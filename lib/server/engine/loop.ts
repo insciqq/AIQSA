@@ -29,6 +29,9 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * ends it. A turn whose answer is written while that report is still owed,
  * and that was not offered it alone, is offered it alone once more after the
  * answer: the answer stands as written, and the round adds nothing to it. A
+ * report that is shown to the user (a monitoring check's starting point or
+ * update) on an answer still without text asks once for that text in a
+ * tool-free round whose text is the answer's; the answer stands after it. A
  * run that researches (`draft`, `lib/server/research/run.ts`) may take its
  * answer from a checked draft instead of a further model round, and has a
  * response without calls checked like one.
@@ -83,13 +86,18 @@ export type AgentLoopPorts = Readonly<{
      */
     afterAnswer?: true;
     /** The round asks for the answer itself: its request carries `ANSWER_NOW_INSTRUCTION`. */
-    answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice;
+    answerNow?: true; reserved?: true; round: number;
+    /** The round asks, without tools, for the text the reserved report made needs: its request carries the report's instruction. */
+    textOwed?: true;
+    toolChoice: LoopToolChoice;
   }>): Promise<ProviderRunRequest>;
   /**
    * The run's one call reserved outside the tool budgets, while it has not
    * been made (`toolBatch.ts` exempts its first call from the call budget).
+   * `textOwed`: the report as made is shown to the user, so an answer without
+   * text is asked for it once.
    */
-  reservedCall?: Readonly<{ name: string; outstanding(): boolean }>;
+  reservedCall?: Readonly<{ name: string; outstanding(): boolean; textOwed?(): boolean }>;
   responseItems(result: ProviderRunResult): readonly TranscriptItem[];
   /** The response completed: its text becomes the answer's before any record of it is written. */
   roundEnd(result: ProviderRunResult, round: number): Promise<void>;
@@ -172,6 +180,34 @@ async function reportAfterAnswer(ports: AgentLoopPorts, reserved: NonNullable<Ag
 }
 
 /**
+ * The one tool-free round that asks for the text a shown report needs, after an answer that has none: the response's text
+ * is the answer's, and a call it makes anyway gets its result without running. A round that fails leaves the answer as it
+ * was, as a failed report round does, while Stop and the deadline still end the turn. Returns the text it added.
+ */
+async function textAfterReport(ports: AgentLoopPorts, round: number): Promise<string> {
+  let roundEnded = false;
+  let text = "";
+  try {
+    await ports.roundStart(round);
+    const request = await ports.prepareRequest({ round, textOwed: true, toolChoice: "none" });
+    const result = await ports.callModel(request, round);
+    roundEnded = true;
+    await ports.roundEnd(result, round);
+    text = result.finalText;
+    await ports.append(ports.responseItems(result));
+    const calls = distinctCalls(result.toolCalls);
+    if (calls.length > 0) await ports.append(calls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
+    return text;
+  } catch (error) {
+    if (ports.signal.aborted) throw error;
+    if (!roundEnded) {
+      await ports.roundEnd({ finalProviderResponsePreview: {}, finalText: "", toolCalls: [], usage: {} }, round).catch(() => undefined);
+    }
+    return text;
+  }
+}
+
+/**
  * Where the turn would end (an answer, or an approval point), its follow-ups
  * are settled first, because an answer is published only with its follow-ups
  * closed at the revision it read: they close, or the ones that arrived are
@@ -193,6 +229,8 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   /** A call was refused for the call budget. */
   let budgetSpent = false;
   let reservedOffered = false;
+  /** The answer's text was asked for once for the shown report (`textAfterReport`). */
+  let textAsked = false;
   let corrections = 0;
   /** The answer's text so far: the user's own follow-up starts it over, what an agent sends adds to it. */
   let answerText = "";
@@ -280,6 +318,14 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
         reservedOffered = true;
         round += 1;
         approvals.push(...await reportAfterAnswer(ports, owed, round));
+      }
+      // A report shown to the user on an answer still without text (a check that wrote only its verdict) asks once for
+      // that text: the shown answer is what the user reads and the next check compares with. The answer stands after it.
+      if (!callsOnly && !ports.draft && approvals.length === 0 && !textAsked && !answerText.trim() &&
+        ports.reservedCall?.textOwed?.() === true) {
+        textAsked = true;
+        round += 1;
+        answerText += await textAfterReport(ports, round);
       }
       // The answer is final unless a follow-up arrived: then the turn goes on with it.
       const followups = await settleFollowups(ports);

@@ -790,6 +790,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The run's one report reserved outside the budgets, when its registry offers it.
         const reservedReport = reservedToolCallForRequest(normalizedRequest) ?? runResearch?.reservedCall ?? null;
         const reserved = reservedReport && registry.resolve(reservedReport.name) ? reservedReport : null;
+        /** The report's last recorded call shows the answer to the user, so the answer needs text (`textNeeded`). */
+        let reportNeedsText = false;
+        const noteReport = (calls: readonly ModelToolCall[], results: readonly TranscriptItem[]) => {
+          if (!reserved || !("textNeeded" in reserved)) return;
+          for (const call of calls) {
+            if (call.name !== reserved.name) continue;
+            const recorded = results.some((item) => item.kind === "tool_result" && item.callId === call.id && item.outcome === "complete");
+            if (recorded) reportNeedsText = reserved.textNeeded(call.arguments);
+          }
+        };
         const batchDeps: ToolBatchDeps = {
           chatId: scope.chatId,
           history: new ToolCallRepeatHistory(),
@@ -993,8 +1003,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
           } } : {}),
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, toolChoice }: Readonly<{
-            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, textOwed, toolChoice }: Readonly<{
+            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; textOwed?: true; toolChoice: LoopToolChoice }>) => {
             // The round after a written answer only reports: none of its text streams into the answer, which stands.
             reportOnlyRound = afterAnswer === true;
             const tools = [...registry.definitions()];
@@ -1011,16 +1021,19 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             // Compaction at the request boundary; a request that cannot fit even then fails visibly.
             const prepared = await context.prepare(request);
             void recordContextStatus("request");
-            // A reserved round's or an answer-now round's instruction rides on its request only, never on the transcript.
+            // A reserved round's, an answer-now round's or a text round's instruction rides on its request only, never on the
+            // transcript.
             const reservedInstruction = reserved && afterAnswer && "afterAnswerInstruction" in reserved
               ? reserved.afterAnswerInstruction : reserved?.instruction;
             const instruction = reservedRound && reservedInstruction ? reservedInstruction
-              : answerNow ? ANSWER_NOW_INSTRUCTION : null;
+              : textOwed && reserved && "textInstruction" in reserved ? reserved.textInstruction
+                : answerNow ? ANSWER_NOW_INSTRUCTION : null;
             return instruction
               ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
           },
-          ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => runResearch ? runResearch.outstanding() : toolState.reservedCalled !== true } } : {}),
+          ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => runResearch ? runResearch.outstanding() : toolState.reservedCalled !== true,
+            textOwed: () => reportNeedsText } } : {}),
           // The response keeps its request's anchor, so the chat's next run measures its first request from it (issue #62).
           responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens,
             history: result.history ?? fallbackHistory(result), nextId: randomUUID, origin: target,
@@ -1042,6 +1055,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           runTools: async (calls, round) => {
             await answer.flush();
             const batch = await runToolBatch(batchDeps, toolState, { calls, round });
+            noteReport(calls, batch.results);
             runResearch?.batchEnded();
             // A value the user had saved as a secret is not repeated in the answer, whatever the model writes (issue #52).
             answer.mask(calls.flatMap((call) => call.name === MANAGE_SECRET_TOOL_NAME ? manageSecretValues(call.arguments)

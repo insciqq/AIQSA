@@ -24,10 +24,10 @@ export type ScheduledTaskRenderedRun = Readonly<{ taskId: string; taskRunId: str
 
 type ScheduledTurn = Readonly<{ scheduledTask?: ChatMessageScheduledTaskWire | null }>;
 
-/** The unread results among a transcript's scheduled turns, in transcript order. */
+/** The unread results among a transcript's scheduled turns, in transcript order; only a kept run can be unread. */
 export function renderedUnseenScheduledRuns(messages: readonly ScheduledTurn[]): ScheduledTaskRenderedRun[] {
   return messages.flatMap(({ scheduledTask: marker }) =>
-    marker?.unseen ? [{ taskId: marker.taskId, taskRunId: marker.taskRunId }] : []);
+    marker?.unseen && marker.taskRunId ? [{ taskId: marker.taskId, taskRunId: marker.taskRunId }] : []);
 }
 
 /** The task whose later runs continue in this chat: it keeps one chat and this is its newest. */

@@ -61,8 +61,8 @@ export function monitoringCheckInstruction(input: Readonly<{ previousResult: boo
     "\"could_not_check\" if a page, search or tool the check needs failed or could not be reached, so you cannot tell " +
       "whether anything changed; never report \"no_update\" then.",
     input.previousResult
-      ? "Then write your answer as usual. A check with no update is not shown to the user."
-      : "Then write your answer as usual."
+      ? "Then write your answer as text, as usual, never the call alone. A check with no update is not shown to the user."
+      : "Then write your answer as text, as usual, never the call alone."
   ].join(" ");
 }
 
@@ -79,6 +79,27 @@ export function monitoringVerdictReservedInstruction(toolName: string = MONITORI
 export function monitoringVerdictAfterAnswerInstruction(toolName: string = MONITORING_VERDICT_TOOL_NAME): string {
   return `Your answer is written and stands as it is, but you did not call ${toolName}. Call ${toolName} now with the ` +
     "outcome of this check and no other tool, and write no further text.";
+}
+
+/**
+ * Whether a check whose model reported `verdict` is shown to the user, so its answer needs text: an update or a reached
+ * goal, and on a first check (no previous shown result in its context) anything but `could_not_check`, since the settlement
+ * makes that the starting point (`monitoringCheckSettlement`). A shown answer is the next check's comparison basis, so an
+ * empty one would leave the user an empty card and every later check nothing to compare with. A `no_update` that is
+ * hidden, and a check that could not check, need none.
+ */
+export function monitoringVerdictNeedsText(verdict: MonitoringVerdict, previousResult: boolean): boolean {
+  return verdict === "update" || verdict === "goal_reached" || (verdict === "no_update" && !previousResult);
+}
+
+/**
+ * The ephemeral last provider message of the one tool-free round that asks a shown check for the text its answer lacks
+ * (`lib/server/engine/loop.ts`): what it writes is the answer, which stands after it.
+ */
+export function monitoringAnswerTextInstruction(): string {
+  return "You reported the outcome of this check, and it will be shown to the user, but your answer has no text. Write " +
+    "the answer now as plain text: the current state you found and what changed, if anything, so the user can read it " +
+    "and the next check can compare with it. Do not call any tool.";
 }
 
 export type MonitoringVerdictRecorder = (input: Readonly<{ runId: string; userId: string; verdict: MonitoringVerdict }>) =>

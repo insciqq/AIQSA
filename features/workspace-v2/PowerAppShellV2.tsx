@@ -1580,6 +1580,7 @@ export function PowerAppShellV2({
     loadEarlierMessages,
     loadingOlderMessages: activeThreadHistory.loading,
     olderMessagesError: activeThreadHistory.error,
+    quietChecks: activeThread.quietChecks ?? null,
     retryActiveChatDetail,
     revealedMessageId: searchRevealedMessage?.chatId === activeChatId ? searchRevealedMessage.messageId : null,
     scheduledTaskChat,

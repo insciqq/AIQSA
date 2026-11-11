@@ -12,6 +12,7 @@ import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { omitSubagentCallbackTurns } from "../../domain/subagentCallbackTurns";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { collapseChatAnswerReviewTree } from "./legacyAnswerReviews";
+import { quietCheckOmission } from "./quietScheduledChecks";
 
 export const chatExportChatSelect = {
   activeLeafMessageId: true,
@@ -28,6 +29,7 @@ export type ChatExportChatRow = Prisma.ChatGetPayload<{ select: typeof chatExpor
 const chatExportMessageSelect = {
   ...messageFollowupSelect,
   answerReviewSessionId: true,
+  branchSourceModelRunId: true,
   content: true,
   createdAt: true,
   id: true,
@@ -35,11 +37,12 @@ const chatExportMessageSelect = {
   parentMessageId: true,
   provider: true,
   role: true,
+  scheduledTaskPrompt: true,
   status: true,
   systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
-type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession" | "attachment" | "message">;
+type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession" | "attachment" | "message" | "modelRun">;
 
 /**
  * Every message of one chat with its follow-ups and attachment metadata, in
@@ -57,12 +60,17 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
   })), chat.activeLeafMessageId);
   const collapsed = loaded.filter((row) => !collapse.removed.has(row.id))
     .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
+  // A quiet check is no result: it stays out like the chat's history leaves it out, without a new export version, since
+  // an export of a chat without one is unchanged (operator decision 2026-11-11, `lib/server/chats/quietScheduledChecks.ts`).
+  const quiet = await quietCheckOmission(db, chat.id, collapsed);
+  const shown = collapsed.filter((row) => !quiet.removed.has(row.id))
+    .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
   // A sub-agent wake-up turn is the server's, never the user's speech: it stays out, its answer under the turn before it.
-  const wakeUps = omitSubagentCallbackTurns(collapsed.map((row) => ({ id: row.id, parentId: row.parentMessageId, role: row.role,
+  const wakeUps = omitSubagentCallbackTurns(shown.map((row) => ({ id: row.id, parentId: row.parentMessageId, role: row.role,
     systemTurnKind: row.systemTurnKind })));
-  const rows = collapsed.filter((row) => !wakeUps.removed.has(row.id))
+  const rows = shown.filter((row) => !wakeUps.removed.has(row.id))
     .map((row) => wakeUps.parents.has(row.id) ? { ...row, parentMessageId: wakeUps.parents.get(row.id) ?? null } : row);
-  const activeLeafKey = wakeUps.resolve(collapse.activeLeafId);
+  const activeLeafKey = wakeUps.resolve(quiet.resolve(collapse.activeLeafId));
   const attachmentIds = [...new Set(rows.flatMap((row) => chatExportAttachmentIds(row.content)))];
   const attachmentRows = attachmentIds.length
     ? await db.attachment.findMany({

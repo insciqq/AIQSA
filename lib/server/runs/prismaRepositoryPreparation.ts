@@ -149,6 +149,7 @@ import {
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
 import { loadAnswerReviewPathView, type AnswerReviewPathView } from "../chats/legacyAnswerReviews";
+import { quietCheckStandIn } from "../chats/quietScheduledChecks";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
 import { UNREGISTERED_WORKSPACE_COMMAND_FILTER, WORKSPACE_EXECUTION_OPEN_STATES } from "../workspace/executionRegistry";
@@ -1144,6 +1145,12 @@ export async function admitPreparingRunWithClient(
         // The prompt a scheduled run posts keeps that fact on the message
         // itself, committed with the run's scheduled origin.
         scheduledPrompt = input.scheduledOccurrence !== undefined;
+        // Any other message continues the latest turn its user was shown, never a quiet check that turn's history
+        // leaves out (operator decision 2026-11-11): the chat's leaf stays the one the send expected, and only the
+        // parent skips past the quiet checks that end the branch, settled and so fixed under the chat's lock.
+        // Its context reads the same branch (`withoutQuietTail` in `lib/server/runs/prismaRepository.ts`).
+        const parentMessageId = !scheduledPrompt && input.expectedActiveLeafId
+          ? await quietCheckStandIn(tx, input.chatId, input.expectedActiveLeafId) : input.expectedActiveLeafId;
         const userMessage = await tx.message.create({
           data: {
             chatId: input.chatId,
@@ -1153,7 +1160,7 @@ export async function admitPreparingRunWithClient(
               : input.normalizedRequest.mcpApproval?.guard?.version === 2 && input.normalizedRequest.mcpApproval.guard.currentMessageId
                 ? { id: input.normalizedRequest.mcpApproval.guard.currentMessageId } : {}),
             modelId: input.modelId,
-            parentMessageId: input.expectedActiveLeafId,
+            parentMessageId,
             provider: input.provider,
             role: "user",
             ...(scheduledPrompt ? { scheduledTaskPrompt: true } : {}),
@@ -1275,8 +1282,11 @@ export async function admitPreparingRunWithClient(
           }
           return reviewedPath;
         };
+        // Quiet checks that end the branch leave its history (`lib/server/chats/quietScheduledChecks.ts`), so the
+        // latest answer the user was shown is the leaf they read; its new version leaves them on the old branch.
         if (!preSendSourceMessageId || (leafMessageId !== preSendSourceMessageId &&
-          (userLeafWithoutAssistant || (await reviewed())?.standInId !== preSendSourceMessageId))) {
+          (userLeafWithoutAssistant || ((await reviewed())?.standInId !== preSendSourceMessageId &&
+            (!leafMessageId || await quietCheckStandIn(tx, input.chatId, leafMessageId) !== preSendSourceMessageId))))) {
           throw new ActiveLeafConflictError();
         }
         let reviewedVersion = false;
