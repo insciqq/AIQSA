@@ -1,6 +1,7 @@
 "use client";
 
 import { writeClipboardText } from "@/components/clipboard/writeClipboardText";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import { Check, Copy } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -42,7 +43,7 @@ export function CodeCopyButton({ label, text }: { label: string; text: string })
         ) : (
           <Copy className="size-3" aria-hidden="true" />
         )}
-        {copied ? "Copied" : "Copy"}
+        <TranslatableLabel>{copied ? "Copied" : "Copy"}</TranslatableLabel>
       </button>
       <span className="sr-only" role="status">
         {copied ? "Copied" : ""}

@@ -166,7 +166,7 @@ export function ConnectedAppsSection({
                         </span>
                         <span className="flex items-center gap-1.5">
                           <Clock3 className="size-3.5" aria-hidden="true" />
-                          Last used {app.lastUsedAt ? <time dateTime={app.lastUsedAt}>{timestamp(app.lastUsedAt)}</time> : "never"}
+                          Last used {app.lastUsedAt ? <time dateTime={app.lastUsedAt}>{timestamp(app.lastUsedAt)}</time> : <span>never</span>}
                         </span>
                       </div>
                       {!active && app.revokedAt ? (

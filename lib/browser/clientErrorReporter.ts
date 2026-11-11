@@ -1,7 +1,9 @@
 import {
   CLIENT_ERRORS_PATH,
+  CLIENT_ERROR_NAMES,
   CLIENT_ERROR_PATHNAME_MAX_LENGTH,
   type ClientErrorKind,
+  type ClientErrorName,
   type ClientErrorReportRequest
 } from "../contracts/clientErrors";
 
@@ -24,6 +26,39 @@ function ownString(value: unknown, key: "message" | "name" | "stack"): string {
     return typeof field === "string" ? field : "";
   } catch {
     return "";
+  }
+}
+
+// React's DOM writes failing because another script moved or replaced the
+// node: Chromium and WebKit name the method, Firefox prefixes `Node.`, and
+// older WebKit says only that the object cannot be found.
+const DOM_CONFLICT = /\b(?:insertBefore|removeChild|appendChild|replaceChild)\b|not a child of this node|object can ?not be found here/iu;
+const KNOWN_NAMES = new Set<string>(CLIENT_ERROR_NAMES);
+
+/** The error's class from a closed set; anything else, or no error object, is `other`. */
+export function clientErrorName(error: unknown): ClientErrorName {
+  const name = ownString(error, "name");
+  return KNOWN_NAMES.has(name) ? name as ClientErrorName : "other";
+}
+
+/** Whether the message reads as a failed DOM insert or remove; only the answer leaves the page. */
+export function isDomConflict(error: unknown): boolean {
+  return DOM_CONFLICT.test(ownString(error, "message"));
+}
+
+/**
+ * Whether a page translator rewrote the document: Chrome marks the root
+ * `translated-ltr`/`translated-rtl`, and translators that change the language
+ * rewrite `lang`, which the layout sets to `en`.
+ */
+export function isPageTranslated(root: Element | null = typeof document === "undefined" ? null : document.documentElement): boolean {
+  if (!root) return false;
+  try {
+    if (root.classList.contains("translated-ltr") || root.classList.contains("translated-rtl")) return true;
+    const lang = root.getAttribute("lang");
+    return lang !== null && lang.toLowerCase() !== "en";
+  } catch {
+    return false;
   }
 }
 
@@ -87,11 +122,17 @@ function send(report: ClientErrorReportRequest): void {
 }
 
 export function createClientErrorReporter(
-  options: Readonly<{ budget?: number; send?: (report: ClientErrorReportRequest) => void; pathname?: () => string | undefined }> = {}
+  options: Readonly<{
+    budget?: number;
+    send?: (report: ClientErrorReportRequest) => void;
+    pathname?: () => string | undefined;
+    translated?: () => boolean;
+  }> = {}
 ): ClientErrorReporter {
   const budget = options.budget ?? CLIENT_ERROR_PAGE_BUDGET;
   const deliver = options.send ?? send;
   const pathname = options.pathname ?? currentPathname;
+  const translated = options.translated ?? (() => isPageTranslated());
   const reported = new WeakSet<object>();
   let sent = 0;
   return Object.freeze({
@@ -105,7 +146,9 @@ export function createClientErrorReporter(
       }
       sent += 1;
       const path = pathname();
-      deliver(path === undefined ? { kind } : { kind, pathname: path });
+      // Closed classes and booleans only: the message and stack stay here.
+      const facts = { error_name: clientErrorName(error), dom_conflict: isDomConflict(error), page_translated: translated() };
+      deliver(path === undefined ? { kind, ...facts } : { kind, pathname: path, ...facts });
     }
   });
 }
