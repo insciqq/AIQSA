@@ -3671,6 +3671,13 @@ export async function recoverPreparingRunWithClient(
   return recovered;
 }
 
+/** Whether the run asked for Workspace and, when not, the request's closed reason (`run_accepted`). */
+function runAcceptedWorkspaceFields(admission: PreparingRunAdmissionInput) {
+  return admission.workspaceEnabled === true
+    ? { workspace_requested: true }
+    : { workspace_requested: false, workspace_reason: admission.workspaceNotRequestedReason ?? "unknown" as const };
+}
+
 export async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput,
@@ -3711,7 +3718,7 @@ export async function createDormantPreparingRun(
     );
     logEvent("run_accepted", { run_id: fallback.runId,
       kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-      preparation: fallback.deferredPdf ? "pdf" : "ready" });
+      preparation: fallback.deferredPdf ? "pdf" : "ready", ...runAcceptedWorkspaceFields(admission) });
     return { ...fallback, acceptedAt: new Date() };
   }
   // Temporary and scheduled task turns without a standing read (any
@@ -3721,7 +3728,8 @@ export async function createDormantPreparingRun(
     (created.scheduledPrompt === true && admission.normalizedRequest.memoryStandingVersion !== 1);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory" });
+    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory",
+    ...runAcceptedWorkspaceFields(admission) });
   const acceptedAt = new Date();
   if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return { ...created, acceptedAt };
   // Durable acceptance transfers cancellation from the HTTP request to the

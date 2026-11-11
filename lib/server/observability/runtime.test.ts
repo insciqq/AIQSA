@@ -339,6 +339,16 @@ describe("bounded observability runtime", () => {
     }
   });
 
+  it("records whether an accepted run asked for Workspace and only a closed reason when it did not", () => {
+    const accepted = { run_id: "run-1", kind: "send", preparation: "ready" } as const;
+    expect(record("run_accepted", { ...accepted, workspace_requested: true })).toMatchObject({ workspace_requested: true });
+    expect(record("run_accepted", { ...accepted, workspace_requested: false, workspace_reason: "user_declined" }))
+      .toMatchObject({ workspace_requested: false, workspace_reason: "user_declined" });
+    const forged = record("run_accepted", { ...accepted, workspace_requested: "yes", workspace_reason: "PRIVATE_TEXT" } as never);
+    expect(forged).not.toHaveProperty("workspace_requested");
+    expect(forged).not.toHaveProperty("workspace_reason");
+  });
+
   it("records a sign-in step with closed fields only, its level decided by outcome and code", () => {
     const identity = {
       email: "PRIVATE_alice@example.test", username: "PRIVATE_alice", subject: "PRIVATE_subject", tenant: "PRIVATE_tenant",
