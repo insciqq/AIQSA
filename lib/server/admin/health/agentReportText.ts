@@ -108,7 +108,7 @@ function modelSection(report: HealthFullReport): string[] {
   const { models } = report;
   return section(heading("Runs by model (runs created in the range, most failures first)", models.rows.length, models.truncated),
     models.rows.flatMap((row) => [
-      ...wrapParts([present([row.connectionName ?? "unattributed", row.modelName]).join(" · ")], "  ", " · "),
+      ...wrapParts([present([row.connectionName ?? "unattributed", row.modelName, row.subagent && "sub-agents"]).join(" · ")], "  ", " · "),
       ...wrapParts(present([`accepted ${row.accepted}`, `completed ${row.completed}`, `failed ${row.failed} (${percent(row.failureRate)})`,
         `cancelled ${row.cancelled}`, row.refusedInput > 0 && `refused input ${row.refusedInput}`, row.open > 0 && `open ${row.open}`,
         plural(row.users, "user"), row.lastFailedAt && `last failure ${minute(row.lastFailedAt)}`]), "      ", " · "),
