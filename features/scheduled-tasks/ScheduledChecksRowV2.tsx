@@ -23,9 +23,10 @@ export function ScheduledChecksRowV2({ expanded, now, onToggle, summary, timeZon
   return (
     <div className="v2-scheduled-checks" data-testid="scheduled-checks-row">
       <UiV2Icon name="clock" />
+      {/* Each optional part is its own element, so a page translator's wrappers never strand a text node React removes. */}
       <p>
-        {label}
-        {last ? <> · last <time dateTime={summary.lastAt ?? undefined}>{last}</time></> : null}
+        <span>{label}</span>
+        {last ? <span> · last <time dateTime={summary.lastAt ?? undefined}>{last}</time></span> : null}
       </p>
       <span aria-hidden="true">·</span>
       <button
