@@ -175,6 +175,20 @@ export const discordSetupItemSchema = z.strictObject({
 });
 export type DiscordSetupItem = z.infer<typeof discordSetupItemSchema>;
 
+/** `GET /api/admin/discord/activity`: the 24 h and 7 d summaries and the latest rows (D-28). */
+export const discordAdminActivitySchema = z.strictObject({
+  last24h: discordActivityStatsSchema,
+  last7d: discordActivityStatsSchema,
+  rows: z.array(discordActivityRowSchema).max(DISCORD_ACTIVITY_ROWS_MAX)
+});
+export type DiscordAdminActivity = z.infer<typeof discordAdminActivitySchema>;
+
+/** `GET /api/admin/discord/monitoring-keys` and the answer to a revoke: every key, never a secret. */
+export const discordMonitoringKeyListSchema = z.strictObject({
+  keys: z.array(discordMonitoringKeySchema).max(50)
+});
+export type DiscordMonitoringKeyList = z.infer<typeof discordMonitoringKeyListSchema>;
+
 export const discordAdminStateSchema = z.strictObject({
   enabled: z.boolean(),
   tokenConfigured: z.boolean(),
@@ -205,11 +219,7 @@ export const discordAdminStateSchema = z.strictObject({
     ready: z.boolean(),
     items: z.array(discordSetupItemSchema).max(DISCORD_SETUP_CHECK_CODES.length)
   }),
-  activity: z.strictObject({
-    last24h: discordActivityStatsSchema,
-    last7d: discordActivityStatsSchema,
-    rows: z.array(discordActivityRowSchema).max(DISCORD_ACTIVITY_ROWS_MAX)
-  }),
+  activity: discordAdminActivitySchema,
   version
 });
 export type DiscordAdminState = z.infer<typeof discordAdminStateSchema>;
@@ -230,6 +240,12 @@ export const discordChannelOptionsSchema = z.strictObject({
   })).max(500)
 });
 export type DiscordChannelOptions = z.infer<typeof discordChannelOptionsSchema>;
+
+/** `GET /api/admin/discord/assistants`: the Assistants the service account can use, for the Assistant choice. */
+export const discordAssistantOptionsSchema = z.strictObject({
+  assistants: z.array(z.strictObject({ id: internalId, name: z.string().min(1).max(200) })).max(500)
+});
+export type DiscordAssistantOptions = z.infer<typeof discordAssistantOptionsSchema>;
 
 const expectedVersion = version;
 export const discordAdminCommandSchema = z.discriminatedUnion("action", [
@@ -317,6 +333,9 @@ export const decodeDiscordAdminState = decoder(discordAdminStateSchema);
 export const decodeDiscordAdminCommand = decoder(discordAdminCommandSchema);
 export const decodeDiscordGuildOptions = decoder(discordGuildOptionsSchema);
 export const decodeDiscordChannelOptions = decoder(discordChannelOptionsSchema);
+export const decodeDiscordAssistantOptions = decoder(discordAssistantOptionsSchema);
+export const decodeDiscordAdminActivity = decoder(discordAdminActivitySchema);
+export const decodeDiscordMonitoringKeyList = decoder(discordMonitoringKeyListSchema);
 export const decodeDiscordMonitoringKeyCreated = decoder(discordMonitoringKeyCreatedSchema);
 export const decodeDiscordMonitoringTelemetry = decoder(discordMonitoringTelemetrySchema);
 

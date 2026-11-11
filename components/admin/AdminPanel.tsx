@@ -7,6 +7,7 @@ import {
   useAdminAssistantsPendingCount,
   type AdminAssistantsPendingCount
 } from "@/components/admin/assistants/useAdminAssistantsPendingCount";
+import { AdminDiscordSection } from "@/components/admin/discord/AdminDiscordSection";
 import { AdminDashboardUnavailable } from "@/components/admin/AdminDashboardUnavailable";
 import { AdminEmailSection } from "@/components/admin/email/AdminEmailSection";
 import { AdminFeedbackHost } from "@/components/admin/AdminFeedbackHost";
@@ -254,6 +255,14 @@ function AdminSectionContent({
       );
     case "telegram":
       return <AdminTelegramSection feedback={feedback} groups={dashboard.groups} />;
+    case "discord":
+      return (
+        <AdminDiscordSection
+          feedback={feedback}
+          onNavigateSection={navigation.selectSection}
+          requestConfirmation={requestConfirmation}
+        />
+      );
     case "usage":
       return (
         <AdminUsageSection
