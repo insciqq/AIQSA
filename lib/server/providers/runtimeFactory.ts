@@ -508,7 +508,9 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         fetchFn,
         acceptStreamedCreate: true,
         initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
-        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection)
+        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection),
+        // A create (Vision, chat PDF, structured output) arrives as a stream on Codex LB: it goes silent no longer than an answer's.
+        streamIdle: compatibleResponsesStreamIdle(snapshot)
       });
       return {
         adapter: createCompatibleResponsesAdapter({
@@ -644,8 +646,11 @@ function withProviderStreamSafetyObservability(
         { identity, stage: "answer" }
       );
       // The response timeout bounds the wait for the response to start, its headers and first event; once a stream's
-      // first event arrived it runs to its idle timeout or ceiling (decision 2026-11-11). A deadline that passed before
-      // the start is named so (`streamProgress.ts`), and the run sends that request again (`modelCall.ts`).
+      // first event arrived it runs to its idle timeout or ceiling (decision 2026-11-11). A streamed request's deadline
+      // that passed before the start is named so (`streamProgress.ts`), and the run sends that request again
+      // (`modelCall.ts`). A request sent without streaming has no first event to wait for: its deadline is the whole
+      // answer's, as before, and stays unnamed unless a stream its provider sent anyway named it.
+      const streamed = request.params.stream === true && request.forceNonStreaming !== true;
       let responseStarted = false;
       const onResponseStart = useBackgroundPollTimeout ? undefined : () => {
         responseStarted = true;
@@ -659,7 +664,7 @@ function withProviderStreamSafetyObservability(
         }), { onResponseHead: options?.onResponseHead, onResponseStart, signal: timeout.signal, timeoutMs: runTimeoutMs,
           requestTimeoutMs: timeoutMs });
       } catch (error) {
-        if (onResponseStart && !responseStarted && isProviderDeadlineExceededError(error)) {
+        if (streamed && !responseStarted && isProviderDeadlineExceededError(error)) {
           markProviderStreamProgress(error, providerStreamProgressFacts({ responseStarted: false }));
         }
         warnProviderStreamSafetyOnce(error, {
