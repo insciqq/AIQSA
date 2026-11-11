@@ -407,6 +407,82 @@ describe("OpenRouter Chat response normalization", () => {
     expect(JSON.stringify(artifacts)).not.toMatch(/PRIVATE_PASSWORD|hidden|unknown/u);
   });
 
+  function citationPayloads(artifacts: readonly ModelRunSseEvent[]): unknown[] {
+    return artifacts.flatMap((event) =>
+      event.type === "artifact" && event.data.artifactType === "citation" ? [event.data.payload] : []
+    );
+  }
+
+  it("reads a url_citation annotation whether or not its type or its nesting is present", () => {
+    // Before 2026-11-11 a typed annotation without the nested object, and a
+    // nested object without a type, both counted as no source at all.
+    const artifacts = extractOpenRouterArtifacts({
+      choices: [{
+        message: {
+          annotations: [
+            { title: "Flat typed", type: "url_citation", url: "https://example.com/flat-typed" },
+            { url_citation: { title: "Nested untyped", url: "https://example.com/nested-untyped" } },
+            { type: "url_citation", url: "https://example.com/malformed", url_citation: "https://example.com/malformed" }
+          ]
+        }
+      }]
+    });
+
+    expect(citationPayloads(artifacts)).toEqual([
+      { index: 1, snippet: undefined, source: "openrouter-annotations", title: "Flat typed", url: "https://example.com/flat-typed" },
+      { index: 2, snippet: undefined, source: "openrouter-annotations", title: "Nested untyped", url: "https://example.com/nested-untyped" }
+    ]);
+  });
+
+  it("reads Perplexity's top-level search_results and lends their titles to bare citations", () => {
+    const artifacts = extractOpenRouterArtifacts({
+      choices: [{
+        message: {
+          annotations: [{
+            type: "url_citation",
+            url_citation: { title: "Annotation title", url: "https://example.com/annotated" }
+          }]
+        }
+      }],
+      citations: ["https://example.com/a", "https://example.com/b"],
+      search_results: [
+        { date: "2026-11-01", snippet: "Excerpt A", title: "Title A", url: "https://example.com/a" },
+        { title: "Title B", url: "https://example.com/b" },
+        { title: "Not the annotation's title", url: "https://example.com/annotated" },
+        { last_updated: "2026-11-02", source: "web", title: "Title C", url: "https://example.com/c" },
+        { title: "Repeated C", url: "https://example.com/c" },
+        { title: "Unsafe", url: "javascript:alert(1)" },
+        { title: "No URL" }
+      ]
+    });
+
+    expect(citationPayloads(artifacts)).toEqual([
+      { index: 1, snippet: "Excerpt A", source: "openrouter", title: "Title A", url: "https://example.com/a" },
+      { index: 2, snippet: undefined, source: "openrouter", title: "Title B", url: "https://example.com/b" },
+      { index: 1, snippet: undefined, source: "openrouter-annotations", title: "Annotation title", url: "https://example.com/annotated" },
+      { index: 4, snippet: undefined, source: "openrouter-search-results", title: "Title C", url: "https://example.com/c" }
+    ]);
+    expect(JSON.stringify(artifacts)).not.toContain("javascript:");
+  });
+
+  it("keeps a citation whose URL has raw spaces, percent-encoded, and still refuses unsafe ones", () => {
+    // A raw space used to fail the shared link check and cost the source.
+    const artifacts = extractOpenRouterArtifacts({
+      citations: [
+        " https://example.com/a path?q=a b ",
+        "https://exa mple.com/host-with-space",
+        "javascript:alert(1) x",
+        "https://user:PRIVATE_PASSWORD@example.com/a b",
+        `https://example.com/${"x".repeat(2_100)} y`
+      ]
+    });
+
+    expect(citationPayloads(artifacts)).toEqual([
+      { index: 1, snippet: undefined, source: "openrouter", title: "Source 1", url: "https://example.com/a%20path?q=a%20b" }
+    ]);
+    expect(JSON.stringify(artifacts)).not.toMatch(/PRIVATE_PASSWORD|javascript:|exa mple/u);
+  });
+
   it.each([
     {
       response: { error: { code: "top_code", message: remoteSecret } }

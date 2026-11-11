@@ -559,6 +559,125 @@ describe("OpenRouter Perplexity search adapter", () => {
     });
   });
 
+  /** The shape of a real Sonar Pro Search response through OpenRouter
+   * (recorded 2026-11-11, content-free): sources only in 15 nested
+   * `url_citation` annotations with zero offsets, no top-level `citations` or
+   * `search_results`. URLs and titles here are synthetic. */
+  function recordedSonarProSearchResponse(message: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      choices: [{
+        finish_reason: "stop",
+        index: 0,
+        logprobs: null,
+        message: {
+          annotations: Array.from({ length: 15 }, (_, index) => ({
+            type: "url_citation",
+            url_citation: {
+              end_index: 0,
+              start_index: 0,
+              title: `Synthetic title ${index + 1}`,
+              url: `https://example.com/recorded/${index + 1}`
+            }
+          })),
+          content: "Synthetic findings [1][15].",
+          refusal: null,
+          role: "assistant",
+          ...message
+        },
+        native_finish_reason: "stop"
+      }],
+      created: 1_762_862_400,
+      id: "gen-synthetic-recorded-shape",
+      model: "perplexity/sonar-pro-search",
+      object: "chat.completion",
+      provider: "Perplexity",
+      service_tier: null,
+      system_fingerprint: null,
+      usage: {
+        completion_tokens: 5,
+        cost: 0.02,
+        cost_details: { upstream_inference_cost: 0 },
+        is_byok: false,
+        prompt_tokens: 11,
+        total_tokens: 16
+      }
+    };
+  }
+
+  it("takes all fifteen sources from the recorded Sonar Pro Search response shape", async () => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: { createChatCompletion: async () => recordedSonarProSearchResponse() }
+    });
+
+    const result = await adapter.search(searchRequest());
+
+    expect(result.sources).toHaveLength(15);
+    expect(result.sources.map((source) => source.citation)).toEqual(Array.from({ length: 15 }, (_, index) => index + 1));
+    expect(result.sources[0]).toEqual({
+      citation: 1, rank: 1, title: "Synthetic title 1", url: "https://example.com/recorded/1"
+    });
+    expect(result.finalProviderResponsePreview).toMatchObject({ sourceCount: 15, status: "completed" });
+  });
+
+  it.each([
+    ["top-level citations", { citations: ["https://example.com/field/1", "https://example.com/field/2"] }, {}],
+    ["message citations", {}, { citations: ["https://example.com/field/1", "https://example.com/field/2"] }],
+    ["top-level search_results", {
+      search_results: [
+        { date: "2026-11-01", title: "Result 1", url: "https://example.com/field/1" },
+        { last_updated: "2026-11-02", source: "web", title: "Result 2", url: "https://example.com/field/2" }
+      ]
+    }, {}],
+    ["typed annotations without nesting", {}, {
+      annotations: [
+        { title: "Flat 1", type: "url_citation", url: "https://example.com/field/1" },
+        { title: "Flat 2", type: "url_citation", url: "https://example.com/field/2" }
+      ]
+    }],
+    ["nested annotations without a type", {}, {
+      annotations: [
+        { url_citation: { title: "Nested 1", url: "https://example.com/field/1" } },
+        { url_citation: { title: "Nested 2", url: "https://example.com/field/2" } }
+      ]
+    }],
+    ["citations whose URLs carry raw spaces", { citations: ["https://example.com/field/1 a", "https://example.com/field/2 b"] }, {}]
+  ])("takes sources from %s when the annotations are empty", async (_field, top, message) => {
+    const response = recordedSonarProSearchResponse({ annotations: [], ...message });
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: { createChatCompletion: async () => ({ ...response, ...top }) }
+    });
+
+    const result = await adapter.search(searchRequest());
+
+    expect(result.sources.map((source) => [source.citation, source.url.replace(/%20[ab]$/u, "")])).toEqual([
+      [1, "https://example.com/field/1"],
+      [2, "https://example.com/field/2"]
+    ]);
+  });
+
+  it("keeps refusing findings that arrive without a source URL in any field", async () => {
+    const adapter = createOpenRouterPerplexitySearchAdapter({
+      client: {
+        createChatCompletion: async () => ({
+          ...recordedSonarProSearchResponse({
+            annotations: [{ type: "url_citation", url_citation: { end_index: 0, start_index: 0, title: "No URL" } }],
+            citations: []
+          }),
+          citations: [],
+          search_results: [{ date: "2026-11-01", title: "No URL either" }, { title: "Unsafe", url: "ftp://example.com/x" }]
+        })
+      }
+    });
+
+    const error = await adapter.search(searchRequest()).catch((value: unknown) => value);
+    expect(isProviderSearchExecutionError(error)).toBe(true);
+    expect(error).toMatchObject({
+      code: "openrouter_search_sources_invalid",
+      costUsd: 0.02,
+      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
+    });
+  });
+
   it("preserves deterministic fake result, artifacts, usage, and request preview", async () => {
     const adapter = createFakeOpenRouterPerplexitySearchAdapter();
 
