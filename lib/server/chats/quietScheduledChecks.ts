@@ -96,7 +96,40 @@ export async function quietCheckStandIn(db: StandInClient, chatId: string, messa
   const scheduledTurn = message?.role === "user" ? message.scheduledTaskPrompt
     : message?.role === "assistant" && message.parent?.role === "user" && message.parent.scheduledTaskPrompt;
   if (!scheduledTurn) return messageId;
-  const path = await db.$queryRaw<QuietCheckMessage[]>(Prisma.sql`
+  const path = await loadStoredPath(db, chatId, messageId);
+  return path.at(-1)?.id === messageId ? quietPathStandIn(db, chatId, path) : messageId;
+}
+
+/**
+ * The native runs of the quiet checks on the stored branch up to `userMessageId` that hold a call whose outcome is
+ * unknown, each with the first message after it that the branch shows. The conversation leaves quiet checks out, so this
+ * is how the unknown-effect guard still counts their calls while the model never reads them; a chat without such a run
+ * costs one read and no transcript.
+ */
+export async function loadQuietCheckEffectRuns(db: StandInClient, input: Readonly<{ chatId: string; userId: string;
+  userMessageId: string }>): Promise<Array<Readonly<{ nextMessageId: string; runId: string }>>> {
+  const candidates = await db.modelRun.findMany({
+    select: { assistantMessageId: true, id: true },
+    where: { chatId: input.chatId, engine: "native", scheduledOccurrenceId: { not: null }, scheduledOutcome: QUIET_OUTCOME,
+      subagentTurnId: null, toolCalls: { some: { OR: [{ state: "running" },
+        { result: { equals: "unknown", path: ["outcome"] }, state: "error" }] } }, userId: input.userId }
+  });
+  if (candidates.length === 0) return [];
+  const path = await loadStoredPath(db, input.chatId, input.userMessageId);
+  const omission = await quietCheckOmission(db, input.chatId, path);
+  const index = new Map(path.map((message, position) => [message.id, position]));
+  return candidates.flatMap((run) => {
+    const at = run.assistantMessageId ? index.get(run.assistantMessageId) : undefined;
+    if (at === undefined || !omission.removed.has(run.assistantMessageId!)) return [];
+    const next = path.slice(at + 1).find((message) => !omission.removed.has(message.id));
+    return next ? [{ nextMessageId: next.id, runId: run.id }] : [];
+  });
+}
+
+/** The stored path from the root to `messageId`, root first, in one statement bounded by the chat's message count. */
+async function loadStoredPath(db: Pick<Prisma.TransactionClient, "$queryRaw">, chatId: string, messageId: string):
+  Promise<QuietCheckMessage[]> {
+  return db.$queryRaw<QuietCheckMessage[]>(Prisma.sql`
     WITH RECURSIVE "bound" AS MATERIALIZED (
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
@@ -119,7 +152,6 @@ export async function quietCheckStandIn(db: StandInClient, chatId: string, messa
     )
     SELECT "id", "parentMessageId", "role", "scheduledTaskPrompt", "branchSourceModelRunId" FROM "path" ORDER BY "depth" DESC
   `);
-  return path.at(-1)?.id === messageId ? quietPathStandIn(db, chatId, path) : messageId;
 }
 
 /**

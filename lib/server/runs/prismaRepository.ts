@@ -34,7 +34,8 @@ import {
   answerReviewVersionQuestion,
   collapseChatAnswerReviews
 } from "../chats/legacyAnswerReviews";
-import { quietPathStandIn, visibleStandIn } from "../chats/quietScheduledChecks";
+import { loadQuietCheckEffectRuns, loadQuietCheckTurnIds, visibleStandIn } from "../chats/quietScheduledChecks";
+import { omitQuietScheduledChecks } from "../../domain/quietScheduledChecks";
 import {
   createPrismaMemoryRunRetrievalService,
   type MemoryRunRetrievalService
@@ -360,25 +361,32 @@ export function createPrismaRunRepository(
     return {
       chatMatched: rows.length > 0,
       messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(
-        selector.kind === "expected" ? await withoutQuietTail(rows, chatId) : rows, chatId))
+        await withoutQuietChecks(rows, chatId, selector.kind === "explicit"), chatId))
     };
   }
 
   /**
-   * A message sent after the branch's latest shown turn continues that turn,
-   * past the quiet checks that end the stored branch
-   * (`lib/server/runs/prismaRepositoryPreparation.ts`), so its model reads
-   * the same branch: that quiet tail leaves its context. Quiet checks earlier
-   * on the branch stay its ancestors.
+   * The branch as its model reads it: without any quiet check
+   * (`lib/server/chats/quietScheduledChecks.ts`), the same branch its reader
+   * is shown, however old. A message sent after the latest shown turn
+   * continues that turn (`lib/server/runs/prismaRepositoryPreparation.ts`),
+   * so the quiet checks that end the stored branch leave too. An answer
+   * repeated for a given question (`keepLeaf`) keeps that question whatever
+   * it is. A scheduled occurrence takes from this branch only its previous
+   * shown result, which is never a quiet check (`scheduledRunContext`).
    */
-  async function withoutQuietTail(rows: ConversationPathRow[], chatId: string): Promise<ConversationPathRow[]> {
+  async function withoutQuietChecks(rows: ConversationPathRow[], chatId: string, keepLeaf: boolean): Promise<ConversationPathRow[]> {
     const path = rows.flatMap((row) => row.messageId ? [{ branchSourceModelRunId: row.messageBranchSourceModelRunId ?? null,
       id: row.messageId, parentMessageId: row.messageParentId ?? null, role: row.messageRole ?? "",
       scheduledTaskPrompt: row.messageScheduledTaskPrompt === true }] : []);
-    const leaf = path.at(-1)?.id;
-    if (!leaf) return rows;
-    const standIn = await quietPathStandIn(prismaClient, chatId, path).catch(retainRunPrismaCode);
-    return standIn === leaf ? rows : rows.slice(0, standIn === null ? 0 : rows.findIndex((row) => row.messageId === standIn) + 1);
+    if (!path.some((message) => message.scheduledTaskPrompt)) return rows;
+    const quietTurns = await loadQuietCheckTurnIds(prismaClient, chatId, path).catch(retainRunPrismaCode);
+    const leaf = path.at(-1);
+    if (keepLeaf && leaf) quietTurns.delete(leaf.role === "user" ? leaf.id : leaf.parentMessageId ?? "");
+    if (quietTurns.size === 0) return rows;
+    const { removed } = omitQuietScheduledChecks(path.map((message) => ({ id: message.id, parentId: message.parentMessageId,
+      role: message.role })), quietTurns);
+    return rows.filter((row) => !row.messageId || !removed.has(row.messageId));
   }
 
   /**
@@ -1320,6 +1328,7 @@ export function createPrismaRunRepository(
     },
     loadVisibleLeafMessageId: (chatId, leafMessageId) =>
       visibleStandIn(prismaClient, chatId, leafMessageId).catch(retainRunPrismaCode),
+    loadQuietCheckEffectRuns: (input) => loadQuietCheckEffectRuns(prismaClient, input).catch(retainRunPrismaCode),
     loadSystemTurnMessageIds: async ({ chatId, messageIds }) => {
       const ids = [...new Set(messageIds)];
       if (ids.length === 0) return new Set();

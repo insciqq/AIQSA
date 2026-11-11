@@ -127,6 +127,18 @@ export async function findMessageMatches(
             -- A turn the server wrote for the user is not the user's text.
             AND message."systemTurnKind" IS NULL
             ${hidden.length > 0 ? Prisma.sql`AND NOT (message."id" = ANY(${hidden}::text[]))` : Prisma.empty}
+            -- A quiet check's turn and answer leave what the chat shows (lib/server/chats/quietScheduledChecks.ts),
+            -- so a match there would open nothing.
+            AND NOT (message."scheduledTaskPrompt" AND EXISTS (
+              SELECT 1 FROM "ModelRun" AS quiet
+              WHERE quiet."userMessageId" = message."id" AND quiet."chatId" = message."chatId"
+                AND quiet."scheduledOccurrenceId" IS NOT NULL AND quiet."scheduledOutcome" = 'no_update'
+            ))
+            AND NOT EXISTS (
+              SELECT 1 FROM "ModelRun" AS quiet
+              WHERE quiet."assistantMessageId" = message."id" AND quiet."chatId" = message."chatId"
+                AND quiet."scheduledOccurrenceId" IS NOT NULL AND quiet."scheduledOutcome" = 'no_update'
+            )
             AND aiqsa_message_search_text(message."content") ILIKE ${messageSearchPattern(input.query)} ESCAPE '\\'
         ),
         grouped AS (
