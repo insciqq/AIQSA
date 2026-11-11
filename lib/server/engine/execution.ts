@@ -552,8 +552,17 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // The old core's answers are text, so the calls of its runs whose outcome stayed unknown are added for the guard alone.
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
+        // The quiet checks the conversation leaves out (`lib/server/chats/quietScheduledChecks.ts`) never return to it, but a
+        // call of theirs whose outcome is unknown still counts, before the next message the branch shows. Only a run holding
+        // one is read. A scheduled run's flat context counts only its previous shown result's calls, as before.
+        const quietRuns = input.scheduled ? [] : await input.repository.loadQuietCheckEffectRuns?.({ chatId: scope.chatId,
+          userId: input.userId, userMessageId: input.created.userMessageId }) ?? [];
+        const quietItems = quietRuns.length > 0 ? await engine.transcripts.loadRuns({ chatId: scope.chatId,
+          runIds: quietRuns.map((run) => run.runId), userId: input.userId }) : new Map<string, TranscriptItem[]>();
         const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects), [
           ...hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })),
+          ...quietRuns.map((run) => ({ beforeItemId: `msg-${run.nextMessageId === input.created.userMessageId
+            ? contextMessages.at(-1)!.id : run.nextMessageId}`, items: quietItems.get(run.runId) ?? [] })),
           // A scheduled run's earlier native answers entered as text: their calls stand where each answer does.
           ...(input.scheduled ? [...nativeRuns].map(([messageId, nativeRunId]) => ({
             beforeItemId: answerEffectAnchor(conversation.items, conversationMessages, messageId),

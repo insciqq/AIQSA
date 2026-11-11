@@ -765,6 +765,53 @@ describe("a stopped step of a recorded answer review", () => {
   });
 });
 
+// Review 2026-11-11: quiet monitoring checks leave the context the owner's next message reads, so their tool results and
+// reasoning never return to it, while a call of theirs whose outcome is unknown still holds an equivalent call back.
+describe("a quiet check the conversation leaves out", () => {
+  const write = { arguments: { summary: "x" }, id: "again", name: "mcp_jira_create_issue" };
+  const quietText = "SYNTHETIC QUIET CHECK REASONING";
+  const quiet: TranscriptItem[] = [
+    { id: "q1", kind: "assistant_text", origin: NATIVE_RUN_ORIGIN, text: quietText },
+    { arguments: "{\"summary\":\"x\"}", callId: "call-1", id: "q2", kind: "tool_call", name: write.name, origin: NATIVE_RUN_ORIGIN }
+  ];
+
+  async function reply(options: Readonly<{ quietRuns: readonly Readonly<{ nextMessageId: string; runId: string }>[]; scheduled?: true }>) {
+    const messages = [nativeSay("user-1", "user", "Check the release page"), nativeSay("answer-1", "assistant", "Version 1.0 is current."),
+      nativeSay("current-user-message", "user", "What changed?")];
+    const { adapter, requests } = scriptedNativeAdapter([{ calls: [write] }, { text: "Done." }]);
+    const memory = memoryNativeEngine();
+    memory.transcripts.loadRuns.mockImplementation(async ({ runIds }) =>
+      new Map(runIds.map((runId): [string, TranscriptItem[]] => [runId, runId === "run-quiet" ? quiet : []])));
+    const repo = { ...nativeRunRepository(), loadQuietCheckEffectRuns: vi.fn(async () => options.quietRuns) };
+    const callTool = vi.fn(async () => ({ isError: false, text: ["Created A-2"], unsupportedContentTypes: [] }));
+    await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created: { assistantMessageId: "answer-2", runId: "run-2",
+      userMessageId: "user-2" }, engine: memory.engine,
+    mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+    prepared: nativePrepared({ context: { messages, mode: "branch_path" }, mcp: NATIVE_MCP_SNAPSHOT,
+      // Always allow: only the guard can hold the write back.
+      mcpApproval: mcpApprovalAdmission(["jira"]) }),
+    repository: asRepository(repo as never), ...(options.scheduled ? { scheduled: true as const } : {}), services: {}, userId: "owner" }));
+    return { callTool, history: requests[0]!.history!, memory, repo };
+  }
+
+  it("never returns to the model, while its unknown write still waits for the user", async () => {
+    const run = await reply({ quietRuns: [{ nextMessageId: "user-2", runId: "run-quiet" }] });
+    expect(run.repo.loadQuietCheckEffectRuns).toHaveBeenCalledWith({ chatId: "chat", userId: "owner", userMessageId: "user-2" });
+    expect(JSON.stringify(run.history)).not.toContain(quietText);
+    expect(run.history.some((item) => item.type === "tool_call" && item.callId === "call-1")).toBe(false);
+    expect(run.callTool).not.toHaveBeenCalled();
+    expect(run.memory.toolCalls.begin).toHaveBeenCalledWith(expect.objectContaining({ approval: expect.anything(), toolName: write.name }));
+  });
+
+  it("reads no transcript when no quiet check left an unknown call, and none in a scheduled run's flat context", async () => {
+    const plain = await reply({ quietRuns: [] });
+    expect(plain.memory.transcripts.loadRuns).not.toHaveBeenCalledWith(expect.objectContaining({ runIds: ["run-quiet"] }));
+    expect(plain.callTool).toHaveBeenCalledTimes(1);
+    const scheduled = await reply({ quietRuns: [{ nextMessageId: "user-2", runId: "run-quiet" }], scheduled: true });
+    expect(scheduled.repo.loadQuietCheckEffectRuns).not.toHaveBeenCalled();
+  });
+});
+
 // Regression: a native answer's delivered follow-up and the text before it reached later turns twice, as the context's
 // follow-up messages and in the answer's own items.
 describe("a native answer that took follow-ups", () => {

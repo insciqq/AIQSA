@@ -564,13 +564,15 @@ export function decodeChatMessageSubagentCallback(value: unknown): ChatMessageSu
 /**
  * A user turn posted by a scheduled task occurrence: the task and its current
  * title, the run's id (`ScheduledTaskRun.id`) and whether its result is
- * unread. The run's id is absent once the task's run history no longer keeps
- * the occurrence, and such a turn is never unread; its own run still names
- * the task. Deleting the task removes the marker.
+ * unread. Once the task's run history no longer keeps the occurrence, the
+ * turn's own run still names the task: `taskRunId` is then that run's id,
+ * which names no `ScheduledTaskRun`, and the turn is never unread, so nothing
+ * marks it seen. The shape stays the one earlier clients decode. Deleting the
+ * task removes the marker.
  */
 export type ChatMessageScheduledTaskWire = Readonly<{
   taskId: string;
-  taskRunId?: string;
+  taskRunId: string;
   title: string;
   unseen: boolean;
 }>;
@@ -578,7 +580,9 @@ export type ChatMessageScheduledTaskWire = Readonly<{
 /**
  * The open chat's quiet checks (operator decision 2026-11-11): its scheduled
  * monitoring runs that settled with no update, which its history leaves out,
- * and when the latest of them started. Absent while there are none.
+ * and when the latest of them started. Absent while there are none, and on an
+ * archived chat's preview, whose exact keys a client of the previous release
+ * still checks during an upgrade.
  */
 export type ChatQuietChecksSummary = Readonly<{ count: number; lastAt: string }>;
 
@@ -1429,16 +1433,14 @@ function decodeChatMessageWire(value: unknown): ChatMessageWire | null {
   if (value.scheduledTask === undefined || value.scheduledTask === null) {
     scheduledTask = value.scheduledTask;
   } else {
-    // Without the run's id (its occurrence was pruned) a turn is never unread.
-    const pruned = isRecord(value.scheduledTask) && !Object.hasOwn(value.scheduledTask, "taskRunId");
-    const marker = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask,
-      pruned ? ["taskId", "title", "unseen"] : ["taskId", "taskRunId", "title", "unseen"]) ? value.scheduledTask : null;
+    const marker = isRecord(value.scheduledTask) && hasExactKeys(value.scheduledTask, ["taskId", "taskRunId", "title", "unseen"])
+      ? value.scheduledTask : null;
     const taskId = marker ? requiredString(marker.taskId) : null;
-    const taskRunId = marker && !pruned ? requiredString(marker.taskRunId) : null;
+    const taskRunId = marker ? requiredString(marker.taskRunId) : null;
     const title = marker ? requiredString(marker.title) : null;
-    if (!marker || !taskId || taskId.length > 128 || (!pruned && (!taskRunId || taskRunId.length > 128)) || !title ||
-      codePointLength(title) > CHAT_TITLE_MAX_LENGTH || typeof marker.unseen !== "boolean" || (pruned && marker.unseen)) return null;
-    scheduledTask = { taskId, ...(taskRunId ? { taskRunId } : {}), title, unseen: marker.unseen };
+    if (!marker || !taskId || taskId.length > 128 || !taskRunId || taskRunId.length > 128 || !title ||
+      codePointLength(title) > CHAT_TITLE_MAX_LENGTH || typeof marker.unseen !== "boolean") return null;
+    scheduledTask = { taskId, taskRunId, title, unseen: marker.unseen };
   }
   const scheduledOutcome: ScheduledTaskCheckOutcome | undefined = isScheduledTaskCheckOutcome(value.scheduledOutcome)
     ? value.scheduledOutcome : undefined;
@@ -2095,7 +2097,6 @@ export function decodeArchivedChatDetailResponse(
     ...(Object.hasOwn(value.chat, "importSource") ? ["importSource"] : []),
     ...(Object.hasOwn(value.chat, "importSourceModel") ? ["importSourceModel"] : []),
     ...(Object.hasOwn(value.chat, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
-    ...(Object.hasOwn(value.chat, "quietChecks") ? ["quietChecks"] : []),
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;
   const memoryMode = retainedMemoryMode(value.chat.memoryMode);

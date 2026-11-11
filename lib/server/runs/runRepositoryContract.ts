@@ -837,6 +837,14 @@ export type RunRepository = {
    * (`lib/server/chats/quietScheduledChecks.ts`).
    */
   loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string | null>;
+  /**
+   * The native runs of quiet checks the branch up to this user message holds
+   * that left a call's outcome unknown, each with the next message the branch
+   * shows: their calls still count for the unknown-effect guard, though the
+   * conversation leaves them out (`lib/server/chats/quietScheduledChecks.ts`).
+   */
+  loadQuietCheckEffectRuns?(input: Readonly<{ chatId: string; userId: string; userMessageId: string }>):
+    Promise<ReadonlyArray<Readonly<{ nextMessageId: string; runId: string }>>>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
    * initiating user's current chat access. */
