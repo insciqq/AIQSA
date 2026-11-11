@@ -210,6 +210,8 @@ export type ShellThreadView = {
    * the chat exists.
    */
   problemReport?: Readonly<{ chatId: string; confirmSent(outcome: "created" | "updated"): void }> | null;
+  /** The open chat's quiet checks, which its history leaves out; null while it has none. */
+  quietChecks?: import("@/lib/contracts/chats").ChatQuietChecksSummary | null;
   /** The message a search result opened in this chat; a long question shows in full. */
   revealedMessageId?: string | null;
   /**

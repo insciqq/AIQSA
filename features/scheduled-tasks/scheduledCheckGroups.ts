@@ -7,8 +7,8 @@ type TranscriptMessage = Readonly<{
   id: string;
   role: "assistant" | "user";
   scheduledOutcome?: ScheduledTaskCheckOutcome;
-  /** Present on a user turn that a scheduled task posted. */
-  scheduledTask?: Readonly<{ taskRunId: string }> | null;
+  /** Present on a user turn that a scheduled task posted, whether or not its run history still keeps it. */
+  scheduledTask?: Readonly<{ taskId: string }> | null;
   status?: "cancelled" | "complete" | "error" | "streaming";
 }>;
 
@@ -32,6 +32,9 @@ export type ScheduledTranscriptItem<T extends TranscriptMessage> =
 /** Group ids never collide with message ids. */
 const GROUP_PREFIX = "scheduled-checks:";
 
+/** The transcript entry of a task chat's quiet checks line (`quietChecksLabel`), which no message or group id takes. */
+export const QUIET_CHECKS_ITEM_ID = `${GROUP_PREFIX}quiet`;
+
 type CheckState = "quiet" | "success" | "failed" | "pending";
 type Unit<T> = { check: boolean; messages: T[] };
 
@@ -54,7 +57,8 @@ function checkState<T extends TranscriptMessage>(unit: Unit<T>, last: boolean): 
 /**
  * Folds scheduled checks that need no attention into quiet groups; every
  * other message stays its own entry, in order. A check with no update always
- * folds. A check that failed (could not check, or a run that errored or
+ * folds: the served history leaves such checks out, so only one that settled
+ * while the chat was open, or a stale cache, still holds one. A check that failed (could not check, or a run that errored or
  * stopped without an outcome) folds only once a later check in
  * this transcript settled successfully: the latest failure stays visible
  * until then. Consecutive folded checks form one group; anything else
@@ -116,6 +120,14 @@ export function scheduledChecksLabel(summary: Pick<ScheduledChecksSummary, "chec
   if (!summary.failed) return `${counted(summary.checks, "check")} with no update`;
   if (!quiet) return `${summary.failed} failed ${summary.failed === 1 ? summary.noun : `${summary.noun}s`}`;
   return `${counted(quiet, "check")} with no update · ${summary.failed} failed`;
+}
+
+/**
+ * The quiet checks a task chat's history leaves out (operator decision 2026-11-11), in words: "Checked once, no change",
+ * "Checked 202 times, no change".
+ */
+export function quietChecksLabel(count: number): string {
+  return `Checked ${count === 1 ? "once" : `${count} times`}, no change`;
 }
 
 /**

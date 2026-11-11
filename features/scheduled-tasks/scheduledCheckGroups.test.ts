@@ -3,6 +3,7 @@ import type { ScheduledTaskCheckOutcome } from "@/lib/contracts/scheduledTasks";
 import {
   formatScheduledTranscriptTime,
   groupScheduledChecks,
+  quietChecksLabel,
   scheduledChecksLabel,
   scheduledTurnCreatedAt
 } from "./scheduledCheckGroups";
@@ -12,7 +13,7 @@ type Message = Readonly<{
   id: string;
   role: "assistant" | "user";
   scheduledOutcome?: ScheduledTaskCheckOutcome;
-  scheduledTask?: Readonly<{ taskRunId: string }> | null;
+  scheduledTask?: Readonly<{ taskId: string; taskRunId?: string }> | null;
   status?: "cancelled" | "complete" | "error" | "streaming";
 }>;
 
@@ -20,7 +21,7 @@ type Message = Readonly<{
 function check(id: string, outcome?: ScheduledTaskCheckOutcome, answer: Partial<Message> = {}, createdAt?: string): Message[] {
   const marker = outcome ? { scheduledOutcome: outcome } : {};
   return [
-    { id: `${id}-q`, role: "user", scheduledTask: { taskRunId: id }, ...marker, ...(createdAt ? { createdAt } : {}) },
+    { id: `${id}-q`, role: "user", scheduledTask: { taskId: "task-1", taskRunId: id }, ...marker, ...(createdAt ? { createdAt } : {}) },
     { id: `${id}-a`, role: "assistant", ...marker, ...answer }
   ];
 }
@@ -125,6 +126,23 @@ describe("groupScheduledChecks", () => {
   it("counts a check whose turn is on an earlier page by its answer", () => {
     expect(shape([{ id: "c1-a", role: "assistant", scheduledOutcome: "no_update" }, ...check("c2", "no_update")]))
       .toEqual([{ checks: 2, failed: 0, id: "scheduled-checks:c1-a", lastAt: null, messages: ["c1-a", "c2-q", "c2-a"], noun: "check" }]);
+  });
+
+  it("folds an old failure whose occurrence the run history no longer keeps, once a later check succeeded", () => {
+    const pruned = check("c1", undefined, { status: "error" }).map((message) => message.role === "user"
+      ? { ...message, scheduledTask: { taskId: "task-1" } } : message);
+    expect(shape([...check("c0", "baseline"), ...pruned, ...check("c2", "update")])).toEqual([
+      "c0-q", "c0-a",
+      { checks: 1, failed: 1, id: "scheduled-checks:c1-q", lastAt: null, messages: ["c1-q", "c1-a"], noun: "check" },
+      "c2-q", "c2-a"
+    ]);
+  });
+});
+
+describe("quietChecksLabel", () => {
+  it("counts the checks the history leaves out", () => {
+    expect(quietChecksLabel(1)).toBe("Checked once, no change");
+    expect(quietChecksLabel(202)).toBe("Checked 202 times, no change");
   });
 });
 
