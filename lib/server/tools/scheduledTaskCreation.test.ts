@@ -68,7 +68,8 @@ describe("create_scheduled_task tool", () => {
       historyRetentionDays: { enum: [30, 90, 365, 0, null], type: ["integer", "null"] } }
     } });
     for (const phrase of ["time zone Europe/Moscow", "\"monitoring\" when", "\"standard\" for reminders",
-      "at most once per answer", "do not ask for confirmation", "without this conversation"]) {
+      "at most once per answer", "do not ask for confirmation", "without this conversation",
+      "growing source (mail, tracker, feed), to look only at what changed since the previous run and report only new items"]) {
       expect(tool.description).toContain(phrase);
     }
     expect(scheduledTaskToolsForRequest(request()).map((entry) => entry.description)).toEqual([tool.description]);
@@ -82,9 +83,10 @@ describe("create_scheduled_task tool", () => {
 
   it("stays small: every ordinary chat request carries it", () => {
     const tool = createScheduledTaskTool("Europe/Moscow");
-    // About 80 tokens of it are the webhook and Telegram choices (2026-10-25).
+    // About 80 tokens of it are the webhook and Telegram choices (2026-10-25), about 30 the growing-source line
+    // (2026-11-11: an hourly mailbox check re-read the whole mailbox every run).
     expect(countTokens(tool.description) + countTokens(JSON.stringify(tool.inputSchema)) + countTokens(tool.name))
-      .toBeLessThanOrEqual(790);
+      .toBeLessThanOrEqual(820);
   });
 
   it("pins Skills only from the run's own catalog, by alias or name, and tells the model which it pinned", async () => {
