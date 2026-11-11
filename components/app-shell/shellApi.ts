@@ -309,6 +309,7 @@ export function chatDetailFromApi(chat: ChatDetailWire): ChatDetail {
     contextStats: chat.contextStats,
     messages: chat.messages.map(messageFromApi),
     pageInfo: chat.pageInfo,
+    ...(chat.quietChecks ? { quietChecks: chat.quietChecks } : {}),
     usageStats: chat.usageStats
   };
 }
