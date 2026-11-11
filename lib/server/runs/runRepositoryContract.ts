@@ -832,9 +832,11 @@ export type RunRepository = {
   /**
    * The message the browser reads `leafMessageId` as: a step of an answer
    * review recorded before the feature's removal reads as the version that
-   * replaces it, any other message as itself.
+   * replaces it, a quiet check as the nearest message before it that is no
+   * quiet check (null when there is none), any other message as itself
+   * (`lib/server/chats/quietScheduledChecks.ts`).
    */
-  loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string>;
+  loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string | null>;
   getRunControlForUser(runId: string, userId: string): Promise<RunControlRecord | null>;
   /** Internal recovery lookup. It deliberately does not depend on the
    * initiating user's current chat access. */

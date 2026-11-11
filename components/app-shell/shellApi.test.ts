@@ -306,6 +306,12 @@ describe("chat wire mapping", () => {
     });
   });
 
+  it("keeps a task chat's quiet checks count, and none for a chat without any", () => {
+    const quietChecks = { count: 202, lastAt: "2026-11-11T11:00:00.000Z" };
+    expect(chatDetailFromApi({ ...detail, quietChecks }).quietChecks).toEqual(quietChecks);
+    expect(chatDetailFromApi(detail)).not.toHaveProperty("quietChecks");
+  });
+
   it("preserves the server-owned context estimate and page fence", () => {
     expect(chatDetailFromApi(detail)).toMatchObject({
       contextStats: {

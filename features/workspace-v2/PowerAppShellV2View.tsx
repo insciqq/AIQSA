@@ -3,7 +3,13 @@
 import { libraryTabGroups } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { ScheduledChecksRowV2 } from "@/features/scheduled-tasks/ScheduledChecksRowV2";
-import { groupScheduledChecks, scheduledTurnCreatedAt, type ScheduledChecksSummary } from "@/features/scheduled-tasks/scheduledCheckGroups";
+import {
+  groupScheduledChecks,
+  QUIET_CHECKS_ITEM_ID,
+  scheduledTurnCreatedAt,
+  type ScheduledChecksSummary
+} from "@/features/scheduled-tasks/scheduledCheckGroups";
+import { ScheduledQuietChecksLineV2 } from "@/features/scheduled-tasks/ScheduledQuietChecksLineV2";
 import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTaskChatHintV2";
 import { useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
 import { ScheduledTurnV2 } from "@/features/scheduled-tasks/ScheduledTurnV2";
@@ -1253,12 +1259,17 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   });
   // Checks with no update, and failed checks that a later check recovered from, fold into one quiet row; opening it shows them unchanged below.
   const scheduledCheckGroups = new Map<string, ScheduledChecksSummary>();
-  const conversationMessages: ConversationMessageV2[] = groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
-    if (item.kind === "message") return [conversationMessage(item.message)];
-    scheduledCheckGroups.set(item.id, item.summary);
-    const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
-    return openScheduledChecks.has(item.id) ? [row, ...item.messages.map(conversationMessage)] : [row];
-  });
+  // A task chat's history leaves its quiet checks out; one line at its top counts them (operator decision 2026-11-11).
+  const quietChecks = thread.quietChecks ?? null;
+  const conversationMessages: ConversationMessageV2[] = [
+    ...(quietChecks ? [{ content: "", id: QUIET_CHECKS_ITEM_ID, role: "assistant" as const }] : []),
+    ...groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+      if (item.kind === "message") return [conversationMessage(item.message)];
+      scheduledCheckGroups.set(item.id, item.summary);
+      const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
+      return openScheduledChecks.has(item.id) ? [row, ...item.messages.map(conversationMessage)] : [row];
+    })
+  ];
   const toggleScheduledChecks = (id: string) => setOpenScheduledChecks((current) => {
     const next = new Set(current);
     if (!next.delete(id)) next.add(id);
@@ -1313,6 +1324,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   };
 
   const renderMessage = (message: ConversationMessageV2): ReactNode => {
+    if (message.id === QUIET_CHECKS_ITEM_ID) {
+      return quietChecks ? <ScheduledQuietChecksLineV2 nextRunAt={scheduledChatTask?.nextRunAt ?? null} summary={quietChecks} /> : null;
+    }
     const checks = scheduledCheckGroups.get(message.id);
     if (checks !== undefined) {
       return (

@@ -139,6 +139,18 @@ describe("thread store", () => {
     });
   });
 
+  it("keeps the quiet checks a detail counted through a live run's merges", () => {
+    const quietChecks = { count: 202, lastAt: "2026-11-11T11:00:00.000Z" };
+    useThreadStore.getState().replaceThread("chat-a", {
+      activeLeafId: "a1",
+      messages: [message({ id: "a1", parentMessageId: null, role: "assistant" })],
+      quietChecks,
+      usageStats: null
+    });
+    useThreadStore.getState().mergeMessages("chat-a", [message({ id: "a2", parentMessageId: "a1", role: "user" })], { activeLeafId: "a2" });
+    expect(thread().quietChecks).toEqual(quietChecks);
+  });
+
   it("applies stream token patches to the active thread", () => {
     useThreadStore.getState().replaceThread("chat-a", {
       activeLeafId: "assistant-1",

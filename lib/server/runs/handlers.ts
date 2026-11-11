@@ -480,9 +480,13 @@ async function acceptedRuntimeBinding(
 
 /**
  * The stored leaf a send's expected leaf names. The browser names the message
- * it was shown, and a leaf that is a step of an answer review recorded before
+ * it was shown: a leaf that is a step of an answer review recorded before
  * the feature's removal reads as the version standing for it
- * (`lib/server/chats/legacyAnswerReviews.ts`); anything else is compared as is.
+ * (`lib/server/chats/legacyAnswerReviews.ts`), and quiet checks that end the
+ * branch read as the message before them, or as no message when nothing else
+ * is on it (`lib/server/chats/quietScheduledChecks.ts`). Anything else is
+ * compared as is. The user's message itself still follows only what they
+ * were shown (`lib/server/runs/prismaRepositoryPreparation.ts`).
  */
 async function storedExpectedLeaf(
   deps: Pick<RunHandlerDeps, "repository">,
@@ -490,7 +494,7 @@ async function storedExpectedLeaf(
   expected: string | null
 ): Promise<string | null> {
   const stored = chat.activeLeafMessageId;
-  if (!expected || !stored || expected === stored || !deps.repository.loadVisibleLeafMessageId) return expected;
+  if (!stored || expected === stored || !deps.repository.loadVisibleLeafMessageId) return expected;
   return await deps.repository.loadVisibleLeafMessageId(chat.id, stored) === expected ? stored : expected;
 }
 
