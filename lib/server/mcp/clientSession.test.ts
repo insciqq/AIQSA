@@ -22,7 +22,9 @@ import {
   validateMcpToolArguments
 } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
+import { McpCallResultPermits, type McpCallResultCeiling } from "./responseGuard";
 import type { McpResponseWireLimits } from "./responseLimits";
+import { mcpToolFailureGuidance } from "./toolFailureGuidance";
 import {
   McpRuntimeCoordinator,
   type McpRuntimeCoordinatorRepository,
@@ -70,6 +72,8 @@ const defaultLimits: McpClientSessionLimits = {
   maxTools: 16
 };
 const privateCancellationReason = "private-cancellation-reason";
+/** A small call result ceiling, so a test never builds a body near the real one. */
+const smallCeiling = (maxBytes = 2_048): McpCallResultCeiling => ({ maxBytes, permits: new McpCallResultPermits(1) });
 
 describe("MCP bounded transport failure details", () => {
   it.each([401, 403, 404, 429, 503])("preserves HTTP %s during initialization without the response body", async (status) => {
@@ -266,6 +270,7 @@ function createSession(
   fixture: Fixture,
   input: Readonly<{
     authProvider?: OAuthClientProvider;
+    callResultCeiling?: McpCallResultCeiling;
     fetch?: FetchLike;
     limits?: Partial<McpClientSessionLimits>;
     onInventoryStale?: () => void;
@@ -277,6 +282,7 @@ function createSession(
   const fetchImplementation: FetchLike = input.fetch ?? ((url, init) => fetch(url, init));
   return new McpClientSession({
     ...(input.authProvider ? { authProvider: input.authProvider } : {}),
+    ...(input.callResultCeiling ? { callResultCeiling: input.callResultCeiling } : {}),
     fetch: fetchImplementation,
     headers: { "X-AIQSA-Static": "static-secret" },
     limits: { ...defaultLimits, ...input.limits },
@@ -981,6 +987,86 @@ describe("McpClientSession", () => {
     } finally { await session.close(); }
   }, 30_000);
 
+  it.each([
+    [true, true], [true, false], [false, true], [false, false]
+  ] as const)("reads a result past the wire limit up to the ceiling and delivers it truncated (JSON: %s, declared length: %s)", async (enableJsonResponse, declaredLength) => {
+    const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const records = () => writer.mock.calls.flatMap(([line]) => {
+      try { return [JSON.parse(String(line)) as Record<string, unknown>]; } catch { return []; }
+    });
+    const text = "Письмо из длинной цепочки, строка без вложений\n".repeat(200);
+    const calls: string[] = [];
+    const fixture = await startFixture({
+      callTool: ({ name }) => {
+        calls.push(name);
+        return { content: [{ type: "text", text: name === "thread" ? text : "small" }] };
+      },
+      enableJsonResponse
+    });
+    // Result limit 1 KiB, wire limit 2 KiB, ceiling 32 KiB; the result is about 16 KiB.
+    const session = createSession(fixture, {
+      callResultCeiling: smallCeiling(32 * 1_024),
+      ...(declaredLength ? {} : { fetch: withoutContentLength }),
+      limits: { maxToolResultBytes: undefined },
+      requestTimeoutMs: 5_000,
+      responseLimits: { callToolResponseMaxBytes: 1_024 }
+    });
+    try {
+      await session.initialize();
+      writer.mockClear();
+      const result = await session.callTool("thread", {});
+      expect(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text }] }))).toBeGreaterThan(2 * 1_024);
+      expect(result.isError).toBe(false);
+      expect(result.truncation!.originalBytes).toBeGreaterThan(2 * 1_024);
+      expect(result.truncation!.deliveredBytes).toBeLessThanOrEqual(1_024);
+      expect(result.text).toHaveLength(2);
+      expect(result.text[0]!.length).toBeGreaterThan(0);
+      expect(text.startsWith(result.text[0]!)).toBe(true);
+      expect(result.text[1]).toContain("Result truncated");
+      expect(records()).toContainEqual(expect.objectContaining({
+        event: "tool_execution", tool_kind: "mcp", stage: "request", outcome: "completed",
+        truncated: true, original_bytes: result.truncation!.originalBytes, delivered_bytes: result.truncation!.deliveredBytes
+      }));
+      expect(JSON.stringify(records())).not.toContain("Письмо");
+      // The tool ran once; the session stays ready and keeps serving calls.
+      expect(calls).toEqual(["thread"]);
+      expect(session.isClosed()).toBe(false);
+      expect(session.fatalResponseErrorCode()).toBeNull();
+      await expect(session.callTool("after", {})).resolves.toMatchObject({ text: ["small"] });
+      // The single permit came back once the first result was cut.
+      await expect(session.callTool("thread", {})).resolves.toMatchObject({ truncation: result.truncation });
+    } finally {
+      try { await session.close(); } finally { writer.mockRestore(); }
+    }
+  });
+
+  it.each([true, false])("fails a result past the ceiling with the ceiling and its guidance (JSON: %s)", async (enableJsonResponse) => {
+    const privateMarker = "private-ceiling-marker";
+    const fixture = await startFixture({
+      callTool: () => ({ content: [{ type: "text", text: privateMarker.repeat(512) }] }),
+      enableJsonResponse
+    });
+    const session = createSession(fixture, {
+      callResultCeiling: smallCeiling(8 * 1_024),
+      fetch: withoutContentLength,
+      limits: { maxToolResultBytes: undefined },
+      requestTimeoutMs: 5_000,
+      responseLimits: { callToolResponseMaxBytes: 1_024 }
+    });
+    try {
+      await session.initialize();
+      const error = await session.callTool("thread", {}).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(McpClientSessionError);
+      expect(error).toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 8 * 1_024, operation: "call_tool", retryable: false });
+      expect(JSON.stringify(error)).not.toContain(privateMarker);
+      const guidance = mcpToolFailureGuidance(error, "read_only");
+      expect(guidance.reason).toBe("result_too_large");
+      expect(guidance.message).toContain("8 KB limit");
+      expect(guidance.message).toContain("ask for less");
+      expect(session.isClosed()).toBe(false);
+    } finally { await session.close(); }
+  });
+
   it("maps initialize and inventory wire overflows to stable non-retryable errors", async () => {
     const privateMarker = "private-wire-inventory-marker";
     const fixture = await startFixture({
@@ -1042,8 +1128,10 @@ describe("McpClientSession", () => {
       },
       enableJsonResponse
     });
-    // The transport accepts twice the configured tools/call limit: 1 KiB.
+    // The transport accepts twice the configured tools/call limit (1 KiB) and
+    // one call's body past that up to the ceiling: 2 KiB here.
     const session = createSession(fixture, {
+      callResultCeiling: smallCeiling(),
       ...(declaredLength ? {} : { fetch: withoutContentLength }),
       limits: { maxToolResultBytes: undefined },
       requestTimeoutMs: 5_000,
@@ -1056,7 +1144,7 @@ describe("McpClientSession", () => {
 
       const error = await session.callTool("whole_thread", {}).catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(McpClientSessionError);
-      expect(error).toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 1_024, operation: "call_tool", retryable: false });
+      expect(error).toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 2_048, operation: "call_tool", retryable: false });
       expect(JSON.stringify(error)).not.toContain(privateMarker);
       // Only that request failed: no fatal cause, the session stays ready.
       expect(session.isClosed()).toBe(false);
@@ -1082,6 +1170,7 @@ describe("McpClientSession", () => {
       resumable: true
     });
     const session = createSession(fixture, {
+      callResultCeiling: smallCeiling(),
       limits: { maxToolResultBytes: undefined },
       requestTimeoutMs: 5_000,
       responseLimits: { callToolResponseMaxBytes: 512 }
@@ -1091,7 +1180,7 @@ describe("McpClientSession", () => {
       await expect(session.callTool("first", {})).resolves.toMatchObject({ text: ["done:first"] });
       const started = Date.now();
       await expect(session.callTool("whole_thread", {})).rejects.toMatchObject({
-        code: "mcp_call_result_too_large", maxBytes: 1_024, operation: "call_tool"
+        code: "mcp_call_result_too_large", maxBytes: 2_048, operation: "call_tool"
       });
       // Settled by its own stream, not by the request timeout.
       expect(Date.now() - started).toBeLessThan(2_000);
@@ -1341,6 +1430,7 @@ describe("MCP runtime over-bound call isolation", () => {
       repository,
       sessions: createMcpClientSessionFactory({
         // A streamed SSE response: the call's own stream is answered locally.
+        callResultCeiling: smallCeiling(),
         fetch: withoutContentLength,
         limits: { ...defaultLimits, maxToolResultBytes: undefined },
         responseLimits: { callToolResponseMaxBytes: 512 }
@@ -1355,14 +1445,14 @@ describe("MCP runtime over-bound call isolation", () => {
       expect(coordinator.hasLiveGeneration(launch.generationId)).toBe(true);
       writer.mockClear();
 
-      await expect(call("whole_thread")).rejects.toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 1_024 });
+      await expect(call("whole_thread")).rejects.toMatchObject({ code: "mcp_call_result_too_large", maxBytes: 2_048 });
       expect(coordinator.hasLiveGeneration(launch.generationId)).toBe(true);
       expect(markFailed).not.toHaveBeenCalled();
       await expect(call("after")).resolves.toMatchObject({ text: ["done:after"] });
 
       expect(records()).toContainEqual(expect.objectContaining({
         event: "tool_execution", tool_kind: "mcp", stage: "request", outcome: "failed",
-        code: "mcp_call_result_too_large", max_bytes: 1_024
+        code: "mcp_call_result_too_large", max_bytes: 2_048
       }));
       expect(records().filter((record) => record.stage === "evict" || record.code === "mcp_session_closed")).toEqual([]);
       expect(JSON.stringify(records())).not.toContain(privateMarker);
