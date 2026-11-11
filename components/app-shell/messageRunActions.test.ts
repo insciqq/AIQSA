@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { resetAssistantLibraryStoreForTest, resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
 import { composerContextConfigurationKey } from "./composerContextConfiguration";
@@ -9,7 +10,9 @@ import {
   type ComposerSessionKey
 } from "./composerSessionStore";
 import type { ConsumeMessageRunStream } from "./messageRunLifecycle";
-import { assistantControlDefaults, useMessageRunActions } from "./messageRunActions";
+import { assistantControlDefaults, useMessageRunActions, type WorkspaceInstallationAvailability } from "./messageRunActions";
+import { useWorkspaceInstallationAvailability } from "./useWorkspaceInstallationAvailability";
+import { WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS } from "./useRefreshOnReturn";
 import { chatRouteForState } from "./chatRoute";
 import { useRunLifecycleStore } from "./runLifecycleStore";
 import { useRunLifecycleActions } from "./runLifecycleActions";
@@ -263,7 +266,8 @@ function useMessageRunActionsForTest(input: {
   refreshWorkspaceAvailability?: () => void;
   resolveCatalog?: () => Catalog | null;
   resolveComputerOffered?: () => boolean;
-  resolveWorkspaceInstallationAvailable?: () => boolean;
+  /** Defaults to an installation that reported Workspace off; `null` leaves the resolver out. */
+  resolveWorkspaceInstallation?: (() => WorkspaceInstallationAvailability) | null;
 }) {
   resetRunLifecycleStoreForTest();
   resetRunSurfaceStoreForTest();
@@ -365,7 +369,9 @@ function useMessageRunActionsForTest(input: {
     primeAnswerSound,
     refreshActiveChat,
     resolveCatalog: input.resolveCatalog,
-    resolveWorkspaceInstallationAvailable: input.resolveWorkspaceInstallationAvailable,
+    ...(input.resolveWorkspaceInstallation === null ? {} : {
+      resolveWorkspaceInstallation: input.resolveWorkspaceInstallation ?? (() => "off" as const)
+    }),
     refreshWorkspaceAvailability: input.refreshWorkspaceAvailability,
     resolveComputerOffered: input.resolveComputerOffered,
     resetThreadToLatest,
@@ -707,7 +713,7 @@ describe("message run actions", () => {
         activeChat: storedOff,
         attachments: [],
         draft: "Use the files",
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
       const catalog = useWorkspaceStore.getState().catalog;
       if (catalog) useWorkspaceStore.setState({ catalog: { ...catalog, defaults: { ...catalog.defaults, workspaceEnabled: false } } });
@@ -725,32 +731,116 @@ describe("message run actions", () => {
         attachments: [],
         draft: "Plain question",
         model: { ...model, capabilities: { ...model.capabilities, toolCalling: false } },
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
       useComposerSessionStore.getState().updateSession(actions.sourceSessionKey, { workspaceEnabled: true });
 
       await actions.submitComposer();
 
-      expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: false, reason: "model_no_tools" });
       expect(actions.setNotice).not.toHaveBeenCalledWith(expect.objectContaining({ kind: "error" }));
     });
 
-    it.each([["unknown", undefined], ["off", false]] as const)(
-      "sends without Workspace while installation availability is %s",
-      async (_state, available) => {
+    it("sends without Workspace only when the installation reported it off", async () => {
+      const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Plain question",
+        resolveWorkspaceInstallation: () => "off"
+      });
+
+      await actions.submitComposer();
+
+      expect(messageBody(fetchMock).workspace).toEqual({ enabled: false, reason: "installation_disabled" });
+    });
+
+    it.each([["unknown", () => "unknown" as const], ["not provided", null]] as const)(
+      "asks for Workspace while installation availability is %s, so the server decides",
+      async (_state, resolveWorkspaceInstallation) => {
         const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
         vi.stubGlobal("fetch", fetchMock);
         const actions = useMessageRunActionsForTest({
           attachments: [],
           draft: "Plain question",
-          ...(available === undefined ? {} : { resolveWorkspaceInstallationAvailable: () => available })
+          resolveWorkspaceInstallation
         });
 
         await actions.submitComposer();
 
-        expect(messageBody(fetchMock).workspace).toEqual({ enabled: false });
+        expect(messageBody(fetchMock).workspace).toEqual({ enabled: true });
       }
     );
+
+    it("keeps Workspace for a file sent after a later availability read failed on return to the tab", async () => {
+      let workspaceReads = 0;
+      const fetchMock = vi.fn(async (...args: unknown[]) => {
+        if (String(args[0]).endsWith("/api/workspace")) {
+          workspaceReads += 1;
+          if (workspaceReads > 1) throw new TypeError("Failed to fetch");
+          return Response.json({ workspace: { available: true, enabled: true, internetEnabled: true, sessionState: null } });
+        }
+        return new Response("", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      let clock = 1_000_000;
+      const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+      const availability = renderHook(() => useWorkspaceInstallationAvailability("account-a"));
+      try {
+        await waitFor(() => expect(availability.result.current.resolve()).toBe("available"));
+        // The OS file dialog took focus; on return the read fails on a waking network.
+        clock += WORKSPACE_AVAILABILITY_RETURN_INTERVAL_MS;
+        await act(async () => { window.dispatchEvent(new Event("focus")); });
+        await waitFor(() => expect(workspaceReads).toBe(2));
+        await act(async () => {});
+        expect(availability.result.current.resolve()).toBe("available");
+        expect(availability.result.current.installation).toMatchObject({ available: true });
+
+        const archive: ComposerAttachment = { fileName: "frames.gif", id: "attachment-gif", kind: "file", status: "ready" };
+        const actions = useMessageRunActionsForTest({
+          attachments: [archive],
+          draft: "Split these frames",
+          resolveWorkspaceInstallation: availability.result.current.resolve
+        });
+
+        await actions.submitComposer();
+
+        expect(messageBody(fetchMock).workspace).toEqual({ enabled: true });
+      } finally {
+        availability.unmount();
+        now.mockRestore();
+      }
+    });
+
+    it("offers the send without Workspace when an unknown availability meets a real refusal", async () => {
+      const responses = [
+        Response.json({ error: "workspace_runtime_unavailable" }, { status: 503 }),
+        new Response("", { status: 200 })
+      ];
+      const fetchMock = vi.fn(async (..._args: unknown[]) => responses.shift()!);
+      vi.stubGlobal("fetch", fetchMock);
+      const refreshWorkspaceAvailability = vi.fn();
+      const actions = useMessageRunActionsForTest({
+        attachments: [],
+        draft: "Use the files",
+        refreshWorkspaceAvailability,
+        resolveWorkspaceInstallation: () => "unknown"
+      });
+
+      await actions.submitComposer();
+
+      expect(refreshWorkspaceAvailability).toHaveBeenCalledOnce();
+      expect(actions.session(actions.sourceSessionKey)).toMatchObject({
+        draft: "Use the files",
+        operationErrorRecoveries: ["send_without_workspace"]
+      });
+
+      await actions.submitComposerWithoutWorkspace();
+
+      expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([
+        { enabled: true }, { enabled: false, reason: "user_declined" }
+      ]);
+    });
 
     it.each(["workspace_runtime_unavailable", "workspace_disabled"])(
       "reads installation availability again after a %s refusal",
@@ -761,7 +851,7 @@ describe("message run actions", () => {
           attachments: [],
           draft: "Use the files",
           refreshWorkspaceAvailability,
-          resolveWorkspaceInstallationAvailable: () => true
+          resolveWorkspaceInstallation: () => "available"
         });
 
         await actions.submitComposer();
@@ -798,7 +888,7 @@ describe("message run actions", () => {
       const actions = useMessageRunActionsForTest({
         attachments: [],
         draft: "Use the files",
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -812,7 +902,7 @@ describe("message run actions", () => {
 
       await actions.submitComposerWithoutWorkspace();
 
-      expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([{ enabled: true }, { enabled: false }]);
+      expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([{ enabled: true }, { enabled: false, reason: "user_declined" }]);
       expect(messageBodies(fetchMock)[1]?.content).toEqual({ blocks: [{ text: "Use the files", type: "text" }] });
       expect(actions.session(actions.sourceSessionKey).operationErrorRecoveries).toEqual([]);
 
@@ -820,7 +910,7 @@ describe("message run actions", () => {
       await actions.submitComposer();
 
       expect(messageBodies(fetchMock).map((body) => body.workspace)).toEqual([
-        { enabled: true }, { enabled: false }, { enabled: true }
+        { enabled: true }, { enabled: false, reason: "user_declined" }, { enabled: true }
       ]);
     });
 
@@ -831,7 +921,7 @@ describe("message run actions", () => {
         attachments: [],
         draft: "Use the files",
         refreshActiveChat,
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -852,7 +942,7 @@ describe("message run actions", () => {
         attachments: [],
         draft: "Use the files",
         refreshActiveChat: async () => failedSessionDetail("running"),
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -870,7 +960,7 @@ describe("message run actions", () => {
       const actions = useMessageRunActionsForTest({
         attachments: [archive],
         draft: "Unpack this",
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -898,7 +988,7 @@ describe("message run actions", () => {
       const actions = useMessageRunActionsForTest({
         attachments: [oversized],
         draft: "Sum the second column",
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -920,7 +1010,7 @@ describe("message run actions", () => {
       const actions = useMessageRunActionsForTest({
         attachments: [],
         draft: "Use the files",
-        resolveWorkspaceInstallationAvailable: () => true
+        resolveWorkspaceInstallation: () => "available"
       });
 
       await actions.submitComposer();
@@ -1430,7 +1520,7 @@ describe("message run actions", () => {
         expectedActiveLeafId: null,
         skillIds: ["skill-actions"],
         timeZone: expect.any(String),
-        workspace: { enabled: false }
+        workspace: { enabled: false, reason: "installation_disabled" }
       });
     });
 
@@ -1631,7 +1721,7 @@ describe("message run actions", () => {
         skillIds: ["skill-actions"],
         skills: { mode: "auto" },
         timeZone: expect.any(String),
-        workspace: { enabled: false }
+        workspace: { enabled: false, reason: "installation_disabled" }
       });
     });
 
@@ -1649,7 +1739,7 @@ describe("message run actions", () => {
         admissionId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
         skillIds: ["skill-actions"],
         timeZone: expect.any(String),
-        workspace: { enabled: false }
+        workspace: { enabled: false, reason: "installation_disabled" }
       });
     });
 
@@ -3149,7 +3239,7 @@ describe("message run actions", () => {
       searchPreferenceSource: "personal",
       timeZone: expect.any(String),
       tools: "none",
-      workspace: { enabled: false }
+      workspace: { enabled: false, reason: "installation_disabled" }
     });
     expect(actions.resetThreadToLatest).not.toHaveBeenCalled();
     expect(actions.refreshActiveChat).toHaveBeenCalledWith("chat-a", {
@@ -4223,7 +4313,7 @@ describe("message run actions", () => {
       },
       searchPreferenceSource: "personal",
       timeZone: expect.any(String),
-      workspace: { enabled: false }
+      workspace: { enabled: false, reason: "installation_disabled" }
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-persisted",

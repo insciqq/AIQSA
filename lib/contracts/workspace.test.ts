@@ -9,11 +9,21 @@ import {
   decodeThreadWorkspaceActivityEntry,
   decodeWorkspaceOutputSkips,
   decodeWorkspacePolicyResponse,
+  decodeWorkspaceNotRequestedReason,
   decodeWorkspaceRuntimeHealth,
   isWorkspaceErrorCode
 } from "./workspace";
 
 describe("workspace browser contracts", () => {
+  it("keeps a request's reason for asking no Workspace within the closed set", () => {
+    for (const reason of ["installation_disabled", "model_no_tools", "user_declined", "unknown"]) {
+      expect(decodeWorkspaceNotRequestedReason(reason)).toBe(reason);
+    }
+    for (const value of [undefined, null, 7, "runtime_unavailable", "USER_DECLINED", { reason: "user_declined" }]) {
+      expect(decodeWorkspaceNotRequestedReason(value)).toBe("unknown");
+    }
+  });
+
   it("decodes runner gateway readiness without treating malformed values as ready", () => {
     expect(decodeWorkspaceRuntimeHealth({ state: "ready", agentReady: true, secret: "hidden" }))
       .toEqual({ state: "ready", agentReady: true });

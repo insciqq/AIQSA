@@ -3,6 +3,7 @@ import { SkillCatalogAuthorityChangedError } from "../skills/catalogRelevanceSer
 import { InstructionPresetError } from "../instructions/store";
 import { decodeArtifactEdit } from "../../contracts/artifacts";
 import { COMPUTER_SEND_FIELD } from "../../contracts/computer";
+import { decodeWorkspaceNotRequestedReason } from "../../contracts/workspace";
 import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { deepResearchRefusal } from "../research/run";
 import type { FrozenComputerBinding } from "../tools/computerBinding";
@@ -194,6 +195,24 @@ function personalDraftFromBody(body: Record<string, unknown> | null):
     folderId: folderId === null ? null : String(folderId),
     memoryMode: memoryMode as "EXCLUDED" | "NORMAL" | "TEMPORARY"
   };
+}
+
+/**
+ * Why a run admitted without Workspace went without it, as the request says,
+ * for the content-free `run_accepted` record only: it never decides admission,
+ * and anything outside the closed set is `unknown`.
+ */
+function workspaceNotRequestedReason(
+  body: Readonly<Record<string, unknown>> | null,
+  workspaceEnabled: boolean
+): Readonly<{ workspaceNotRequestedReason?: ReturnType<typeof decodeWorkspaceNotRequestedReason> }> {
+  if (workspaceEnabled) return {};
+  const intent = body?.workspace;
+  return { workspaceNotRequestedReason: decodeWorkspaceNotRequestedReason(
+    typeof intent === "object" && intent !== null && !Array.isArray(intent)
+      ? (intent as Record<string, unknown>).reason
+      : undefined
+  ) };
 }
 
 async function readJson(
@@ -746,6 +765,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ? { workspaceAdmissionPlan: preparedData.workspaceAdmissionPlan }
           : {}),
         workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
+        ...workspaceNotRequestedReason(sendBody, preparedData.normalizedRequest.workspace?.enabled === true),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
@@ -990,6 +1010,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
           ? { workspaceAdmissionPlan: preparedData.workspaceAdmissionPlan }
           : {}),
         workspaceEnabled: preparedData.normalizedRequest.workspace?.enabled === true,
+        ...workspaceNotRequestedReason(body, preparedData.normalizedRequest.workspace?.enabled === true),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
         memoryMaterializer: createPreparingMemoryMaterializer(
