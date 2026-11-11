@@ -70,7 +70,7 @@ import {
 import type { TranscriptRepository } from "./transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "./transcriptWriter";
 import {
-  answerEffectAnchor, createAgentUnknownEffects, unknownEffectsOf, withHiddenRunEffects, withRetiredEffects
+  answerEffectAnchor, createAgentUnknownEffects, unknownEffectsOf, unresolvedCallItems, withHiddenRunEffects, withRetiredEffects
 } from "./unknownEffects";
 import { createUsageLedger } from "./usage";
 import { takeNativeRunInterruption, WORKSPACE_STOPPED_INTERRUPTION } from "./runInterruption";
@@ -564,7 +564,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects), [
           ...hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })),
           ...quietRuns.map((run) => ({ beforeItemId: `msg-${run.nextMessageId === input.created.userMessageId
-            ? contextMessages.at(-1)!.id : run.nextMessageId}`, items: quietItems.get(run.runId) ?? [] })),
+            ? contextMessages.at(-1)!.id : run.nextMessageId}`, items: unresolvedCallItems(quietItems.get(run.runId) ?? []) })),
           // A scheduled run's earlier native answers entered as text: their calls stand where each answer does.
           ...(input.scheduled ? [...nativeRuns].map(([messageId, nativeRunId]) => ({
             beforeItemId: answerEffectAnchor(conversation.items, conversationMessages, messageId),
