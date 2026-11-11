@@ -4,7 +4,7 @@ import { prisma } from "../prisma";
 import { createAcceptedStructuredOutputSnapshotExecutor } from "../providerRuntime/structuredOutputExecutor";
 import { buildChatTitleRequest, CHAT_TITLE_GENERATION_TIMEOUT_MS, normalizeGeneratedChatTitle } from "./titleGeneration";
 import { createChatTitleRepository } from "./titleGenerationRepository";
-import { runInBackground, runWithContext } from "../observability";
+import { logEvent, runInBackground, runWithContext } from "../observability";
 
 export function createChatTitleWorker(input: Readonly<{
   execute: ReturnType<typeof createAcceptedStructuredOutputSnapshotExecutor>;
@@ -36,7 +36,16 @@ export function createChatTitleWorker(input: Readonly<{
             }
             // Preserve paid accounting even for invalid output, revocation, rename,
             // or failure to apply the title. This operation is independently idempotent.
-            if (usage) await input.repository.recordUsage(work, usage);
+            // Usage is bookkeeping: a write that still fails after its own retries
+            // leaves the receipt unknown and never costs the user the title.
+            if (usage) {
+              try {
+                await input.repository.recordUsage(work, usage);
+              } catch (error) {
+                logEvent("service_operation", { action: "degrade", code: "run_usage_unrecorded", error, outcome: "degraded",
+                  run_id: work.runId, stage: "write", subsystem: "database" });
+              }
+            }
             await input.repository.finish(work, signal.aborted ? null : title);
           }));
         }
