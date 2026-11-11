@@ -553,8 +553,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const retiredEffects = await engine.transcripts.retiredRunEffects({ assistantMessageIds: answerIds, chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds });
         // The quiet checks the conversation leaves out (`lib/server/chats/quietScheduledChecks.ts`) never return to it, but a
-        // call of theirs whose outcome is unknown still counts, before the next message the branch shows. Only a run holding
-        // one is read. A scheduled run's flat context counts only its previous shown result's calls, as before.
+        // call of theirs whose outcome is unknown still counts, here as anywhere by `unknownEffectsOf`, before the first user
+        // message shown after it. Only a run holding an unfinished call is read, from anywhere in the chat, since the reply's
+        // own path leaves the quiet checks it follows. A scheduled run's flat context counts only its previous shown result's
+        // calls, as before.
         const quietRuns = input.scheduled ? [] : await input.repository.loadQuietCheckEffectRuns?.({ chatId: scope.chatId,
           userId: input.userId, userMessageId: input.created.userMessageId }) ?? [];
         const quietItems = quietRuns.length > 0 ? await engine.transcripts.loadRuns({ chatId: scope.chatId,
