@@ -500,9 +500,10 @@ describe("a chat title's usage and its answer's usage totals", () => {
       expect(usageFailures).toEqual([]);
       expect(await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: f.runId } }))
         .toMatchObject({ inputTokens: 10, outputTokens: 5, usageCompleteness: "COMPLETE" });
-      const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: f.runId } });
-      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } }))
-        .toMatchObject({ totalInputTokens: run.inputTokens, totalOutputTokens: run.outputTokens });
+      // The title's usage came first, and the answer's totals still add the answer's to it, each once.
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: f.runId } }))
+        .toMatchObject({ inputTokens: 40, outputTokens: 7, totalTokens: 47, usageCompleteness: "COMPLETE" });
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } })).toMatchObject({ totalInputTokens: 40, totalOutputTokens: 7 });
     } finally {
       resume.release();
       await Promise.allSettled([totals, recording]);
