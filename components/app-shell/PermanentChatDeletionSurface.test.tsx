@@ -5,6 +5,7 @@ import { useMemorySettingsStore } from "./memorySettingsStore";
 import { COMPLETED_NOTICE_DISMISS_MS, PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
 import { activatePermanentChatDeletionAccount, openPermanentChatDeletion, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
 import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
+import { simulatePageTranslation } from "@/tests/support/pageTranslation";
 
 beforeEach(async () => {
   resetPermanentChatDeletionStoreForTest();
@@ -54,6 +55,48 @@ describe("PermanentChatDeletionSurface", () => {
     await waitFor(() => expect(
       within(dialog).getByRole("button", { name: "Close" })
     ).toHaveFocus());
+  });
+
+  it("confirms on a translated page without crashing or abandoning the sent request", async () => {
+    let settle!: (response: Response) => void;
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => {
+      settle = resolve;
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const crashes: unknown[] = [];
+    const onError = (event: ErrorEvent) => {
+      crashes.push(event.error);
+      event.preventDefault();
+    };
+    window.addEventListener("error", onError);
+    try {
+      openPermanentChatDeletion({ chatId: "chat-1", location: "WORKSPACE", title: "Research notes" });
+      const { unmount } = render(<PermanentChatDeletionSurface />);
+      const dialog = screen.getByRole("dialog", { name: "Delete this chat permanently?" });
+      expect(simulatePageTranslation(dialog)).toBeGreaterThan(0);
+      const confirm = within(dialog).getByRole("button", { name: "Delete permanently" });
+      expect(confirm.querySelector("font")).not.toBeNull();
+
+      fireEvent.click(confirm);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      expect(confirm).toBeDisabled();
+      expect(confirm.querySelector(".animate-spin")).not.toBeNull();
+      expect(screen.getByRole("dialog", { name: "Delete this chat permanently?" })).toBe(dialog);
+      expect(crashes).toEqual([]);
+
+      // The shell going away (a crash screen elsewhere, a navigation) leaves the request alone.
+      unmount();
+      resetPermanentChatDeletionStoreForTest();
+      expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).not.toBe(true);
+      await act(async () => {
+        settle(Response.json({ status: "IN_PROGRESS" }));
+      });
+      expect(window.sessionStorage.getItem("aiqsa:chat-permanent-deletion:v2:account-a"))
+        .toBe(JSON.stringify({ chatId: "chat-1", version: 2 }));
+      expect(crashes).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
   });
 
   it("shows private-safe blocked progress without technical identifiers", () => {

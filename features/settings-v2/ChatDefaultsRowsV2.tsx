@@ -7,6 +7,7 @@ import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Co
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { UiV2Button } from "@/components/ui-v2";
 import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import type { SearchPlan } from "@/lib/domain/search";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
@@ -159,7 +160,10 @@ function WebSearchDefaultRowV2({ engines, onResetSearchPlan, onSearchPlan, searc
   return (
     <SettingsRowV2 description="Sources the model uses to search the web in every chat." testId="settings-default-search" title="Web search">
       <details className="v2-search-default-disclosure">
-        <summary aria-label="Web search default">{searchPreferenceSource === "organization" ? "Organization default · " : ""}{names.length ? names.join(", ") : "Off"}</summary>
+        <summary aria-label="Web search default">
+          {searchPreferenceSource === "organization" ? <span>Organization default · </span> : null}
+          <TranslatableLabel>{names.length ? names.join(", ") : "Off"}</TranslatableLabel>
+        </summary>
         <SearchPlanPickerV2 options={engines} selectedIds={searchPlan.optionIds}
           onChange={(optionIds) => onSearchPlan({ mode: "all_selected", optionIds })} />
         {(searchPreferenceSource === "personal" && onResetSearchPlan) || searchPlan.optionIds.length ? (

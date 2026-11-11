@@ -1,8 +1,10 @@
 import {
   CLIENT_ERROR_KINDS,
+  CLIENT_ERROR_NAMES,
   CLIENT_ERROR_PATHNAME_MAX_LENGTH,
   CLIENT_ERROR_REPORT_MAX_BYTES,
   type ClientErrorKind,
+  type ClientErrorName,
   type ClientErrorReportErrorCode
 } from "../../contracts/clientErrors";
 import type { RequestAuthResolver } from "../auth/requestAuth";
@@ -32,22 +34,44 @@ type RateWindow = { count: number; startedAt: number };
 
 const headers = { "cache-control": "private, no-store" };
 const kinds = new Set<string>(CLIENT_ERROR_KINDS);
+const errorNames = new Set<string>(CLIENT_ERROR_NAMES);
 
 function failure(code: ClientErrorReportErrorCode | "unauthorized" | "forbidden", status: number, extra?: HeadersInit): Response {
   return Response.json({ error: code }, { headers: { ...headers, ...extra }, status });
 }
 
-function decodeReport(raw: unknown): Readonly<{ kind: ClientErrorKind; pathname?: string }> | null {
+/** What the record may carry: closed values the browser chose, never its text. */
+type ReportFacts = { kind: ClientErrorKind; error_name?: ClientErrorName; dom_conflict?: boolean; page_translated?: boolean };
+
+/** The record's facts, and the pathname that is only matched. */
+type DecodedReport = Readonly<{ facts: Readonly<ReportFacts>; pathname?: string }>;
+
+const reportKeys = new Set(["kind", "pathname", "error_name", "dom_conflict", "page_translated"]);
+
+function decodeReport(raw: unknown): DecodedReport | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "kind" && key !== "pathname")) return null;
-  const { kind, pathname } = record;
+  if (Object.keys(record).some((key) => !reportKeys.has(key))) return null;
+  const { kind, pathname, error_name: errorName, dom_conflict: domConflict, page_translated: pageTranslated } = record;
   if (typeof kind !== "string" || !kinds.has(kind)) return null;
-  if (pathname === undefined) return { kind: kind as ClientErrorKind };
+  const facts: ReportFacts = { kind: kind as ClientErrorKind };
+  if (errorName !== undefined) {
+    if (typeof errorName !== "string" || !errorNames.has(errorName)) return null;
+    facts.error_name = errorName as ClientErrorName;
+  }
+  if (domConflict !== undefined) {
+    if (typeof domConflict !== "boolean") return null;
+    facts.dom_conflict = domConflict;
+  }
+  if (pageTranslated !== undefined) {
+    if (typeof pageTranslated !== "boolean") return null;
+    facts.page_translated = pageTranslated;
+  }
+  if (pathname === undefined) return { facts };
   if (typeof pathname !== "string" || pathname.length > CLIENT_ERROR_PATHNAME_MAX_LENGTH || !pathname.startsWith("/")) {
     return null;
   }
-  return { kind: kind as ClientErrorKind, pathname };
+  return { facts, pathname };
 }
 
 function manifestTemplate(route: ResolvedRoute): string | undefined {
@@ -106,8 +130,8 @@ export function createClientErrorHandler(deps: ClientErrorHandlerDeps) {
     // output reaches the record.
     const routePath = report.pathname === undefined ? undefined : manifestTemplate(resolveRoute(report.pathname));
     log(routePath === undefined
-      ? { kind: report.kind, route_source: "unknown" }
-      : { kind: report.kind, routePath, route_source: "manifest" });
+      ? { ...report.facts, route_source: "unknown" }
+      : { ...report.facts, routePath, route_source: "manifest" });
     return new Response(null, { headers, status: 204 });
   };
 }

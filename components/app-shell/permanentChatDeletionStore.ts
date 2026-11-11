@@ -245,62 +245,66 @@ export function openPermanentChatDeletionStatus(
   usePermanentChatDeletionStore.setState({ statusOpen: true });
 }
 
+/**
+ * Records a deletion the server admitted, whether or not the shell that sent
+ * it is still mounted. The tab-scoped reference is the account's own, so a
+ * shell mounted again (after a crash screen's Try again, say) follows the
+ * status instead of losing it; a shell of the same account shows it now.
+ * Returns whether that account is still the one on screen.
+ */
+function recordAdmission(
+  accountId: string,
+  generation: number,
+  chatId: string,
+  status: MemoryConsumerPermanentChatDeleteResponse
+): boolean {
+  writeStatusReference(accountId, chatId, status);
+  const state = usePermanentChatDeletionStore.getState();
+  if (state.accountId !== accountId) return false;
+  // A shell mounted since then may already be confirming another chat; that
+  // dialog stays, and the reference waits for the next status read.
+  if (generation !== operationGeneration && state.target) return true;
+  usePermanentChatDeletionStore.setState({
+    alsoForgetOriginMemories: false,
+    busy: false,
+    confirmationError: null,
+    reference: { chatId },
+    status,
+    statusError: null,
+    statusLoadState: "ready",
+    statusOpen: true,
+    target: null
+  });
+  return true;
+}
+
 export async function confirmPermanentChatDeletion(): Promise<void> {
   const current = usePermanentChatDeletionStore.getState();
   const accountId = current.accountId;
   const target = current.target;
   if (!accountId || !target || current.busy) return;
   const generation = operationGeneration;
+  // A status read in flight is superseded. The confirmation itself has no
+  // abort: once sent the server may already be deleting, and only its answer
+  // (or the status read after a lost one) can say, so unmounting the shell or
+  // a crash screen lets it settle instead of leaving the outcome unknown.
   activeController?.abort();
-  const controller = new AbortController();
-  activeController = controller;
+  activeController = null;
   usePermanentChatDeletionStore.setState({ busy: true, confirmationError: null });
   try {
     const status = await admitPermanentChatDeletion(target.chatId, {
       alsoForgetOriginMemories: current.alsoForgetOriginMemories,
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       requestId: requestId()
-    }, controller.signal);
-    if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
-    activeController = null;
-    const reference = { chatId: target.chatId };
-    writeStatusReference(accountId, target.chatId, status);
-    usePermanentChatDeletionStore.setState({
-      alsoForgetOriginMemories: false,
-      busy: false,
-      confirmationError: null,
-      reference,
-      status,
-      statusError: null,
-      statusLoadState: "ready",
-      statusOpen: true,
-      target: null
     });
+    if (!recordAdmission(accountId, generation, target.chatId, status)) return;
     await Promise.resolve(reconcileAdmission?.(target.chatId)).catch(() => undefined);
   } catch (error) {
-    if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
     const reason = errorReason(error);
     if (reason === "FAILED") {
       try {
-        const status = await loadPermanentChatDeletionStatus(
-          target.chatId,
-          controller.signal
-        );
-        if (!currentAccount(generation, accountId) || controller.signal.aborted) return;
-        activeController = null;
-        const reference = { chatId: target.chatId };
-        writeStatusReference(accountId, target.chatId, status);
-        usePermanentChatDeletionStore.setState({
-          alsoForgetOriginMemories: false,
-          busy: false,
-          confirmationError: null,
-          reference,
-          status,
-          statusError: null,
-          statusLoadState: "ready",
-          statusOpen: true,
-          target: null
-        });
+        const status = await loadPermanentChatDeletionStatus(target.chatId);
+        if (!recordAdmission(accountId, generation, target.chatId, status)) return;
         await Promise.resolve(reconcileAdmission?.(target.chatId)).catch(() => undefined);
         return;
       } catch {
@@ -308,7 +312,7 @@ export async function confirmPermanentChatDeletion(): Promise<void> {
         // confirmation visible without exposing server lifecycle detail.
       }
     }
-    activeController = null;
+    if (!currentAccount(generation, accountId)) return;
     usePermanentChatDeletionStore.setState({
       busy: false,
       confirmationError: reason

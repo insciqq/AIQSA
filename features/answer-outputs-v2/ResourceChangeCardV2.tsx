@@ -189,7 +189,7 @@ function CardV2({ actions, children, confirm, detail = null, error, heading, hea
         <strong title={name}>{name}</strong>
         <small title={detail ? `${line}\n${detail}` : line}>
           <span className="v2-resource-change-card-heading" id={headingId} ref={headingRef} tabIndex={-1}>{heading}</span>
-          {meta ? ` · ${meta}` : null}
+          {meta ? <span> · {meta}</span> : null}
         </small>
       </span>
       {actions ? <span className="v2-resource-change-card-actions">{actions}</span> : null}

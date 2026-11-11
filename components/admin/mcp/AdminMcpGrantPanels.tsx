@@ -10,6 +10,7 @@ import { AdminGroupBulkGrantActions } from "@/components/admin/groups/AdminGroup
 import { cardClass } from "@/components/admin/mcp/mcpPrimitives";
 import type { AdminMcpController } from "@/components/admin/useAdminMcpController";
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
+import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
 import type { AdminGroup, AdminUserRecord } from "@/lib/contracts/admin";
 import type { AdminMcpGrant, AdminMcpServer } from "@/lib/contracts/mcp";
 import { Check, Search } from "lucide-react";
@@ -67,7 +68,7 @@ function EffectiveAccessFact({ accountActive, direct, inheritedGroups }: Readonl
       data-effective-mcp-access={effective ? "granted" : "not-granted"}
     >
       {effective ? <Check aria-hidden="true" className="size-3.5" /> : null}
-      {label}
+      <TranslatableLabel>{label}</TranslatableLabel>
     </span>
   );
 }
