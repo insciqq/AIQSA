@@ -16,7 +16,7 @@ import { activeRunControllers } from "../runs/activeRunControllerRegistry";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { TURN_HANDOFF_RESERVE_MS } from "../runs/turnDeadline";
 import {
-  monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
+  monitoringAnswerTextInstruction, monitoringCheckInstruction, monitoringVerdictAfterAnswerInstruction, monitoringVerdictReservedInstruction
 } from "../tools/monitoringVerdict";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
@@ -144,6 +144,44 @@ describe("a scheduled monitoring check on the native engine", () => {
     // Nothing of the report-only round streamed live either.
     expect(JSON.stringify(events)).not.toContain("Extra words.");
     expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === afterAnswer)).toBe(false);
+  });
+
+  it("is asked once for the text a shown verdict's empty answer lacks, and that text becomes the answer", async () => {
+    const textInstruction = monitoringAnswerTextInstruction();
+    for (const [status, previousResult] of [["update", true], ["no_update", false]] as const) {
+      // An update, and a first check's starting point whatever it reported: both are shown.
+      const { adapter, requests } = scriptedNativeAdapter([
+        { calls: [{ arguments: { status }, id: "v1", name: VERDICT }] }, { text: "" }, { text: "Version 2.0 is out." }
+      ]);
+      const memory = memoryNativeEngine();
+      const repo = nativeRunRepository();
+      const events = await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        prepared: nativePrepared({ monitoringPreviousResult: previousResult, monitoringVerdictTool: true }),
+        repository: asRepository(repo), scheduled: true, services: {}, userId: "owner" }));
+      expect(events.at(-1)).toEqual({ data: { runId: "run-1", status: "complete" }, type: "done" });
+      expect(requests).toHaveLength(3);
+      expect(requests[2]!.toolChoice).toBe("none");
+      expect(requests[2]!.history!.at(-1)).toEqual({ text: textInstruction, type: "user" });
+      expect(requests[1]!.history!.some((item) => item.type === "user" && item.text === textInstruction)).toBe(false);
+      expect(memory.published()).toBe("Version 2.0 is out.");
+      // The instruction rides on its request only.
+      expect(memory.transcriptRows.some((item) => item.kind === "user" && item.text === textInstruction)).toBe(false);
+    }
+  });
+
+  it("is not asked for text when its no_update is hidden, or when it could not check", async () => {
+    for (const status of ["no_update", "could_not_check"] as const) {
+      const { adapter, requests } = scriptedNativeAdapter([
+        { calls: [{ arguments: { status }, id: "v1", name: VERDICT }] }, { text: "" }, { text: "never" }
+      ]);
+      const memory = memoryNativeEngine();
+      const repo = nativeRunRepository();
+      await nativeSseEvents(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        prepared: nativePrepared({ monitoringPreviousResult: true, monitoringVerdictTool: true }),
+        repository: asRepository(repo), scheduled: true, services: {}, userId: "owner" }));
+      expect(requests).toHaveLength(2);
+      expect(memory.published()).not.toBe("never");
+    }
   });
 
   it("tells the model when its occurrence can no longer take a verdict", async () => {
