@@ -2,9 +2,13 @@ import { modelTokenPricing, modelTokenPricingSelect } from "../providers/modelTo
 import { storedTokenUsage } from "../usage";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage } from "../../domain/usage";
+import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage, type NormalizedTokenUsage } from "../../domain/usage";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
+import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
 import type { ChatTitleWork } from "./titleGeneration";
+
+/** Attempts of the title usage write: one, and two more after a deadlock or serialization failure. */
+export const TITLE_USAGE_WRITE_ATTEMPTS = 3;
 
 const clearedInput = { answerText: "", credentialVersionId: null, expectedTitle: "", questionText: "", reasoningEffort: null, providerSnapshot: Prisma.DbNull };
 
@@ -95,36 +99,16 @@ export function createChatTitleRepository(client: PrismaClient) {
     async recordUsage(work: ChatTitleWork, reported: ModelRunUsage): Promise<void> {
       const usage = normalizeTokenUsage(reported);
       if (usage.completeness === "unavailable") return;
-      await client.$transaction(async (tx) => {
-        const [event] = await tx.$queryRaw<Array<{ id: string; usageCompleteness: string }>>(Prisma.sql`
-          SELECT "id", "usageCompleteness" FROM "UsageEvent"
-          WHERE "chatTitleGenerationId" = ${work.runId} FOR UPDATE
-        `);
-        if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
-        const pricing = await tx.providerModel.findUnique({
-          where: { id: work.providerSnapshot.providerModelId },
-          select: { ...modelTokenPricingSelect }
-        });
-        const estimatedCostMicros = pricing &&
-          (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
-          ? estimateCostMicros(usage, modelTokenPricing(pricing)) : null;
-        await tx.usageEvent.update({ where: { id: event.id }, data: { ...storedTokenUsage(usage), estimatedCostMicros } });
-        // The title receipt is separate from answer settlement. Enrichment can
-        // neither reopen its terminal state nor replace the answer's events.
-        const answer = await tx.modelRun.findUnique({ where: { id: work.runId } });
-        if (answer && answer.userId === work.userId && answer.status === "complete") {
-          const total = sumTokenUsage([{ ...answer, completeness:
-            answer.usageCompleteness === "COMPLETE" ? "complete" :
-              answer.usageCompleteness === "PARTIAL" ? "partial" : "unavailable" }, usage]);
-          await tx.modelRun.updateMany({ where: { id: work.runId, userId: work.userId, status: "complete" },
-            data: { ...storedTokenUsage(total), estimatedCostMicros:
-              sumEstimatedCostMicros([answer.estimatedCostMicros, estimatedCostMicros]) } });
+      // Bookkeeping after the answer: a deadlock victim or serialization failure rolled back whole, and a repeat writes
+      // nothing once a receipt is sealed, so it runs again a bounded number of times instead of losing the title's usage.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await client.$transaction((tx) => recordTitleUsage(tx, work, usage));
+          return;
+        } catch (error) {
+          if (attempt >= TITLE_USAGE_WRITE_ATTEMPTS || !isPrismaSerializationConflict(error)) throw error;
         }
-        await tx.chat.updateMany({ where: { id: work.chatId, userId: work.userId }, data: {
-          totalInputTokens: { increment: usage.inputTokens ?? 0 }, totalOutputTokens: { increment: usage.outputTokens ?? 0 },
-          totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 }
-        } });
-      });
+      }
     },
 
     async finish(work: ChatTitleWork, title: string | null): Promise<void> {
@@ -149,4 +133,42 @@ export function createChatTitleRepository(client: PrismaClient) {
       });
     }
   };
+}
+
+/**
+ * Seals the title's usage receipt and adds it to its answer run's and chat's totals, once. The chat row is locked
+ * first, in settlement order (owner, chat, run: `lockRunSettlementScope`), as the answer's own usage totals
+ * (`applyUsageTotals`) take it: taken in the order receipt, run, chat, this deadlocked with those totals of the same
+ * answer. `NO KEY UPDATE` is the strength the chat's UPDATE below takes anyway.
+ */
+async function recordTitleUsage(tx: Prisma.TransactionClient, work: ChatTitleWork, usage: NormalizedTokenUsage): Promise<void> {
+  await tx.$queryRaw(Prisma.sql`SELECT "id" FROM "Chat" WHERE "id" = ${work.chatId} FOR NO KEY UPDATE`);
+  const [event] = await tx.$queryRaw<Array<{ id: string; usageCompleteness: string }>>(Prisma.sql`
+    SELECT "id", "usageCompleteness" FROM "UsageEvent"
+    WHERE "chatTitleGenerationId" = ${work.runId} FOR UPDATE
+  `);
+  if (!event || event.usageCompleteness !== "UNAVAILABLE") return;
+  const pricing = await tx.providerModel.findUnique({
+    where: { id: work.providerSnapshot.providerModelId },
+    select: { ...modelTokenPricingSelect }
+  });
+  const estimatedCostMicros = pricing &&
+    (pricing.inputTokenPriceUsdPerMillion !== null && pricing.outputTokenPriceUsdPerMillion !== null)
+    ? estimateCostMicros(usage, modelTokenPricing(pricing)) : null;
+  await tx.usageEvent.update({ where: { id: event.id }, data: { ...storedTokenUsage(usage), estimatedCostMicros } });
+  // The title receipt is separate from answer settlement. Enrichment can
+  // neither reopen its terminal state nor replace the answer's events.
+  const answer = await tx.modelRun.findUnique({ where: { id: work.runId } });
+  if (answer && answer.userId === work.userId && answer.status === "complete") {
+    const total = sumTokenUsage([{ ...answer, completeness:
+      answer.usageCompleteness === "COMPLETE" ? "complete" :
+        answer.usageCompleteness === "PARTIAL" ? "partial" : "unavailable" }, usage]);
+    await tx.modelRun.updateMany({ where: { id: work.runId, userId: work.userId, status: "complete" },
+      data: { ...storedTokenUsage(total), estimatedCostMicros:
+        sumEstimatedCostMicros([answer.estimatedCostMicros, estimatedCostMicros]) } });
+  }
+  await tx.chat.updateMany({ where: { id: work.chatId, userId: work.userId }, data: {
+    totalInputTokens: { increment: usage.inputTokens ?? 0 }, totalOutputTokens: { increment: usage.outputTokens ?? 0 },
+    totalReasoningTokens: { increment: usage.reasoningTokens ?? 0 }
+  } });
 }
