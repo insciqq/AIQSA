@@ -6,7 +6,9 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../../domain/content";
 import { providerTemplateIds } from "../../../domain/providerTemplates";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceRunOutputDirectory, workspaceSandboxName } from "../../../domain/workspace";
+import { chatTitleWork } from "../../../../tests/support/chatTitles";
 import { endedSubagentResult } from "../../../../tests/support/subagentPorts";
+import { createChatTitleRepository } from "../../chats/titleGenerationRepository";
 import { SUBAGENT_RUN_NO_ANSWER, createNativeRunStore } from "../../engine/runStore";
 import { hashCanonicalMcpValue } from "../../mcp/definitions";
 import { requireMemoryCommandSource } from "../../memory/commands/sourceAuthority";
@@ -23,10 +25,11 @@ import { createPrismaSubagentBackgroundStore } from "./store";
 /**
  * The row-lock order of the transactions that met in production deadlocks, on a disposable database: a background
  * sub-agent's admission against a Workspace registration of its parent run, a sub-agent's settlement against its
- * usage totals, and Memory's source check against usage totals. Each test holds one transaction at the point where
- * the old order deadlocked, lets the other one run into it, and checks what the waiting one holds before it lets the
- * first go on: with the order fixed, the waiter holds nothing the holder needs next, so both finish and none is a
- * deadlock victim. No timing decides a test: every wait is observed through `pg_blocking_pids` or a `NOWAIT` lock.
+ * usage totals, Memory's source check against usage totals, and a chat title's usage against its answer's totals. Each
+ * test holds one transaction at the point where the old order deadlocked, lets the other one run into it, and checks
+ * what the waiting one holds before it lets the first go on: with the order fixed, the waiter holds nothing the holder
+ * needs next, so both finish and none is a deadlock victim. No timing decides a test: every wait is observed through
+ * `pg_blocking_pids`, the waiter's statement in `pg_stat_activity` or a `NOWAIT` lock.
  */
 
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
@@ -36,6 +39,8 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
   providerModelId: providerTemplateIds.fakeModel, reasoningEffort: null };
 const usage = (inputTokens: number): RunUsageAttribution => ({ estimatedCostMicros: 5, modelId: "fake-qsa", operationCount: 1,
   provider: "fake", purpose: "chat_answer", usage: { inputTokens, outputTokens: 2 } });
+/** What the title model reported, as the title worker hands it over. */
+const titleUsage = { inputTokens: 10, outputTokens: 5 };
 const owners: string[] = [];
 
 function barrier<T = void>() {
@@ -113,6 +118,15 @@ function sqlState(error: unknown): unknown {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2010"
     ? (error.meta as { code?: unknown } | undefined)?.code : undefined;
 }
+
+/** The statement a backend runs now, so a test can tell which of its locks it waits for. */
+async function statementOf(pid: number): Promise<string> {
+  const [row] = await prisma.$queryRaw<Array<{ query: string }>>`SELECT "query" FROM pg_stat_activity WHERE "pid" = ${pid}::int`;
+  return row?.query ?? "";
+}
+
+/** The chat-row lock `applyUsageTotals` and the title's `recordUsage` take first, as Prisma sends it. */
+const CHAT_LOCK_STATEMENT = 'SELECT "id" FROM "Chat" WHERE "id" = $1 FOR NO KEY UPDATE';
 
 /** Whether a `NOWAIT` row lock gets its rows at once, so no transaction holds a lock on them that conflicts with it. */
 async function lockableNow(query: Prisma.Sql): Promise<boolean> {
@@ -199,6 +213,35 @@ async function memoryCommand() {
     sourceMessageId: message.id, sourceRevision: 0, state: "CLAIMED", userId
   } });
   return { chatId: chat.id, claimToken, jobId: job.id, messageId: message.id, runId: run.id, userId,
+    usageScope: { assistantMessageId: answer.id, chatId: chat.id, runId: run.id, userId } };
+}
+
+/**
+ * A finished native answer with its usage totals still unwritten, whose automatic title was dispatched: the title's
+ * usage receipt is still unknown, as `createChatTitleRepository(...).take` leaves it.
+ */
+async function titledAnswer() {
+  const userId = `lock-order-title-${randomUUID()}`;
+  owners.push(userId);
+  await prisma.user.create({ data: { displayName: "Synthetic lock order", id: userId, status: "active" } });
+  const chat = await prisma.chat.create({ data: { title: "Lock order title", userId } });
+  const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Synthetic question"),
+    role: "user", status: "complete" } });
+  const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Synthetic answer"),
+    parentMessageId: question.id, role: "assistant", status: "complete" } });
+  await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
+  const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine: "native",
+    modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "complete", userId, userMessageId: question.id } });
+  const work = chatTitleWork({ chatId: chat.id, expectedTitle: chat.title, runId: run.id, userId });
+  const snapshot = work.providerSnapshot;
+  await prisma.chatTitleGeneration.create({ data: { answerText: work.answerText, chatId: chat.id, dispatchedAt: new Date(),
+    expectedTitle: work.expectedTitle, expiresAt: new Date(Date.now() + 300_000),
+    providerSnapshot: JSON.parse(JSON.stringify(snapshot)) as Prisma.InputJsonValue, questionText: work.questionText, runId: run.id,
+    status: "dispatched", titleRevision: work.titleRevision, userId } });
+  await prisma.usageEvent.create({ data: { chatId: chat.id, chatTitleGeneration: true, chatTitleGenerationId: run.id,
+    modelId: snapshot.model.upstreamModelId, modelRunId: run.id, provider: snapshot.providerFamily,
+    providerModelId: snapshot.providerModelId, purpose: "chat_title", userId } });
+  return { chatId: chat.id, runId: run.id, work,
     usageScope: { assistantMessageId: answer.id, chatId: chat.id, runId: run.id, userId } };
 }
 
@@ -386,6 +429,83 @@ describe("Memory's source check and usage totals of the same answer", () => {
     } finally {
       resume.release();
       await Promise.allSettled([totals, checking]);
+    }
+  }, 60_000);
+});
+
+describe("a chat title's usage and its answer's usage totals", () => {
+  it("lets the title's usage wait for answer totals holding the chat and the run before it locks its receipt", async () => {
+    const f = await titledAnswer();
+    const usagePid = barrier<number>();
+    const runHeld = barrier();
+    const resume = barrier();
+    // Paused after it locked the chat and wrote the run's totals, before the chat's.
+    const runs = createNativeRunStore(observed(usagePid.release,
+      { pause: { method: "update", model: "chat", reached: () => runHeld.release(), resume: resume.wait } }));
+    const titlePid = barrier<number>();
+    const titleFailures: unknown[] = [];
+    const titles = createChatTitleRepository(observed(titlePid.release, { failed: (error) => titleFailures.push(error) }));
+    let totals: Promise<unknown> | undefined;
+    let recording: Promise<unknown> | undefined;
+    try {
+      totals = runs.applyUsageTotals(f.usageScope, [usage(30)]).catch((error: unknown) => ({ error }));
+      await Promise.race([runHeld.wait, totals.then((value) => { throw new Error("totals_ended_before_run_lock", { cause: value }); })]);
+      recording = titles.recordUsage(f.work, titleUsage).catch((error: unknown) => ({ error }));
+      const waiter = await titlePid.wait;
+      await waitForBlock(waiter, await usagePid.wait);
+      // The title waits at the chat, so it holds neither its receipt nor anything of the run the totals hold.
+      expect(await statementOf(waiter)).toContain(CHAT_LOCK_STATEMENT);
+      expect(await lockableNow(Prisma.sql`SELECT "id" FROM "UsageEvent" WHERE "chatTitleGenerationId" = ${f.runId} FOR UPDATE NOWAIT`))
+        .toBe(true);
+      resume.release();
+      expect(await totals).toBeUndefined();
+      expect(await recording).toBeUndefined();
+      expect(titleFailures).toEqual([]);
+      expect(await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: f.runId } }))
+        .toMatchObject({ inputTokens: 10, outputTokens: 5, usageCompleteness: "COMPLETE" });
+      // The title's usage adds to the answer's totals on the run and on the chat alike.
+      expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: f.runId } })).toMatchObject({ inputTokens: 40, outputTokens: 7 });
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } })).toMatchObject({ totalInputTokens: 40, totalOutputTokens: 7 });
+    } finally {
+      resume.release();
+      await Promise.allSettled([totals, recording]);
+    }
+  }, 60_000);
+
+  it("lets answer totals wait for the title's usage holding the chat, its receipt and the run, holding nothing it needs", async () => {
+    const f = await titledAnswer();
+    const titlePid = barrier<number>();
+    const runHeld = barrier();
+    const resume = barrier();
+    // Paused after it sealed its receipt and added it to the run, before the chat's totals: where the old order (receipt,
+    // run, then chat) met the totals holding the chat and waiting for the run.
+    const titles = createChatTitleRepository(observed(titlePid.release,
+      { pause: { method: "updateMany", model: "chat", reached: () => runHeld.release(), resume: resume.wait } }));
+    const usagePid = barrier<number>();
+    const usageFailures: unknown[] = [];
+    const runs = createNativeRunStore(observed(usagePid.release, { failed: (error) => usageFailures.push(error) }));
+    let totals: Promise<unknown> | undefined;
+    let recording: Promise<unknown> | undefined;
+    try {
+      recording = titles.recordUsage(f.work, titleUsage).catch((error: unknown) => ({ error }));
+      await Promise.race([runHeld.wait, recording.then((value) => { throw new Error("title_usage_ended_before_run_lock", { cause: value }); })]);
+      totals = runs.applyUsageTotals(f.usageScope, [usage(30)]).catch((error: unknown) => ({ error }));
+      const waiter = await usagePid.wait;
+      await waitForBlock(waiter, await titlePid.wait);
+      // The totals wait for the chat first, holding nothing of the run or the chat the title's usage writes next.
+      expect(await statementOf(waiter)).toContain(CHAT_LOCK_STATEMENT);
+      resume.release();
+      expect(await recording).toBeUndefined();
+      expect(await totals).toBeUndefined();
+      expect(usageFailures).toEqual([]);
+      expect(await prisma.usageEvent.findUniqueOrThrow({ where: { chatTitleGenerationId: f.runId } }))
+        .toMatchObject({ inputTokens: 10, outputTokens: 5, usageCompleteness: "COMPLETE" });
+      const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: f.runId } });
+      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } }))
+        .toMatchObject({ totalInputTokens: run.inputTokens, totalOutputTokens: run.outputTokens });
+    } finally {
+      resume.release();
+      await Promise.allSettled([totals, recording]);
     }
   }, 60_000);
 });
