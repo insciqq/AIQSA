@@ -34,6 +34,8 @@ import { SearchToolCancelledError } from "../search/toolExecutor";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
 import { ImageInputError, ImageToolError, markImageFailureNotSent } from "../images/inputError";
+import { ImageGenerationError } from "../providers/imageGeneration";
+import { imageFailureDiagnostic } from "../providers/imageFailure";
 import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { buildToolRegistry } from "./toolRegistry";
@@ -932,6 +934,65 @@ describe("native tool batch", () => {
       });
       await expect(runToolBatch({ ...stopped, signal: controller.signal }, { calls: 0 }, { round: 1, calls: [imageCall("c3")] }))
         .rejects.toBeDefined();
+    });
+
+    it("settles a provider rejection that proves no image was made as a known error, so a later image call still runs", async () => {
+      const observation = await captureRunObservation();
+      const rejected = (status: number, error?: Record<string, unknown>) => {
+        const body = JSON.stringify({ error: { message: "PRIVATE_PROVIDER_TEXT", ...error } });
+        return new ImageGenerationError("image_provider_http_error", status, imageFailureDiagnostic(body, status));
+      };
+      const failures: Record<string, unknown> = {
+        safety: rejected(400, { code: "content_policy_violation" }),
+        unclassified: rejected(400),
+        refused: new ImageGenerationError("image_generation_refused", null, undefined, "other")
+      };
+      const execute = vi.fn(async (call: ModelToolCall): Promise<ToolExecutionResult> => {
+        if (call.id in failures) throw failures[call.id];
+        return { callId: call.id, content: [{ type: "json", value: { image_id: "image-1" } }], name: call.name, status: "complete" };
+      });
+      const batch = await imageBatch(execute);
+      const state = { calls: 0 };
+      const first = await runToolBatch(batch, state, { round: 1, calls: Object.keys(failures).map((id) => imageCall(id)) });
+      const values = first.results.map((item) => JSON.parse(item.output) as { error: string; message: string });
+      expect(first.results.map((item) => item.outcome)).toEqual(["error", "error", "error"]);
+      expect(values.map((value) => value.error)).toEqual(["image_provider_http_error", "image_provider_http_error",
+        "image_generation_refused"]);
+      expect(values[0]!.message).toContain("declined the request under its content policy");
+      expect(values[1]!.message).toContain("rejected the request with HTTP 400");
+      expect(values[2]!.message).toContain("without a completed image");
+      for (const value of values) {
+        expect(value).not.toHaveProperty("outcome");
+        expect(value.message).not.toMatch(/may have been sent|effect is unknown|outcome is unknown/u);
+      }
+      expect(batch.unknownEffects.find(imageCall("later"))).toBeNull();
+      // The same request again, in the same turn, reaches the provider: nothing holds it back as a repeat.
+      const again = await runToolBatch(batch, state, { round: 2, calls: [imageCall("later")] });
+      expect(again.results[0]).toMatchObject({ outcome: "complete" });
+      expect(execute).toHaveBeenCalledTimes(4);
+      const records = observation.records().filter((record) => record.event === "tool_call");
+      expect(records.map((record) => [record.outcome, record.code, record.error_category ?? null])).toEqual([
+        ["failed", "image_provider_http_error", null], ["failed", "image_provider_http_error", null],
+        ["failed", "image_generation_refused", null], ["completed", undefined, null]
+      ]);
+      expect(JSON.stringify(observation.records())).not.toContain("PRIVATE_");
+    });
+
+    it.each([
+      ["a timeout", new ImageGenerationError("image_request_timed_out")],
+      ["a transport loss after dispatch", new ImageGenerationError("image_provider_request_failed")],
+      ["a 5xx without a result", new ImageGenerationError("image_provider_http_error", 502, { category: "upstream_unavailable" })]
+    ] as const)("keeps %s an unknown effect that is never sent again", async (_name, error) => {
+      const execute = vi.fn(async (): Promise<ToolExecutionResult> => { throw error; });
+      const batch = await imageBatch(execute);
+      const state = { calls: 0 };
+      const first = await runToolBatch(batch, state, { round: 1, calls: [imageCall("c1")] });
+      expect(first.results[0]).toMatchObject({ outcome: "unknown" });
+      expect(JSON.parse(first.results[0]!.output)).toMatchObject({ error: error.code, outcome: "unknown" });
+      expect(batch.unknownEffects.find(imageCall("c1"))).not.toBeNull();
+      const again = await runToolBatch(batch, state, { round: 2, calls: [imageCall("c2")] });
+      expect(again.results[0]).toMatchObject({ outcome: "error", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT });
+      expect(execute).toHaveBeenCalledTimes(1);
     });
   });
 
