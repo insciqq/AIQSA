@@ -98,7 +98,8 @@ for (const size of SIZES) {
         await expect(page.getByTestId("app-shell")).toBeVisible();
         const drawer = page.getByRole("complementary", { name: "Chat navigation", exact: true });
         const row = page.locator(`[data-navigation-chat-id="${target}"]`);
-        if (!(await row.isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
+        // The phone keeps the chat list in a drawer; on desktop it is open, and the row may still be loading.
+        if (size.name === "phone") await page.getByRole("button", { name: "Open sidebar" }).click();
         await expect(row).toBeVisible();
         await row.getByRole("button", { name: `Actions: ${title}` }).click();
         await page.getByRole("menuitem", { name: "Delete…", exact: true }).click();
