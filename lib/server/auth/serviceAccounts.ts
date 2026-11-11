@@ -67,14 +67,13 @@ export async function createServiceAccount(
   });
 
   await provisionActiveUser(tx, { userId: account.id });
-  await tx.userMemorySettings.create({
-    data: {
-      learnAutomatically: false,
-      referenceChatHistory: false,
-      useMemoryFacts: false,
-      userId: account.id
-    },
-    select: { userId: true }
+  // The database may already hold the account's default Memory settings row; turn everything off either way.
+  const memoryOff = { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false };
+  await tx.userMemorySettings.upsert({
+    create: { ...memoryOff, userId: account.id },
+    select: { userId: true },
+    update: memoryOff,
+    where: { userId: account.id }
   });
 
   return { account, kind: "created" };

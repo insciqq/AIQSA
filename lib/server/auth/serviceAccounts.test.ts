@@ -15,7 +15,7 @@ function transaction(actor: Actor) {
     $queryRaw: vi.fn(async () => []),
     user: { create: createUser, findUnique: vi.fn(async () => actor) },
     userGroup: { upsert: vi.fn() },
-    userMemorySettings: { create: createMemorySettings },
+    userMemorySettings: { upsert: createMemorySettings },
     userSettings: { upsert: upsertSettings }
   };
   return { createMemorySettings, createUser, tx, upsertSettings };
@@ -35,8 +35,11 @@ describe("service accounts", () => {
     // No identity is created: nothing touches AuthIdentity at all.
     expect(tx).not.toHaveProperty("authIdentity");
     expect(upsertSettings).toHaveBeenCalledOnce();
+    // The default row may already exist (database default): both branches turn Memory off.
     expect(createMemorySettings).toHaveBeenCalledWith(expect.objectContaining({
-      data: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false, userId: "service-1" }
+      create: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false, userId: "service-1" },
+      update: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false },
+      where: { userId: "service-1" }
     }));
   });
 
