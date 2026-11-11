@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { authEmailDomain, normalizeAuthDomain } from "./password";
 import { provisionActiveUser, type ProvisioningGroupInput } from "./provisioning";
+import { isServiceAccount } from "./serviceAccounts";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import {
   lockAuthFlowToken,
@@ -387,7 +388,9 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
           Boolean(identity && !user) ||
           Boolean(identity && identity.userId !== user?.id) ||
           Boolean(identity && (identity.provider !== "password" || identity.emailVerifiedAt)) ||
-          Boolean(user && (user.email !== candidate.normalizedEmail || user.status !== "pending"))
+          Boolean(user && (user.email !== candidate.normalizedEmail || user.status !== "pending")) ||
+          // A service account never accepts an invitation, whatever its state.
+          isServiceAccount(user)
         ) {
           return null;
         }
@@ -542,7 +545,8 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
           flowToken.identity.emailVerifiedAt ||
           flowToken.identity.provider !== "password" ||
           flowToken.identity.user.status === "disabled" ||
-          flowToken.identity.user.status === "denied"
+          flowToken.identity.user.status === "denied" ||
+          isServiceAccount(flowToken.identity.user)
         ) {
           return null;
         }
@@ -686,7 +690,8 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
             }
           });
 
-          if (existingUser?.status === "disabled" || existingUser?.status === "denied") {
+          // A service account answers like a disabled one: no identity, token or email.
+          if (existingUser?.status === "disabled" || existingUser?.status === "denied" || isServiceAccount(existingUser)) {
             return {
               ok: true,
               sentToEmail: null
@@ -717,7 +722,7 @@ export function createPrismaAuthRegistrationRepository(prisma: PrismaClient): Au
           });
         }
 
-        if (identity.user.status === "disabled" || identity.user.status === "denied") {
+        if (identity.user.status === "disabled" || identity.user.status === "denied" || isServiceAccount(identity.user)) {
           return {
             ok: true,
             sentToEmail: null

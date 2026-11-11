@@ -24,6 +24,7 @@ import {
   type RequestAuthResolver,
   type SealedIdTokenHint
 } from "./requestAuth";
+import { isServiceAccount } from "./serviceAccounts";
 import { hashToken, verifyTokenHash as verifyTokenHashDefault } from "./token";
 import type { AuthConfig } from "./config";
 import { resolveLoginRateLimitIdentity } from "./clientIdentity";
@@ -312,7 +313,7 @@ function resetCompleteBody(body: unknown): { password: string; token: string } |
 function isActiveVerifiedPasswordIdentity(
   identity: PasswordIdentityRecord | null
 ): identity is PasswordIdentityRecord {
-  return Boolean(identity?.emailVerifiedAt && identity.user.status === "active");
+  return Boolean(identity?.emailVerifiedAt && identity.user.status === "active" && !isServiceAccount(identity.user));
 }
 
 /**
@@ -320,7 +321,9 @@ function isActiveVerifiedPasswordIdentity(
  * checked only against an active, verified identity, so the other codes say nothing about it.
  */
 function passwordRefusalCode(identity: PasswordIdentityRecord) {
-  if (identity.user.status === "disabled" || identity.user.status === "denied") return "account_inactive" as const;
+  if (identity.user.status === "disabled" || identity.user.status === "denied" || isServiceAccount(identity.user)) {
+    return "account_inactive" as const;
+  }
   if (!identity.emailVerifiedAt) return "email_unverified" as const;
   if (identity.user.status === "pending") return "account_pending" as const;
   return "invalid_credentials" as const;

@@ -13,10 +13,11 @@ import {
   activeGroupIdsForUser,
   hasModelAccess,
   isFullAccessMember,
+  isServiceAccountUser,
   userDeletionInfo,
   userInitials
 } from "@/components/admin/users/usersView";
-import { UserAvatar, UserStatusPill, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
+import { ServiceAccountBadge, UserAvatar, UserStatusPill, sectionHeadingClass } from "@/components/admin/users/usersPrimitives";
 import { AdminUserDirectGrants, AdminUserDirectKeys } from "@/components/admin/users/AdminUserDirectAccess";
 import {
   AdminUserManagedGroups,
@@ -119,6 +120,8 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
   const isSelf = user.id === users.adminUserId;
   const pending = user.status === "pending";
   const active = user.status === "active";
+  // A service account never signs in: no administrator role, second factor or email to verify.
+  const service = isServiceAccountUser(user);
   const currentGroupIds = activeGroupIdsForUser(user, groups);
   const signIn = useAdminUserSignIn(user.id, currentGroupIds.join(","));
   const savedGroupIds = pending ? [] : currentGroupIds;
@@ -129,7 +132,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
   const deletion = userDeletionInfo(user, users.adminUserId);
   const busy = users.actionsDisabled || saving;
   const initials = userInitials(user);
-  const identity = [
+  const identity = service ? "Runs connector work. It never signs in." : [
     user.email ?? "No email",
     user.role === "admin" ? "admin" : null,
     user.hasVerifiedIdentity ? "verified email" : "email not verified",
@@ -163,6 +166,7 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
         <UserAvatar initials={initials} size="header" />
         <div className="min-w-0 flex-1">
           <h2 className="break-words text-xl font-semibold leading-tight text-ink [overflow-wrap:anywhere]">{user.displayName}</h2>
+          {service ? <div className="mt-1 flex"><ServiceAccountBadge /></div> : null}
           <p className="mt-0.5 break-words text-[13px] text-ink-muted [overflow-wrap:anywhere]">{identity}</p>
         </div>
         <UserStatusPill status={user.status} />
@@ -256,19 +260,21 @@ export function AdminUserPage({ catalog, groups, mcp, onDeleted, providers, user
           ) : null}
           {active && !isSelf ? (
             <>
-              <UiV2Button
-                disabled={busy}
-                icon="shield"
-                onClick={() => users.actions.requestSetRole(user, user.role === "admin" ? "user" : "admin")}
-                tone="ghost"
-                type="button"
-              >
-                {user.role === "admin" ? "Remove administrator rights" : "Make administrator"}
-              </UiV2Button>
+              {service ? null : (
+                <UiV2Button
+                  disabled={busy}
+                  icon="shield"
+                  onClick={() => users.actions.requestSetRole(user, user.role === "admin" ? "user" : "admin")}
+                  tone="ghost"
+                  type="button"
+                >
+                  {user.role === "admin" ? "Remove administrator rights" : "Make administrator"}
+                </UiV2Button>
+              )}
               <UiV2Button disabled={busy} icon="logout" onClick={() => users.actions.requestRevokeSessions(user)} tone="ghost" type="button">
                 Revoke sessions
               </UiV2Button>
-              {user.twoFactorEnabled ? (
+              {user.twoFactorEnabled && !service ? (
                 <UiV2Button
                   disabled={busy}
                   icon="shield"

@@ -7,6 +7,7 @@ import { deactivateUserAsSystem, reactivateUserAsSystem } from "../adminUserSess
 import { applyMembershipChange } from "../groupMembership";
 import { isPlausibleEmail, normalizeAuthEmail } from "../password";
 import { provisionActiveUser } from "../provisioning";
+import { isServiceAccount } from "../serviceAccounts";
 import { lockActiveAdmins, lockAuthRegistrationEmail, lockAuthUser } from "../transactionLocks";
 import type { ScimFilterClause, ScimGroupFilterAttribute, ScimUserFilterAttribute } from "./filter";
 import {
@@ -151,6 +152,13 @@ function userRecord(row: Prisma.UserGetPayload<{ select: typeof userSelect }>): 
 
 const NOTHING = { id: { in: [] as string[] } };
 
+/**
+ * SCIM sees only people: a service account is never listed, matched, linked, updated or
+ * deactivated by provisioning, never shown as a group member, and a group push never adds or
+ * removes it.
+ */
+const PEOPLE = { kind: "person" } satisfies Prisma.UserWhereInput;
+
 function userClause(clause: ScimFilterClause<ScimUserFilterAttribute>): Prisma.UserWhereInput {
   switch (clause.attribute) {
     case "emails.value":
@@ -176,7 +184,7 @@ function groupClause(clause: ScimFilterClause<ScimGroupFilterAttribute>): Prisma
     case "id":
       return { id: clause.value };
     case "members.value":
-      return { users: { some: { userId: clause.value } } };
+      return { users: { some: { user: PEOPLE, userId: clause.value } } };
   }
 }
 
@@ -199,7 +207,7 @@ async function withMembers(
   const memberships = await client.userGroup.findMany({
     orderBy: [{ groupId: "asc" }, { userId: "asc" }],
     select: { groupId: true, user: { select: { displayName: true, id: true } } },
-    where: { groupId: { in: groups.map((group) => group.id) } }
+    where: { groupId: { in: groups.map((group) => group.id) }, user: PEOPLE }
   });
   return groups.map((group) => ({
     ...group,
@@ -264,14 +272,14 @@ async function updateUser(
   change: UserChange,
   now: Date
 ): Promise<ScimUserWriteResult> {
-  const before = await tx.user.findUnique({ select: { displayName: true, email: true }, where: { id } });
+  const before = await tx.user.findFirst({ select: { displayName: true, email: true }, where: { ...PEOPLE, id } });
   if (!before) throw new ScimRefusal<ScimUserWriteResult>({ kind: "not_found" });
   const planned = change.profile(before);
   if (planned.email !== null && planned.email !== before.email) await lockAuthRegistrationEmail(tx, planned.email);
   const activeAdmins = change.active === undefined ? null : await lockActiveAdmins(tx);
   await lockAuthUser(tx, id);
   const user = await tx.user.findUnique({ where: { id } });
-  if (!user) throw new ScimRefusal<ScimUserWriteResult>({ kind: "not_found" });
+  if (!user || isServiceAccount(user)) throw new ScimRefusal<ScimUserWriteResult>({ kind: "not_found" });
   const next = change.profile(user);
   if (next.email !== planned.email) throw new ScimWriteRetry();
 
@@ -352,8 +360,9 @@ function archivedGroupName(group: { id: string; name: string }): string {
   return `${group.name.slice(0, GROUP_NAME_MAX_LENGTH - suffix.length).trimEnd()}${suffix}`;
 }
 
+/** The group's members SCIM manages; its service-account members stay whatever SCIM pushes. */
 async function currentMembers(tx: Prisma.TransactionClient, groupId: string): Promise<Set<string>> {
-  const memberships = await tx.userGroup.findMany({ select: { userId: true }, where: { groupId } });
+  const memberships = await tx.userGroup.findMany({ select: { userId: true }, where: { groupId, user: PEOPLE } });
   return new Set(memberships.map((membership) => membership.userId));
 }
 
@@ -373,7 +382,7 @@ async function setMembers(
   if (add.length + remove.length > SCIM_MEMBER_CHANGES_MAX) {
     throw invalidScimValue(`A request may change at most ${SCIM_MEMBER_CHANGES_MAX} members.`);
   }
-  if (add.length && await tx.user.count({ where: { id: { in: add } } }) !== add.length) {
+  if (add.length && await tx.user.count({ where: { ...PEOPLE, id: { in: add } } }) !== add.length) {
     throw invalidScimValue("One or more members are not users of this AIQSA installation.");
   }
   for (const userId of add) await applyMembershipChange(tx, { add: [groupId], remove: [], userId });
@@ -391,7 +400,7 @@ export function createPrismaScimRepository(prisma: PrismaClient): ScimRepository
 
   return {
     async listUsers(query) {
-      const where: Prisma.UserWhereInput = { AND: query.clauses.map(userClause) };
+      const where: Prisma.UserWhereInput = { AND: [PEOPLE, ...query.clauses.map(userClause)] };
       const [totalResults, rows] = await Promise.all([
         prisma.user.count({ where }),
         query.count > 0
@@ -408,14 +417,18 @@ export function createPrismaScimRepository(prisma: PrismaClient): ScimRepository
     },
 
     async getUser(id) {
-      const row = await prisma.user.findUnique({ select: userSelect, where: { id } }).catch(retainDatabaseFailure);
+      const row = await prisma.user.findFirst({ select: userSelect, where: { ...PEOPLE, id } }).catch(retainDatabaseFailure);
       return row ? userRecord(row) : null;
     },
 
     async createUser(input, now) {
       return writeUser(async (tx) => {
         await lockAuthRegistrationEmail(tx, input.email);
-        const existing = await tx.user.findUnique({ select: { id: true }, where: { email: input.email } });
+        const existing = await tx.user.findUnique({ select: { id: true, kind: true }, where: { email: input.email } });
+
+        // A service account has no email (a database check holds it); were one ever to match, it is
+        // a conflict, never a link.
+        if (existing && isServiceAccount(existing)) throw new ScimRefusal<ScimUserWriteResult>({ kind: "uniqueness" });
 
         if (!existing) {
           if (input.externalId !== undefined && await userExternalIdTaken(tx, input.externalId, null)) {
@@ -443,6 +456,7 @@ export function createPrismaScimRepository(prisma: PrismaClient): ScimRepository
         await lockAuthUser(tx, existing.id);
         const user = await tx.user.findUnique({ where: { id: existing.id } });
         if (!user) throw new ScimWriteRetry();
+        if (isServiceAccount(user)) throw new ScimRefusal<ScimUserWriteResult>({ kind: "uniqueness" });
         if (user.scimExternalId !== null ||
           (input.externalId !== undefined && await userExternalIdTaken(tx, input.externalId, user.id))) {
           throw new ScimRefusal<ScimUserWriteResult>({ kind: "uniqueness" });

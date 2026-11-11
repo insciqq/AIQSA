@@ -63,6 +63,7 @@ export type AdminSetUserRoleResult =
   | "not_found"
   | "revoked"
   | "self_role_change_forbidden"
+  | "service_account"
   | "unchanged"
   | "user_not_active";
 

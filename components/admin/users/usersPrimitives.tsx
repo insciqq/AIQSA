@@ -57,6 +57,15 @@ export function UsersTag({
   );
 }
 
+/** The badge that marks a service account in the users list and on its page. */
+export function ServiceAccountBadge() {
+  return (
+    <span data-testid="admin-user-service-account">
+      <UsersTag>Service account</UsersTag>
+    </span>
+  );
+}
+
 const pillTone: Record<"accent" | "caution" | "critical" | "neutral" | "ok", string> = {
   accent: "border-proof/30 bg-proof/10 text-proof",
   caution: "border-caution/25 bg-caution/10 text-caution",

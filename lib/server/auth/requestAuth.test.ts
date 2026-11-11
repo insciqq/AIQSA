@@ -99,6 +99,19 @@ describe("DB-backed request auth", () => {
     ).resolves.toBeNull();
     await expect(resolveAuthToken(revoked.token, { sessions: revokedSessions })).resolves.toBeNull();
   });
+
+  it("never authenticates a session row of a service account", async () => {
+    const sessions = createMemoryAuthSessionStore({
+      user: createTestUser({ id: "service-1", kind: "service", role: "user" })
+    });
+    // A planted row: no sign-in path issues one, and resolution refuses it anyway.
+    const planted = await createAuthSession({ secureCookie: false, sessions, userId: "service-1" });
+    const resolveAuth = createRequestAuthResolver({ getConfig: () => config, sessions });
+
+    await expect(resolveAuthToken(planted.token, { sessions })).resolves.toBeNull();
+    await expect(resolveAuth(new Request("http://app.local/api/me", { headers: { cookie: planted.cookie } })))
+      .resolves.toBeNull();
+  });
 });
 
 describe("request attribution", () => {

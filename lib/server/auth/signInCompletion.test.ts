@@ -25,7 +25,11 @@ const confirmedFactor = {
   userId: "user-1"
 };
 
-function sessionTransaction(factor: typeof confirmedFactor | null = null, scimDeactivatedAt: Date | null = null) {
+function sessionTransaction(
+  factor: typeof confirmedFactor | null = null,
+  scimDeactivatedAt: Date | null = null,
+  kind: "person" | "service" = "person"
+) {
   const create = vi.fn(async (input: { data: object }) => ({ ...input.data, id: "session-1", user: createTestUser() }));
   const findFactor = vi.fn(async () => factor);
 
@@ -33,8 +37,8 @@ function sessionTransaction(factor: typeof confirmedFactor | null = null, scimDe
     create,
     findFactor,
     tx: {
-      // The seam's shared lock on the account row, which reads a pending SCIM deactivation.
-      $queryRaw: vi.fn(async () => [{ scimDeactivatedAt }]),
+      // The seam's shared lock on the account row, which reads its kind and a pending SCIM deactivation.
+      $queryRaw: vi.fn(async () => [{ kind, scimDeactivatedAt }]),
       authRecoveryCode: { count: vi.fn(async () => 2) },
       authSession: { create },
       authTotpFactor: { findUnique: findFactor }
@@ -98,6 +102,17 @@ describe("sign-in completion seam", () => {
         expect(create).not.toHaveBeenCalled();
         expect(findFactor).not.toHaveBeenCalled();
       }
+    }
+  });
+
+  it("refuses every method, the bootstrap token included, for a service account", async () => {
+    for (const signInMethod of AUTH_SESSION_SIGN_IN_METHODS) {
+      const { create, findFactor, tx } = sessionTransaction(confirmedFactor, null, "service");
+      const issued = await issueSignInSession(tx as never, { session, signInMethod, userId: "service-1" });
+
+      expect(issued).toEqual({ kind: "refused" });
+      expect(create).not.toHaveBeenCalled();
+      expect(findFactor).not.toHaveBeenCalled();
     }
   });
 
