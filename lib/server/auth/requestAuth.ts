@@ -1,5 +1,6 @@
 import type { AuthSessionSignInMethod } from "@/lib/contracts/authSignInMethods";
 import { attributeRequestUser } from "../observability";
+import { isServiceAccount } from "./serviceAccounts";
 import { hashToken } from "./token";
 import {
   createSessionSetCookie,
@@ -13,6 +14,8 @@ export type AuthenticatedUser = {
   displayName: string;
   email: string | null;
   id: string;
+  /** `service` for a service account, which no session ever authenticates; absent means a person. */
+  kind?: string | null;
   role: string;
   status: string;
 };
@@ -96,8 +99,9 @@ function asDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
+/** Active, and a person: a session row of a service account never authenticates anything. */
 function isActiveUser(user: AuthenticatedUser | null): user is AuthenticatedUser {
-  return user?.status === "active";
+  return user?.status === "active" && !isServiceAccount(user);
 }
 
 function userAgent(request: Request): string | null {
