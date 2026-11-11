@@ -219,6 +219,12 @@ async function renderFixture(query: UiV2FixtureQuery) {
     const { TelegramAdminV2Gallery } = await import("./_fixtures/TelegramAdminV2Gallery");
     return <TelegramAdminV2Gallery state={state} />;
   }
+  if (query.fixture === "discord-admin") {
+    const { DISCORD_ADMIN_FIXTURE_STATES } = await import("./_fixtures/discordFixtureApi");
+    const state = fixtureState(query.state, DISCORD_ADMIN_FIXTURE_STATES, "healthy");
+    const { DiscordAdminV2Gallery } = await import("./_fixtures/DiscordAdminV2Gallery");
+    return <DiscordAdminV2Gallery state={state} />;
+  }
   if (query.fixture === "connect") {
     const state = fixtureState(query.state, ["empty", "empty-ipv6", "list", "pair", "pair-expired"] as const, "list");
     const { ConnectV2Gallery } = await import("./_fixtures/ConnectV2Gallery");
