@@ -80,7 +80,16 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   [SUBAGENT_END_REASONS.deadline]: "Ran out of time",
   [SUBAGENT_END_REASONS.chatDeleted]: "The chat was deleted",
   [SUBAGENT_END_REASONS.restart]: "Interrupted by a restart",
-  [SUBAGENT_END_REASONS.workspaceStopUnproven]: "Interrupted by a restart; its Workspace work may not have stopped"
+  [SUBAGENT_END_REASONS.workspaceStopUnproven]: "Interrupted by a restart; its Workspace work may not have stopped",
+  // A turn that failed on its model provider once its retries ran out (`subagentFailureCode` in the engine's runner).
+  provider_stream_failed: "The model provider's answer broke off",
+  provider_stream_timeout: "The model provider stopped sending its answer",
+  provider_request_timed_out: "The model provider did not answer in time",
+  provider_response_failed: "The model provider could not finish its answer",
+  provider_server_error: "The model provider returned a server error",
+  provider_rate_limited: "The model provider was limiting requests",
+  provider_quota_exhausted: "The model provider account ran out of quota",
+  provider_auth_rejected: "The model provider rejected the configured key"
 };
 
 /** What differs for a child: its parent, not the main agent, did these. */

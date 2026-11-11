@@ -22,10 +22,12 @@ import {
 import type { ThreadWorkspaceActivityEntry } from "../../../contracts/workspace";
 import { estimateApproxTokens } from "../../../domain/contextBudget";
 import type { ModelRunUsage } from "../../../domain/modelRunEvents";
-import { logEvent } from "../../observability";
+import { logEvent, runWithContext } from "../../observability";
 import { gatewayRoutingLane } from "../../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../../providers/history";
+import { isProviderDeadlineExceededError } from "../../providers/network";
 import { observedFailure } from "../../providers/providerObservability";
+import { isProviderResponseFailure } from "../../providers/responseFailure";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
@@ -584,8 +586,21 @@ function endingOf(error: unknown, turn: TurnRecord, host: SubagentHost): Readonl
     return { reason: SUBAGENT_END_REASONS.parentStopped, state: "stopped" };
   }
   if (error instanceof SubagentTurnFailure) return { reason: error.code, state: "failed" };
-  const code = observedFailure(error).code;
-  return { reason: code !== "unknown" && isSubagentCode(code) ? code : "subagent_failed", state: "failed" };
+  return { reason: subagentFailureCode(error), state: "failed" };
+}
+
+/**
+ * The cause a turn that failed on its own ends with, by the code a main-agent run that failed the same way shows
+ * (`failurePayload` in `../execution.ts`): a classified failure keeps its code, and a provider stream that dropped or a
+ * response the provider failed, which carry none once retries ran out, take the generic code of their kind. Codes come
+ * only from the closed observed set (`failureCodes.json`), never from exception text; anything else is `subagent_failed`.
+ */
+export function subagentFailureCode(error: unknown): string {
+  if (isProviderDeadlineExceededError(error)) return "provider_request_timed_out";
+  const failure = observedFailure(error);
+  const code = failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
+    : failure.stream_drop !== undefined ? "provider_stream_failed" : "subagent_failed";
+  return isSubagentCode(code) ? code : "subagent_failed";
 }
 
 export type HostedSubagentRunner = SubagentRunner & Readonly<{
@@ -1043,7 +1058,10 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     } catch (error) {
       const ending = endingOf(error, turn, host);
       if (ending.state === "failed") {
-        logEvent("run_execution", { code: ending.reason, error, outcome: "failed", run_id: input.hostRunId, stage: "execution" });
+        const failure = observedFailure(error);
+        logEvent("run_execution", { code: ending.reason, error, outcome: "failed", run_id: input.hostRunId, stage: "execution",
+          ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
+          ...(failure.provider_error_code ? { provider_error_code: failure.provider_error_code } : {}) });
       }
       if (input.signal.reason instanceof SubagentTimeEnded && streamed.trim()) {
         report = [SUBAGENT_REPORT_CUT_OFF, report, streamed].filter(Boolean).join("\n\n");
@@ -1091,13 +1109,15 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     if (turns.has(input.turnId)) throw new Error("subagent_turn_exists");
     let resolveRecord!: (record: TurnRecord) => void;
     const ready = new Promise<TurnRecord>((resolve) => { resolveRecord = resolve; });
-    const promise = ready.then(async (record) => {
+    // Its records name the run that holds it: a background turn's own run, which names the turn, not the parent that
+    // started it (whose context `begin` runs in), so a lookup of that run finds its model calls' failures.
+    const promise = ready.then((record) => runWithContext({ run_id: input.hostRunId, user_id: input.userId }, async () => {
       const result = await saveBackgroundResult(input, AbortSignal.any([host.signal, input.signal, record.controller.signal]),
         await endChildren(record, await executeTurn(record)));
       record.result = result;
       await settleRow(input, result);
       return result;
-    });
+    }));
     const record: TurnRecord = { arrivals: new Set(), awaitedChildren: new Set(), calledChildren: false, controller: new AbortController(), input, kind,
       mailbox: [], promise, result: null, stopReason: null };
     turns.set(input.turnId, record);
