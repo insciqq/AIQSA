@@ -7,8 +7,11 @@ import { retainDatabaseFailure } from "../../observability/databaseFailure";
  * and per day, and per conversation per hour, counted over `DiscordReply`
  * rows. Only questions that went to a run count (answers and follow-ups);
  * refused ones never do, so a refusal cannot keep its author locked out. Test
- * questions count like any other. The service account's own message limits
- * never apply to Discord runs.
+ * questions (PRD D-36) are neither refused by these limits (the bridge skips
+ * the check) nor counted toward people's: an end-to-end bot asks dozens in a
+ * row, often in the same thread as people. The Assistant's monthly budget and
+ * the model key's limit still apply to them. The service account's own
+ * message limits never apply to Discord runs.
  */
 
 export const DISCORD_HOUR_MS = 3_600_000;
@@ -56,7 +59,7 @@ const COUNTED = { in: ["answer", "follow_up"] as ("answer" | "follow_up")[] };
 
 export function createPrismaDiscordLimitStore(prisma: LimitClient): DiscordLimitStore {
   async function window(where: { discordUserId?: bigint; conversationId?: string }, now: Date, length: number, limit: number): Promise<DiscordLimitWindow> {
-    const filter = { ...where, kind: COUNTED, receivedAt: { gt: new Date(now.getTime() - length) } };
+    const filter = { ...where, kind: COUNTED, receivedAt: { gt: new Date(now.getTime() - length) }, test: false };
     const count = await prisma.discordReply.count({ where: filter }).catch(retainDatabaseFailure);
     if (count < limit) return { count, freesAt: null, limit };
     // The question at ascending offset `count - limit` ages out first.

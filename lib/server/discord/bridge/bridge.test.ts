@@ -421,6 +421,44 @@ describe("Discord bridge: limits", () => {
     expect(h.runs.runs).toHaveLength(1);
     expect(botMessages(h, first.id).map((message) => message.content).at(-1)).toMatch(/^❌ This thread has reached its limit of 1 questions per hour\./u);
   });
+
+  it("never holds a test author's questions by the author or thread limits, nor counts them toward people's", async () => {
+    const fake = createFakeDiscord();
+    const tester = fake.addUser({ bot: true, username: "e2e-bot" });
+    const h = harness({
+      control: {
+        limits: { parallelThreads: 16, perAuthorDaily: 1, perAuthorHourly: 1, perThreadHourly: 1 },
+        testAuthorIds: new Set([tester]), testChannelIds: new Set([fake.channels.text])
+      },
+      fake
+    });
+    const first = await h.say(mention(h, tester, "one"));
+    await h.settle();
+    const second = await h.say(mention(h, tester, "two", first.id));
+    await h.settle();
+    const third = await h.say(mention(h, tester, "three", first.id));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(3);
+    for (const question of [first, second, third]) {
+      expect(h.replies.rows.get(question.id)).toMatchObject({ kind: "answer", state: "delivered", test: true });
+    }
+    // People in the same thread start from zero: the test questions count toward neither the thread nor anyone's limit.
+    const [alice, bob] = [h.user("alice"), h.user("bob")];
+    const fourth = await h.say({ authorId: alice, channelId: first.id, content: "four" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(4);
+    expect(h.replies.rows.get(fourth.id)).toMatchObject({ kind: "answer", test: false });
+    // The thread's limit still holds people: Alice's question filled it.
+    const fifth = await h.say({ authorId: bob, channelId: first.id, content: "five" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(4);
+    expect(h.replies.rows.get(fifth.id)).toMatchObject({ code: "discord_thread_limit", kind: "refused", limitKind: "thread", test: false });
+    // And a test question after it is still answered.
+    const sixth = await h.say(mention(h, tester, "six", first.id));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(5);
+    expect(h.replies.rows.get(sixth.id)).toMatchObject({ kind: "answer", state: "delivered", test: true });
+  });
 });
 
 describe("Discord bridge: answers", () => {

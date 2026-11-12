@@ -846,6 +846,41 @@ describe("Prisma MCP runtime desired-state snapshots", () => {
     }));
   });
 
+  it("keeps an active service account's installation runtimes through housekeeping, which has no session to show", async () => {
+    const findMany = vi.fn(async () => []);
+    const executeRaw = vi.fn(async () => 0);
+    const client = {
+      $executeRaw: executeRaw,
+      mcpUserServer: { findMany }
+    } as unknown as PrismaClient;
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY,
+      prisma: client
+    });
+
+    await repository.synchronizeDesired({ now: NOW });
+    const eviction = (executeRaw.mock.calls[0] as unknown as [TemplateStringsArray])[0].join("?").replace(/\s+/gu, " ");
+    expect(eviction).toContain([
+      "AND NOT EXISTS ( SELECT 1 FROM \"User\" AS service_account",
+      "JOIN \"McpServer\" AS installation_server ON installation_server.\"id\" = preference.\"serverId\"",
+      "WHERE service_account.\"id\" = preference.\"userId\" AND service_account.\"kind\" = 'service'",
+      "AND service_account.\"status\" = 'active' AND installation_server.\"ownerUserId\" IS NULL )"
+    ].join(" "));
+    const where = (findMany.mock.calls[0] as unknown as [{ where: Record<string, unknown> }])[0].where;
+    expect(where).toMatchObject({ desiredRuntimeGenerationId: { not: null }, enabled: true, user: { status: "active" } });
+    expect(where.OR).toEqual([
+      { user: { OR: [expect.objectContaining({ authSessions: expect.anything() }), expect.objectContaining({ inboundMcpOAuthGrants: expect.anything() })] } },
+      { server: { ownerUserId: null }, user: { kind: "service" } }
+    ]);
+
+    // A user's own reconciliation is scoped to that user and evicts nothing.
+    await repository.synchronizeDesired({ now: NOW, userId: USER_ID });
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const scoped = (findMany.mock.calls[1] as unknown as [{ where: Record<string, unknown> }])[0].where;
+    expect(scoped.OR).toBeUndefined();
+    expect(scoped.user).toEqual({ id: USER_ID, status: "active" });
+  });
+
   it.each([false, true])("persists an encrypted effective snapshot without the owner's switch-offs, personal=%s", async (personal) => {
     const record = runtimeRecord({
       configuration: { ...configuration, disabledToolNames: ["dangerous_tool"] },
