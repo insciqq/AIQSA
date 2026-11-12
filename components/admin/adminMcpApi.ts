@@ -341,6 +341,29 @@ export function adminMcpErrorMessage(error: AdminMcpClientError): string {
     if (issue.code === "mcp_effective_value_required") {
       return "A required configuration value is missing. Fill in the server's configuration fields and try again.";
     }
+    if (issue.code === "client_secret_required") {
+      return "Enter the client secret. A secret saved for another token endpoint is never sent to this one.";
+    }
+    if (issue.code === "mcp_client_credentials_rejected") {
+      const field = issue.path === "clientSecret" ? "Check the client ID and secret."
+        : issue.path === "auth.clientId" ? "This client may not use the client credentials grant."
+          : issue.path === "auth.scopes" ? "Check the requested scopes."
+            : issue.path === "auth.resource" ? "Check the resource."
+              : "Check the client ID, secret, scopes and resource.";
+      return `The token endpoint refused the client credentials. ${field}`;
+    }
+    if (issue.code === "mcp_client_credentials_unreachable") {
+      return "The token endpoint could not be reached. Check its URL and availability; an endpoint on the installation's network also needs the private network permission.";
+    }
+    if (issue.code === "mcp_client_credentials_invalid_response") {
+      return "The token endpoint did not return a usable bearer token. Check the token endpoint URL.";
+    }
+    if (issue.code === "client_credentials_token_endpoint_invalid") {
+      return "The token endpoint must be an https URL without credentials, query or fragment.";
+    }
+    if (issue.code === "client_credentials_authorization_header_reserved") {
+      return "Client credentials send the Authorization header. Remove the configuration field that targets it.";
+    }
     if (issue.code === "validation_identity_invalid") {
       return "Your administrator access changed during the check. Sign in again before applying settings.";
     }

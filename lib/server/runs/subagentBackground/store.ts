@@ -170,7 +170,7 @@ export type BackgroundOrphan = Readonly<{ chatId: string; runId: string; turnId:
 export type OwedCallbackChat = SubagentChatScope & Readonly<{ turnIds: readonly string[] }>;
 
 export type SubagentBackgroundStore = Readonly<{
-  /** Whether this main-agent run, or the sub-agent calling, may start background turns: an active web or Assistant run, not scheduled, not Telegram. */
+  /** Whether this main-agent run, or the sub-agent calling, may start background turns: an active web or Assistant run, not scheduled, Telegram or Discord. */
   callerAvailable(input: SubagentChatScope & Readonly<{ parentAgent?: SubagentParentAgent; parentRunId: string }>): Promise<boolean>;
   admit(input: SubagentAdmissionInput): Promise<SubagentAdmission>;
   settle(input: SubagentChatScope & Readonly<{ result: EndedSubagentCallResult; turnId: string }>): Promise<SubagentSettlement>;
@@ -424,7 +424,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
       const run = await client.modelRun.findFirst({
         select: { id: true },
         where: { chat: { permanentDeletionAt: null }, chatId, engine: "native", id: parentAgent?.runId ?? parentRunId, scheduledTaskId: null,
-          status: { in: dispatchableModelRunStatuses }, telegramRunLinks: { none: {} }, userId,
+          status: { in: dispatchableModelRunStatuses }, telegramRunLinks: { none: {} }, discordReplies: { none: {} }, userId,
           // A child's parent runs in the main agent's run, or in its own once it runs in the background.
           ...(parentAgent ? { OR: [{ subagentTurnId: null }, { subagentTurnId: parentAgent.turnId }] } : { subagentTurnId: null }) }
       });

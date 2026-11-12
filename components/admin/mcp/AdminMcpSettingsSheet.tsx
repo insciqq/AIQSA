@@ -8,6 +8,7 @@ import {
   blankMcpServerForm,
   editableMcpServerForm,
   normalizeMcpImport,
+  requestMcpClientSecret,
   requestMcpSharedValues,
   type AdminMcpServerForm
 } from "@/components/admin/mcp/adminMcpDraft";
@@ -96,8 +97,10 @@ function SheetBody({
     setSaving(true);
     try {
       const sharedValues = requestMcpSharedValues(form);
+      const clientSecret = requestMcpClientSecret(form);
       if (mode.kind === "create") {
         const result = await controller.actions.create({
+          ...(clientSecret ? { clientSecret } : {}),
           description: form.description,
           draft: form.draft,
           name: form.name.trim(),
@@ -112,6 +115,7 @@ function SheetBody({
         return;
       }
       const result = await controller.actions.save(mode.server.id, {
+        ...(clientSecret ? { clientSecret } : {}),
         description: form.description,
         draft: form.draft,
         expectedUpdatedAt: form.expectedUpdatedAt,
@@ -224,11 +228,14 @@ function SheetBody({
               <span className={helpTextClass}>Shown to people next to the server in chat settings.</span>
             </label>
             <AdminMcpDraftEditor
+              clientSecretDraft={form.clientSecret ?? ""}
               disabled={busy}
               draft={form.draft}
               onChange={(draft) => setForm({ ...form, draft })}
+              onClientSecretChange={(value) => setForm({ ...form, clientSecret: value || undefined })}
               onSharedValueChange={(slotKey, value) => setForm({ ...form, sharedValues: { ...form.sharedValues, [slotKey]: value } })}
               sharedValueDraft={form.sharedValues}
+              storedClientCredentials={mode.kind === "edit" ? mode.server.clientCredentials : undefined}
               storedSharedValues={mode.kind === "edit" ? mode.server.sharedValues : undefined}
             />
             {creating ? (

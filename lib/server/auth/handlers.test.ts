@@ -757,6 +757,27 @@ describe("auth route handlers", () => {
     expect(mailer.sent).toHaveLength(1);
   });
 
+  it("sends no reset token or email for a service account's planted password identity", async () => {
+    const repository = createMemoryPasswordAuthRepository({
+      identity: createTestPasswordIdentity({ user: { kind: "service", role: "user" } })
+    });
+    const mailer = createMemoryAuthMailer();
+    const POST = createPasswordResetRequestHandler({
+      getConfig: () => ({ ...config, appBaseUrl: "https://aiqsa.example" }),
+      mailer,
+      now: () => new Date("2026-06-14T00:00:00.000Z"),
+      repository,
+      responseFloorMs: 0
+    });
+
+    const response = await POST(jsonRequest("/api/auth/password-reset/request", { email: "operator@aiqsa.local" }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ ok: true });
+    expect(repository.resetTokens.size).toBe(0);
+    expect(mailer.sent).toHaveLength(0);
+  });
+
   it("keeps reset responses on the same floor without awaiting SMTP for known accounts", async () => {
     const pendingMail = deferred();
     const sleep = vi.fn(async () => undefined);
@@ -1407,6 +1428,8 @@ describe("refused sign-in journal of the password form", () => {
     const cases = [
       [dana({ user: { status: "disabled" } }), "account_inactive"],
       [dana({ user: { status: "denied" } }), "account_inactive"],
+      // A service account with a planted, verified password identity never signs in.
+      [dana({ user: { kind: "service", role: "user" } }), "account_inactive"],
       [dana({ user: { status: "pending" } }), "account_pending"],
       [dana({ emailVerifiedAt: null }), "email_unverified"],
       [dana({ emailVerifiedAt: null, user: { status: "pending" } }), "email_unverified"]

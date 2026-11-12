@@ -1,3 +1,4 @@
+import { createMcpClientCredentialsAuthProvider, McpClientCredentialsTokens } from "./clientCredentials";
 import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { getMcpRequestMaxBytes } from "./responseLimits";
@@ -57,9 +58,15 @@ export function createDefaultMcpLaunchFetch(deps: Readonly<{
 }
 
 function createDefaultMcpRuntimeCoordinator(): McpRuntimeCoordinator {
+  // One token per installation server and secret generation, shared by every
+  // user's session in this process (the coordinator is a process singleton).
+  const clientCredentialsTokens = new McpClientCredentialsTokens();
   const directSessions = createMcpClientSessionFactory({
     authProviderForLaunch: async (launch) => launch.oauthConnectionId
       ? createDefaultMcpOAuthRuntimeProvider(launch.oauthConnectionId)
+      : undefined,
+    clientCredentialsProviderForLaunch: (launch) => launch.clientCredentials
+      ? createMcpClientCredentialsAuthProvider({ launch: launch.clientCredentials, tokens: clientCredentialsTokens })
       : undefined,
     fetch: createMcpSafeFetch(),
     fetchForLaunch: createDefaultMcpLaunchFetch(),

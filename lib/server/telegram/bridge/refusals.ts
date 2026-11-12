@@ -1,5 +1,6 @@
 import { MCP_APPROVAL_CONTINUATION_UNAVAILABLE } from "../../../contracts/mcpApprovals";
 import { isUsageLimitRefusalCode } from "../../../contracts/usageLimits";
+import type { ConnectorSendRefusal } from "../../connectors/runAdmission";
 import { TELEGRAM_COPY, TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, telegramUsageLimitText } from "../copy";
 
 /**
@@ -12,15 +13,7 @@ import { TELEGRAM_COPY, TELEGRAM_RUN_REFUSAL_COPY as COPY, telegramReasonText, t
  */
 
 /** Why a message was not admitted, as the send handler (or the bridge before it) answered. */
-export type TelegramSendRefusal = Readonly<{
-  status: number;
-  code: string;
-  /** From `retry-after`, for usage limits. */
-  retryAfterSeconds?: number;
-  usageLimit?: Readonly<{ limit: number | null; window: string | null }>;
-  /** The run that holds the chat (`active_run_in_progress`). */
-  activeRunId?: string;
-}>;
+export type TelegramSendRefusal = ConnectorSendRefusal;
 
 export type TelegramRefusalAction = "model" | "settings" | "open" | "none";
 

@@ -68,8 +68,9 @@ const PERMANENT_REVOCATION_STATUSES: ReadonlySet<number> = new Set([400, 401, 40
 const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
 
 // Every authorization-server response, including the ones the SDK parses with
-// response.json(), passes through this byte bound before it is buffered.
-function boundedOAuthResponse(response: Response): Response {
+// response.json() and client-credentials token answers, passes through this
+// byte bound before it is buffered.
+export function boundedOAuthResponse(response: Response): Response {
   if (!response.body || NULL_BODY_STATUSES.has(response.status)) return response;
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > MAX_OAUTH_RESPONSE_BYTES) {

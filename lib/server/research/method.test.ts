@@ -417,20 +417,20 @@ describe("the method", () => {
   });
 
   it("offers research only on a request, and only with Search, sub-agents and an interactive web run", () => {
-    const base = { monitoring: false, scheduled: false, searchOptions: 1, subagents: true, telegram: false };
+    const base = { connector: false, monitoring: false, scheduled: false, searchOptions: 1, subagents: true };
     for (const request of ["approval", "chosen", "continue"] as const) expect(researchOffered({ ...base, request })).toBe(true);
     // No words of a message offer it (operator decision 2026-11-05): with no request, nothing does.
     expect(researchOffered({ ...base, request: null })).toBe(false);
-    for (const off of [{ searchOptions: 0 }, { subagents: false }, { telegram: true }, { scheduled: true }, { monitoring: true }]) {
+    for (const off of [{ searchOptions: 0 }, { subagents: false }, { connector: true }, { scheduled: true }, { monitoring: true }]) {
       expect(researchOffered({ ...base, ...off, request: "chosen" })).toBe(false);
     }
   });
 
   it("refuses Deep research where it cannot run with a code the user can act on: Search is the one thing they can turn on", () => {
-    const base = { monitoring: false, scheduled: false, searchOptions: 1, subagents: true, telegram: false };
+    const base = { connector: false, monitoring: false, scheduled: false, searchOptions: 1, subagents: true };
     expect(deepResearchRefusal(base)).toBeNull();
     expect(deepResearchRefusal({ ...base, searchOptions: 0 })).toBe(DEEP_RESEARCH_REFUSALS.needsSearch);
-    for (const off of [{ subagents: false }, { telegram: true }, { scheduled: true }, { monitoring: true }]) {
+    for (const off of [{ subagents: false }, { connector: true }, { scheduled: true }, { monitoring: true }]) {
       expect(deepResearchRefusal({ ...base, ...off })).toBe(DEEP_RESEARCH_REFUSALS.unavailable);
       expect(deepResearchRefusal({ ...base, ...off, searchOptions: 0 })).toBe(DEEP_RESEARCH_REFUSALS.unavailable);
     }

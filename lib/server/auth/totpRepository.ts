@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { TwoFactorStatusWire } from "@/lib/contracts/twoFactor";
 import type { SafeUser } from "./handlers";
 import type { SecondFactorSignInMethod } from "./secondFactorChallenge";
+import { isServiceAccount } from "./serviceAccounts";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import { encryptTotpSecret, generateTotpSecret, matchTotpStep, normalizeTotpCode, decryptTotpSecret } from "./totp";
 import {
@@ -85,12 +86,16 @@ async function activeEligibleUser(tx: Prisma.TransactionClient, userId: string) 
       authIdentities: { select: { id: true }, take: 1, where: totpEligibleIdentityWhere },
       displayName: true,
       email: true,
+      kind: true,
       status: true
     },
     where: { id: userId }
   });
 
-  return user?.status === "active" ? { ...user, eligible: user.authIdentities.length > 0 } : null;
+  // A service account never signs in, so it never enrolls a second factor.
+  return user?.status === "active" && !isServiceAccount(user)
+    ? { ...user, eligible: user.authIdentities.length > 0 }
+    : null;
 }
 
 function enabled(factor: { confirmedAt: Date | null; secretEnvelope: string | null } | null): boolean {
@@ -303,6 +308,7 @@ export function createPrismaSecondFactorSignInRepository(prisma: PrismaClient): 
           identity.userId !== challenge.userId ||
           identity.provider !== challenge.signInMethod ||
           identity.user.status !== "active" ||
+          isServiceAccount(identity.user) ||
           (challenge.signInMethod === "password" && (!identity.emailVerifiedAt || !identity.passwordHash))
         ) {
           return { kind: "challenge_expired" };

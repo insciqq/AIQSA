@@ -7,6 +7,8 @@ import type {
 } from "@/lib/contracts/mcp";
 
 export type McpDraftValidationInput = Readonly<{
+  /** A client-credentials draft's secret: the one entered with this check, or the one stored for its token endpoint origin. */
+  clientSecret?: string;
   draft: McpDraftConfiguration;
   onProgress?(stage: McpDraftValidationStage): Promise<void>;
   /** A personal (user-owned) connection: its transport follows the personal network policy. */

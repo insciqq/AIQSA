@@ -1,4 +1,5 @@
 import type { FetchLike, OAuthClientProvider } from "@modelcontextprotocol/client";
+import type { McpClientCredentialsAuthProvider } from "./clientCredentials";
 import {
   McpClientSession,
   McpClientSessionError,
@@ -12,6 +13,8 @@ import type { McpRuntimeLaunch, McpRuntimeSessionFactory } from "./runtimeCoordi
 export function createMcpClientSessionFactory(input: Readonly<{
   authProviderForLaunch?: (launch: McpRuntimeLaunch) => Promise<OAuthClientProvider | undefined>;
   callResultCeiling?: McpCallResultCeiling;
+  /** The installation sign-in of a client-credentials launch; its tokens are shared per server. */
+  clientCredentialsProviderForLaunch?: (launch: McpRuntimeLaunch) => McpClientCredentialsAuthProvider | undefined;
   fetch: FetchLike;
   fetchForLaunch?: (launch: McpRuntimeLaunch) => FetchLike | Promise<FetchLike>;
   limits: McpClientSessionLimits;
@@ -31,19 +34,41 @@ export function createMcpClientSessionFactory(input: Readonly<{
         });
       }
 
-      const authProvider = launch.oauthConnectionId
+      const oauthProvider = launch.oauthConnectionId
         ? await input.authProviderForLaunch?.(launch)
         : undefined;
-      if (launch.oauthConnectionId && !authProvider) {
+      const clientCredentials = launch.clientCredentials
+        ? input.clientCredentialsProviderForLaunch?.(launch)
+        : undefined;
+      if ((launch.oauthConnectionId && !oauthProvider) || (launch.clientCredentials && !clientCredentials) ||
+        (launch.oauthConnectionId && launch.clientCredentials)) {
         throw new McpClientSessionError({
           code: "mcp_session_configuration_invalid",
           operation: "session"
         });
       }
+      if (clientCredentials) {
+        // Sign in before connecting, so a refused or unreachable token
+        // endpoint fails the launch with its own code.
+        await clientCredentials.token();
+        launch.signal?.throwIfAborted();
+      }
+      const authProvider = oauthProvider ?? clientCredentials;
+      // The exact secrets a result may echo: the sign-in's, or what the OAuth provider reports.
+      const exactKnownSecrets = (): readonly string[] => {
+        if (clientCredentials) return clientCredentials.exactKnownSecrets();
+        if (!oauthProvider || !("exactKnownSecrets" in oauthProvider) ||
+          typeof oauthProvider.exactKnownSecrets !== "function") return [];
+        const values: unknown = oauthProvider.exactKnownSecrets.call(oauthProvider);
+        return Array.isArray(values)
+          ? values.filter((value): value is string => typeof value === "string")
+          : [];
+      };
+      const launchFetch = await input.fetchForLaunch?.(launch) ?? input.fetch;
       const session = new McpClientSession({
         ...(authProvider ? { authProvider } : {}),
         ...(input.callResultCeiling ? { callResultCeiling: input.callResultCeiling } : {}),
-        fetch: await input.fetchForLaunch?.(launch) ?? input.fetch,
+        fetch: clientCredentials ? clientCredentials.observeFetch(launchFetch) : launchFetch,
         headers: launch.headers,
         limits: input.limits,
         onInventoryStale: launch.onToolsChanged,
@@ -67,16 +92,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
             timeoutMs: launch.callTimeoutMs
           });
           try {
-            const exactKnownSecrets = authProvider && "exactKnownSecrets" in authProvider &&
-              typeof authProvider.exactKnownSecrets === "function"
-              ? authProvider.exactKnownSecrets.call(authProvider)
-              : [];
-            return redactMcpToolCallResult(
-              result,
-              Array.isArray(exactKnownSecrets)
-                ? exactKnownSecrets.filter((value): value is string => typeof value === "string")
-                : []
-            );
+            return redactMcpToolCallResult(result, exactKnownSecrets());
           } catch {
             throw new McpClientSessionError({
               code: "mcp_call_result_invalid",
@@ -86,14 +102,7 @@ export function createMcpClientSessionFactory(input: Readonly<{
         },
         fatalResponseErrorCode: () => session.fatalResponseErrorCode(),
         close: () => session.close(),
-        exactKnownSecrets() {
-          if (!authProvider || !("exactKnownSecrets" in authProvider) ||
-            typeof authProvider.exactKnownSecrets !== "function") return [];
-          const values = authProvider.exactKnownSecrets.call(authProvider);
-          return Array.isArray(values)
-            ? values.filter((value): value is string => typeof value === "string")
-            : [];
-        },
+        exactKnownSecrets: () => [...exactKnownSecrets()],
         isClosed: () => session.isClosed(),
         ping: (options) => session.ping(options),
         async listTools(signal, options) {

@@ -116,3 +116,40 @@ describe("createChatShare ownership", () => {
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ chatId: "c", ownerUserId: "u" }) });
   });
 });
+
+describe("createChatShare for a service account's chat", () => {
+  async function shareDiscord(kind: "service" | "person") {
+    const created: Array<{ snapshot: { messages: Array<{ content: { blocks: Array<{ text: string }> } }>; title: string }; title: string }> = [];
+    const findFirst = vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", title: "Thread token=abcd1234efgh5678ijkl", user: { kind }, messages: [
+      row("q", null, "user", "Question from Alice (discord:1100000000000000020):\nWhat is DB_PASSWORD?"),
+      row("a", "q", "assistant", "It is DB_PASSWORD=s3cr3t-Value-Only-Here and the key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd")
+    ] }));
+    const tx = {
+      answerReviewSession: { findMany: async () => [] },
+      chat: { findFirst },
+      message: { findMany: async () => [] },
+      sharedChatSnapshot: { create: async ({ data }: { data: (typeof created)[number] }) => { created.push(data); return { id: "share" }; } }
+    };
+    const repository = createPrismaShareRepository({ $transaction: async (work: (client: typeof tx) => unknown) => work(tx) } as never);
+    await repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" });
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({ include: expect.objectContaining({ user: { select: { kind: true } } }) }));
+    return created[0]!;
+  }
+
+  // The decision reads the owner, so a chat whose Discord conversation row was never written is redacted all the same.
+  it("redacts the secrets of a service account's chat, its title included, with or without a Discord conversation row", async () => {
+    const data = await shareDiscord("service");
+    const text = JSON.stringify(data);
+    expect(text).not.toContain("s3cr3t-Value-Only-Here");
+    expect(text).not.toContain("sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    expect(text).not.toContain("abcd1234efgh5678ijkl");
+    expect(text).toContain("[redacted]");
+    expect(data.snapshot.messages[0]!.content.blocks[0]!.text).toContain("What is DB_PASSWORD?");
+    expect(data.title).toBe(data.snapshot.title);
+  });
+
+  it("keeps a person's chat text as it is", async () => {
+    const data = await shareDiscord("person");
+    expect(JSON.stringify(data)).toContain("s3cr3t-Value-Only-Here");
+  });
+});

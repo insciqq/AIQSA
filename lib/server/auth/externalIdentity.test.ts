@@ -1,5 +1,5 @@
 import { AuthIdentityProvider, GroupExternalNameSource } from "@prisma/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { EXTERNAL_GROUP_SOURCES } from "@/lib/contracts/authSignInMethods";
 import {
   externalAdminRoleChange,
@@ -93,5 +93,67 @@ describe("external identity settlement rules", () => {
       role,
       roleManagedBy
     })).toBe(change);
+  });
+});
+
+describe("external sign-in of a service account", () => {
+  const serviceUser = {
+    email: "user@example.test",
+    id: "service-1",
+    kind: "service",
+    role: "user",
+    roleManagedBy: null,
+    scimDeactivatedAt: null,
+    scimExternalId: null,
+    status: "active"
+  };
+
+  function transaction(subjectIdentity: boolean) {
+    const writes = vi.fn(() => {
+      throw new Error("settlement wrote for a service account");
+    });
+    const tx = {
+      // Locks: the email, the identity and the account rows.
+      $queryRaw: vi.fn(async () => []),
+      authIdentity: {
+        create: writes,
+        findUnique: vi.fn(async (query: { include?: object; where: Record<string, unknown> }) => {
+          if (!subjectIdentity) return null;
+          if ("provider_providerAccountId" in query.where) return { id: "identity-1", userId: serviceUser.id };
+          if (query.include) {
+            return {
+              emailVerifiedAt: new Date("2026-10-01T00:00:00.000Z"),
+              id: "identity-1",
+              normalizedEmail: "user@example.test",
+              source: input().source,
+              user: serviceUser,
+              userId: serviceUser.id
+            };
+          }
+          return null;
+        }),
+        update: writes
+      },
+      user: {
+        create: writes,
+        findUnique: vi.fn(async () => serviceUser),
+        update: writes
+      }
+    };
+    return { tx, writes };
+  }
+
+  it("refuses a planted identity whose subject matches", async () => {
+    const { tx, writes } = transaction(true);
+
+    await expect(settleExternalIdentity(tx as never, input())).resolves.toEqual({ status: "not_allowed" });
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  it("never links a new identity to it by a matching verified email", async () => {
+    const { tx, writes } = transaction(false);
+
+    await expect(settleExternalIdentity(tx as never, input())).resolves.toEqual({ status: "not_allowed" });
+    expect(writes).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,7 @@ import {
   remoteRuntimeCandidate
 } from "./runtimeRepository";
 import { mcpEndpointBinding, mcpToolDefinitionEvidence, type McpEndpointBinding } from "./definitions";
+import { sealMcpClientCredentialsSecret } from "./clientCredentials";
 
 const KEY = Buffer.alloc(32, 0x4d);
 const NOW = new Date("2026-07-22T19:00:00.000Z");
@@ -35,6 +36,7 @@ type GrantFixture = {
 };
 
 type RecordOptions = {
+  clientSecret?: { generation: number; secret: string; tokenEndpoint: string };
   validationEvidence?: unknown;
   activeRevision?: boolean;
   archivedAt?: Date | null;
@@ -190,6 +192,15 @@ function runtimeRecord(options: RecordOptions = {}): RuntimeRecord {
       } : null,
       activeRevisionId: hasRevision ? REVISION_ID : null,
       archivedAt: options.archivedAt ?? null,
+      clientCredentialsSecretEnvelope: options.clientSecret ? sealMcpClientCredentialsSecret({
+        generation: options.clientSecret.generation,
+        key: KEY,
+        secret: options.clientSecret.secret,
+        serverId: SERVER_ID,
+        tokenEndpoint: options.clientSecret.tokenEndpoint,
+        updatedAt: NOW
+      }) : null,
+      clientCredentialsSecretGeneration: options.clientSecret?.generation ?? 0,
       createdAt: NOW,
       description: "Remote MCP",
       displayName: "Remote MCP",
@@ -702,6 +713,109 @@ describe("remote MCP runtime candidates", () => {
     expect(safeIdentity).not.toContain("personal-secret");
     expect(safeIdentity).not.toContain("shared-secret");
     expect(safeIdentity).not.toContain(firstRecord.personalConfigEnvelope ?? "missing-envelope");
+  });
+});
+
+describe("client-credentials MCP runtime candidates", () => {
+  const CLIENT_SECRET = "installation-client-secret";
+  const clientCredentialsConfiguration: McpDraftConfiguration = {
+    auth: {
+      authMethod: "client_secret_post",
+      clientId: "agent",
+      mode: "client_credentials",
+      scopes: ["agent"],
+      tokenEndpoint: "https://auth.example.test/oauth/token"
+    },
+    runtime: { callTimeoutMs: 28_000, startupTimeoutMs: 41_000 },
+    slots: [],
+    source: { allowPrivateNetwork: true, kind: "remote", url: "https://mcp.example.test/rpc" },
+    transport: "streamable_http"
+  };
+  const record = (options: RecordOptions = {}) => runtimeRecord({
+    clientSecret: { generation: 3, secret: CLIENT_SECRET, tokenEndpoint: "https://auth.example.test/other/path" },
+    configuration: clientCredentialsConfiguration,
+    ...options
+  });
+
+  it("launches for an entitled user without a per-user connection, as the installation's client", () => {
+    const candidate = remoteRuntimeCandidate({ key: KEY, record: record() });
+
+    expect(candidate).toMatchObject({
+      clientCredentials: {
+        grant: {
+          allowPrivateNetwork: true,
+          authMethod: "client_secret_post",
+          clientId: "agent",
+          clientSecret: CLIENT_SECRET,
+          resource: "https://mcp.example.test/rpc",
+          scopes: ["agent"],
+          tokenEndpoint: "https://auth.example.test/oauth/token"
+        },
+        secretGeneration: 3,
+        serverId: SERVER_ID
+      },
+      credentialSources: ["shared"],
+      effectiveEnvelope: { clientCredentials: { secret: CLIENT_SECRET, secretGeneration: 3 }, plan: [], values: {} },
+      headers: {},
+      redactionValues: [CLIENT_SECRET],
+      userId: USER_ID
+    });
+    expect(candidate).not.toHaveProperty("oauthConnectionId");
+    // Access still comes from grants: no grant, no runtime.
+    expect(remoteRuntimeCandidate({ key: KEY, record: record({ grants: [] }) })).toBeNull();
+  });
+
+  it("never launches for a personal server, without a secret, or with a secret entered for another origin", () => {
+    expect(remoteRuntimeCandidate({ key: KEY, record: record({ ownerUserId: USER_ID }) })).toBeNull();
+    const withoutSecret = runtimeRecord({ configuration: clientCredentialsConfiguration });
+    expect(remoteRuntimeCandidate({ key: KEY, record: withoutSecret })).toBeNull();
+    expect(remoteRuntimeCandidate({ key: KEY, record: record({
+      clientSecret: { generation: 3, secret: CLIENT_SECRET, tokenEndpoint: "https://elsewhere.example.test/token" }
+    }) })).toBeNull();
+  });
+
+  it("starts a new generation for a rotated secret", () => {
+    const current = remoteRuntimeCandidate({ key: KEY, record: record() });
+    const rotated = remoteRuntimeCandidate({ key: KEY, record: record({
+      clientSecret: { generation: 4, secret: "rotated-secret", tokenEndpoint: "https://auth.example.test/token" }
+    }) });
+
+    expect(current?.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rotated?.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rotated?.fingerprint).not.toBe(current?.fingerprint);
+  });
+
+  it("restores an accepted generation with the secret it was accepted with, and refuses one without it", async () => {
+    const expected = remoteRuntimeCandidate({ key: KEY, record: record() });
+    if (!expected) throw new Error("expected runtime candidate");
+    const generation = (envelope: unknown) => ({
+      effectiveConfigEnvelope: encryptMcpEnvelope(envelope, KEY,
+        mcpRuntimeGenerationEnvelopeContext("generation-cc", expected.fingerprint)),
+      fingerprint: expected.fingerprint,
+      id: "generation-cc",
+      inventoryUpdatedAt: NOW,
+      oauthConnectionId: null,
+      retryAt: null,
+      revision: { configuration: clientCredentialsConfiguration, id: REVISION_ID, serverId: SERVER_ID,
+        validationEvidence: checkedEvidence(CHECKED_TOOLS) },
+      userServer: { serverId: SERVER_ID, userId: USER_ID }
+    });
+    const findFirst = vi.fn(async () => generation(expected.effectiveEnvelope));
+    const repository = createPrismaMcpRuntimeRepository({
+      encryptionKey: () => KEY,
+      prisma: { mcpRuntimeGeneration: { findFirst } } as unknown as PrismaClient
+    });
+
+    await expect(repository.loadAcceptedGeneration("generation-cc", NOW)).resolves.toMatchObject({
+      clientCredentials: expected.clientCredentials,
+      fingerprint: expected.fingerprint,
+      headers: {},
+      redactionValues: [CLIENT_SECRET]
+    });
+
+    const { clientCredentials: _frozen, ...withoutSecret } = expected.effectiveEnvelope;
+    findFirst.mockResolvedValueOnce(generation(withoutSecret));
+    await expect(repository.loadAcceptedGeneration("generation-cc", NOW)).resolves.toBeNull();
   });
 });
 

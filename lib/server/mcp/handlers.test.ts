@@ -1120,3 +1120,65 @@ describe("MCP repository error mapping", () => {
     await expect(response.json()).resolves.toEqual({ error: "mcp_validation_unavailable" });
   });
 });
+
+describe("MCP client-credentials secret on the admin wire", () => {
+  const SECRET = "client-secret-sentinel";
+  const clientCredentialsDraft: McpDraftConfiguration = {
+    auth: {
+      authMethod: "client_secret_basic",
+      clientId: "agent",
+      mode: "client_credentials",
+      scopes: ["agent"],
+      tokenEndpoint: "https://auth.example.com/oauth/token"
+    },
+    runtime: { callTimeoutMs: 30_000, startupTimeoutMs: 45_000 },
+    slots: [],
+    source: { kind: "remote", url: "https://mcp.example.com/mcp" },
+    transport: "streamable_http"
+  };
+
+  it("hands a pasted secret to create and Test & Save and never returns it", async () => {
+    const repository = new MemoryMcpRepository();
+    const created = await createAdminMcpCreateHandler(deps(repository))(request({
+      body: { activate: true, clientSecret: `  ${SECRET}\n`, draft: clientCredentialsDraft, name: "Gateway" },
+      contentType: "application/json",
+      user: "admin"
+    }));
+    expect(created.status).toBe(202);
+    expect(repository.createCalls).toEqual([expect.objectContaining({ clientSecret: SECRET })]);
+    expect(await created.text()).not.toContain(SECRET);
+
+    const tested = await createAdminMcpDraftTestHandler(deps(repository))(request({
+      body: { clientSecret: SECRET, draft: clientCredentialsDraft, expectedUpdatedAt: NOW, publish: true },
+      contentType: "application/json",
+      user: "admin"
+    }), routeContext);
+    expect(tested.status).toBe(200);
+    expect(repository.testDraftCalls).toEqual([expect.objectContaining({ clientSecret: SECRET, publish: true })]);
+    expect(await tested.text()).not.toContain(SECRET);
+  });
+
+  it("refuses a secret outside a publication, through PATCH, or malformed, before the repository", async () => {
+    const repository = new MemoryMcpRepository();
+    const responses = await Promise.all([
+      createAdminMcpDraftTestHandler(deps(repository))(request({
+        body: { clientSecret: SECRET }, contentType: "application/json", user: "admin"
+      }), routeContext),
+      createAdminMcpUpdateHandler(deps(repository))(request({
+        body: { clientSecret: SECRET, name: "Renamed" }, contentType: "application/json", method: "PATCH", user: "admin"
+      }), routeContext),
+      ...[42, "", " \n", "line\nbreak", "x".repeat(4_097)].map((clientSecret) =>
+        createAdminMcpCreateHandler(deps(repository))(request({
+          body: { clientSecret, draft: clientCredentialsDraft, name: "Gateway" }, contentType: "application/json", user: "admin"
+        })))
+    ]);
+
+    for (const response of responses) {
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "invalid_mcp_values" });
+    }
+    expect(repository.createCalls).toEqual([]);
+    expect(repository.testDraftCalls).toEqual([]);
+    expect(repository.updateCalls).toEqual([]);
+  });
+});

@@ -11,7 +11,9 @@ export const mcpToolUpdateTrustProofSql = `
 DO $$ BEGIN
   IF (SELECT count(*) FROM "McpServer" server JOIN "_McpToolUpdateTrustFixture" f ON f.id = server.id
     WHERE server."autoApplyToolUpdates" AND NOT server."toolUpdateCheckPending" AND server."toolUpdateCheckRequestedAt" IS NULL
-      AND f.row = to_jsonb(server) - 'autoApplyToolUpdates' - 'toolUpdateCheckPending' - 'toolUpdateCheckRequestedAt') <> 3
+      AND f.row = to_jsonb(server) - 'autoApplyToolUpdates' - 'toolUpdateCheckPending' - 'toolUpdateCheckRequestedAt'
+        -- Columns later migrations add are not this migration's change.
+        - 'clientCredentialsSecretEnvelope' - 'clientCredentialsSecretGeneration') <> 3
     THEN RAISE EXCEPTION 'mcp_tool_update_trust_not_applied_to_existing_servers'; END IF;
 END $$;
 DROP TABLE "_McpToolUpdateTrustFixture";

@@ -4,7 +4,7 @@ export type ObservabilityContext = Readonly<{
   user_id?: string;
 }>;
 export type ProcessRole = "app" | "memory_coordinator" | "workspace_runner" | "maintenance" | "bootstrap" | "storage_relay";
-export type Subsystem = "attachments" | "pdf" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "connect" | "telegram";
+export type Subsystem = "attachments" | "pdf" | "memory" | "mcp" | "workspace" | "run_recovery" | "chat_title" | "memory_search" | "database" | "object_storage" | "email" | "admin" | "configuration" | "scheduled_tasks" | "push" | "usage_alerts" | "telemetry" | "dictation" | "connect" | "telegram" | "discord";
 export type SubsystemState = "disabled" | "starting" | "unknown" | "ready" | "failed";
 export type LifecycleStage = "startup" | "discover" | "reconcile" | "claim" | "drain" | "preflight" | "prepare" | "process" | "parse" | "chunk" | "embed" | "validate" | "publish" | "progress" | "retry" | "complete" | "fail" | "release" | "settle" | "refresh" | "probe" | "evict" | "initialize" | "quiesce" | "resume" | "collect" | "seal" | "export" | "restore" | "recovery" | "continuation" | "cleanup" | "projection" | "integrity" | "rebuild" | "dispatch" | "shutdown" | "read" | "write" | "delete" | "multipart_start" | "multipart_complete" | "multipart_abort" | "multipart_sign" | "health" | "heartbeat";
 export type LifecycleOutcome = "started" | "completed" | "failed" | "degraded" | "cancelled" | "stale" | "waiting" | "skipped" | "lost_lease" | "blocked";
@@ -117,6 +117,18 @@ export type WorkspaceFailureCause =
   | "guest_operation_failed" | "guest_exec_failed" | "guest_path_denied" | "guest_operation_refused" | "guest_other" | "guest_unparsed"
   | "transport_timeout" | "transport_closed" | "transport_output_limit" | "transport_invalid_request" | "transport_other"
   | "state_sandbox_unavailable" | "state_mcp_unavailable";
+/** Discord Connect record ids (PRD D-30): decimal snowflake strings and AIQSA run and chat ids. */
+export type DiscordEventIds = Readonly<{
+  guild_id?: string; channel_id?: string; thread_id?: string; message_id?: string; author_id?: string;
+  run_id?: string; chat_id?: string;
+  /** A run started by an allowed test author in a test channel. */
+  test?: boolean;
+}>;
+export type DiscordRestRouteName = "get_current_user" | "get_current_application" | "list_current_user_guilds" | "list_guild_channels" |
+  "get_guild_member" | "get_gateway_bot" | "list_channel_messages" | "get_channel_message" | "create_message" | "edit_message" |
+  "delete_message" | "start_thread_from_message" | "trigger_typing" | "add_own_reaction" | "remove_own_reaction" | "get_channel";
+export type DiscordIntakeReason = "bot_author" | "webhook" | "system_type" | "edit" | "other_guild" | "channel_rule" |
+  "channel_permissions" | "dm_disabled" | "not_member" | "no_trigger" | "stale" | "disabled" | "duplicate";
 export type EventFields = {
   image_execution: CaughtError & Readonly<{
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |
@@ -266,5 +278,31 @@ export type EventFields = {
     operation: UploadRefusalOperation; stage?: UploadRefusalStage; code: string; httpStatus: number;
     size_class?: UploadSizeClass; mime_family?: UploadMimeFamily; client_aborted?: boolean;
   }>;
+  /** The Discord gateway session; never a token, URL or session id. */
+  discord_gateway: Readonly<{
+    stage: "connect" | "identify" | "resume" | "ready" | "resumed" | "reconnect" | "invalid_session" | "heartbeat" | "close";
+    outcome: "started" | "completed" | "failed" | "waiting" | "blocked";
+    code?: string; close_code?: number; duration_ms?: number; delay_ms?: number; attempt?: number; resumable?: boolean;
+  }>;
+  /** A Discord REST 429 or the invalid-request pause; never a path, header or Discord's text. */
+  discord_rest: Readonly<{
+    route?: DiscordRestRouteName; outcome: "rate_limited" | "paused" | "failed" | "refused"; httpStatus?: number; code?: string;
+    scope?: "user" | "global" | "shared"; retry_after_ms?: number; delay_ms?: number; attempt?: number; count?: number;
+  }>;
+  discord_intake: DiscordEventIds & Readonly<{
+    outcome: "claimed" | "duplicate" | "ignored" | "refused"; reason?: DiscordIntakeReason; code?: string;
+  }>;
+  /** One stage of a Discord question; `duration_ms` counts from `received`. */
+  discord_request: DiscordEventIds & Readonly<{
+    stage: "received" | "acked" | "admitted" | "first_status" | "delivered" | "failed" | "interrupted" | "limited";
+    kind?: "answer" | "follow_up" | "refused"; duration_ms?: number; code?: string; limit_kind?: "author" | "thread" | "key";
+    /** Secrets replaced in what the stage sent to Discord (a count, never what was found). */
+    redactions?: number;
+  }>;
+  discord_run_summary: DiscordEventIds & Readonly<{
+    mcp_server?: string; mcp_calls?: number; mcp_errors?: number; compactions?: number; subagents?: number;
+    sources?: number; not_found?: boolean;
+  }>;
+  discord_rating: DiscordEventIds & Readonly<{ value: "up" | "down"; outcome: "added" | "removed" }>;
   provider_stream_safety_terminated: ProviderIdentity & Readonly<{ code: string; durationMs: number; limit: number; observed: number; totalStreamBytes: number; termination: string; unit: string }>;
 };

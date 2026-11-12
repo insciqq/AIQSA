@@ -1,5 +1,6 @@
 import { deleteExpiredAnswerProblemReports } from "../answerProblemReports/repository";
 import { deleteExpiredSignInRefusals } from "../auth/signInRefusals";
+import { deleteExpiredDiscordRecords } from "../discord/store/retention";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { prisma } from "../prisma";
@@ -56,7 +57,8 @@ export function getDefaultObjectDeletionWorker(): RunRecoveryScheduler {
     const pruneRecords = createRecordPrune([
       { failureCode: "answer_problem_report_prune_failed", prune: (now) => deleteExpiredAnswerProblemReports(prisma, now) },
       { failureCode: "sign_in_refusal_prune_failed", prune: (now) => deleteExpiredSignInRefusals(prisma, now) },
-      { failureCode: "telegram_record_prune_failed", prune: (now) => deleteExpiredTelegramRecords(prisma, now) }
+      { failureCode: "telegram_record_prune_failed", prune: (now) => deleteExpiredTelegramRecords(prisma, now) },
+      { failureCode: "discord_record_prune_failed", prune: (now) => deleteExpiredDiscordRecords(prisma, now) }
     ]);
     globalForObjectDeletion.__aiqsaObjectDeletionWorker = new RunRecoveryScheduler({
       intervalMs: PASS_INTERVAL_MS,

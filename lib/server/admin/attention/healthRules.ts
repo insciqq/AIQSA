@@ -46,7 +46,13 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   memoryRebuildsPerOwnerMin: 3,
   memoryRebuildWindowMs: 24 * 3_600_000,
   /** Every failed run created within this window raises the failed-runs item. */
-  runsFailedWindowMs: 24 * 3_600_000
+  runsFailedWindowMs: 24 * 3_600_000,
+  /** An enabled Discord bot without a gateway session this long is disconnected (PRD D-34). */
+  discordDisconnectedMs: 5 * 60_000,
+  /** Discord questions of the last hour that failed (limit hits and test mode left out, PRD D-34, D-36)... */
+  discordFailuresMin: 5,
+  /** ...and their share among the hour's questions. */
+  discordFailuresMinShare: 0.25
 });
 
 /**
@@ -134,7 +140,21 @@ export type HealthFinding =
   | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
   | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
   | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
-  | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>;
+  | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>
+  | Readonly<{ code: "discord_disconnected"; minutes: number; reason: "connect_address" | "gateway_refused" | "network" }>
+  | Readonly<{ code: "discord_token_rejected" | "discord_intents_disallowed" | "discord_session_limit" | "discord_setup_incomplete" }>
+  | Readonly<{ code: "discord_failures_rising"; failures: number; requests: number }>;
+
+/** The Discord bot's switch, its session's recorded health and whether its setup passes. */
+export type DiscordSessionHealth = Readonly<{
+  enabled: boolean;
+  connected: boolean;
+  lastFailureAt: Date | null;
+  lastFailureCode: string | null;
+  setupReady: boolean;
+  /** People's questions of the last hour and how many failed (`lib/server/discord/monitoring.ts`); absent when not read. */
+  lastHour?: Readonly<{ requests: number; failures: number }> | null;
+}>;
 
 export type ProviderFailureKind = "network" | "other" | "rate_limited" | "server_error" | "timeout";
 
@@ -155,6 +175,7 @@ const subsystemLabels = {
   chat_title: "Chat titles",
   configuration: "Configuration",
   database: "Database",
+  discord: "Discord",
   email: "Email",
   // Knowledge and Projects were removed; incidents recorded while they were retired keep these labels.
   knowledge: "Knowledge removal",
@@ -473,6 +494,42 @@ export function memoryRebuildFindings(
   }];
 }
 
+/**
+ * Discord session health (PRD D-34), read from the control row and this
+ * process's session: only while the bot is on. A rejected token, refused
+ * intents and a spent connection budget are news at once; a lost connection
+ * only after it stayed lost past the grace, since the session reconnects on
+ * its own; a failing setup item means every question is refused. Failing
+ * answers are news once they are both many and a large share of the hour's
+ * questions.
+ */
+export function discordSessionFindings(
+  health: DiscordSessionHealth | null,
+  now: Date,
+  thresholds: HealthThresholds = HEALTH_ATTENTION_THRESHOLDS
+): HealthFinding[] {
+  if (!health?.enabled) return [];
+  const findings: HealthFinding[] = [];
+  const code = health.connected ? null : health.lastFailureCode;
+  if (code === "discord_token_rejected" || code === "discord_intents_disallowed" || code === "discord_session_limit") {
+    findings.push({ code });
+  } else if (code !== null) {
+    const since = health.lastFailureAt?.getTime() ?? now.getTime();
+    const reason = code === "discord_connect_address_invalid" ? "connect_address" : code === "discord_gateway_refused" ? "gateway_refused" : "network";
+    // A refusal or a bad address will not heal by waiting; a dropped connection gets the grace.
+    if (reason !== "network" || now.getTime() - since >= thresholds.discordDisconnectedMs) {
+      findings.push({ code: "discord_disconnected", minutes: Math.max(0, Math.floor((now.getTime() - since) / 60_000)), reason });
+    }
+  }
+  if (!health.setupReady) findings.push({ code: "discord_setup_incomplete" });
+  const hour = health.lastHour;
+  if (hour && hour.requests > 0 && hour.failures >= thresholds.discordFailuresMin &&
+    hour.failures / hour.requests >= thresholds.discordFailuresMinShare) {
+    findings.push({ code: "discord_failures_rising", failures: hour.failures, requests: hour.requests });
+  }
+  return findings;
+}
+
 function plural(count: number, singular: string, pluralForm = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
@@ -605,6 +662,41 @@ export function healthAttentionItems(
           severity: "warn",
           detail: `${plural(finding.owners, "owner")} had the Memory index rebuilt ${finding.atLeast} or more times in the last 24 hours, up to ${finding.maxPerOwner} for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons`,
           target: { section: "health" }, title: "Memory index keeps rebuilding" });
+        break;
+      case "discord_disconnected":
+        items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",
+          detail: finding.reason === "connect_address"
+            ? "AIQSA_DISCORD_CONNECT_ADDRESS is not a public address, so the bot cannot connect — fix it and restart AIQSA"
+            : finding.reason === "gateway_refused"
+              ? "Discord refused the bot's connection — check the bot in the Discord Developer Portal"
+              : `The bot has had no Discord connection for ${plural(finding.minutes, "minute")} and is reconnecting — check the server's outbound network`,
+          target: { section: "discord" }, title: "Discord bot is disconnected" });
+        break;
+      case "discord_token_rejected":
+        items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",
+          detail: "Discord rejected the bot token — reset it in the Discord Developer Portal and use Test & Save",
+          target: { section: "discord" }, title: "Discord rejected the bot token" });
+        break;
+      case "discord_intents_disallowed":
+        items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",
+          detail: "Discord refused the Message Content intent — turn it on in the Discord Developer Portal, then save the token again",
+          target: { section: "discord" }, title: "Discord refused Message Content" });
+        break;
+      case "discord_session_limit":
+        items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "warn",
+          detail: "The bot's daily Discord connection budget is spent — it connects again when Discord resets it",
+          target: { section: "discord" }, title: "Discord connection budget used up" });
+        break;
+      case "discord_failures_rising":
+        items.push({ action: "Open Discord", code: finding.code, count: finding.failures, id: finding.code, severity: "warn",
+          detail: `${finding.failures} of ${plural(finding.requests, "Discord question")} failed in the last hour — ` +
+            "the Discord activity lists them with their reasons",
+          target: { section: "discord" }, title: "Discord answers are failing" });
+        break;
+      case "discord_setup_incomplete":
+        items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",
+          detail: "The bot is on, but a setup item fails, so every Discord question is refused — open the Discord setup checklist",
+          target: { section: "discord" }, title: "Discord setup is incomplete" });
         break;
     }
   }

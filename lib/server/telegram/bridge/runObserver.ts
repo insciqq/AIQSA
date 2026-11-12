@@ -1,3 +1,4 @@
+import { followConnectorRunEvents } from "../../connectors/runObserver";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { reachTelegramChat, type TelegramChatBinding } from "../control/reach";
@@ -82,22 +83,11 @@ export async function observeTelegramRun(deps: TelegramRunObserverDeps, input: T
     ...(deps.draftRefreshMs === undefined ? {} : { refreshMs: deps.draftRefreshMs })
   });
   drafts.start();
-  let text = "";
   let settled = false;
   try {
-    for await (const event of admission.events) {
-      await publish(event, context);
-      if (event.type === "answerDelta") {
-        text += event.delta;
-        drafts.update(text);
-      } else if (event.type === "answerReset") {
-        text = "";
-        drafts.reset();
-      } else if (event.type === "done" || event.type === "failed") {
-        settled = true;
-        break;
-      }
-    }
+    settled = await followConnectorRunEvents(admission.events, {
+      onReset: () => drafts.reset(), onText: (text) => drafts.update(text), publish: (event) => publish(event, context)
+    });
   } finally {
     await drafts.stop();
   }

@@ -388,6 +388,13 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
+  await tx.discordBotControl.upsert({
+    // Discord starts off without a bot; adoption repairs a missing singleton but
+    // never changes an administrator's token, switch, choices or the session.
+    create: { id: "installation" },
+    update: {},
+    where: { id: "installation" }
+  });
 
   return catalog;
 }

@@ -11,6 +11,7 @@ import { prisma } from "../../prisma";
 import { createPrismaAdminRepository } from "../adminRepository";
 import { deactivateUserAsSystem } from "../adminUserSessionCommands";
 import { externalIdentityPolicy, settleExternalIdentity, type ExternalIdentityInput } from "../externalIdentity";
+import { createServiceAccount } from "../serviceAccounts";
 import { issueSignInSession } from "../signInCompletion";
 import { hashToken } from "../token";
 import { authentik, entra, okta } from "./clients.testFixtures";
@@ -636,6 +637,67 @@ describe("SCIM groups", () => {
         expect(["applied", "group_membership_managed", "user_access_stale"]).toContain(manual);
         await expect(members(group.id)).resolves.toEqual([]);
         await prisma.group.update({ data: { scimExternalId: null }, where: { id: group.id } });
+      }
+    });
+  });
+});
+
+describe("SCIM and service accounts", () => {
+  it("never lists, finds, updates, deactivates or regroups a service account", async () => {
+    await withScimData(async (fixture) => {
+      const created = await prisma.$transaction((tx) =>
+        createServiceAccount(tx, { createdByUserId: fixture.adminId, displayName: "Connector service" }));
+      if (created.kind !== "created") throw new Error(`service_account_${created.kind}`);
+      const service = created.account.id;
+      try {
+        const person = await fixture.user("person");
+        const page = { count: 1000, startIndex: 1 };
+
+        expect((await scim.listUsers({ ...page, clauses: [] })).resources.map((resource) => resource.id)).not.toContain(service);
+        await expect(scim.listUsers({ ...page, clauses: [{ attribute: "id", value: service }] }))
+          .resolves.toEqual({ resources: [], totalResults: 0 });
+        await expect(scim.getUser(service)).resolves.toBeNull();
+        await expect(scim.patchUser(service, parseScimUserPatch(entra.disableUser), now)).resolves.toEqual({ kind: "not_found" });
+        await expect(scim.replaceUser(service, parseScimUserBody({ userName: fixture.email("service") }), now))
+          .resolves.toEqual({ kind: "not_found" });
+        await expect(scim.deactivateUser(service, now)).resolves.toEqual({ kind: "not_found" });
+        await expect(account(service)).resolves.toEqual({
+          displayName: "Connector service", email: null, scimDeactivatedAt: null, scimExternalId: null, status: "active"
+        });
+
+        // A group an administrator put the service account in: SCIM links it, never shows the
+        // service account as a member, never removes it and never adds it by id.
+        const group = await fixture.group("Connectors", [service, person]);
+        await expect(scim.createGroup(parseScimGroupBody({ displayName: group.name, members: [{ value: person }] })))
+          .resolves.toMatchObject({ kind: "ok" });
+        await expect(scim.getGroup(group.id, true)).resolves.toMatchObject({ members: [{ id: person }] });
+        await expect(scim.listGroups({ clauses: [{ attribute: "members.value", value: service }], count: 100, members: false, startIndex: 1 }))
+          .resolves.toEqual({ resources: [], totalResults: 0 });
+        await expect(scim.replaceGroup(group.id, parseScimGroupBody({ displayName: group.name, members: [] })))
+          .resolves.toMatchObject({ kind: "ok" });
+        await expect(members(group.id)).resolves.toEqual([service]);
+        await expect(scim.replaceGroup(group.id, parseScimGroupBody({ displayName: group.name, members: [{ value: service }] })))
+          .rejects.toBeInstanceOf(ScimRequestError);
+      } finally {
+        await prisma.userGroup.deleteMany({ where: { userId: service } });
+        await prisma.user.deleteMany({ where: { id: service } });
+      }
+    });
+  });
+
+  it("deactivates people unchanged while a service account exists", async () => {
+    await withScimData(async (fixture) => {
+      const created = await prisma.$transaction((tx) =>
+        createServiceAccount(tx, { createdByUserId: fixture.adminId, displayName: "Connector service" }));
+      if (created.kind !== "created") throw new Error(`service_account_${created.kind}`);
+
+      try {
+        const ada = userId(await scim.createUser(parseScimUserBody({ userName: fixture.email("ada") }), now));
+        await expect(scim.deactivateUser(ada, now)).resolves.toEqual({ kind: "ok", userId: ada });
+        await expect(account(ada)).resolves.toMatchObject({ scimDeactivatedAt: now, status: "disabled" });
+        await expect(account(created.account.id)).resolves.toMatchObject({ status: "active" });
+      } finally {
+        await prisma.user.deleteMany({ where: { id: created.account.id } });
       }
     });
   });

@@ -59,6 +59,8 @@ export type AdminGroup = {
 
 export type AdminUserRole = "admin" | "user";
 
+export type AdminUserKind = "person" | "service";
+
 export type AdminUserRecord = {
   deletion?: AdminDeletionInfo;
   directGrants: AdminAccessGrantRecord[];
@@ -71,6 +73,8 @@ export type AdminUserRecord = {
   lastSessionAt: string | null;
   role: AdminUserRole;
   status: "active" | "denied" | "disabled" | "pending";
+  /** `service` for a service account, which never signs in; absent means a person. */
+  kind?: AdminUserKind;
   /** Whether the user confirmed TOTP two-factor sign-in. */
   twoFactorEnabled?: boolean;
 };
@@ -294,6 +298,7 @@ type AdminActionDomainErrorCode =
   | "self_delete_forbidden"
   | "self_role_change_forbidden"
   | "self_two_factor_reset_forbidden"
+  | "service_account_role_fixed"
   | "user_active"
   | "user_access_stale"
   | "user_credential_invalid"

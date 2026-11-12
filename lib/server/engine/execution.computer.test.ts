@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createFakeComputerOps, type FakeComputerOps } from "../connect/computerPort";
+import type { ConnectorTurn } from "../connectors/turn";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
@@ -89,13 +90,13 @@ function repository() {
   };
 }
 
-function start(ops: FakeComputerOps, steps: readonly Step[], options: Readonly<{ computer?: FrozenComputerBinding | null; telegram?: true }> = {}) {
+function start(ops: FakeComputerOps, steps: readonly Step[], options: Readonly<{ computer?: FrozenComputerBinding | null; connectorTurn?: ConnectorTurn }> = {}) {
   runs += 1;
   const runId = `run-computer-${runs}`;
   const model = adapter(steps);
   const response = createNativeRunExecutionResponse({ adapter: model.adapter, created: { assistantMessageId: `answer-${runs}`, runId,
     userMessageId: `question-${runs}` }, engine: engine(), prepared: prepared(options.computer === null ? undefined : options.computer ?? binding),
-  repository: repository() as unknown as RunRepository, services: { computer: ops }, ...(options.telegram ? { telegram: true } : {}),
+  repository: repository() as unknown as RunRepository, services: { computer: ops }, ...(options.connectorTurn ? { connectorTurn: options.connectorTurn } : {}),
   userId: USER });
   return { model, response, runId };
 }
@@ -148,8 +149,8 @@ describe("a run bound to the user's computer", () => {
     expect(ops.endedRuns).toEqual([{ deviceId: DEVICE, runId: run.runId, userId: USER }]);
   });
 
-  it("offers nothing of the computer to a run without a binding or to a Telegram turn", async () => {
-    for (const options of [{ computer: null }, { telegram: true as const }]) {
+  it("offers nothing of the computer to a run without a binding or to a connector's turn", async () => {
+    for (const options of [{ computer: null }, { connectorTurn: "telegram" as const }, { connectorTurn: "discord" as const }]) {
       const ops = createFakeComputerOps();
       const run = start(ops, [{ text: "Hello." }], options);
       await events(run.response);

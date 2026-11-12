@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TelemetryCounterGroup } from "../../telemetry/store";
 import {
+  discordSessionFindings,
   evaluateHealthRules,
   failedRunFindings,
   healthAttentionItems,
@@ -353,5 +354,55 @@ describe("healthAttentionItems", () => {
     expect(shown([{}, { revokedAt: minutesAgo(2) }])).toBe(1);
     // A failing connection is about its requests, not its key.
     expect(healthAttentionItems(findings.slice(2, 3), [connection("conn-1", "OpenAI", true, [])])).toHaveLength(1);
+  });
+});
+
+describe("Discord session health rules", () => {
+  const healthy = { connected: true, enabled: true, lastFailureAt: null, lastFailureCode: null, setupReady: true };
+
+  it("raises nothing for a bot that is off or connected with a passing setup", () => {
+    expect(discordSessionFindings(null, now)).toEqual([]);
+    expect(discordSessionFindings({ ...healthy, enabled: false, lastFailureAt: minutesAgo(60), lastFailureCode: "discord_token_rejected", setupReady: false }, now))
+      .toEqual([]);
+    expect(discordSessionFindings(healthy, now)).toEqual([]);
+  });
+
+  it("names a rejected token, refused intents and a spent budget at once, and a lost connection only after five minutes", () => {
+    const lost = { ...healthy, connected: false };
+    for (const code of ["discord_token_rejected", "discord_intents_disallowed", "discord_session_limit"] as const) {
+      expect(discordSessionFindings({ ...lost, lastFailureAt: minutesAgo(0), lastFailureCode: code }, now)).toEqual([{ code }]);
+    }
+    expect(discordSessionFindings({ ...lost, lastFailureAt: minutesAgo(4), lastFailureCode: "discord_disconnected" }, now)).toEqual([]);
+    expect(discordSessionFindings({ ...lost, lastFailureAt: minutesAgo(7), lastFailureCode: "discord_disconnected" }, now))
+      .toEqual([{ code: "discord_disconnected", minutes: 7, reason: "network" }]);
+    expect(discordSessionFindings({ ...lost, lastFailureAt: minutesAgo(0), lastFailureCode: "discord_connect_address_invalid" }, now))
+      .toEqual([{ code: "discord_disconnected", minutes: 0, reason: "connect_address" }]);
+    expect(discordSessionFindings({ ...healthy, setupReady: false }, now)).toEqual([{ code: "discord_setup_incomplete" }]);
+  });
+
+  it("jumps to the Discord section with copy that names no code", () => {
+    const items = healthAttentionItems([
+      { code: "discord_disconnected", minutes: 7, reason: "network" }, { code: "discord_token_rejected" }, { code: "discord_intents_disallowed" },
+      { code: "discord_session_limit" }, { code: "discord_setup_incomplete" }
+    ], null);
+    expect(items.map((item) => [item.code, item.severity, item.target])).toEqual([
+      ["discord_disconnected", "bad", { section: "discord" }], ["discord_token_rejected", "bad", { section: "discord" }],
+      ["discord_intents_disallowed", "bad", { section: "discord" }], ["discord_session_limit", "warn", { section: "discord" }],
+      ["discord_setup_incomplete", "bad", { section: "discord" }]
+    ]);
+    expect(items[0]!.detail).toContain("7 minutes");
+    expect(JSON.stringify(items.map(({ detail, title }) => ({ detail, title })))).not.toMatch(/discord_/u);
+  });
+
+  it("raises failing answers at five failures that are a quarter of the hour's questions, and only while the bot is on", () => {
+    const hour = (failures: number, requests: number) => ({ ...healthy, lastHour: { failures, requests } });
+    expect(discordSessionFindings(hour(5, 20), now)).toEqual([{ code: "discord_failures_rising", failures: 5, requests: 20 }]);
+    expect(discordSessionFindings(hour(4, 4), now)).toEqual([]);
+    expect(discordSessionFindings(hour(5, 21), now)).toEqual([]);
+    expect(discordSessionFindings({ ...hour(9, 9), enabled: false }, now)).toEqual([]);
+    expect(discordSessionFindings({ ...healthy, lastHour: null }, now)).toEqual([]);
+    const [item] = healthAttentionItems([{ code: "discord_failures_rising", failures: 5, requests: 20 }], null);
+    expect(item).toMatchObject({ count: 5, severity: "warn", target: { section: "discord" }, title: "Discord answers are failing" });
+    expect(item!.detail).toContain("5 of 20 Discord questions failed in the last hour");
   });
 });
