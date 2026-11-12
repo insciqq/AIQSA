@@ -85,6 +85,25 @@ describe("Discord stores (stateful)", () => {
     expect(await replies.fixAdmissionTarget(admitted.questionMessageId, { plannedChatId: first })).toBeNull();
   });
 
+  it("retires only a claimed question nobody claimed the send of, once", async () => {
+    const unsent = claim();
+    await replies.claim(unsent);
+    const outcomes = await Promise.all(Array.from({ length: 2 }, () => replies.retireUnsent(unsent.questionMessageId, "discord_question_not_addressed")));
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    expect(await replies.find(unsent.questionMessageId)).toMatchObject({ code: "discord_question_not_addressed", runId: null, state: "interrupted" });
+    // A send claimed first wins: the row stays for admission and delivery.
+    const sending = claim();
+    await replies.claim(sending);
+    expect(await replies.claimSend(sending.questionMessageId, new Date())).toBe(true);
+    expect(await replies.retireUnsent(sending.questionMessageId, "discord_question_not_addressed")).toBe(false);
+    expect(await replies.find(sending.questionMessageId)).toMatchObject({ code: null, state: "claimed" });
+    const admitted = claim();
+    await replies.claim(admitted);
+    await replies.update(admitted.questionMessageId, { state: "admitted" });
+    expect(await replies.retireUnsent(admitted.questionMessageId, "discord_question_not_addressed")).toBe(false);
+    expect(await replies.find(admitted.questionMessageId)).toMatchObject({ code: null, state: "admitted" });
+  });
+
   it("keeps one conversation per Discord channel, bound to the service account's chat and gone with it", async () => {
     const { chatId, userId } = await serviceChat();
     const channelId = snowflake();
