@@ -396,7 +396,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       attachments: probe.hook, conversationId: run.conversation.id, facts: deps.facts, header: null,
       maxChars: RUN_FOLLOWUP_MAX_CHARS, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
       scope: { afterId: run.includedUpTo, bounded: false, channelId: run.conversation.discordChannelId, kind: "delta" },
-      trigger, uploads: null, userId: control.serviceUserId
+      trigger, uploads: null, userId: control.serviceUserId, guildId: question.ids.guildId
     });
     if (!turn.ok || probe.seen() || run.answered) return false;
     const input = {
@@ -664,7 +664,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       const turn = await readDiscordTurnContext({
         attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
         header: await header(placement, trigger, message.guildId), mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest,
-        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId
+        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId
       });
       if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
       // Files of its own, its Reply target's or in its history, or a history file: a text follow-up would lose them.

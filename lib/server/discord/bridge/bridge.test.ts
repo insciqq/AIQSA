@@ -191,7 +191,10 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     }));
     expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: false } });
     expect(sentText(run!.body)).toContain(`Discord thread "what is the release status?" in #agent-test, server "Example server".`);
-    expect(sentText(run!.body)).toContain(`Question from alice (discord:${alice}):\n@${h.fake.bot.username} what is the release status?`);
+    // The question line links the asking message (a merge request tool cites it).
+    expect(sentText(run!.body)).toContain(
+      `Question from alice (discord:${alice}), message https://discord.com/channels/${question.guild_id}/${question.channel_id}/${question.id}:\n@${h.fake.bot.username} what is the release status?`
+    );
 
     const answers = botMessages(h, thread.id);
     expect(answers).toHaveLength(1);
@@ -240,7 +243,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(text).toContain("Messages since your last reply:");
     expect(text).toContain(`bob (discord:${bob}): @carol take a look`);
     expect(text).not.toContain("The answer.");
-    expect(text.indexOf("Sure, the dates are fine")).toBeLessThan(text.indexOf(`Question from carol (discord:${carol}):`));
+    expect(text.indexOf("Sure, the dates are fine")).toBeLessThan(text.indexOf(`Question from carol (discord:${carol}), message https://discord.com/channels/`));
     expect(h.fake.reactions(asked.id, "✅")).toEqual([h.fake.bot.id]);
     expect(logs.filter((entry) => entry.event === "discord_intake" && entry.fields.reason === "no_trigger")).toHaveLength(2);
   });
@@ -350,7 +353,7 @@ describe("Discord bridge: follow-ups, order and parallel threads", () => {
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(run!.followups.map((entry) => entry.nonce)).toEqual([`dc-${second.id}`, `dc-${third.id}`]);
-    expect(run!.followups[0]!.text).toContain(`Question from bob (discord:${bob}):\ninclude Y`);
+    expect(run!.followups[0]!.text).toMatch(new RegExp(`Question from bob \\(discord:${bob}\\), message https://discord\\.com/channels/\\d+/\\d+/\\d+:\\ninclude Y`, "u"));
     expect(run!.followups[1]!.text).not.toContain("include Y");
     expect(h.fake.reactions(second.id, "👀")).toEqual([h.fake.bot.id]);
     run!.finish({ text: "Report with Y and Z." });
