@@ -68,6 +68,7 @@ function dispatch(service: DiscordControlService, actorUserId: string, command: 
     case "set_direct_messages": return service.setDirectMessages({ ...actor, dmEnabled: command.dmEnabled });
     case "set_test_access":
       return service.setTestAccess({ ...actor, testAuthorIds: command.testAuthorIds, testChannelIds: command.testChannelIds });
+    case "set_call_names": return service.setCallNames({ ...actor, callNames: command.callNames });
     case "create_service_account": return service.createServiceAccount(actor);
     case "set_assistant": return service.setAssistant({ ...actor, assistantId: command.assistantId });
     case "set_limits": return service.setLimits({ ...actor, limits: command.limits });

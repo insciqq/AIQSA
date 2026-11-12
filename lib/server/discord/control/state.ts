@@ -36,6 +36,8 @@ export type DiscordEffectiveControl = Readonly<{
   dmEnabled: boolean;
   testAuthorIds: ReadonlySet<string>;
   testChannelIds: ReadonlySet<string>;
+  /** Names that address the bot in channels and threads (`bridge/triggers.ts`). */
+  callNames: readonly string[];
   serviceUserId: string | null;
   assistantId: string | null;
   limits: DiscordLimits;
@@ -53,6 +55,7 @@ export function isDiscordBotActive(control: DiscordEffectiveControl): control is
 export function effectiveDiscordControl(record: DiscordControlRecord, key: () => Buffer): DiscordEffectiveControl {
   const base = {
     assistantId: record.assistantId,
+    callNames: record.callNames,
     channelIds: new Set(record.channelIds),
     channelMode: record.channelMode,
     dmEnabled: record.dmEnabled,

@@ -42,6 +42,8 @@ export type DiscordContextMessage = Readonly<{
   /** The message this one replies to. */
   referenceId: string | null;
   referenceChannelId: string | null;
+  /** The author of the message this one replies to, when Discord sent it along (`referenced_message`). */
+  referencedAuthorId: string | null;
   mentionUserIds: readonly string[];
   mentionRoleIds: readonly string[];
 }>;
@@ -155,6 +157,7 @@ export function decodeDiscordContextMessage(value: unknown, names: DiscordMentio
     mentionUserIds: Array.isArray(payload.mentions) ? payload.mentions.flatMap((entry) => snowflake(record(entry)?.id) ?? []) : [],
     referenceChannelId: snowflake(reference?.channel_id),
     referenceId: snowflake(reference?.message_id),
+    referencedAuthorId: snowflake(record(record(payload.referenced_message)?.author)?.id),
     text,
     type: typeof payload.type === "number" && Number.isSafeInteger(payload.type) ? payload.type : -1
   };

@@ -128,7 +128,7 @@ export type DiscordRestRouteName = "get_current_user" | "get_current_application
   "get_guild_member" | "get_gateway_bot" | "list_channel_messages" | "get_channel_message" | "create_message" | "edit_message" |
   "delete_message" | "start_thread_from_message" | "trigger_typing" | "add_own_reaction" | "remove_own_reaction" | "get_channel" | "archive_thread";
 export type DiscordIntakeReason = "bot_author" | "webhook" | "system_type" | "edit" | "other_guild" | "channel_rule" |
-  "channel_permissions" | "dm_disabled" | "not_member" | "no_trigger" | "stale" | "disabled" | "duplicate";
+  "channel_permissions" | "dm_disabled" | "not_member" | "stale" | "disabled" | "duplicate";
 export type EventFields = {
   image_execution: CaughtError & Readonly<{
     stage: "input" | "binding" | "run" | "references" | "reference_read" | "reference_validation" | "authorization" |

@@ -44,6 +44,7 @@ function controlFor(fake: FakeDiscord): DiscordActiveControl {
     session: null,
     testAuthorIds: new Set(),
     testChannelIds: new Set(),
+    callNames: [],
     tokenState: "ready",
     version: 3
   };

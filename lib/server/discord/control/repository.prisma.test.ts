@@ -20,7 +20,7 @@ const UNCONFIGURED = {
   applicationId: null, assistantId: null, botRoleId: null, botUserId: null, botUsername: null, channelIds: [], channelMode: "only_listed" as const,
   dmEnabled: false, enabled: false, enabledAt: null, guildId: null, guildName: null, identifyAt: [], lastConnectedAt: null, lastEventAt: null,
   lastFailureAt: null, lastFailureCode: null, resumeGatewayUrl: null, serviceUserId: null, sessionGeneration: null, sessionId: null, sessionSeq: null,
-  testAuthorIds: [], testChannelIds: [], tokenEnvelope: null, tokenGeneration: 0, updatedByUserId: null
+  callNames: [], testAuthorIds: [], testChannelIds: [], tokenEnvelope: null, tokenGeneration: 0, updatedByUserId: null
 };
 
 beforeEach(async () => {
@@ -132,6 +132,16 @@ describe("Discord control repository (stateful)", () => {
     // Deleting the account leaves the control row without one.
     await prisma.user.delete({ where: { id: account.id } });
     expect((await repository.read()).serviceUserId).toBeNull();
+  });
+
+  it("saves call names as typed, bumping the version, and keeps them across another server", async () => {
+    const actor = await admin();
+    const { version } = await repository.read();
+    const written = await repository.setCallNames({ actorUserId: actor, callNames: ["Agent", "Агент"], expectedVersion: version });
+    expect(written).toMatchObject({ kind: "ok", record: { callNames: ["Agent", "Агент"], version: version + 1 } });
+    expect(await repository.setCallNames({ actorUserId: actor, callNames: [], expectedVersion: version })).toEqual({ kind: "stale" });
+    await repository.setGuild({ actorUserId: actor, expectedVersion: version + 1, guildId: "1100000000000000500", guildName: "Example server" });
+    expect((await repository.read()).callNames).toEqual(["Agent", "Агент"]);
   });
 
   it("forgets the old server's channels and the bot's role when another server is chosen", async () => {

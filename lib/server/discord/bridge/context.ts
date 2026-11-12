@@ -112,6 +112,12 @@ export type DiscordContextInput = Readonly<{
   attachments: DiscordAttachmentHook;
   maxChars?: number;
   /**
+   * Whether a later message of the same author joins the question, and as what (`bridge/triggers.ts`: in a server
+   * only a message that itself asks the bot, its call name stripped). Null stops joining there, so that message and
+   * what follows stay after the turn's cursor for the next turn's context. Undefined joins every one.
+   */
+  merge?: (message: DiscordContextMessage) => DiscordContextMessage | null;
+  /**
    * The question's server, null in a direct message: the question line then carries the message's Discord link, which
    * tools that need a reference to the asking message (a merge request) can cite. Undefined leaves the link out.
    */
@@ -189,7 +195,9 @@ async function mergedAfter(input: DiscordContextInput): Promise<DiscordContextMe
   for (const message of later) {
     if (message.authorId !== input.trigger.authorId || !DISCORD_CONTEXT_MESSAGE_TYPES.has(message.type) ||
       message.createdAt.getTime() - previous.createdAt.getTime() > input.mergeWindowMs) break;
-    merged.push(message);
+    const joined = input.merge ? input.merge(message) : message;
+    if (!joined) break;
+    merged.push(joined);
     previous = message;
   }
   return merged;
