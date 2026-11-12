@@ -9,7 +9,7 @@ import {
 } from "./context";
 import { decodeDiscordContextMessage, type DiscordMentionNames } from "./messages";
 import { discordRunFailure, discordSendRefusalFailure } from "./refusals";
-import { discordTrigger } from "./triggers";
+import { discordCallNameMatch, discordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
 
 function setup() {
@@ -182,8 +182,8 @@ describe("Discord triggers", () => {
       mention_roles: [], mentions: [], type: 0, ...fields
     })!;
   }
-  const ask = (fields: Record<string, unknown>, kind: DiscordChannelKind = "text", botOpenedThread = false) =>
-    discordTrigger({ botOpenedThread, botRoleId, botUserId, kind, message: message(fields) });
+  const ask = (fields: Record<string, unknown>, kind: DiscordChannelKind = "text", callNames: readonly string[] = []) =>
+    discordTrigger({ botRoleId, botUserId, callNames, kind, message: message(fields) });
 
   it("answers a direct message, a mention of the bot or its role, and a Reply to the bot", () => {
     expect(ask({}, "dm")).toBe("dm");
@@ -195,14 +195,74 @@ describe("Discord triggers", () => {
     expect(ask({})).toBeNull();
   });
 
-  it("answers anyone in a thread it opened, except people talking to each other", () => {
-    expect(ask({}, "thread", true)).toBe("bot_thread");
-    expect(ask({ mentions: [{ id: "1100000000000000051" }] }, "thread", true)).toBeNull();
-    expect(ask({ mention_roles: ["1100000000000000052"] }, "thread", true)).toBeNull();
-    expect(ask({ mention_everyone: true }, "thread", true)).toBeNull();
-    expect(ask({ message_reference: { message_id: "1100000000000000090" }, referenced_message: { author: { id: "1100000000000000051" } }, type: 19 },
-      "thread", true)).toBeNull();
-    expect(ask({ mentions: [{ id: botUserId }, { id: "1100000000000000051" }] }, "thread", true)).toBe("mention");
+  it("answers a thread or channel message only when it mentions, replies to or calls the bot by a call name", () => {
+    const names = ["Agent", "Агент"];
+    for (const kind of ["thread", "text", "forum_post", "voice"] as const) {
+      expect(ask({ content: "and the deadlines?" }, kind, names), kind).toBeNull();
+      expect(ask({ content: "Agent, and the deadlines?" }, kind, names), kind).toBe("call_name");
+      expect(ask({ content: "агент: мои задачи?" }, kind, names), kind).toBe("call_name");
+    }
+    expect(ask({ content: "Agent, and the deadlines?" }, "thread")).toBeNull();
+    expect(ask({ content: "Agent, hi", mentions: [{ id: botUserId }] }, "thread", names)).toBe("mention");
+    expect(ask({ content: "Agent, hi", message_reference: { message_id: "1100000000000000090" },
+      referenced_message: { author: { id: botUserId } }, type: 19 }, "thread", names)).toBe("reply_to_bot");
+    // A Reply to someone else or a mention of someone else still answers to a call name: the name is the address.
+    expect(ask({ content: "Agent, check this", mentions: [{ id: "1100000000000000051" }] }, "thread", names)).toBe("call_name");
+    expect(ask({ content: "Agent" }, "thread", names)).toBeNull();
+    // A direct message is always a question.
+    expect(ask({ content: "anything" }, "dm", names)).toBe("dm");
+  });
+});
+
+describe("Discord call names", () => {
+  const names = ["Agent", "Agent Smith", "Агент", "R2-D2"];
+  const cases: Array<[string, string | null, string | null]> = [
+    ["Agent, what can you do?", "Agent", "what can you do?"],
+    ["agent: my tasks?", "Agent", "my tasks?"],
+    ["AGENT - status", "Agent", "status"],
+    ["Agent – status", "Agent", "status"],
+    ["Agent—status", "Agent", "status"],
+    ["Agent,status", "Agent", "status"],
+    ["Agent what is new", "Agent", "what is new"],
+    ["   Agent, leading spaces", "Agent", "leading spaces"],
+    ["Agent\nsecond line", "Agent", "second line"],
+    ["Agent Smith, the report", "Agent Smith", "the report"],
+    ["agent   smith: the report", "Agent Smith", "the report"],
+    ["Агент, что нового?", "Агент", "что нового?"],
+    ["агент: мои задачи", "Агент", "мои задачи"],
+    ["АГЕНТ — статус", "Агент", "статус"],
+    ["R2-D2, beep", "R2-D2", "beep"],
+    ["Agentry is a word", null, null],
+    ["Agents, all of you", null, null],
+    ["Агенты, все", null, null],
+    ["Agent_1, hi", null, null],
+    ["Agent2 hi", null, null],
+    ["Agent? what", null, null],
+    ["Agent.", null, null],
+    ["Agent", null, null],
+    ["Agent,", null, null],
+    ["Agent:   ", null, null],
+    ["  agent  ", null, null],
+    ["Hey Agent, what", null, null],
+    ["the Agent said", null, null],
+    ["", null, null]
+  ];
+  it.each(cases)("%j", (text, name, rest) => {
+    const match = discordCallNameMatch(text, names);
+    expect(match ? [match.name, match.rest] : null).toEqual(name === null ? null : [name, rest]);
+  });
+
+  it("matches nothing without names and treats a name's characters literally", () => {
+    expect(discordCallNameMatch("Agent, hi", [])).toBeNull();
+    expect(discordCallNameMatch("A.ent, hi", ["A.ent"])).toEqual({ name: "A.ent", rest: "hi" });
+    expect(discordCallNameMatch("Abent, hi", ["A.ent"])).toBeNull();
+    expect(discordCallNameMatch("(bot) hi", ["(bot)"])).toEqual({ name: "(bot)", rest: "hi" });
+  });
+
+  it("prefers the longest name whichever order the names come in", () => {
+    expect(discordCallNameMatch("Agent Smith, hi", ["Agent Smith", "Agent"])).toEqual({ name: "Agent Smith", rest: "hi" });
+    expect(discordCallNameMatch("Agent Smith, hi", ["Agent", "Agent Smith"])).toEqual({ name: "Agent Smith", rest: "hi" });
+    expect(discordCallNameMatch("Agent Smithers, hi", ["Agent", "Agent Smith"])).toEqual({ name: "Agent", rest: "Smithers, hi" });
   });
 });
 

@@ -21,6 +21,7 @@ const state: DiscordAdminState = {
   dmEnabled: false,
   testAuthorIds: ["400000000000000009"],
   testChannelIds: ["300000000000000001"],
+  callNames: ["Agent", "Агент"],
   serviceAccount: { status: "active", userId: "user_1" },
   assistant: { id: "assistant_1", name: "Discord agent" },
   limits: { perAuthorHourly: 20, perAuthorDaily: 100, perThreadHourly: 60, parallelThreads: 16 },
@@ -87,6 +88,7 @@ describe("Discord contract", () => {
       { action: "set_channels", channelMode: "all_except", channelIds: ["1", "2"], expectedVersion: 1 },
       { action: "set_direct_messages", dmEnabled: true, expectedVersion: 1 },
       { action: "set_test_access", testAuthorIds: ["9"], testChannelIds: [], expectedVersion: 1 },
+      { action: "set_call_names", callNames: ["Agent", "Агент Смит"], expectedVersion: 1 },
       { action: "create_service_account", expectedVersion: 1 },
       { action: "set_assistant", assistantId: "assistant_1", expectedVersion: 1 },
       { action: "set_limits", limits: state.limits, expectedVersion: 1 },
@@ -101,6 +103,24 @@ describe("Discord contract", () => {
     expect(decodeDiscordAdminCommand({ action: "register_commands", expectedVersion: 1 })).toBeNull();
     // Monitoring keys change only through their own route.
     expect(decodeDiscordAdminCommand({ action: "create_monitoring_key", expectedVersion: 1 })).toBeNull();
+  });
+
+  it("bounds call names: trimmed, 1–48 characters, one line, at most ten, none twice ignoring case", () => {
+    const names = (callNames: unknown) => decodeDiscordAdminCommand({ action: "set_call_names", callNames, expectedVersion: 1 });
+    expect(names([])).toEqual({ action: "set_call_names", callNames: [], expectedVersion: 1 });
+    expect(names(["  Agent  "])).toMatchObject({ callNames: ["Agent"] });
+    expect(names(["x".repeat(48)])).not.toBeNull();
+    expect(names(["x".repeat(49)])).toBeNull();
+    expect(names(["   "])).toBeNull();
+    expect(names(["Agent\nSmith"])).toBeNull();
+    expect(names(["Agent\u2028Smith"])).toBeNull();
+    expect(names(["Agent", "AGENT"])).toBeNull();
+    expect(names(["Агент", "агент"])).toBeNull();
+    expect(names(Array.from({ length: 10 }, (_, index) => `Agent ${index}`))).not.toBeNull();
+    expect(names(Array.from({ length: 11 }, (_, index) => `Agent ${index}`))).toBeNull();
+    expect(names([42])).toBeNull();
+    expect(decodeDiscordAdminState({ ...state, callNames: ["Agent", "agent"] })).toBeNull();
+    expect(decodeDiscordAdminState({ ...state, callNames: undefined })).toBeNull();
   });
 
   it("carries a monitoring secret only in the create response", () => {

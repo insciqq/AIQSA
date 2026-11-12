@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 export const ADMIN_DISCORD_REFRESH_MS = 15_000;
 
 export type AdminDiscordBusy =
-  | "assistant" | "channels" | "direct_messages" | "disable" | "enable" | "guild" | "limits" | "service_account"
+  | "assistant" | "call_names" | "channels" | "direct_messages" | "disable" | "enable" | "guild" | "limits" | "service_account"
   | "test" | "test_access" | null;
 
 export type AdminDiscordOutcome =
@@ -26,6 +26,7 @@ export type AdminDiscordController = Readonly<{
     /** Reads the state again and clears the stale-version prompt. */
     reload(): Promise<void>;
     setAssistant(assistantId: string): Promise<AdminDiscordOutcome>;
+    setCallNames(callNames: readonly string[]): Promise<AdminDiscordOutcome>;
     setChannels(input: Readonly<{ channelIds: readonly string[]; mode: DiscordChannelMode }>): Promise<AdminDiscordOutcome>;
     setDirectMessages(enabled: boolean): Promise<AdminDiscordOutcome>;
     setEnabled(enabled: boolean): Promise<AdminDiscordOutcome>;
@@ -157,6 +158,9 @@ export function useAdminDiscordController({
     setAssistant: (assistantId) => command("assistant", (expectedVersion) => ({
       action: "set_assistant", assistantId, expectedVersion
     }), "The Discord Assistant was saved."),
+    setCallNames: (callNames) => command("call_names", (expectedVersion) => ({
+      action: "set_call_names", callNames: [...callNames], expectedVersion
+    }), "Call names were saved."),
     setChannels: ({ channelIds, mode }) => command("channels", (expectedVersion) => ({
       action: "set_channels", channelIds: [...channelIds], channelMode: mode, expectedVersion
     }), "Discord channels were saved."),

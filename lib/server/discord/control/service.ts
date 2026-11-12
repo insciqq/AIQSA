@@ -64,6 +64,7 @@ export type DiscordControlService = Readonly<{
   setChannels(input: Actor & Readonly<{ channelMode: DiscordChannelMode; channelIds: readonly string[] }>): Promise<DiscordControlResult>;
   setDirectMessages(input: Actor & Readonly<{ dmEnabled: boolean }>): Promise<DiscordControlResult>;
   setTestAccess(input: Actor & Readonly<{ testAuthorIds: readonly string[]; testChannelIds: readonly string[] }>): Promise<DiscordControlResult>;
+  setCallNames(input: Actor & Readonly<{ callNames: readonly string[] }>): Promise<DiscordControlResult>;
   createServiceAccount(input: Actor): Promise<DiscordControlResult>;
   setAssistant(input: Actor & Readonly<{ assistantId: string }>): Promise<DiscordControlResult>;
   setLimits(input: Actor & Readonly<{ limits: DiscordLimits }>): Promise<DiscordControlResult>;
@@ -228,6 +229,7 @@ export function createDiscordControlService(deps: DiscordControlServiceDeps): Di
         ? { id: record.assistantId, name: assistantName.slice(0, 200) }
         : null,
       bot,
+      callNames: [...record.callNames],
       channelMode: record.channelMode,
       channels: record.channelIds.map((id) => ({ id, name: channelNameMap.get(id) ?? null })),
       dmEnabled: record.dmEnabled,
@@ -379,6 +381,10 @@ export function createDiscordControlService(deps: DiscordControlServiceDeps): Di
 
     async setTestAccess(input) {
       return outcome(await deps.repository.setTestAccess(input));
+    },
+
+    async setCallNames(input) {
+      return outcome(await deps.repository.setCallNames(input));
     },
 
     async createServiceAccount(input) {
