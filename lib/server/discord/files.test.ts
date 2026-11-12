@@ -275,7 +275,7 @@ describe("Discord answer files out", () => {
   });
 
   it("keeps the request within 25 MiB and cleans and redacts names", async () => {
-    const files = [file(1, 15 * MiB), file(2, 15 * MiB), file(3, 100, "ghp_abcdefghijklmnopqrstuvwxyz0123456789.csv"), file(4, 100, "../../etc/‮passwd.csv")];
+    const files = [file(1, 15 * MiB), file(2, 15 * MiB), file(3, 100, "ghp_abcdefghijklmnopqrstuvwxyz0123456789.csv"), file(4, 100, "../../etc/\u202epasswd.csv")];
     const read = reader(new Map(files.map((entry) => [entry.attachmentId, entry.byteSize])));
     const result = await createDiscordAnswerFiles({ read })({ answer: answerWith({ generatedFiles: files }), chatId: "c1", runId: "r1", test: false, userId: "svc_1" });
     expect(result.files.map((entry) => entry.filename)).toEqual(["report-1.csv", "[redacted].csv", "passwd.csv"]);
