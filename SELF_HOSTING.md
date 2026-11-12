@@ -149,6 +149,16 @@ The client follows the server's version by itself after each AIQSA update and ch
 
 The server relays the agent's requests and the computer's answers in memory and never stores or logs them. Command output and file contents the agent reads become the chat's tool results: they are kept with the chat and sent to the chat's model provider like any tool result.
 
+## Discord Connect
+
+Discord Connect lets one Discord bot answer people in one Discord server: a mention in a channel, thread, forum post or voice channel's chat, a reply to the bot, or a direct message becomes an AIQSA run of the chosen Assistant, and the answer goes back to Discord. All runs come from a **service account** that never signs in; one AIQSA chat belongs to each Discord thread.
+
+1. In the Discord Developer Portal create an application and its bot, turn on **Message Content Intent**, and invite the bot to your server with View Channels, Send Messages, Send Messages in Threads, Create Public Threads, Read Message History, Add Reactions, Attach Files and Embed Links.
+2. In AIQSA, **Admin → Discord**: paste the token (Test & Save), pick the server and the channels, create the service account, add it to a group that grants the model and the MCP servers the bot may use, and pick the Assistant. Enable once Setup shows nothing blocking.
+3. Discord runs call MCP tools **without approval cards** and have Memory off. Grant the service account only servers you trust for unattended use, preferably read-only ones. What the bot posts, and the channel content it reads, follows Discord's own retention; Discord chats and their share pages stay in AIQSA.
+
+If the server cannot reach Discord directly, set `AIQSA_DISCORD_CONNECT_ADDRESS` to the public address of an SNI forwarder you run: every Discord connection (`discord.com`, `gateway.discord.gg` and any `*.discord.gg` session host, `cdn.discordapp.com`, `media.discordapp.net`) then goes there with Discord's own TLS. A monitoring key from the Discord section reads `/api/monitoring/discord` and `/api/monitoring/discord/metrics` (Prometheus) with `Authorization: Bearer`.
+
 ## Sign-in methods
 
 Sign-in is configured in **Control Center → People → Sign-in**, without a restart except for the trusted header and the break-glass token. Every method card works the same way: fill in the fields, **Save**, **Test** where offered, then **Activate**; **Disable** keeps the settings. Secrets are stored encrypted and never shown again, and a blank secret field keeps the stored value. Under *Values for the identity provider* each card shows the URLs to copy into the identity provider (IdP), built from `AIQSA_APP_BASE_URL`; the examples below use `https://aiqsa.example.com`. After a failed sign-in the card names the reason, without personal data.
