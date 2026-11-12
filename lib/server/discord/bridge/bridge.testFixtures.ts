@@ -25,8 +25,8 @@ export function createMemoryDiscordReplyStore(): DiscordReplyStore & Readonly<{ 
         ackAt: null, admittedAt: null, answerMessageId: null, authorName: input.authorName.slice(0, 100) || "Discord user", channelId: input.channelId,
         code: null, compactions: null, conversationId: input.conversationId ?? null, deliveredAt: null, discordUserId: input.discordUserId,
         expectedLeafId: input.expectedLeafId ?? null, failureKind: null, firstStatusAt: null, guildId: input.guildId, kind: input.kind ?? "answer",
-        limitKind: null, mcpByServer: null, plannedChatId: null, questionMessageId: input.questionMessageId, readmitAt: null, receivedAt: input.receivedAt,
-        runId: null, sources: null, state: "claimed", statusMessageId: null, subagents: null, test: input.test
+        limitKind: null, mcpByServer: null, plannedChatId: null, questionMessageId: input.questionMessageId, receivedAt: input.receivedAt,
+        runId: null, sendClaimedAt: null, sources: null, state: "claimed", statusMessageId: null, subagents: null, test: input.test
       });
       return "claimed" as const;
     },
@@ -49,10 +49,19 @@ export function createMemoryDiscordReplyStore(): DiscordReplyStore & Readonly<{ 
         .filter((row) => (row.state === "claimed" || row.state === "admitted") && row.receivedAt.getTime() < input.before.getTime())
         .sort((left, right) => left.receivedAt.getTime() - right.receivedAt.getTime()).slice(0, input.limit);
     },
-    async claimReadmission(id, at) {
+    async fixAdmissionTarget(id, target) {
       const row = rows.get(id);
-      if (!row || row.state !== "claimed" || row.runId !== null || row.readmitAt !== null) return false;
-      rows.set(id, { ...row, readmitAt: at });
+      if (!row || row.state !== "claimed") return null;
+      const fixed: DiscordReplyRecord = "plannedChatId" in target
+        ? { ...row, plannedChatId: row.plannedChatId ?? target.plannedChatId }
+        : { ...row, expectedLeafId: row.expectedLeafId ?? target.expectedLeafId };
+      rows.set(id, fixed);
+      return fixed;
+    },
+    async claimSend(id, at) {
+      const row = rows.get(id);
+      if (!row || row.state !== "claimed" || row.runId !== null || row.sendClaimedAt !== null) return false;
+      rows.set(id, { ...row, sendClaimedAt: at });
       return true;
     }
   });

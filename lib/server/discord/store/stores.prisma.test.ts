@@ -62,21 +62,27 @@ describe("Discord stores (stateful)", () => {
       .some((row) => row.questionMessageId === question.questionMessageId)).toBe(false);
   });
 
-  it("keeps a new chat's planned id and lets one caller claim a question's readmission, once", async () => {
+  it("fixes a question's admission target once and lets one caller claim its send, once", async () => {
     const question = claim();
     await replies.claim(question);
-    expect(await replies.update(question.questionMessageId, { plannedChatId: "00000000-0000-4000-8000-000000000001" }, ["claimed"])).toBe(true);
+    const first = "00000000-0000-4000-8000-000000000001";
+    const fixed = await Promise.all([first, "00000000-0000-4000-8000-000000000002"].map((plannedChatId) =>
+      replies.fixAdmissionTarget(question.questionMessageId, { plannedChatId })));
+    expect(new Set(fixed.map((row) => row?.plannedChatId)).size).toBe(1);
+    const leaf = claim();
+    await replies.claim(leaf);
+    expect(await replies.fixAdmissionTarget(leaf.questionMessageId, { expectedLeafId: "leaf-1" })).toMatchObject({ expectedLeafId: "leaf-1" });
+    expect(await replies.fixAdmissionTarget(leaf.questionMessageId, { expectedLeafId: "leaf-2" })).toMatchObject({ expectedLeafId: "leaf-1" });
     const at = new Date();
-    const outcomes = await Promise.all(Array.from({ length: 3 }, () => replies.claimReadmission(question.questionMessageId, at)));
+    const outcomes = await Promise.all(Array.from({ length: 3 }, () => replies.claimSend(question.questionMessageId, at)));
     expect(outcomes.filter(Boolean)).toHaveLength(1);
-    expect(await replies.claimReadmission(question.questionMessageId, new Date())).toBe(false);
-    expect(await replies.find(question.questionMessageId)).toMatchObject({
-      plannedChatId: "00000000-0000-4000-8000-000000000001", readmitAt: at, state: "claimed"
-    });
+    expect(await replies.claimSend(question.questionMessageId, new Date())).toBe(false);
+    expect(await replies.find(question.questionMessageId)).toMatchObject({ sendClaimedAt: at, state: "claimed" });
     const admitted = claim();
     await replies.claim(admitted);
     await replies.update(admitted.questionMessageId, { state: "admitted" });
-    expect(await replies.claimReadmission(admitted.questionMessageId, new Date())).toBe(false);
+    expect(await replies.claimSend(admitted.questionMessageId, new Date())).toBe(false);
+    expect(await replies.fixAdmissionTarget(admitted.questionMessageId, { plannedChatId: first })).toBeNull();
   });
 
   it("keeps one conversation per Discord channel, bound to the service account's chat and gone with it", async () => {

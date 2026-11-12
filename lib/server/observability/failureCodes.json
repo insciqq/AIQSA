@@ -192,6 +192,7 @@
   "discord_run_listener_failed",
   "discord_run_refused",
   "discord_search_disabled",
+  "discord_send_taken",
   "discord_service_account_inactive",
   "discord_service_account_missing",
   "discord_session_failed",
