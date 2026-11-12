@@ -240,6 +240,41 @@ describe("MCP Test & Save persistence", () => {
     }
   });
 
+  it("keeps an active service account's requested installation runtime without any session, never once it is disabled", async () => {
+    const f = await fixture();
+    await f.repository.setGrant({ serverId: f.serverId, userId: f.userId,
+      groupId: null, canUse: true, personalSlotKeys: [] });
+    expect(await f.repository.updateUserServer({ serverId: f.serverId, userId: f.userId, enabled: true }))
+      .toMatchObject({ kind: "ok" });
+    // A service account never signs in (Discord Connect), so it has no session to show activity.
+    await prisma.user.update({ where: { id: f.userId }, data: { email: null, kind: "service", role: "user" } });
+    try {
+      const now = new Date();
+      const runtime = createPrismaMcpRuntimeRepository({ prisma, encryptionKey: () => Buffer.alloc(32, 1) });
+      const desired = async () => (await prisma.mcpUserServer.findFirstOrThrow({ where: { userId: f.userId, serverId: f.serverId } }))
+        .desiredRuntimeGenerationId;
+      // Housekeeping keeps demand alive, but never creates it.
+      await runtime.synchronizeDesired({ now });
+      expect(await desired()).toBeNull();
+      const launches = await runtime.synchronizeDesired({ now, onDemand: true, serverIds: [f.serverId], userId: f.userId });
+      expect(launches).toHaveLength(1);
+      const generationId = launches[0]!.generationId;
+      const reconcile = async (at: Date) => (await runtime.synchronizeDesired({ now: at }))
+        .filter((launch) => launch.generationId === generationId);
+      expect(await prisma.authSession.count({ where: { userId: f.userId } })).toBe(0);
+      // Long past the activity window a person's runtime would be evicted; the service account's stays desired.
+      expect(await reconcile(new Date(now.getTime() + 60 * 60_000))).toHaveLength(1);
+      expect(await desired()).toBe(generationId);
+      // A disabled service account is evicted like anyone without activity.
+      await prisma.user.update({ where: { id: f.userId }, data: { status: "disabled" } });
+      expect(await reconcile(new Date(now.getTime() + 60 * 60_000))).toHaveLength(0);
+      expect(await desired()).toBeNull();
+    } finally {
+      await prisma.mcpUserServer.updateMany({ where: { userId: f.userId }, data: { desiredRuntimeGenerationId: null } });
+      await prisma.mcpRuntimeGeneration.deleteMany({ where: { userServer: { userId: f.userId } } });
+    }
+  });
+
   it("applies tool switches without another check, preserving the pending endpoint, keys and immutable revisions", async () => {
     const { repository, server, serverId, validate } = await fixture();
     const original = await prisma.mcpServer.findUniqueOrThrow({ where: { id: serverId } });

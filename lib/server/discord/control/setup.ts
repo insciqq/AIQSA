@@ -1,4 +1,5 @@
 import type { DiscordSetupItem } from "../../../contracts/discord";
+import { MCP_RUN_PLAN_LIMITS } from "../../../contracts/mcp";
 import type { DiscordControlRecord } from "./repository";
 
 /**
@@ -18,6 +19,13 @@ export type DiscordAssistantSetupFacts =
     model: "ok" | "inherit" | "unavailable";
     search: "on" | "off" | "unusable";
     mcp: "none" | "granted" | "not_granted";
+    /**
+     * The tools an exact MCP row loads into every request: the published
+     * tools of its servers' active revisions minus those switched off on the
+     * server and those a tool policy keeps from the service account. Zero
+     * unless `mcp` is `granted`.
+     */
+    mcpToolCount: number;
     /** Which provider key the model's runs resolve for the service account; null without a usable model. */
     credential: "own" | "shared" | "unavailable" | null;
   }>;
@@ -39,6 +47,18 @@ export type DiscordSetupCheck = Readonly<{ ready: boolean; items: DiscordSetupIt
 
 function item(code: DiscordSetupItem["code"], status: DiscordSetupItem["status"], action: DiscordSetupItem["action"] = null): DiscordSetupItem {
   return { action: status === "ok" ? null : action, code, status };
+}
+
+/**
+ * An exact MCP row loads every tool of its servers into one request, and run
+ * admission refuses a plan over `MCP_RUN_PLAN_LIMITS.maxTools`
+ * (`mcp_plan_too_large`, reported as `assistant_tools_not_available`), so
+ * every Discord question would be refused while the check said Ready.
+ */
+function mcpToolCountItem(toolCount: number): DiscordSetupItem {
+  return toolCount > MCP_RUN_PLAN_LIMITS.maxTools
+    ? { action: "open_assistant", code: "discord_mcp_too_many_tools", status: "blocking", toolCount }
+    : item("discord_mcp_too_many_tools", "ok");
 }
 
 export function discordSetupCheck(facts: DiscordSetupFacts): DiscordSetupCheck {
@@ -65,6 +85,7 @@ export function discordSetupCheck(facts: DiscordSetupFacts): DiscordSetupCheck {
       items.push(item("discord_search_disabled",
         assistant.search === "on" ? "ok" : assistant.search === "off" ? "warning" : "blocking", "open_assistant"));
       items.push(item("discord_mcp_not_granted", assistant.mcp === "not_granted" ? "blocking" : "ok", "open_mcp_grants"));
+      if (assistant.mcp === "granted") items.push(mcpToolCountItem(assistant.mcpToolCount));
       if (assistant.credential === "own" || assistant.credential === "shared") {
         items.push(item("discord_shared_key", assistant.credential === "shared" ? "warning" : "ok", "open_provider_keys"));
       }

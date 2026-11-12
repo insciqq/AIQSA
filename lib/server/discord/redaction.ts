@@ -113,12 +113,23 @@ function labelRanges(text: string): Range[] {
   return ranges;
 }
 
+/** Whether `start` sits right after a URL scheme (`https:` or `https://`), so its colon starts no value. */
+function afterUrlScheme(text: string, start: number): boolean {
+  const lead = text.slice(Math.max(0, start - 16), start);
+  return /(?:^|[^A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]{1,15}:(?:\/\/)?$/u.test(lead) &&
+    (lead.endsWith("://") || text.startsWith("//", start));
+}
+
 /** Spans worth removing: the Memory parser's redacting spans, its high-entropy runs right after `=` or `:`, the label rules. */
 function secretRanges(text: string): Range[] {
   const parsed = redactMemorySecrets(text);
   const ranges: Range[] = parsed.spans.map(span => ({ start: span.start, end: span.end }));
   for (const span of parsed.detections) {
     if (span.finding !== "HIGH_ENTROPY_TOKEN") continue;
+    // A URL's scheme colon is no assignment: a long link path reads as high entropy, and cutting it removed every
+    // GitLab merge request link from answers (production, 2026-11-12). Secrets in a URL are still caught by the
+    // label rules (`?token=...`) and by the parser's credential and known-format spans.
+    if (afterUrlScheme(text, span.start)) continue;
     const before = text.slice(Math.max(0, span.start - 3), span.start).replace(/["'` \t]+$/u, "");
     if (before.endsWith("=") || before.endsWith(":")) ranges.push({ start: span.start, end: span.end });
   }

@@ -36,6 +36,7 @@ export const DISCORD_REASON_CODES = [
   "discord_invalid_requests",
   "discord_key_limit",
   "discord_mcp_not_granted",
+  "discord_mcp_too_many_tools",
   "discord_message_content_disabled",
   "discord_model_unavailable",
   "discord_monthly_budget",
@@ -77,7 +78,7 @@ export const DISCORD_SETUP_CHECK_CODES = [
   "discord_token_missing", "discord_token_rejected", "discord_message_content_disabled", "discord_guild_missing",
   "discord_service_account_missing", "discord_service_account_inactive", "discord_assistant_missing",
   "discord_assistant_unavailable", "discord_model_unavailable", "discord_search_disabled", "discord_mcp_not_granted",
-  "discord_shared_key", "discord_monthly_budget"
+  "discord_mcp_too_many_tools", "discord_shared_key", "discord_monthly_budget"
 ] as const satisfies readonly DiscordReasonCode[];
 export type DiscordSetupCheckCode = (typeof DISCORD_SETUP_CHECK_CODES)[number];
 
@@ -179,7 +180,9 @@ export const discordSetupItemSchema = z.strictObject({
   code: z.enum(DISCORD_SETUP_CHECK_CODES),
   /** `ok` items are listed too, so the section shows what passed. */
   status: z.enum(["ok", "warning", "blocking"]),
-  action: z.enum(DISCORD_SETUP_ACTIONS).nullable()
+  action: z.enum(DISCORD_SETUP_ACTIONS).nullable(),
+  /** `discord_mcp_too_many_tools` when it fails: the MCP tools the Assistant's exact row loads into each request. */
+  toolCount: z.number().int().nonnegative().optional()
 });
 export type DiscordSetupItem = z.infer<typeof discordSetupItemSchema>;
 

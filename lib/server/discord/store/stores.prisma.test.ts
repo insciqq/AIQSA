@@ -106,7 +106,7 @@ describe("Discord stores (stateful)", () => {
     expect(await prisma.discordReply.count({ where: { conversationId: first.record.id } })).toBe(0);
   });
 
-  it("counts an author's and a conversation's questions per window, never refused ones, and when the window frees", async () => {
+  it("counts an author's and a conversation's questions per window, never refused or test ones, and when the window frees", async () => {
     const { chatId, userId } = await serviceChat();
     const { record } = await conversations.create({
       botOpened: false, chatId, discordChannelId: snowflake(), guildId: "1100000000000000001", kind: "thread", now: new Date(), parentChannelId: null, userId
@@ -117,6 +117,9 @@ describe("Discord stores (stateful)", () => {
     for (const [minutesAgo, kind] of [[50, "answer"], [30, "follow_up"], [10, "answer"], [5, "refused"], [90, "answer"]] as const) {
       await replies.claim(claim({ conversationId: record.id, discordUserId: author, kind, receivedAt: at(minutesAgo) }));
     }
+    // Test questions count toward neither the author's nor the conversation's windows.
+    await replies.claim(claim({ conversationId: record.id, discordUserId: author, kind: "answer", receivedAt: at(20), test: true }));
+    await replies.claim(claim({ conversationId: record.id, discordUserId: snowflake(), kind: "follow_up", receivedAt: at(15), test: true }));
     const usage = await limits.usage({ conversationId: record.id, discordUserId: author, limits: { perAuthorDaily: 10, perAuthorHourly: 3, perThreadHourly: 5 }, now });
     expect(usage.authorHour).toEqual({ count: 3, freesAt: new Date(at(50).getTime() + 3_600_000), limit: 3 });
     expect(usage.authorDay).toEqual({ count: 4, freesAt: null, limit: 10 });
