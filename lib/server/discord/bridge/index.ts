@@ -54,7 +54,8 @@ import type { DiscordUploads } from "./uploads";
  *   `DiscordReply` row keeps it to one answer however often Discord delivers
  *   it; a repeat stops there.
  * - Author and conversation limits refuse with a short text at most once an
- *   hour per author or conversation, then with ❌ only.
+ *   hour per author or conversation, then with ❌ only; test questions are
+ *   neither refused by them nor counted toward them (`store/limits.ts`).
  * - A mention in a channel opens a thread from the message and answers there;
  *   where no thread can be opened (a voice-channel chat, a refusal) it answers
  *   in place, the conversation keyed by the channel.
@@ -348,6 +349,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   }
 
   async function refuseLimit(question: Question, control: DiscordActiveControl, conversationId: string | null): Promise<boolean> {
+    // A test question (PRD D-36) is never held by the author or conversation limits; budgets and the key limit still apply.
+    if (question.ids.test) return false;
     const at = new Date(now());
     const usage = await deps.limits.usage({ conversationId, discordUserId: question.ids.discordUserId, limits: control.limits, now: at });
     const exceeded = discordLimitExceeded(usage);
