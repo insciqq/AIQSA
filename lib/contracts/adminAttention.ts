@@ -15,6 +15,12 @@ export type AdminAttentionSeverity = "bad" | "neutral" | "warn";
 export type AdminAttentionCode =
   | "assistants_listing_pending"
   | "background_failures"
+  | "discord_disconnected"
+  | "discord_failures_rising"
+  | "discord_intents_disallowed"
+  | "discord_session_limit"
+  | "discord_setup_incomplete"
+  | "discord_token_rejected"
   | "email_delivery_failing"
   | "email_not_configured"
   | "logs_dropped"
@@ -48,6 +54,7 @@ export type AdminAttentionCode =
 
 export const adminAttentionSections = [
   "assistants",
+  "discord",
   "email",
   "groups",
   "health",
@@ -135,6 +142,12 @@ export type AdminAttentionSummaryResponse = {
 /** Items derived from the health rules. */
 export const adminHealthAttentionCodes = [
   "background_failures",
+  "discord_disconnected",
+  "discord_failures_rising",
+  "discord_intents_disallowed",
+  "discord_session_limit",
+  "discord_setup_incomplete",
+  "discord_token_rejected",
   "logs_dropped",
   "memory_index_rebuilds_repeated",
   "new_error",

@@ -243,6 +243,53 @@ describe("MCP definition validation", () => {
   });
 });
 
+describe("MCP client-credentials auth policy", () => {
+  const clientCredentials = (auth: Record<string, unknown>, slots: unknown[] = []) => validateMcpDraft({
+    ...draftWithSlots(slots),
+    auth: { clientId: " agent ", mode: "client_credentials", tokenEndpoint: "https://auth.example.com/oauth/token", ...auth }
+  });
+
+  it("normalizes the policy with Basic authentication and the MCP endpoint as the default resource", () => {
+    const result = clientCredentials({ scopes: ["agent", "agent", "read"] });
+
+    expect(result.ok && result.value.auth).toEqual({
+      authMethod: "client_secret_basic",
+      clientId: "agent",
+      mode: "client_credentials",
+      scopes: ["agent", "read"],
+      tokenEndpoint: "https://auth.example.com/oauth/token"
+    });
+    expect(clientCredentials({ authMethod: "client_secret_post", resource: "https://mcp.example.test/" }))
+      .toMatchObject({ ok: true, value: { auth: { authMethod: "client_secret_post", resource: "https://mcp.example.test/" } } });
+  });
+
+  it.each([
+    [{ tokenEndpoint: "http://auth.example.com/token" }, "auth.tokenEndpoint"],
+    [{ tokenEndpoint: "https://user:pass@auth.example.com/token" }, "auth.tokenEndpoint"],
+    [{ tokenEndpoint: "https://auth.example.com/token?client_secret=x" }, "auth.tokenEndpoint"],
+    [{ clientId: "" }, "auth.clientId"],
+    [{ clientId: "tab\tseparated" }, "auth.clientId"],
+    [{ scopes: ["has space"] }, "auth.scopes"],
+    [{ resource: "https://mcp.example.test/#fragment" }, "auth.resource"],
+    [{ authMethod: "private_key_jwt" }, "auth.authMethod"]
+  ])("refuses %j at %s", (auth, path) => {
+    const result = clientCredentials(auth);
+
+    expect(result.ok).toBe(false);
+    expect(result.ok ? [] : result.issues.map((issue) => issue.path)).toContain(path);
+  });
+
+  it("keeps the Authorization header for the installation's bearer", () => {
+    const result = clientCredentials({}, [headerSlot({ target: { kind: "header", name: "authorization" } })]);
+
+    expect(result).toEqual({
+      issues: [{ code: "client_credentials_authorization_header_reserved", path: "slots.0.target.name" }],
+      ok: false
+    });
+    expect(clientCredentials({}, [headerSlot()]).ok).toBe(true);
+  });
+});
+
 describe("MCP definition helpers", () => {
   it("canonicalizes object keys recursively and produces stable hashes", () => {
     const left = { z: [{ b: 2, a: 1 }], a: { y: true, x: null } };

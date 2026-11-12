@@ -2,6 +2,7 @@ import { createMcpGuardService } from "../mcp/guard";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { getComputerOps } from "../connect/computerPort";
 import { isConnectEnabled } from "../connect/policy";
+import type { ConnectorTurn } from "../connectors/turn";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
 import { admitMemorySearch } from "../memory/search/admission";
@@ -43,11 +44,12 @@ export function defaultRunServices(storage: StorageAdapter) {
       enabled: isConnectEnabled },
     images: imageGenerationForStorage(storage),
     memorySearch: createPrismaMemorySearchService(),
-    memorySearchAdmission: { async admit(userId: string, assistantId?: string | null) {
+    memorySearchAdmission: { async admit(userId: string, assistantId?: string | null, connectorTurn?: ConnectorTurn) {
       const policy = await prisma.modelPolicy.findUniqueOrThrow({
         where: { id: "installation" }, select: { memorySearchTimeoutSeconds: true }
       });
-      return admitMemorySearch({ userId, assistantId, timeoutSeconds: Number(policy.memorySearchTimeoutSeconds) });
+      return admitMemorySearch({ userId, assistantId, ...(connectorTurn ? { connectorTurn } : {}),
+        timeoutSeconds: Number(policy.memorySearchTimeoutSeconds) });
     } },
     mcp: defaultMcpRunPlan,
     mcpGuard: createMcpGuardService(prisma),

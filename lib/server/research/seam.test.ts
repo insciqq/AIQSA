@@ -256,7 +256,7 @@ describe("starting research", () => {
     // The message asks for research in words ("Проведи исследование"): with no choice it is an ordinary turn (operator decision 2026-11-05).
     expect((await offered({ prepared: prepared({ chosen: false }) })).offered).toBe(false);
     // Where it cannot run, the run is refused before any model call, never answered another way.
-    for (const extra of [{ prepared: prepared({ noSearch: true }) }, { telegram: true }, { scheduled: true }] as const) {
+    for (const extra of [{ prepared: prepared({ noSearch: true }) }, { connectorTurn: "telegram" }, { connectorTurn: "discord" }, { scheduled: true }] as const) {
       expect(await offered(extra)).toEqual({ failed: [expect.objectContaining({ code: DEEP_RESEARCH_REFUSALS.unavailable })], offered: undefined });
     }
     expect((await offered({}, undefined as never)).offered).toBe(true);

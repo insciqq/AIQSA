@@ -574,6 +574,7 @@ describe("admin route handlers", () => {
       },
       { body: { action: "set_user_role", role: "user", userId: "user-1" }, response: { error: "last_admin_forbidden" }, result: "last_admin_forbidden", status: 409 },
       { body: { action: "set_user_role", role: "admin", userId: "user-1" }, response: { error: "user_not_active" }, result: "user_not_active", status: 409 },
+      { body: { action: "set_user_role", role: "admin", userId: "service-1" }, response: { error: "service_account_role_fixed" }, result: "service_account", status: 409 },
       { body: { action: "set_user_role", role: "admin", userId: "user-1" }, response: { error: "user_not_found" }, result: "not_found", status: 404 }
     ];
     vi.mocked(logEvent).mockClear();

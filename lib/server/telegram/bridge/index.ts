@@ -1,4 +1,5 @@
 import type { TelegramCallbackKind } from "../../../contracts/telegram";
+import { createConnectorRunWait } from "../../connectors/runAdmission";
 import { logEvent, runInBackground } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { TelegramAccessResolver } from "../control/access";
@@ -8,7 +9,7 @@ import type { TelegramHandlerRegistry, TelegramMessageContext, TelegramMessageHa
 import type { TelegramLinkStore } from "../store/links";
 import type { TelegramMessageRefStore } from "../store/messageRefs";
 import type { TelegramRunLinkStore } from "../store/runLinks";
-import { createTelegramAdmission, createTelegramRunWait, type TelegramSendMessage } from "./admission";
+import { createTelegramAdmission, type TelegramSendMessage } from "./admission";
 import { createTelegramConversation, isStaleTelegramMessage, type TelegramConversation } from "./conversation";
 import { deliverTelegramRun } from "./delivery";
 import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventContext } from "./events";
@@ -105,7 +106,7 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
     access: deps.access, conversation, gateway: deps.gateway, links: deps.links, messageRefs: deps.messageRefs, now, sessions: deps.sessions
   });
   const staleNotices = new Map<string, number>();
-  const waitForRun = createTelegramRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
+  const waitForRun = createConnectorRunWait(deps.gateway, { now, ...(deps.sleep ? { sleep: deps.sleep } : {}) });
   /** The sweep in progress, and whether (and for which start) another one was asked for meanwhile. */
   let sweeping: Promise<void> | null = null;
   let requested: Date | null = null;

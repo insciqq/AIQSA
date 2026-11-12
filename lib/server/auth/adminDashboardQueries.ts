@@ -77,6 +77,7 @@ const adminDashboardUserSelect = {
     }
   },
   id: true,
+  kind: true,
   role: true,
   settings: {
     select: {
@@ -326,6 +327,7 @@ export async function listAdminDashboard(
       groups: serializeAdminMemberships(user.groups),
       hasVerifiedIdentity: user.authIdentities.some((identity) => Boolean(identity.emailVerifiedAt)),
       id: user.id,
+      kind: user.kind,
       lastSessionAt: serializeAdminLastSession(user.authSessions),
       role: user.role,
       status: user.status,

@@ -6,6 +6,7 @@ import {
   type McpFatalResponseErrorCode
 } from "./clientSession";
 import { boundMcpToolDescription, type McpToolExclusionReason } from "@/lib/contracts/mcp";
+import { mcpClientCredentialsFailureCode, type McpClientCredentialsLaunch } from "./clientCredentials";
 import type { McpPublishedToolDefinitions } from "./definitions";
 import { mcpDispatchError } from "./dispatchStatus";
 import { redactMcpToolCallResult } from "./resultRedaction";
@@ -27,6 +28,8 @@ export type McpRuntimeInventoryTool = {
 export type McpRuntimeLaunch = {
   allowPrivateNetwork?: boolean;
   callTimeoutMs: number;
+  /** An installation server signing in with OAuth client credentials. */
+  clientCredentials?: McpClientCredentialsLaunch;
   disabledToolNames?: readonly string[];
   fingerprint: string;
   generationId: string;
@@ -278,6 +281,9 @@ function stableRuntimeError(error: unknown): string {
   // A network-policy refusal keeps its reason through launch, health and refresh.
   const refusal = mcpNetworkPolicyRefusal(error);
   if (refusal) return refusal;
+  // A client-credentials sign-in failure names the token endpoint's answer.
+  const signIn = mcpClientCredentialsFailureCode(error);
+  if (signIn) return signIn;
   if (error instanceof McpClientSessionError && RESPONSE_LIMIT_ERROR_CODES.has(error.code)) {
     return error.code;
   }

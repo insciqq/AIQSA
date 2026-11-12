@@ -5,6 +5,7 @@ import { databaseFailureCode } from "../../observability/databaseFailure";
 import { readFailedRunLoad } from "../health/failedRuns";
 import { readMemoryRebuildLoad } from "../health/memoryRebuilds";
 import {
+  discordSessionFindings,
   failedRunFindings,
   HEALTH_ATTENTION_THRESHOLDS,
   memoryRebuildFindings,
@@ -26,14 +27,15 @@ async function readOptionalFindings(read: () => Promise<HealthFinding[]>): Promi
 }
 
 /**
- * The health rules over this installation's failed runs, telemetry counters
- * and Memory rebuilds, read now. Failed runs come first: each is an answer a
- * user did not get.
+ * The health rules over this installation's failed runs, Discord session,
+ * telemetry counters and Memory rebuilds, read now. Failed runs come first:
+ * each is an answer a user did not get; a Discord bot that cannot answer comes
+ * next for the same reason.
  */
 export async function readDefaultHealthFindings(): Promise<HealthFinding[]> {
   const now = new Date();
   const thresholds = HEALTH_ATTENTION_THRESHOLDS;
-  const [runFindings, telemetryFindings, rebuildFindings] = await Promise.all([
+  const [runFindings, telemetryFindings, rebuildFindings, discordFindings] = await Promise.all([
     readOptionalFindings(async () => failedRunFindings(await readFailedRunLoad(prisma, {
       from: new Date(now.getTime() - thresholds.runsFailedWindowMs),
       to: new Date(now.getTime() + 1),
@@ -48,7 +50,12 @@ export async function readDefaultHealthFindings(): Promise<HealthFinding[]> {
       now,
       threshold: thresholds.memoryRebuildsPerOwnerMin,
       windowMs: thresholds.memoryRebuildWindowMs
-    })))
+    }))),
+    readOptionalFindings(async () => {
+      // Loaded on demand: the Discord connector is feature-local.
+      const { readDiscordHealthSnapshot } = await import("../../discord/defaultDiscord");
+      return discordSessionFindings(await readDiscordHealthSnapshot(), now, thresholds);
+    })
   ]);
-  return [...runFindings, ...telemetryFindings, ...rebuildFindings];
+  return [...runFindings, ...discordFindings, ...telemetryFindings, ...rebuildFindings];
 }

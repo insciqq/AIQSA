@@ -3,6 +3,7 @@ import { revokeConnectDevicesForUser } from "../connect/revocation";
 import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
 import { revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
+import { isServiceAccount } from "./serviceAccounts";
 import { issueSignInSession, type SignInSessionInput } from "./signInCompletion";
 import { lockAuthIdentity } from "./transactionLocks";
 
@@ -15,6 +16,8 @@ export type PasswordIdentityRecord = {
     displayName: string;
     email: string | null;
     id: string;
+    /** `service` for a service account, whose password identity never signs in or resets. */
+    kind?: string | null;
     role: string;
     status: string;
   };
@@ -55,7 +58,7 @@ export type PasswordAuthRepository = {
 };
 
 function isActiveVerifiedPasswordIdentity(identity: PasswordIdentityRecord | null): identity is PasswordIdentityRecord {
-  return Boolean(identity?.emailVerifiedAt && identity.user.status === "active");
+  return Boolean(identity?.emailVerifiedAt && identity.user.status === "active" && !isServiceAccount(identity.user));
 }
 
 export function createPrismaPasswordAuthRepository(prisma: PrismaClient): PasswordAuthRepository {

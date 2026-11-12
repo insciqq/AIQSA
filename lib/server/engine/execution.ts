@@ -6,6 +6,7 @@ import { SCHEDULED_TASK_RUN_DEADLINE_MINUTES } from "../../contracts/scheduledTa
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ChatTitleGenerator } from "../chats/titleGeneration";
+import type { ConnectorTurn } from "../connectors/turn";
 import { logEvent, runWithContext } from "../observability";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../providers/history";
@@ -173,8 +174,11 @@ export type NativeRunExecutionInput = Readonly<{
    * an absent one is unavailable.
    */
   subagents?: SubagentRunPorts;
-  /** A Telegram turn: its chat shows no live browser, so a handoff points to the web chat. */
-  telegram?: true;
+  /**
+   * A connector's turn (`lib/server/connectors/turn.ts`): no live browser, no background sub-agents and no Deep research;
+   * a Telegram turn's handoff points to the web chat.
+   */
+  connectorTurn?: ConnectorTurn;
   userId: string;
   workspace?: WorkspaceCoordinator;
 }>;
@@ -473,7 +477,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         // The live browser of an interactive web run (`browserLive.ts`): its owner watches it and answers handoffs.
         const coordinator = input.workspace;
-        if (workspace && coordinator?.browserLive && !input.scheduled && !input.telegram) {
+        if (workspace && coordinator?.browserLive && !input.scheduled && !input.connectorTurn) {
           const holds = coordinator.holdsWorkspace;
           // A run gone without `end` (a crash) leaves the shared channel once it no longer holds the Workspace.
           live = browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId, userId: input.userId }) } : {}),
@@ -622,9 +626,10 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
         const delivered: string[] = [];
+        // A Discord turn never has a Workspace (admission refuses it); were it to, nobody could take its browser over.
         const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
-          : input.scheduled ? { kind: "unattended" }
-            : input.telegram ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
+          : input.scheduled || input.connectorTurn === "discord" ? { kind: "unattended" }
+            : input.connectorTurn === "telegram" ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
               : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
                 researching: () => research?.holding() ?? false };
         const registryInput = {
@@ -634,7 +639,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           mcpBindings,
           onUsage: (attribution: RunUsageAttribution) => usage.add(attribution),
           ...(input.scheduled ? { scheduled: true as const } : {}),
-          ...(input.telegram ? { telegram: true as const } : {}),
+          ...(input.connectorTurn ? { connectorTurn: input.connectorTurn } : {}),
           // A call on the user's computer never waits past the main agent's tool time.
           toolTimeLeftMs: () => toolTimeEndsAt - now(),
           runId,
@@ -672,7 +677,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const backgroundParts: SubagentBackgroundParts | undefined = threadStore ? {
           live: (backgroundRunId) => {
             const liveCoordinator = input.workspace;
-            if (!workspace || !liveCoordinator?.browserLive || input.scheduled || input.telegram) return null;
+            if (!workspace || !liveCoordinator?.browserLive || input.scheduled || input.connectorTurn) return null;
             const holds = liveCoordinator.holdsWorkspace;
             return browserLiveRelay().register({ ...(holds ? { attached: () => holds({ runId: backgroundRunId, userId: input.userId }) } : {}),
               channel: (request) => liveCoordinator.browserLive!({ request, runId: backgroundRunId }), chatId: scope.chatId,
@@ -734,8 +739,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return (batch?.entries ?? []).filter((entry) => entry.delivery !== "undelivered" && userAuthoredFollowup(entry))
               .map((entry) => ({ id: entry.id, text: entry.text }));
           },
-          // Only a web chat starts background turns: a Telegram turn or a scheduled occurrence waits for the sub-agents it starts.
-          backgroundAllowed: !input.telegram && !input.scheduled,
+          // Only a web chat starts background turns: a connector turn or a scheduled occurrence waits for the sub-agents it starts.
+          backgroundAllowed: !input.connectorTurn && !input.scheduled,
           ports: input.subagents, recordSearchEvidence: (row) => input.repository.createSearchRun(row), runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft: agentToolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
@@ -748,7 +753,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // (operator decision 2026-11-05). No words in a chat offer it, and a start call in the items authorizes nothing: the turns a
         // continuation goes on from must have been sent with it.
         const researchAvailability: ResearchAvailability = { monitoring: normalizedRequest.monitoringVerdictTool === true, scheduled: input.scheduled === true,
-          searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), telegram: input.telegram === true };
+          searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), connector: input.connectorTurn !== undefined };
         const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
         const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
           ? createRunResearch({ authority: researchRequest === "chosen" ? [] : researchAuthorityChain({ continuationTurns, messages: conversationMessages,
@@ -885,7 +890,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const compactionRouting = gatewayRoutingLane({ chatId: scope.chatId, name: `compaction:${runId}` });
         // A research run's requests keep being sent again far longer than a chat's (`MODEL_CALL_RESEARCH_RETRY`), and a scheduled
         // or webhook occurrence's keep their attempts without the chat's window (`MODEL_CALL_UNATTENDED_RETRY`): nobody waits on
-        // them. A chat, Telegram turn or sub-agent turn takes the interactive default (`MODEL_CALL_RETRY`).
+        // them. A chat, connector turn or sub-agent turn takes the interactive default (`MODEL_CALL_RETRY`).
         const modelRetry = runResearch ? { retry: MODEL_CALL_RESEARCH_RETRY } : input.scheduled ? { retry: MODEL_CALL_UNATTENDED_RETRY } : {};
         // Measurement and compaction before every request (`runContext.ts`); compaction calls are the answer model's.
         const context = createRunContext({

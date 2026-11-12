@@ -7,6 +7,7 @@ import {
   SdkErrorCode,
   SdkHttpError,
   StreamableHTTPClientTransport,
+  type AuthProvider,
   type FetchLike,
   type Implementation,
   type JsonSchemaType,
@@ -237,7 +238,12 @@ export type McpClientRequestOptions = Readonly<{
 }>;
 
 export type McpClientSessionOptions = Readonly<{
-  authProvider?: OAuthClientProvider;
+  /**
+   * Per-user OAuth, or a bearer-only provider (client credentials): the
+   * transport asks it for a token before each request and, after a 401 to
+   * anything but tools/call, lets it renew once before resending.
+   */
+  authProvider?: AuthProvider | OAuthClientProvider;
   /** How far past the transport's tools/call bound one result is still read;
    * defaults to the process's ceiling and permits. */
   callResultCeiling?: McpCallResultCeiling;

@@ -46,6 +46,7 @@ https://github.com/user-attachments/assets/04f00676-97c8-4fa9-8911-de94bdd4a7bb
 - Workspace browser: a live view in the chat, Take control, sign-in handoff and saved browser logins.
 - Sub-agents: parallel agents with their own threads, plus personal custom sub-agents with their own instructions and model.
 - Telegram: chat with your agent from a linked Telegram account and receive Automation results there.
+- Discord: one bot answers people in your Discord server's channels, threads and DMs as an Assistant, one AIQSA chat per thread.
 - MCP: connect remote MCP servers with OAuth; Auto mode finds the right tool for the request.
 - Skills: reusable instructions and files that the model loads when they are relevant.
 - Automations: once, daily, weekly or monthly runs, or a run for each webhook call with its request body as event data, with optional email notifications.

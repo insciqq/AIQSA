@@ -48,6 +48,12 @@ enum UserStatus {
   denied
 }
 
+/// `service` accounts run connector work and never sign in (`lib/server/auth/serviceAccounts.ts`).
+enum UserKind {
+  person
+  service
+}
+
 enum ProjectRole {
   VIEWER
   CONTRIBUTOR
@@ -921,6 +927,9 @@ model User {
   telegramLinkCodes TelegramLinkCode[]
   telegramScheduledDeliveries TelegramScheduledDelivery[]
   telegramBotControlUpdates TelegramBotControl[] @relation("TelegramBotControlUpdater")
+  discordBotControlUpdates DiscordBotControl[] @relation("DiscordBotControlUpdater")
+  discordBotControlServiceAccounts DiscordBotControl[] @relation("DiscordBotControlServiceUser")
+  discordMonitoringKeys DiscordMonitoringKey[]
   id                                  String                             @id @default(uuid())
   email                               String?                            @unique
   displayName                         String
@@ -929,6 +938,9 @@ model User {
   /// when the role is manual. Only that source demotes, and a manual role change clears it.
   roleManagedBy                       String?
   status                              UserStatus                         @default(pending)
+  /// A service account never signs in and SCIM never sees it; a database check keeps it a
+  /// non-administrator without an email.
+  kind                                UserKind                           @default(person)
   scimExternalId                      String?                            @unique
   /// When SCIM last asked to deactivate the account; with `disabled`, SCIM may reactivate it.
   /// With `active` (only an administrator no other one could replace) sign-in stays refused.
@@ -1924,6 +1936,7 @@ model AssistantDefinition {
   skillLinks         AssistantSkill[]
   modelRuns          ModelRun[]
   telegramLinks      TelegramLink[]
+  discordBotControls DiscordBotControl[]
 
   @@unique([ownerUserId, id])
   @@index([ownerUserId, archivedAt])
@@ -2532,6 +2545,7 @@ model Chat {
   answerReviewSessions            AnswerReviewSession[]
   telegramLinks                   TelegramLink[]            @relation("TelegramLinkCurrentChat")
   telegramMessageRefs             TelegramMessageRef[]
+  discordConversations            DiscordConversation[]
   subagentThreads                 SubagentThread[]
 
   @@unique([userId, id])
@@ -3034,6 +3048,7 @@ model ModelRun {
   browserPushDelivery          BrowserPushDelivery?
   problemReports               AnswerProblemReport[]
   telegramRunLinks             TelegramRunLink[]
+  discordReplies               DiscordReply[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -3451,6 +3466,11 @@ model McpServer {
   draftTestEvidence    Json?
   sharedConfigEnvelope String?
   sharedConfigVersion  Int                  @default(0)
+  /// Installation servers signing in with OAuth client credentials: the
+  /// write-only client secret, bound to the token endpoint origin it was
+  /// entered for. Tokens are never stored (`lib/server/mcp/clientCredentials.ts`).
+  clientCredentialsSecretEnvelope   String?
+  clientCredentialsSecretGeneration Int     @default(0)
   createdAt            DateTime             @default(now())
   updatedAt            DateTime             @updatedAt
   activeRevision       McpRevision?         @relation("ActiveMcpRevision", fields: [activeRevisionId], references: [id], onDelete: SetNull)
@@ -6809,4 +6829,191 @@ model TelegramScheduledDelivery {
   @@index([state, nextAttemptAt])
   @@index([userId])
   @@index([createdAt])
+}
+
+enum DiscordChannelMode {
+  only_listed
+  all_except
+}
+
+enum DiscordConversationKind {
+  thread
+  forum_post
+  dm
+  voice_chat
+  channel
+}
+
+enum DiscordReplyState {
+  claimed
+  admitted
+  delivered
+  failed
+  interrupted
+  unknown
+}
+
+enum DiscordReplyKind {
+  answer
+  follow_up
+  refused
+}
+
+enum DiscordLimitKind {
+  author
+  thread
+  key
+}
+
+/// Discord Connect: the installation's one bot. The administrator's switch, the
+/// write-only bot token as an `AIQSA_ENCRYPTION_KEY` envelope bound to its
+/// generation, the bot's identity, the server, channel rule, direct messages,
+/// test access, service account, Assistant and limits; the gateway session the
+/// next process resumes, the IDENTIFY times of the last day and content-free
+/// session health. Checks keep the row a singleton and its parts consistent.
+model DiscordBotControl {
+  id                String               @id
+  enabled           Boolean              @default(false)
+  /// When the switch last went on; a question sent before it is never answered.
+  enabledAt         DateTime?
+  tokenEnvelope     String?
+  /// Bumped with every saved token, whose envelope and gateway session it binds; zero before the first one.
+  tokenGeneration   Int                  @default(0)
+  applicationId     BigInt?
+  botUserId         BigInt?
+  botUsername       String?              @db.VarChar(64)
+  /// The bot's managed role in the server, learned from the gateway; mentioning it counts as mentioning the bot.
+  botRoleId         BigInt?
+  guildId           BigInt?
+  /// A display snapshot of the server's name taken when it was chosen.
+  guildName         String?              @db.VarChar(100)
+  channelMode       DiscordChannelMode   @default(only_listed)
+  channelIds        BigInt[]             @default([])
+  dmEnabled         Boolean              @default(false)
+  /// Bot authors whose messages count as a person's, only in `testChannelIds` and their threads.
+  testAuthorIds     BigInt[]             @default([])
+  testChannelIds    BigInt[]             @default([])
+  serviceUserId     String?
+  assistantId       String?
+  perAuthorHourly   Int                  @default(20)
+  perAuthorDaily    Int                  @default(100)
+  perThreadHourly   Int                  @default(60)
+  parallelThreads   Int                  @default(16)
+  /// The gateway session of `sessionGeneration`'s token, which the next process resumes instead of identifying.
+  sessionId         String?              @db.VarChar(128)
+  sessionGeneration Int?
+  sessionSeq        Int?
+  resumeGatewayUrl  String?              @db.VarChar(256)
+  /// IDENTIFY permits granted within the last 24 hours (AIQSA's own ceiling below Discord's shared budget).
+  identifyAt        DateTime[]           @default([])
+  lastConnectedAt   DateTime?
+  lastEventAt       DateTime?
+  lastFailureAt     DateTime?
+  lastFailureCode   String?              @db.VarChar(64)
+  version           Int                  @default(1)
+  updatedByUserId   String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  updatedBy         User?                @relation("DiscordBotControlUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  serviceUser       User?                @relation("DiscordBotControlServiceUser", fields: [serviceUserId], references: [id], onDelete: SetNull)
+  assistant         AssistantDefinition? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
+
+  @@index([updatedByUserId])
+  @@index([serviceUserId])
+  @@index([assistantId])
+}
+
+/// One Discord thread, forum post, direct-message channel, voice-channel chat or
+/// (when a thread could not be opened) text channel, and the service account's
+/// chat that carries it.
+model DiscordConversation {
+  id                    String                  @id @default(uuid())
+  discordChannelId      BigInt                  @unique
+  kind                  DiscordConversationKind
+  guildId               BigInt?
+  parentChannelId       BigInt?
+  userId                String
+  chatId                String                  @unique
+  /// AIQSA opened the thread, so people's messages in it need no mention.
+  botOpened             Boolean                 @default(false)
+  lastIncludedMessageId BigInt?
+  createdAt             DateTime                @default(now())
+  lastActivityAt        DateTime                @default(now())
+  chat                  Chat                    @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  replies               DiscordReply[]
+
+  @@index([userId, chatId])
+  @@index([lastActivityAt])
+}
+
+/// One Discord question: the claim that keeps it to one answer, and its
+/// content-free journal (who, where, stages, outcome, run totals). No text.
+model DiscordReply {
+  questionMessageId BigInt                @id
+  conversationId    String?
+  guildId           BigInt?
+  /// The channel, thread or direct-message channel the question was posted in.
+  channelId         BigInt
+  discordUserId     BigInt
+  /// A display snapshot for the administrator's journal; never logged.
+  authorName        String                @db.VarChar(100)
+  kind              DiscordReplyKind      @default(answer)
+  state             DiscordReplyState     @default(claimed)
+  test              Boolean               @default(false)
+  runId             String?
+  expectedLeafId    String?
+  /// The new chat's id, set once before the send, so every attempt (live or recovered) admits into this one chat.
+  plannedChatId     String?
+  statusMessageId   BigInt?
+  answerMessageId   BigInt?
+  code              String?               @db.VarChar(80)
+  failureKind       String?               @db.VarChar(32)
+  limitKind         DiscordLimitKind?
+  receivedAt        DateTime              @default(now())
+  ackAt             DateTime?
+  admittedAt        DateTime?
+  firstStatusAt     DateTime?
+  deliveredAt       DateTime?
+  /// When one attempt, live or recovered, claimed the question's one send: set once, never sent again by another.
+  sendClaimedAt     DateTime?
+  /// `{ "<mcp server id>": { "calls": n, "errors": n } }` of the run.
+  mcpByServer       Json?
+  compactions       Int?
+  subagents         Int?
+  sources           Int?
+  conversation      DiscordConversation?  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  run               ModelRun?             @relation(fields: [runId], references: [id], onDelete: SetNull)
+  ratings           DiscordAnswerRating[]
+
+  @@index([discordUserId, receivedAt])
+  @@index([conversationId, receivedAt])
+  @@index([state, receivedAt])
+  @@index([receivedAt])
+  @@index([runId])
+  @@index([answerMessageId])
+}
+
+/// A thumbs up (1) or down (-1) one Discord user left on an answer.
+model DiscordAnswerRating {
+  replyId       BigInt
+  discordUserId BigInt
+  value         Int          @db.SmallInt
+  createdAt     DateTime     @default(now())
+  reply         DiscordReply @relation(fields: [replyId], references: [questionMessageId], onDelete: Cascade)
+
+  @@id([replyId, discordUserId])
+}
+
+/// A key outside monitoring reads Discord telemetry with; only its SHA-256 is kept.
+model DiscordMonitoringKey {
+  id              String    @id @default(uuid())
+  keyHash         String    @unique @db.Char(64)
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  revokedAt       DateTime?
+  lastUsedAt      DateTime?
+  createdBy       User?     @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([createdByUserId])
+  @@index([revokedAt])
 }

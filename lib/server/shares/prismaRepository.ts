@@ -10,10 +10,31 @@ import { prisma } from "../prisma";
 import { collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
 import { quietCheckOmission } from "../chats/quietScheduledChecks";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
+import { isServiceAccount } from "../auth/serviceAccounts";
+import { redactOutgoing } from "../discord/redaction";
 import type { ShareRepository } from "./handlers";
+import type { PublicShareSnapshot } from "../../domain/shareSnapshot";
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue;
+}
+
+/**
+ * A service account's chat (Discord Connect's) is shared with every recognized
+ * secret replaced, its title too (PRD D-21, D-22): its text came from Discord
+ * threads and an agent reading cluster state, and its link is posted to
+ * Discord. The decision reads the owner's kind, which every such chat has,
+ * never the optional link to a Discord conversation. People's shares keep their text.
+ */
+export function redactDiscordShareSnapshot(snapshot: PublicShareSnapshot): PublicShareSnapshot {
+  return {
+    messages: snapshot.messages.map((message) => ({
+      content: { blocks: message.content.blocks.map((block) => ({ text: redactOutgoing(block.text).text, type: block.type })) },
+      role: message.role
+    })),
+    title: redactOutgoing(snapshot.title).text,
+    version: snapshot.version
+  };
 }
 
 export function createPrismaShareRepository(prismaClient = prisma): ShareRepository {
@@ -21,7 +42,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
     createChatShare: async ({ activeLeafMessageId, chatId, shareToken, slugHash, userId }) =>
       prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
-          include: { messages: true },
+          include: { messages: true, user: { select: { kind: true } } },
           where: {
             archived: false,
             id: chatId,
@@ -70,7 +91,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           role: message.role, systemTurnKind: message.systemTurnKind })));
         const shownLeaf = quiet.resolve(collapse.replacements.get(leaf) ?? leaf);
         if (!shownLeaf) return { error: "invalid_active_leaf" as const };
-        const snapshot = buildPublicShareSnapshot({
+        const built = buildPublicShareSnapshot({
           activeLeafMessageId: wakeUps.resolve(shownLeaf) ?? shownLeaf,
           messages: kept.filter((message) => !wakeUps.removed.has(message.id)).map((message) => ({
             content: message.content,
@@ -81,6 +102,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           })),
           title: chat.title
         });
+        const snapshot = isServiceAccount(chat.user) ? redactDiscordShareSnapshot(built) : built;
 
         const share = await tx.sharedChatSnapshot.create({
           data: {
@@ -88,7 +110,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
             ownerUserId: userId,
             slugHash,
             snapshot: json(snapshot),
-            title: chat.title
+            title: snapshot.title
           }
         });
 
