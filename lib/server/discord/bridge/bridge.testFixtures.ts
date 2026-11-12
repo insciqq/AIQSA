@@ -105,7 +105,7 @@ export function createMemoryDiscordConversationStore(): DiscordConversationStore
 export function createMemoryDiscordLimitStore(replies: Readonly<{ rows: Map<string, DiscordReplyRecord> }>): DiscordLimitStore {
   function window(match: (row: DiscordReplyRecord) => boolean, now: Date, length: number, limit: number): DiscordLimitWindow {
     const counted = [...replies.rows.values()]
-      .filter((row) => (row.kind === "answer" || row.kind === "follow_up") && match(row) && row.receivedAt.getTime() > now.getTime() - length)
+      .filter((row) => (row.kind === "answer" || row.kind === "follow_up") && !row.test && match(row) && row.receivedAt.getTime() > now.getTime() - length)
       .sort((left, right) => left.receivedAt.getTime() - right.receivedAt.getTime());
     const agingOut = counted.length >= limit ? counted[counted.length - limit] : undefined;
     return { count: counted.length, freesAt: agingOut ? new Date(agingOut.receivedAt.getTime() + length) : null, limit };

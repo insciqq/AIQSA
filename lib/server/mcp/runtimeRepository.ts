@@ -640,6 +640,11 @@ export function createPrismaMcpRuntimeRepository(input: {
         // Eviction is observed runtime state, not a user preference mutation.
         // Keep McpUserServer.updatedAt as the enable/config-change timestamp;
         // an enabled server remains available for a later on-demand start.
+        // An active service account (Discord Connect) never signs in, so it
+        // has no session to show activity: its installation-server runtimes
+        // stay warm like a recently active user's, or every question would
+        // cold-start them and meet "still starting".
+        // The selection below keeps the same accounts.
         await client.$executeRaw`
           UPDATE "McpUserServer" AS preference
           SET "desiredRuntimeGenerationId" = NULL
@@ -661,6 +666,15 @@ export function createPrismaMcpRuntimeRepository(input: {
                 AND hub_grant."capability" = 'mcp:hub'
                 AND hub_grant."state" = 'ACTIVE'
                 AND hub_grant."lastUsedAt" >= ${recentActivityCutoff}
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM "User" AS service_account
+              JOIN "McpServer" AS installation_server ON installation_server."id" = preference."serverId"
+              WHERE service_account."id" = preference."userId"
+                AND service_account."kind" = 'service'
+                AND service_account."status" = 'active'
+                AND installation_server."ownerUserId" IS NULL
             )
         `.catch(retainDatabaseFailure);
       }
@@ -697,10 +711,10 @@ export function createPrismaMcpRuntimeRepository(input: {
             enabled: true,
             ...(userId ? { OR: [{ ownerUserId: null }, { ownerUserId: userId }] } : {})
           },
-          user: {
-            status: "active",
-            ...(userId ? { id: userId } : {
-              OR: [
+          user: { status: "active", ...(userId ? { id: userId } : {}) },
+          ...(userId ? {} : {
+            OR: [
+              { user: { OR: [
                 { authSessions: { some: {
                   expiresAt: { gt: now }, lastSeenAt: { gte: recentActivityCutoff }, revokedAt: null
                 } } },
@@ -708,9 +722,10 @@ export function createPrismaMcpRuntimeRepository(input: {
                   resourcePath: "/mcp/hub", capability: "mcp:hub", state: "ACTIVE",
                   lastUsedAt: { gte: recentActivityCutoff }
                 } } }
-              ]
-            })
-          }
+              ] } },
+              { server: { ownerUserId: null }, user: { kind: "service" } }
+            ]
+          })
         }
       }).catch(retainDatabaseFailure);
       const key = encryptionKey();
