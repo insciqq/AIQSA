@@ -12,7 +12,7 @@ import { containsOutgoingSecret } from "../redaction";
  * a citation's `[N](<url>)`; angle brackets keep Discord from previewing them.
  */
 
-export const ZERO_WIDTH_SPACE = "​";
+export const ZERO_WIDTH_SPACE = "\u200b";
 const MAX_HREF_LENGTH = 512;
 
 /** Breaks the mention forms; enough on its own inside code, where Discord renders no other markup. */

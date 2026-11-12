@@ -5,7 +5,7 @@ import {
   DISCORD_MESSAGE_MAX_CHARS, DISCORD_STATUS_MAX_CHARS, discordInlineText, formatDiscordStatus, renderDiscordAnswer
 } from "./index";
 
-const Z = "​";
+const Z = "\u200b";
 const citations: ThreadCitation[] = [
   { index: 1, title: "Note", url: "https://example.com/note" },
   { index: 2, title: "Guide", url: "https://example.com/@guide" },
