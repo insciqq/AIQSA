@@ -276,7 +276,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     const asked = await h.say({ authorId: alice, channelId: h.fake.channels.text, content: "Агент, когда релиз?" });
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
-    expect(h.fake.channel(asked.id).name).toBe("когда релиз?");
+    expect(h.fake.channel(asked.id)?.name).toBe("когда релиз?");
     const text = sentText(h.runs.runs[0]!.body);
     expect(text).toMatch(/:\nкогда релиз\?$/u);
     expect(text).toContain("who knows the release date?");
