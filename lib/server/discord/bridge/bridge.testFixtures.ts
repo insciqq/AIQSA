@@ -128,10 +128,7 @@ export function createMemoryDiscordLimitStore(replies: Readonly<{ rows: Map<stri
   });
 }
 
-export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string, DiscordReplyRecord> }>, runs: Readonly<{
-  /** The runs of the fake run gateway, oldest first. */
-  list(): readonly Readonly<{ runId: string; chatId: string }>[];
-}> = { list: () => [] }): DiscordRunFacts & Readonly<{
+export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string, DiscordReplyRecord> }>): DiscordRunFacts & Readonly<{
   summaries: Map<string, DiscordRunSummary>;
 }> {
   const summaries = new Map<string, DiscordRunSummary>();
@@ -146,12 +143,6 @@ export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string
         for (const id of [row.answerMessageId, row.statusMessageId]) if (id && ids.includes(id)) found.set(id, row.conversationId);
       }
       return found;
-    },
-    async questionsOfRun(runId) {
-      return [...replies.rows.values()].filter((row) => row.runId === runId).map((row) => row.questionMessageId);
-    },
-    async firstRunOfChat(chatId) {
-      return runs.list().find((run) => run.chatId === chatId)?.runId ?? null;
     }
   });
 }
