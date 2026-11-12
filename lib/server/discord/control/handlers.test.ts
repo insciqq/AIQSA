@@ -26,9 +26,9 @@ function service(overrides: Partial<DiscordControlService> = {}): DiscordControl
     createServiceAccount: ok, disable: ok, enable: ok, setAssistant: ok, setChannels: ok, setDirectMessages: ok, setGuild: ok, setLimits: ok,
     setTestAccess: ok, testAndSave: ok,
     health: vi.fn(),
-    listAssistants: vi.fn(async () => ({ ok: true, state: { assistants: [] } }) as const),
-    listChannels: vi.fn(async () => ({ ok: true, state: { channels: [] } }) as const),
-    listGuilds: vi.fn(async () => ({ ok: true, state: { guilds: [] } }) as const),
+    listAssistants: vi.fn(async () => ({ ok: true as const, state: { assistants: [] } })),
+    listChannels: vi.fn(async () => ({ ok: true as const, state: { channels: [] } })),
+    listGuilds: vi.fn(async () => ({ ok: true as const, state: { guilds: [] } })),
     read: vi.fn(async () => STATE),
     ...overrides
   };

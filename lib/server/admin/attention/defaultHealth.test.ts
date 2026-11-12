@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const reads = vi.hoisted(() => ({
   discord: vi.fn(async () => ({
-    connected: true, enabled: false, lastConnectedAt: null, lastFailureAt: null, lastFailureCode: null as string | null, setupReady: true
+    connected: true, enabled: false, lastConnectedAt: null as Date | null, lastFailureAt: null as Date | null, lastFailureCode: null as string | null,
+    setupReady: true
   })),
   failedRuns: vi.fn(async () => ({ runs: 2, users: 1, groups: [], groupsTruncated: false })),
   memoryRebuilds: vi.fn(async () => [])

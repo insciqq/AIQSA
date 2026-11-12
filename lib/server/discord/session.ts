@@ -283,7 +283,7 @@ export function createDiscordSession(deps: DiscordSessionDeps): DiscordSession {
       await shutdown(target);
     }),
     status: () => {
-      if (!running) return { generation: null, state: "off" };
+      if (!running) return { generation: null, state: "off" as const };
       const state = running.client.state();
       return { generation: running.generation, state: state.status, ...(state.code ? { code: state.code } : {}) };
     },
