@@ -63,7 +63,7 @@ describe("Discord run facts (stateful)", () => {
     await expect(facts.summary(randomUUID())).resolves.toBeNull();
   });
 
-  it("names AIQSA's own posts with their question's conversation, and the questions of a run", async () => {
+  it("names AIQSA's own posts with their question's conversation", async () => {
     const { runId } = await run({ status: "complete" });
     const question = snowflake();
     const status = snowflake();
@@ -78,12 +78,5 @@ describe("Discord run facts (stateful)", () => {
     ] });
     const own = await facts.aiqsaMessages([status.toString(), refusal.toString(), snowflake().toString()]);
     expect([...own.entries()].sort()).toEqual([[refusal.toString(), null], [status.toString(), null]].sort());
-    await expect(facts.questionsOfRun(runId)).resolves.toEqual([question.toString()]);
-  });
-
-  it("names a chat's first run", async () => {
-    const { chatId, runId } = await run({ status: "complete" });
-    await expect(facts.firstRunOfChat(chatId)).resolves.toBe(runId);
-    await expect(facts.firstRunOfChat(randomUUID())).resolves.toBeNull();
   });
 });

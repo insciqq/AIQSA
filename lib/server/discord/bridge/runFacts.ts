@@ -23,10 +23,6 @@ export type DiscordRunFacts = Readonly<{
   summary(runId: string): Promise<DiscordRunSummary | null>;
   /** The given Discord messages that AIQSA posted for a question, each with the question's conversation (null: none). */
   aiqsaMessages(messageIds: readonly string[]): Promise<ReadonlyMap<string, string | null>>;
-  /** The questions a run answers (its answer and its follow-ups). */
-  questionsOfRun(runId: string): Promise<readonly string[]>;
-  /** A chat's first run: in a chat a Discord question created, that question's own. */
-  firstRunOfChat(chatId: string): Promise<string | null>;
 }>;
 
 type FactsClient = Pick<PrismaClient, "discordReply" | "modelRun" | "modelRunToolCall" | "runTranscriptItem" | "subagentTurn">;
@@ -102,18 +98,6 @@ export function createPrismaDiscordRunFacts(prisma: FactsClient): DiscordRunFact
         }
       }
       return found;
-    },
-
-    async questionsOfRun(runId) {
-      const rows = await prisma.discordReply.findMany({ select: { questionMessageId: true }, take: 100, where: { runId } })
-        .catch(retainDatabaseFailure);
-      return rows.map((row) => row.questionMessageId.toString());
-    },
-
-    async firstRunOfChat(chatId) {
-      const run = await prisma.modelRun.findFirst({ orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true }, where: { chatId } })
-        .catch(retainDatabaseFailure);
-      return run?.id ?? null;
     }
   });
 }
