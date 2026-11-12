@@ -93,7 +93,9 @@ test.beforeAll(async ({ browser }) => {
   adminSession = await people.signIn(browser, (await people.admin("Discord live admin"))!);
   const request = adminSession.page.request;
   await disableDiscord(request);
-  model = await setupCodexLbAnswerModel(request, { label: "Discord live", nativeSearch: true, vision: true });
+  model = await setupCodexLbAnswerModel(request, {
+    label: "Discord live", nativeSearch: true, preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL"), vision: true
+  });
   const search = await connectionSearchSource(request, model.connectionId, "web_search", { protocol: "openai_responses_web_search" });
   const assistant = await assistants.create(request, {
     name: "Discord live agent",
