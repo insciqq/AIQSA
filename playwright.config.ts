@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { DISCORD_E2E_API_ORIGIN, DISCORD_E2E_GATEWAY_URL } from "./tests/e2e/support/discordApiOrigin";
 import { TELEGRAM_E2E_API_ORIGIN } from "./tests/e2e/support/telegramApiOrigin";
 
 const baseURL = "http://127.0.0.1:3000";
@@ -39,6 +40,9 @@ export default defineConfig({
       AIQSA_BOOTSTRAP_LOGIN_ENABLED: "",
       AIQSA_BOOTSTRAP_USER_ID: "00000000-0000-4000-8000-000000000001",
       AIQSA_COOKIE_SECURE: "0",
+      // The fake Discord a Discord spec starts on these loopback ports; read only in test mode.
+      AIQSA_DISCORD_API_ORIGIN: DISCORD_E2E_API_ORIGIN,
+      AIQSA_DISCORD_GATEWAY_URL: DISCORD_E2E_GATEWAY_URL,
       AIQSA_ENCRYPTION_KEY: encryptionKey,
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: fakeProviderTokenDelayMs,
       AIQSA_LOCAL_DEV_PROFILE_DISABLED: "1",
