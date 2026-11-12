@@ -41,7 +41,7 @@ export type DiscordReplyRecord = Readonly<{
   test: boolean;
   runId: string | null;
   expectedLeafId: string | null;
-  /** A new chat's id, written before its first send: recovery asks again only into this chat. */
+  /** A new chat's id, set once before the send: every attempt, live or recovered, admits into this chat. */
   plannedChatId: string | null;
   statusMessageId: string | null;
   answerMessageId: string | null;
@@ -53,8 +53,8 @@ export type DiscordReplyRecord = Readonly<{
   admittedAt: Date | null;
   firstStatusAt: Date | null;
   deliveredAt: Date | null;
-  /** When recovery claimed the question to ask it again (once, by one process). */
-  readmitAt: Date | null;
+  /** When an attempt claimed the question's one send (`claimSend`); another attempt never sends. */
+  sendClaimedAt: Date | null;
   mcpByServer: DiscordMcpTotals | null;
   compactions: number | null;
   subagents: number | null;
@@ -95,10 +95,14 @@ export type DiscordReplyStore = Readonly<{
   /** Questions still `claimed` or `admitted` that arrived before `before`, oldest first, for recovery. */
   listUnsettled(input: Readonly<{ before: Date; limit: number }>): Promise<DiscordReplyRecord[]>;
   /**
-   * Claims a question still `claimed`, with no run and never claimed so before, for recovery to ask again; true for
-   * the one caller (across processes) that may.
+   * Fixes the question's admission target once and reads it back: a new chat's planned id, or the existing chat's
+   * expected leaf, is written only while unset, so every attempt (live or recovered, in any process) admits the same
+   * way. Null when the question is no longer `claimed`.
    */
-  claimReadmission(questionMessageId: string, at: Date): Promise<boolean>;
+  fixAdmissionTarget(questionMessageId: string, target: Readonly<{ plannedChatId: string }> | Readonly<{ expectedLeafId: string | null }>):
+    Promise<DiscordReplyRecord | null>;
+  /** Claims the question's one send right before it; true for the one attempt (across processes) that may send. */
+  claimSend(questionMessageId: string, at: Date): Promise<boolean>;
 }>;
 
 type ReplyClient = Pick<PrismaClient, "discordReply">;
@@ -144,9 +148,9 @@ export function discordReplyRecord(row: DiscordReply): DiscordReplyRecord {
     mcpByServer: mcpTotals(row.mcpByServer),
     plannedChatId: row.plannedChatId,
     questionMessageId: row.questionMessageId.toString(),
-    readmitAt: row.readmitAt,
     receivedAt: row.receivedAt,
     runId: row.runId,
+    sendClaimedAt: row.sendClaimedAt,
     sources: row.sources,
     state: row.state,
     statusMessageId: snowflake(row.statusMessageId),
@@ -237,10 +241,25 @@ export function createPrismaDiscordReplyStore(prisma: ReplyClient): DiscordReply
       return rows.map(discordReplyRecord);
     },
 
-    async claimReadmission(questionMessageId, at) {
+    async fixAdmissionTarget(questionMessageId, target) {
+      const id = BigInt(questionMessageId);
+      if ("plannedChatId" in target) {
+        await prisma.discordReply.updateMany({
+          data: { plannedChatId: target.plannedChatId }, where: { plannedChatId: null, questionMessageId: id, state: "claimed" }
+        }).catch(retainDatabaseFailure);
+      } else if (target.expectedLeafId !== null) {
+        await prisma.discordReply.updateMany({
+          data: { expectedLeafId: target.expectedLeafId }, where: { expectedLeafId: null, questionMessageId: id, state: "claimed" }
+        }).catch(retainDatabaseFailure);
+      }
+      const row = await prisma.discordReply.findUnique({ where: { questionMessageId: id } }).catch(retainDatabaseFailure);
+      return row && row.state === "claimed" ? discordReplyRecord(row) : null;
+    },
+
+    async claimSend(questionMessageId, at) {
       const updated = await prisma.discordReply.updateMany({
-        data: { readmitAt: at },
-        where: { questionMessageId: BigInt(questionMessageId), readmitAt: null, runId: null, state: "claimed" }
+        data: { sendClaimedAt: at },
+        where: { questionMessageId: BigInt(questionMessageId), runId: null, sendClaimedAt: null, state: "claimed" }
       }).catch(retainDatabaseFailure);
       return updated.count === 1;
     }
