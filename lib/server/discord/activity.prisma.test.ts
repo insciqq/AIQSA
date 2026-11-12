@@ -44,7 +44,9 @@ async function serviceRun(status: "complete" | "error" = "complete") {
     chatId: chat.id, content: textMessageContent(SENTINEL), parentMessageId: question.id, role: "assistant", status
   } });
   const run = await prisma.modelRun.create({ data: {
-    assistantMessageId: answer.id, chatId: chat.id, engine: "native", modelId: "fake-qsa", provider: "fake", status, userId, userMessageId: question.id
+    assistantMessageId: answer.id, chatId: chat.id, engine: "native", modelId: "fake-qsa", provider: "fake", status, userId, userMessageId: question.id,
+    // A run past `preparing` carries its normalized request (ModelRun_memory_request_shape_check).
+    normalizedRequest: {}
   } });
   const conversation = await prisma.discordConversation.create({ data: {
     chatId: chat.id, discordChannelId: snowflake(), guildId: GUILD, kind: "thread", parentChannelId: CHANNEL, userId
