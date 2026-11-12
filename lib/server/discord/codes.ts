@@ -45,6 +45,9 @@ export function discordTransportFailureCode(kind: DiscordTransportFailureKind): 
   return DISCORD_TRANSPORT_FAILURE_CODES[kind];
 }
 
+/** A claimed question that, read again, no longer asks the bot (PRD O-37): retired without a run or a reply. */
+export const DISCORD_NOT_ADDRESSED_CODE = "discord_question_not_addressed";
+
 /** Every log code this module family emits besides the contract's reason codes. */
 export const DISCORD_LOG_CODES = [
   ...Object.values(DISCORD_TRANSPORT_FAILURE_CODES),
@@ -58,5 +61,6 @@ export const DISCORD_LOG_CODES = [
   DISCORD_DISABLED_CODE,
   DISCORD_TOKEN_MISSING_CODE,
   DISCORD_INVALID_RESPONSE_CODE,
+  DISCORD_NOT_ADDRESSED_CODE,
   ...Object.values(DISCORD_GATEWAY_CODES)
 ] as const;

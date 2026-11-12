@@ -250,6 +250,7 @@ export const defaultDiscordControlService: DiscordControlService = Object.freeze
   listGuilds: () => getDefaultDiscord().controlService.listGuilds(),
   read: () => getDefaultDiscord().controlService.read(),
   setAssistant: (input) => getDefaultDiscord().controlService.setAssistant(input),
+  setCallNames: (input) => getDefaultDiscord().controlService.setCallNames(input),
   setChannels: (input) => getDefaultDiscord().controlService.setChannels(input),
   setDirectMessages: (input) => getDefaultDiscord().controlService.setDirectMessages(input),
   setGuild: (input) => getDefaultDiscord().controlService.setGuild(input),

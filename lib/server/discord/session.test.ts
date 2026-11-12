@@ -57,6 +57,7 @@ function controlFor(fake: FakeDiscord, state: ReturnType<typeof memoryStore>["st
       : null,
     testAuthorIds: new Set(),
     testChannelIds: new Set(),
+    callNames: [],
     tokenState: "ready",
     version: 1,
     ...overrides

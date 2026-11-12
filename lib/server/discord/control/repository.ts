@@ -36,6 +36,7 @@ export type DiscordControlRecord = Readonly<{
   dmEnabled: boolean;
   testAuthorIds: readonly string[];
   testChannelIds: readonly string[];
+  callNames: readonly string[];
   serviceUserId: string | null;
   assistantId: string | null;
   limits: DiscordLimits;
@@ -84,6 +85,7 @@ export type DiscordControlRepository = Readonly<{
   setTestAccess(input: Readonly<{
     actorUserId: string; expectedVersion: number; testAuthorIds: readonly string[]; testChannelIds: readonly string[];
   }>): Promise<DiscordControlWrite>;
+  setCallNames(input: Readonly<{ actorUserId: string; expectedVersion: number; callNames: readonly string[] }>): Promise<DiscordControlWrite>;
   /**
    * Binds a service account: an existing bound account (whatever its status)
    * stays and nothing changes; otherwise `create` makes one in the same
@@ -134,6 +136,7 @@ export function discordControlRecord(row: DiscordBotControl): DiscordControlReco
     botRoleId: snowflake(row.botRoleId),
     botUserId: snowflake(row.botUserId),
     botUsername: row.botUsername,
+    callNames: [...(row.callNames ?? [])],
     channelIds: snowflakes(row.channelIds),
     channelMode: row.channelMode,
     dmEnabled: row.dmEnabled,
@@ -266,6 +269,10 @@ export function createPrismaDiscordControlRepository(prisma: ControlClient): Dis
         testChannelIds: input.testChannelIds.map((id) => BigInt(id)),
         updatedByUserId: input.actorUserId
       }));
+    },
+
+    setCallNames(input) {
+      return write(input.expectedVersion, async () => ({ callNames: [...input.callNames], updatedByUserId: input.actorUserId }));
     },
 
     async bindServiceAccount(input) {

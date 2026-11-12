@@ -23,6 +23,7 @@ import {
   discordLimitsDirty,
   discordLimitsDraft,
   discordTokenError,
+  parseDiscordCallNames,
   parseDiscordIds,
   parseDiscordLimits,
   type DiscordChannelsDraft,
@@ -31,7 +32,7 @@ import {
 import type { AdminDiscordController } from "@/components/admin/discord/useAdminDiscordController";
 import { useDiscordListing } from "@/components/admin/discord/useDiscordListing";
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
-import { DISCORD_TEST_IDS_MAX, type DiscordAdminState, type DiscordLimits } from "@/lib/contracts/discord";
+import { DISCORD_CALL_NAMES_MAX, DISCORD_TEST_IDS_MAX, type DiscordAdminState, type DiscordLimits } from "@/lib/contracts/discord";
 import { useId, useState, type FormEvent } from "react";
 
 type FormProps = Readonly<{ controller: AdminDiscordController; discord: DiscordAdminState }>;
@@ -364,6 +365,78 @@ export function DiscordChannelsForm({ controller, discord }: FormProps) {
           <UiV2Button disabled={busy !== null} onClick={() => { setDraft(null); setFeedback(null); }} type="button">Discard</UiV2Button>
         ) : null}
         <span className={footerNoteClass} role="status">{dirty ? `Unsaved. ${summary}` : summary}</span>
+      </div>
+    </form>
+  );
+}
+
+/** Names that address the bot when a channel or thread message starts with one (PRD O-37). */
+export function DiscordCallNamesForm({ controller, discord }: FormProps) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const id = useId();
+  const busy = controller.state.busy;
+  const stored = discord.callNames.join("\n");
+  const text = draft ?? stored;
+  const parsed = parseDiscordCallNames(text);
+  const dirty = !parsed.ok || parsed.names.join("\n") !== stored;
+
+  const save = async () => {
+    if (busy || !dirty) return;
+    setFeedback(null);
+    if (!parsed.ok) {
+      setError(parsed.message);
+      document.getElementById(`${id}-names`)?.focus();
+      return;
+    }
+    const outcome = await controller.actions.setCallNames(parsed.names);
+    if (outcome.ok) setDraft(null);
+    else if (outcome.message) setFeedback({ ok: false, text: outcome.message });
+  };
+
+  return (
+    <form aria-labelledby={`${id}-heading`} className={discordCardClass} data-testid="discord-call-names-form" onSubmit={onSubmit(save)}>
+      <div className={cardBodyClass}>
+        <div>
+          <h2 className={sectionHeadingClass} id={`${id}-heading`}>Call names</h2>
+          <p className="mt-1 text-xs leading-5 text-ink-muted" id={`${id}-help`}>
+            A message that starts with one of these names, then a comma, colon, space or dash, counts as addressing the bot in
+            channels and threads. Direct messages are always answered.
+          </p>
+        </div>
+        <div className="min-w-0">
+          <label className={fieldLabelClass} htmlFor={`${id}-names`}>Names</label>
+          <textarea
+            aria-describedby={`${id}-help ${id}-format${error ? ` ${id}-error` : ""}`}
+            aria-invalid={error ? true : undefined}
+            className={`${inputClass} min-h-[5.5rem] py-2 text-sm`}
+            data-testid="discord-call-names"
+            disabled={busy !== null}
+            id={`${id}-names`}
+            onChange={(event) => {
+              setDraft(event.currentTarget.value);
+              setError(null);
+              setFeedback(null);
+            }}
+            rows={3}
+            spellCheck={false}
+            value={text}
+          />
+          {error ? <span className={fieldErrorClass} id={`${id}-error`}>{error}</span> : null}
+          <span className={helpTextClass} id={`${id}-format`}>
+            One name per line or separated by commas, up to {DISCORD_CALL_NAMES_MAX}. Empty: only mentions and replies ask the bot.
+          </span>
+        </div>
+        <FormFeedback feedback={feedback} testId="discord-call-names-result" />
+      </div>
+      <div className={cardFooterClass}>
+        <UiV2Button busy={busy === "call_names"} data-testid="discord-save-call-names" disabled={busy !== null || !dirty} tone="primary" type="submit">
+          Save call names
+        </UiV2Button>
+        {dirty ? (
+          <UiV2Button disabled={busy !== null} onClick={() => { setDraft(null); setError(null); setFeedback(null); }} type="button">Discard</UiV2Button>
+        ) : null}
       </div>
     </form>
   );

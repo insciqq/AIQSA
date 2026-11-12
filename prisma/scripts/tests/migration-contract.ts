@@ -763,7 +763,7 @@ function bootstrapFoundationDigest(database: string): string {
       'discord_control', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, enabled, "tokenEnvelope" IS NOT NULL, "tokenGeneration", "guildId",
           "channelMode", "channelIds", "dmEnabled", "serviceUserId", "assistantId", "perAuthorHourly", "perAuthorDaily",
-          "perThreadHourly", "parallelThreads", "sessionId" IS NOT NULL, version, "updatedByUserId") ORDER BY id)
+          "perThreadHourly", "parallelThreads", "sessionId" IS NOT NULL, "callNames", version, "updatedByUserId") ORDER BY id)
         FROM "DiscordBotControl"
       ), '[]'::jsonb)
     )::text);`,
@@ -803,10 +803,10 @@ function runBootstrapProof(database: string): void {
     psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || "channelMode"::text
       || ':' || ("tokenEnvelope" IS NULL)::text || ':' || "tokenGeneration"::text || ':' || cardinality("channelIds")::text
       || ':' || "perAuthorHourly"::text || '/' || "perAuthorDaily"::text || '/' || "perThreadHourly"::text
-      || '/' || "parallelThreads"::text || ':' || version::text
+      || '/' || "parallelThreads"::text || ':' || cardinality("callNames")::text || ':' || version::text
       FROM "DiscordBotControl" WHERE id = 'installation';`),
-    "off:only_listed:true:0:0:20/100/60/16:1",
-    "fresh migration history must leave the Discord bot off, unconfigured and listing no channel before bootstrap",
+    "off:only_listed:true:0:0:20/100/60/16:0:1",
+    "fresh migration history must leave the Discord bot off, unconfigured, listing no channel and no call name before bootstrap",
   );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
@@ -864,7 +864,7 @@ function runBootstrapProof(database: string): void {
     INSERT INTO "TelegramBotGroup" ("groupId") SELECT id FROM "Group" ORDER BY id LIMIT 1;
     UPDATE "DiscordBotControl" SET "guildId" = 900000000000000001, "channelMode" = 'all_except',
       "channelIds" = ARRAY[900000000000000002]::BIGINT[], "dmEnabled" = true, "perAuthorHourly" = 5,
-      "parallelThreads" = 4, version = version + 1 WHERE id = 'installation';`);
+      "parallelThreads" = 4, "callNames" = ARRAY['Agent']::TEXT[], version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(

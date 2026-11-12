@@ -103,6 +103,11 @@ export type DiscordReplyStore = Readonly<{
     Promise<DiscordReplyRecord | null>;
   /** Claims the question's one send right before it; true for the one attempt (across processes) that may send. */
   claimSend(questionMessageId: string, at: Date): Promise<boolean>;
+  /**
+   * Ends a claimed question nobody has sent, `interrupted` with `code`, in one conditional write: false when an
+   * attempt claimed its send (or recorded its run) first, which then admits and delivers it as usual.
+   */
+  retireUnsent(questionMessageId: string, code: string): Promise<boolean>;
 }>;
 
 type ReplyClient = Pick<PrismaClient, "discordReply">;
@@ -259,6 +264,14 @@ export function createPrismaDiscordReplyStore(prisma: ReplyClient): DiscordReply
     async claimSend(questionMessageId, at) {
       const updated = await prisma.discordReply.updateMany({
         data: { sendClaimedAt: at },
+        where: { questionMessageId: BigInt(questionMessageId), runId: null, sendClaimedAt: null, state: "claimed" }
+      }).catch(retainDatabaseFailure);
+      return updated.count === 1;
+    },
+
+    async retireUnsent(questionMessageId, code) {
+      const updated = await prisma.discordReply.updateMany({
+        data: { code, state: "interrupted" },
         where: { questionMessageId: BigInt(questionMessageId), runId: null, sendClaimedAt: null, state: "claimed" }
       }).catch(retainDatabaseFailure);
       return updated.count === 1;
