@@ -26,6 +26,7 @@ import {
 
 export const FAKE_DISCORD_TOKEN = "MTAwMDAwMDAwMDAwMDAwMDAx.FAKE00.fake-discord-bot-token-for-tests-0000";
 const SNOWFLAKE_START = 1_100_000_000_000_000_000n;
+const DISCORD_EPOCH_MS = 1_420_070_400_000n;
 const NONCE_WINDOW_MS = 5 * 60_000;
 const CDN_ORIGIN = "https://cdn.discordapp.com";
 const MEDIA_ORIGIN = "https://media.discordapp.net";
@@ -206,6 +207,13 @@ export type FakeDiscordOptions = Readonly<{
   guildName?: string;
   heartbeatIntervalMs?: number;
   messageContentEnabled?: boolean;
+  /**
+   * Message times and snowflakes follow the wall clock instead of the fixed
+   * synthetic one: a running AIQSA drops messages older than ten minutes or
+   * sent before its enable time, and a reused stand's journal is keyed by
+   * message ids, so a browser stand needs current ids that never repeat.
+   */
+  liveClock?: boolean;
 }>;
 
 type GatewayConnection = {
@@ -216,10 +224,15 @@ type GatewaySession = { id: string; seq: number; events: { s: number; t: string;
 
 export function createFakeDiscord(options: FakeDiscordOptions = {}) {
   const token = options.token ?? FAKE_DISCORD_TOKEN;
-  let nextId = SNOWFLAKE_START;
-  const id = () => String(nextId++);
-  let clock = Date.parse("2026-11-12T09:00:00.000Z");
-  const timestamp = () => new Date(clock += 1_000).toISOString();
+  const live = options.liveClock === true;
+  const wallSnowflake = () => (BigInt(Date.now()) - DISCORD_EPOCH_MS) << 22n;
+  let nextId = live ? wallSnowflake() : SNOWFLAKE_START;
+  const id = () => {
+    if (live) { const now = wallSnowflake(); if (now > nextId) nextId = now; }
+    return String(nextId++);
+  };
+  let clock = live ? Date.now() : Date.parse("2026-11-12T09:00:00.000Z");
+  const timestamp = () => new Date(clock = live ? Math.max(clock + 1, Date.now()) : clock + 1_000).toISOString();
 
   const application = { id: id(), flags: options.messageContentEnabled === false ? 0 : FAKE_DISCORD_MESSAGE_CONTENT_FLAGS };
   const bot: FakeDiscordUser = { id: id(), username: "aiqsa-test", global_name: "AIQSA Test", bot: true };
@@ -753,7 +766,10 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
   // -------------------------------------------------------------------------
   // Loopback servers
 
-  async function start(): Promise<Readonly<{ origin: string; gatewayUrl: string; resumeGatewayUrl: string; stop(): Promise<void> }>> {
+  /** `ports` fixes the loopback ports (a browser stand's server is configured before the fake starts); absent or 0 picks free ones. */
+  async function start(ports: Readonly<{ port?: number; resumePort?: number }> = {}): Promise<Readonly<{
+    origin: string; gatewayUrl: string; resumeGatewayUrl: string; stop(): Promise<void>;
+  }>> {
     const sockets = new Set<Socket>();
     async function onRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
       const chunks: Buffer[] = [];
@@ -771,18 +787,18 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
       response.writeHead(answer.status, Object.fromEntries(answer.headers));
       response.end(Buffer.from(await answer.arrayBuffer()));
     }
-    function listen(server: Server): Promise<number> {
+    function listen(server: Server, port = 0): Promise<number> {
       server.on("connection", (socket: Socket) => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
       return new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+        server.listen(port, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
       });
     }
     const main = createServer((request, response) => { void onRequest(request, response); });
     const resume = createServer((_request, response) => { response.writeHead(404); response.end(); });
     main.on("upgrade", (request, socket) => { attachGateway("main", String(request.headers.host), (onText, onClose) => acceptUpgrade(request, socket, onText, onClose)); });
     resume.on("upgrade", (request, socket) => { attachGateway("resume", String(request.headers.host), (onText, onClose) => acceptUpgrade(request, socket, onText, onClose)); });
-    const [mainPort, resumePort] = await Promise.all([listen(main), listen(resume)]);
+    const [mainPort, resumePort] = await Promise.all([listen(main, ports.port), listen(resume, ports.resumePort)]);
     const previous = gatewayUrls;
     gatewayUrls = { main: `ws://127.0.0.1:${mainPort}`, resume: `ws://localhost:${resumePort}` };
     return {
