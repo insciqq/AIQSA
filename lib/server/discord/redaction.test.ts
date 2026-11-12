@@ -78,6 +78,21 @@ describe("redactOutgoing", () => {
     }
   });
 
+  it("keeps long links whose paths only look random, and still removes secrets inside a link", () => {
+    // Production 2026-11-12: every merge request link was cut, as `https:` read like an assignment.
+    const links = [
+      "https://gitlab.example.com/devops/discord-agent-sandbox/-/merge_requests/801",
+      "https://gitlab.example.com/team/game-server/-/commit/9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+      "https://wiki.example.com/pages/viewpage.action?pageId=123456789"
+    ];
+    for (const link of links) {
+      expect(redactOutgoing(`See [the change](${link}) and ${link}.`)).toEqual({ count: 0, text: `See [the change](${link}) and ${link}.` });
+    }
+    expect(redactOutgoing("hook https://example.com/hook?token=Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA").text).not.toContain("Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA");
+    expect(redactOutgoing("https://user:hunter2pass@example.com/").text).not.toContain("hunter2pass");
+    expect(redactOutgoing("DB_PASSWORD=hunter2").text).toBe("DB_PASSWORD=[redacted]");
+  });
+
   it("stays linear on long hostile input", () => {
     const hostile = `${"A=".repeat(50_000)}${"password: ".repeat(10_000)}${"Bearer ".repeat(10_000)}`;
     const started = performance.now();
