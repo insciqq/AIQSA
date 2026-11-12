@@ -29,7 +29,6 @@ function okItems(overrides: Partial<Record<DiscordSetupItem["code"], Pick<Discor
 function adminState(overrides: Partial<DiscordAdminState> = {}): DiscordAdminState {
   // Every fixture is a valid wire value, so the section is tested against the contract.
   return discordAdminStateSchema.parse({
-    activity: { last24h: emptyStats, last7d: emptyStats, rows: [] },
     assistant: { id: "asst_one", name: "Discord agent" },
     bot: { applicationId: "100000000000000001", userId: "100000000000000002", username: "fixture_bot" },
     channelMode: "only_listed",
@@ -39,7 +38,6 @@ function adminState(overrides: Partial<DiscordAdminState> = {}): DiscordAdminSta
     guild: GUILD,
     health: { connected: true, lastConnectedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), lastFailureAt: null, lastFailureCode: null },
     limits: DISCORD_LIMIT_DEFAULTS,
-    monitoringKeys: [],
     serviceAccount: { status: "active", userId: "svc_discord" },
     setup: { items: okItems(), ready: true },
     testAuthorIds: [],

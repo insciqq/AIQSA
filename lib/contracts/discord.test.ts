@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  decodeDiscordAdminCommand, decodeDiscordAdminState, decodeDiscordMonitoringKeyCreated, decodeDiscordMonitoringTelemetry,
-  DISCORD_GATEWAY_INTENTS, DISCORD_HEALTH_CODES, DISCORD_REASON_CODES, DISCORD_SETUP_CHECK_CODES, discordMessageLink,
-  discordSnowflakeSchema, type DiscordActivityStats, type DiscordAdminState
+  decodeDiscordAdminActivity, decodeDiscordAdminCommand, decodeDiscordAdminState, decodeDiscordMonitoringKeyCreated,
+  decodeDiscordMonitoringTelemetry, DISCORD_GATEWAY_INTENTS, DISCORD_HEALTH_CODES, DISCORD_REASON_CODES,
+  DISCORD_SETUP_CHECK_CODES, discordMessageLink, discordSnowflakeSchema, type DiscordActivityStats, type DiscordAdminActivity,
+  type DiscordAdminState
 } from "./discord";
 
 const NOW = "2026-11-12T10:00:00.000Z";
@@ -23,20 +24,20 @@ const state: DiscordAdminState = {
   serviceAccount: { status: "active", userId: "user_1" },
   assistant: { id: "assistant_1", name: "Discord agent" },
   limits: { perAuthorHourly: 20, perAuthorDaily: 100, perThreadHourly: 60, parallelThreads: 16 },
-  monitoringKeys: [{ id: "key_1", createdAt: NOW, lastUsedAt: null, revokedAt: null }],
   health: { connected: true, lastConnectedAt: NOW, lastEventAt: NOW, lastFailureAt: null, lastFailureCode: null },
   setup: { ready: true, items: [{ code: "discord_shared_key", status: "warning", action: "open_provider_keys" }] },
-  activity: {
-    last24h: stats, last7d: stats,
-    rows: [{
-      questionMessageId: "500000000000000001", receivedAt: NOW, guildId: "200000000000000001", channelId: "300000000000000001",
-      channelName: "agent-test", authorId: "400000000000000001", authorName: "Alice", kind: "answer", state: "delivered",
-      code: null, latencyMs: 5200, messageLink: discordMessageLink("200000000000000001", "300000000000000001", "500000000000000001"),
-      test: false
-    }]
-  },
   version: 3
 };
+const activity: DiscordAdminActivity = {
+  last24h: stats, last7d: stats,
+  rows: [{
+    questionMessageId: "500000000000000001", receivedAt: NOW, guildId: "200000000000000001", channelId: "300000000000000001",
+    channelName: "agent-test", authorId: "400000000000000001", authorName: "Alice", kind: "answer", state: "delivered",
+    code: null, latencyMs: 5200, messageLink: discordMessageLink("200000000000000001", "300000000000000001", "500000000000000001"),
+    test: false
+  }]
+};
+const monitoringKey = { id: "key_1", createdAt: NOW, lastUsedAt: null, revokedAt: null };
 
 describe("Discord contract", () => {
   it("names the six gateway intents of the spec", () => {
@@ -63,10 +64,20 @@ describe("Discord contract", () => {
     expect(decodeDiscordAdminState({ ...state, channels: Array.from({ length: 201 }, (_, index) => ({ id: String(index + 1), name: null })) })).toBeNull();
     expect(decodeDiscordAdminState({ ...state, guild: { id: "1", name: "x".repeat(101) } })).toBeNull();
     expect(decodeDiscordAdminState({ ...state, limits: { ...state.limits, parallelThreads: 65 } })).toBeNull();
-    expect(decodeDiscordAdminState({ ...state, activity: { ...state.activity, rows: Array(51).fill(state.activity.rows[0]) } })).toBeNull();
     expect(decodeDiscordAdminState({ ...state, health: { ...state.health, lastFailureCode: "telegram_busy" } })).toBeNull();
-    const row = state.activity.rows[0]!;
-    expect(decodeDiscordAdminState({ ...state, activity: { ...state.activity, rows: [{ ...row, messageLink: "https://example.com/x" }] } })).toBeNull();
+    // Monitoring keys and activity have their own routes; the bot state carries neither.
+    expect(decodeDiscordAdminState({ ...state, monitoringKeys: [] })).toBeNull();
+    expect(decodeDiscordAdminState({ ...state, activity })).toBeNull();
+    expect(decodeDiscordAdminState({ ...state, setup: { ready: true, items: [{ code: "discord_no_budget", status: "warning", action: null }] } })).toBeNull();
+    expect(decodeDiscordAdminState({ ...state, setup: { ready: true, items: [{ code: "discord_monthly_budget", status: "warning", action: "open_usage_limits" }] } }))
+      .not.toBeNull();
+  });
+
+  it("decodes the activity listing and refuses oversized or foreign links", () => {
+    expect(decodeDiscordAdminActivity(activity)).toEqual(activity);
+    expect(decodeDiscordAdminActivity({ ...activity, rows: Array(51).fill(activity.rows[0]) })).toBeNull();
+    const row = activity.rows[0]!;
+    expect(decodeDiscordAdminActivity({ ...activity, rows: [{ ...row, messageLink: "https://example.com/x" }] })).toBeNull();
   });
 
   it("decodes every admin command with expectedVersion and refuses malformed ones", () => {
@@ -80,9 +91,7 @@ describe("Discord contract", () => {
       { action: "set_assistant", assistantId: "assistant_1", expectedVersion: 1 },
       { action: "set_limits", limits: state.limits, expectedVersion: 1 },
       { action: "enable", expectedVersion: 1 },
-      { action: "disable", expectedVersion: 1 },
-      { action: "create_monitoring_key", expectedVersion: 1 },
-      { action: "revoke_monitoring_key", keyId: "key_1", expectedVersion: 1 }
+      { action: "disable", expectedVersion: 1 }
     ];
     for (const command of commands) expect(decodeDiscordAdminCommand(command), command.action).toEqual(command);
     expect(decodeDiscordAdminCommand({ action: "enable" })).toBeNull();
@@ -90,10 +99,12 @@ describe("Discord contract", () => {
     expect(decodeDiscordAdminCommand({ action: "test_and_save", token: "Bot abc\r\nX: y", expectedVersion: 1 })).toBeNull();
     expect(decodeDiscordAdminCommand({ action: "set_channels", channelMode: "all", channelIds: [], expectedVersion: 1 })).toBeNull();
     expect(decodeDiscordAdminCommand({ action: "register_commands", expectedVersion: 1 })).toBeNull();
+    // Monitoring keys change only through their own route.
+    expect(decodeDiscordAdminCommand({ action: "create_monitoring_key", expectedVersion: 1 })).toBeNull();
   });
 
   it("carries a monitoring secret only in the create response", () => {
-    const created = { key: state.monitoringKeys[0], secret: `aiqsa_dmk_${"a".repeat(43)}` };
+    const created = { key: monitoringKey, secret: `aiqsa_dmk_${"a".repeat(43)}` };
     expect(decodeDiscordMonitoringKeyCreated(created)).toEqual(created);
     expect(decodeDiscordMonitoringKeyCreated({ ...created, secret: "short" })).toBeNull();
   });

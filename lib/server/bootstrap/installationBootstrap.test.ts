@@ -138,6 +138,7 @@ function createBootstrapTransaction(input: {
     usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
     connectPolicyUpsert: record("connectPolicy.upsert", { id: "installation" }),
     telegramBotControlUpsert: record("telegramBotControl.upsert", { id: "installation" }),
+    discordBotControlUpsert: record("discordBotControl.upsert", { id: "installation" }),
     userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
@@ -222,6 +223,7 @@ function createBootstrapTransaction(input: {
     usageLimitPolicy: { upsert: spies.usageLimitPolicyUpsert },
     connectPolicy: { upsert: spies.connectPolicyUpsert },
     telegramBotControl: { upsert: spies.telegramBotControlUpsert },
+    discordBotControl: { upsert: spies.discordBotControlUpsert },
     user: {
       create: spies.userCreate,
       findUnique: spies.userFindUnique
@@ -503,6 +505,12 @@ describe("installation bootstrap", () => {
     });
     // Telegram starts off without a bot; adoption never touches a saved token, switch or access.
     expect(fixture.spies.telegramBotControlUpsert).toHaveBeenCalledWith({
+      create: { id: "installation" },
+      update: {},
+      where: { id: "installation" }
+    });
+    // Discord too: off without a bot, and adoption never touches a saved token, switch, choices or session.
+    expect(fixture.spies.discordBotControlUpsert).toHaveBeenCalledWith({
       create: { id: "installation" },
       update: {},
       where: { id: "installation" }

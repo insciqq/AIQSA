@@ -78,6 +78,7 @@ const ROUTES: readonly (readonly [string, string, RegExp])[] = [
   ["GET", "get_current_application", /^\/oauth2\/applications\/@me$/u],
   ["GET", "list_current_user_guilds", /^\/users\/@me\/guilds$/u],
   ["GET", "list_guild_channels", /^\/guilds\/(\d+)\/channels$/u],
+  ["GET", "get_channel", /^\/channels\/(\d+)$/u],
   ["GET", "get_guild_member", /^\/guilds\/(\d+)\/members\/(\d+)$/u],
   ["GET", "get_gateway_bot", /^\/gateway\/bot$/u],
   ["GET", "list_channel_messages", /^\/channels\/(\d+)\/messages$/u],
@@ -497,6 +498,7 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
         if (params[0] !== guild.id) throw new HttpError(404, 10004);
         return json(200, [...channels.values()].filter((entry) => entry.guild_id && ![10, 11, 12].includes(entry.type)), headers);
       }
+      case "get_channel": return json(200, channel(params[0]!), headers);
       case "get_guild_member": {
         const member = members.get(params[1]!);
         if (params[0] !== guild.id || !member) throw new HttpError(404, 10007);
