@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 import type { FakeDiscordMessage } from "../support/fakeDiscord";
 import { createAssistantFixture } from "./support/assistants";
 import {
-  answerMessage, chatUserImageCount, configureDiscordByApi, disableDiscord, say, startDiscordStand, waitForDiscordReply, waitForReaction,
+  answerMessage, chatUserImageCount, configureDiscordByApi, disableDiscord, say, startDiscordStand, waitForDiscordReply, waitForAnsweredReactions,
   type DiscordReplyView, type DiscordStand
 } from "./support/discordStand";
 import {
@@ -81,7 +81,7 @@ function solidPng(width: number, height: number, rgb: readonly [number, number, 
 async function answered(question: FakeDiscordMessage, since: number): Promise<DiscordReplyView> {
   const reply = await waitForDiscordReply(prisma, stand.fake, question.id, { since, timeout: PAID_TURN_TIMEOUT_MS });
   expect(reply.state, `answer state (${reply.code ?? "no code"})`).toBe("delivered");
-  await waitForReaction(stand.fake, question.id, "✅");
+  await waitForAnsweredReactions(stand.fake, question.id, PAID_TURN_TIMEOUT_MS);
   return reply;
 }
 

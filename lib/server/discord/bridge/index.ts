@@ -39,7 +39,7 @@ import { compareDiscordIds, decodeDiscordContextMessage, type DiscordContextMess
 import { discordRunFailure, discordSendRefusalFailure, type DiscordFailure } from "./refusals";
 import type { DiscordRunFacts } from "./runFacts";
 import {
-  createDiscordStatusMessage, discordActivityLabel, discordReact, DISCORD_REACTION_DONE, DISCORD_REACTION_FAILED, DISCORD_REACTION_SEEN,
+  createDiscordStatusMessage, discordActivityLabel, discordReact, DISCORD_REACTION_FAILED, DISCORD_REACTION_SEEN,
   DISCORD_STATUS_EDIT_INTERVAL_MS, DISCORD_TYPING_INTERVAL_MS, type DiscordFinalMessage, type DiscordStatusMessage
 } from "./status";
 import { discordCallNameMatch, discordContextTrigger, discordTrigger, type DiscordTrigger } from "./triggers";
@@ -816,7 +816,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     const rest = deps.rest();
     for (const question of followUps) {
       await discordReact(rest, {
-        add: outcome === "complete" ? [DISCORD_REACTION_DONE] : outcome === "error" ? [DISCORD_REACTION_FAILED] : [],
+        add: outcome === "error" ? [DISCORD_REACTION_FAILED] : [],
         channelId: question.ids.channelId, messageId: question.ids.questionMessageId, remove: [DISCORD_REACTION_SEEN]
       });
       const at = new Date(now());
@@ -888,7 +888,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     let result: "delivered" | "failed" | "unknown";
     if (sent.kind === "sent") {
       await discordReact(rest, {
-        add: outcome === "complete" ? [DISCORD_REACTION_DONE] : outcome === "error" ? [DISCORD_REACTION_FAILED] : [],
+        add: outcome === "error" ? [DISCORD_REACTION_FAILED] : [],
         channelId: question.ids.channelId, messageId: question.ids.questionMessageId, remove: [DISCORD_REACTION_SEEN]
       });
       await patch(question, {

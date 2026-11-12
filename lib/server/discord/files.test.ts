@@ -416,6 +416,6 @@ describe("Discord files through the bridge", () => {
     const [answer] = h.fake.messages(question.id).filter((message) => message.author.id === h.fake.bot.id);
     expect(answer!.content).toBe("Here it is.\n\n1 file is only in AIQSA");
     expect(answer!.attachments).toEqual([]);
-    expect(h.fake.reactions(question.id, "✅")).toEqual([h.fake.bot.id]);
+    expect(h.fake.reactionsBy(question.id, h.fake.bot.id)).toEqual([]);
   });
 });

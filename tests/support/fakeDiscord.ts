@@ -909,6 +909,9 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
     messages: (channelId: string) => [...(messages.get(channelId) ?? [])],
     channel: (channelId: string) => channels.get(channelId),
     reactions: (messageId: string, emoji: string) => [...(reactions.get(messageId)?.get(emoji) ?? [])],
+    /** Every emoji `userId` has on the message. */
+    reactionsBy: (messageId: string, userId: string) =>
+      [...(reactions.get(messageId) ?? new Map<string, Set<string>>())].flatMap(([emoji, users]) => users.has(userId) ? [emoji] : []),
     fail(rule: FakeDiscordFailureRule): void { failures.push({ ...rule, remaining: rule.times ?? 1, reply: rule.reply }); },
     calls(filter: Readonly<{ route?: string; method?: string }> = {}): FakeDiscordCall[] {
       return calls.filter((call) => (!filter.route || call.route === filter.route) && (!filter.method || call.method === filter.method));

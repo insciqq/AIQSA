@@ -6,7 +6,7 @@ import type { FakeDiscordMessage } from "../support/fakeDiscord";
 import { createAssistantFixture } from "./support/assistants";
 import {
   answerMessage, botActivity, configureDiscordByApi, discordActivity, discordCommand, discordReply, discordState, disableDiscord, say,
-  startDiscordStand, waitForDiscordReply, waitForReaction, type DiscordReplyView, type DiscordStand
+  startDiscordStand, waitForDiscordReply, waitForAnsweredReactions, waitForReaction, type DiscordReplyView, type DiscordStand
 } from "./support/discordStand";
 import { createPeopleFixture, type E2ESession } from "./support/people";
 
@@ -52,7 +52,7 @@ async function afterMergeWindow(previous: FakeDiscordMessage): Promise<void> {
 async function delivered(question: FakeDiscordMessage, since: number): Promise<DiscordReplyView> {
   const reply = await waitForDiscordReply(prisma, stand.fake, question.id, { since });
   expect(reply.state, `answer state (${reply.code ?? "no code"})`).toBe("delivered");
-  await waitForReaction(stand.fake, question.id, "✅");
+  await waitForAnsweredReactions(stand.fake, question.id);
   return reply;
 }
 
@@ -102,7 +102,7 @@ test.afterAll(async () => {
   }
 });
 
-test("a call-name message in the thread while the answer runs joins that run: 👀, then ✅ on both", async () => {
+test("a call-name message in the thread while the answer runs joins that run: 👀, taken back on both with the answer", async () => {
   const { fake } = stand;
   const since = fake.calls().length;
   const question = say(fake, {
@@ -118,8 +118,7 @@ test("a call-name message in the thread while the answer runs joins that run: �
   expect(joined.kind).toBe("follow_up");
   expect(joined.state).toBe("delivered");
   expect(joined.runId).toBe(main.runId);
-  await waitForReaction(fake, followUp.id, "✅");
-  await expect.poll(() => fake.reactions(followUp.id, "👀").includes(fake.bot.id)).toBe(false);
+  await waitForAnsweredReactions(fake, followUp.id);
   expect(fake.violations()).toEqual([]);
 });
 

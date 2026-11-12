@@ -1,4 +1,4 @@
-import type { ProviderHistoryFormat, ProviderNativeData } from "../providers/history";
+import { HOSTED_SEARCH_RECORD_LIMITS, type ProviderHistoryFormat, type ProviderHostedSearch, type ProviderNativeData } from "../providers/history";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { parseWorkspaceImageEvidence, type WorkspaceImageEvidence } from "../workspace/directImageEvidence";
 import type { TranscriptItem, TranscriptOrigin, TranscriptRequestAnchor } from "./transcript";
@@ -88,6 +88,22 @@ function requestAnchor(value: unknown): TranscriptRequestAnchor | undefined {
     inputTokens: tokens(value.inputTokens) ?? invalid() };
 }
 
+/** A hosted Search record within its bounds (`HOSTED_SEARCH_RECORD_LIMITS`). An older release ignores the field. */
+function hostedSearch(value: unknown): ProviderHostedSearch | undefined {
+  if (value === undefined) return undefined;
+  const limits = HOSTED_SEARCH_RECORD_LIMITS;
+  if (!isRecord(value) || !Array.isArray(value.queries) || value.queries.length > limits.queries ||
+    !value.queries.every((query) => boundedString(query, limits.queryChars)) ||
+    !Array.isArray(value.sources) || value.sources.length > limits.sources ||
+    !value.sources.every((source) => isRecord(source) && boundedString(source.url, limits.urlChars) &&
+      (source.title === undefined || boundedString(source.title, limits.titleChars)))) return invalid();
+  return {
+    queries: [...value.queries as string[]],
+    sources: (value.sources as Record<string, unknown>[]).map((source) =>
+      typeof source.title === "string" ? { title: source.title, url: source.url as string } : { url: source.url as string })
+  };
+}
+
 function optional<T>(key: string, value: T | undefined): Record<string, T> {
   return value === undefined ? {} : { [key]: value };
 }
@@ -106,13 +122,14 @@ export function encodeTranscriptItem(item: TranscriptItem): TranscriptRowFields 
       case "user":
         return { text: item.text, ...(item.followup ? { followup: true } : {}), ...(item.callback ? { callback: true } : {}) };
       case "assistant_text":
-        return { text: item.text, ...optional("native", item.native), ...optional("origin", item.origin),
-          ...optional("outputTokens", item.outputTokens), ...optional("requestAnchor", item.requestAnchor) };
+        return { text: item.text, ...optional("hostedSearch", item.hostedSearch), ...optional("native", item.native),
+          ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens),
+          ...optional("requestAnchor", item.requestAnchor) };
       case "reasoning":
         return { native: item.native, origin: item.origin, ...optional("outputTokens", item.outputTokens),
           ...optional("requestAnchor", item.requestAnchor) };
       case "tool_call":
-        return { arguments: item.arguments, name: item.name, ...optional("native", item.native),
+        return { arguments: item.arguments, name: item.name, ...optional("hostedSearch", item.hostedSearch), ...optional("native", item.native),
           ...optional("origin", item.origin), ...optional("outputTokens", item.outputTokens),
           ...optional("requestAnchor", item.requestAnchor) };
       case "tool_result":
@@ -151,7 +168,9 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
       const itemOrigin = origin(body.origin, false);
       const outputTokens = tokens(body.outputTokens);
       const anchor = requestAnchor(body.requestAnchor);
-      return { id, kind, ...(itemNative ? { native: itemNative } : {}), ...(itemOrigin ? { origin: itemOrigin } : {}),
+      const search = hostedSearch(body.hostedSearch);
+      return { ...(search ? { hostedSearch: search } : {}), id, kind, ...(itemNative ? { native: itemNative } : {}),
+        ...(itemOrigin ? { origin: itemOrigin } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}), ...(anchor ? { requestAnchor: anchor } : {}), text: text(body.text) };
     }
     case "reasoning": {
@@ -166,7 +185,8 @@ export function decodeTranscriptItem(row: Readonly<{ body: unknown; callId: stri
       const itemOrigin = origin(body.origin, false);
       const outputTokens = tokens(body.outputTokens);
       const anchor = requestAnchor(body.requestAnchor);
-      return { arguments: body.arguments, callId: row.callId!, id, kind, name: body.name,
+      const search = hostedSearch(body.hostedSearch);
+      return { arguments: body.arguments, callId: row.callId!, ...(search ? { hostedSearch: search } : {}), id, kind, name: body.name,
         ...(itemNative ? { native: itemNative } : {}), ...(itemOrigin ? { origin: itemOrigin } : {}),
         ...(outputTokens !== undefined ? { outputTokens } : {}), ...(anchor ? { requestAnchor: anchor } : {}) };
     }

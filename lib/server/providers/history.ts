@@ -1,3 +1,4 @@
+import { safeExternalHref } from "../../domain/links";
 import { geminiInteractionStepForWire } from "./geminiInteractionsProtocol";
 
 /**
@@ -31,14 +32,38 @@ export type ProviderNativeData = Readonly<{
  */
 export type ProviderHistoryImage = Readonly<{ data: string; mimeType: "image/jpeg" | "image/png" }>;
 
+/**
+ * What a provider's own hosted Search did within one response: the queries it
+ * reported and the sources it found or cited, bounded
+ * (`HOSTED_SEARCH_RECORD_LIMITS`). Its items stay out of the history (they
+ * carry no result the next request could use), so without this record a later
+ * turn could not tell that the answer before it searched at all. Capture puts
+ * it on the response's first text or call; it is never sent as a field, and
+ * the engine replays it as a note before that item (`hostedSearchNote`,
+ * `lib/server/engine/transcript.ts`).
+ */
+export type ProviderHostedSearch = Readonly<{
+  queries: readonly string[];
+  sources: readonly Readonly<{ title?: string; url: string }>[];
+}>;
+
+export const HOSTED_SEARCH_RECORD_LIMITS = Object.freeze({
+  queries: 6,
+  queryChars: 160,
+  sources: 8,
+  titleChars: 100,
+  urlChars: 240
+});
+
 export type ProviderHistoryItem =
   /** `currentInput` marks the run's own input: the adapter renders it with
    * the request's attachments and response reminder. */
   | Readonly<{ currentInput?: true; text: string; type: "user" }>
-  | Readonly<{ native?: ProviderNativeData; text: string; type: "assistant_text" }>
+  | Readonly<{ hostedSearch?: ProviderHostedSearch; native?: ProviderNativeData; text: string; type: "assistant_text" }>
   | Readonly<{ native: ProviderNativeData; type: "reasoning" }>
   /** `arguments` is the JSON text the model produced. */
-  | Readonly<{ arguments: string; callId: string; name: string; native?: ProviderNativeData; type: "tool_call" }>
+  | Readonly<{ arguments: string; callId: string; hostedSearch?: ProviderHostedSearch; name: string; native?: ProviderNativeData;
+    type: "tool_call" }>
   | Readonly<{ callId: string; images?: readonly ProviderHistoryImage[]; isError?: true; name: string; output: string; type: "tool_result" }>
   | Readonly<{ native: ProviderNativeData; type: "compaction" }>;
 
@@ -129,19 +154,105 @@ export function providerHistoryPreview(history: readonly ProviderHistoryItem[]) 
     : []);
 }
 
+// ------------------------------------------------------------ Hosted Search
+
+/** One line of provider text: no control characters or lone surrogates (PostgreSQL JSON refuses them), whitespace collapsed,
+ * clipped with an ellipsis without splitting a character. */
+function recordText(value: unknown, maximum: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.replace(/[\ud800-\udfff]/gu, "")
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!text) return undefined;
+  if (text.length <= maximum) return text;
+  const cut = /[\ud800-\udbff]$/u.test(text.slice(0, maximum - 1)) ? maximum - 2 : maximum - 1;
+  return `${text.slice(0, cut).trimEnd()}…`;
+}
+
+/** A source link as the record keeps it: http(s) without credentials, tracking parameters or fragment, within the bound. */
+function recordUrl(value: unknown): string | undefined {
+  const href = safeExternalHref(value);
+  if (!href) return undefined;
+  try {
+    const url = new URL(href);
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return undefined;
+    for (const key of [...url.searchParams.keys()]) if (/^utm_/iu.test(key)) url.searchParams.delete(key);
+    url.hash = "";
+    const kept = url.toString();
+    return kept.length <= HOSTED_SEARCH_RECORD_LIMITS.urlChars ? kept : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Collects one response's hosted Search; `record()` is null when the response did not search. */
+function hostedSearchCollector() {
+  let searched = false;
+  const queries: string[] = [];
+  const sources = new Map<string, { title?: string }>();
+  const query = (value: unknown) => {
+    const text = recordText(value, HOSTED_SEARCH_RECORD_LIMITS.queryChars);
+    if (text && !queries.includes(text)) queries.push(text);
+  };
+  const source = (url: unknown, title?: unknown) => {
+    const link = recordUrl(url);
+    if (!link) return;
+    const name = recordText(title, HOSTED_SEARCH_RECORD_LIMITS.titleChars);
+    const known = sources.get(link);
+    if (!known) sources.set(link, name ? { title: name } : {});
+    else if (name && !known.title) known.title = name;
+  };
+  return {
+    search(action: unknown) {
+      searched = true;
+      if (!isRecord(action)) return;
+      query(action.query);
+      if (Array.isArray(action.queries)) action.queries.forEach(query);
+      if (Array.isArray(action.sources)) for (const entry of action.sources) if (isRecord(entry)) source(entry.url, entry.title);
+      // An opened page, or one searched within, is a source too.
+      source(action.url);
+    },
+    source,
+    record(): ProviderHostedSearch | null {
+      if (!searched) return null;
+      // Cited sources (with their titles) first, then what the search only found.
+      const all = [...sources].map(([url, { title }]) => title ? { title, url } : { url });
+      const ordered = [...all.filter((entry) => "title" in entry), ...all.filter((entry) => !("title" in entry))];
+      return {
+        queries: queries.slice(0, HOSTED_SEARCH_RECORD_LIMITS.queries),
+        sources: ordered.slice(0, HOSTED_SEARCH_RECORD_LIMITS.sources)
+      };
+    }
+  };
+}
+
+/** The response's items with its hosted Search on its first text or call; a response with neither keeps no record. */
+function withHostedSearch(items: ProviderHistoryItem[], record: ProviderHostedSearch | null): ProviderHistoryItem[] {
+  if (!record) return items;
+  const index = items.findIndex((item) => item.type === "assistant_text" || item.type === "tool_call");
+  const carrier = items[index];
+  if (!carrier || (carrier.type !== "assistant_text" && carrier.type !== "tool_call")) return items;
+  return items.map((item, position) => position === index ? { ...carrier, hostedSearch: record } : item);
+}
+
 // ---------------------------------------------------------------- Responses
 
 /**
  * A completed Responses output as history, in output order: reasoning items
  * whole, function calls with their item id and status, assistant messages as
  * text (with `phase` when the model set one) and compaction items whole.
- * Hosted tool items (web search) stay out, as they always did between turns:
- * the answer text carries their result.
+ * Hosted tool items (web search) stay out: what they did rides on the
+ * response's first text or call as its `hostedSearch` record, with the
+ * sources its messages cite.
  */
 export function responsesHistoryFromOutput(output: unknown): ProviderHistoryItem[] {
   const items: ProviderHistoryItem[] = [];
+  const search = hostedSearchCollector();
   for (const item of Array.isArray(output) ? output : []) {
     if (!isRecord(item)) continue;
+    if (item.type === "web_search_call") {
+      search.search(item.action);
+      continue;
+    }
     if (item.type === "reasoning") {
       items.push({ native: native("openai_responses", item), type: "reasoning" });
     } else if (item.type === "compaction") {
@@ -160,6 +271,12 @@ export function responsesHistoryFromOutput(output: unknown): ProviderHistoryItem
         type: "tool_call"
       });
     } else if (item.type === "message" && (item.role === undefined || item.role === "assistant")) {
+      for (const part of Array.isArray(item.content) ? item.content : []) {
+        if (!isRecord(part) || !Array.isArray(part.annotations)) continue;
+        for (const annotation of part.annotations) {
+          if (isRecord(annotation) && annotation.type === "url_citation") search.source(annotation.url, annotation.title);
+        }
+      }
       const text = textParts(item.content, RESPONSES_TEXT_PARTS);
       if (!text) continue;
       items.push({
@@ -169,7 +286,7 @@ export function responsesHistoryFromOutput(output: unknown): ProviderHistoryItem
       });
     }
   }
-  return items;
+  return withHostedSearch(items, search.record());
 }
 
 /** The Responses input item that asks the route to compact everything before

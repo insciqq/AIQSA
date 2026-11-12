@@ -11,6 +11,7 @@ import {
   chatHistoryFromMessage,
   chatMessagesFromHistory,
   geminiHistoryFromSteps,
+  HOSTED_SEARCH_RECORD_LIMITS,
   responsesHistoryFromOutput,
   responsesInputFromHistory,
   RUN_CURRENT_INPUT_MISSING,
@@ -74,7 +75,7 @@ const responsesTurn: ProviderHistoryItem[] = [
 ];
 
 describe("provider history capture", () => {
-  it("captures a Responses output in order and leaves hosted tool items out", () => {
+  it("captures a Responses output in order, leaving hosted tool items out and their record on the first text or call", () => {
     expect(responsesHistoryFromOutput([
       { action: { type: "search" }, id: "ws_1", status: "completed", type: "web_search_call" },
       { encrypted_content: "BLOB", id: "rs_1", summary: [{ text: "Plan", type: "summary_text" }], type: "reasoning" },
@@ -86,11 +87,59 @@ describe("provider history capture", () => {
     ])).toEqual([
       { native: { fields: { encrypted_content: "BLOB", id: "rs_1", summary: [{ text: "Plan", type: "summary_text" }], type: "reasoning" },
         format: "openai_responses" }, type: "reasoning" },
-      { native: { fields: { phase: "commentary" }, format: "openai_responses" }, text: "Checking. ", type: "assistant_text" },
+      { hostedSearch: { queries: [], sources: [] }, native: { fields: { phase: "commentary" }, format: "openai_responses" },
+        text: "Checking. ", type: "assistant_text" },
       { arguments: "{}", callId: "call_1", name: "lookup_order",
         native: { fields: { id: "fc_1", status: "completed" }, format: "openai_responses" }, type: "tool_call" },
       { text: "Done.", type: "assistant_text" }
     ]);
+  });
+
+  it("records a response's hosted Search: its queries, then cited sources with titles before the ones it only found, bounded", () => {
+    const cited = (url: string, title: unknown) => ({ end_index: 1, start_index: 0, title, type: "url_citation", url });
+    const [first, ...rest] = responsesHistoryFromOutput([
+      { action: { query: "aiqsa release  notes\n", sources: [{ type: "url", url: "https://found.example/a" },
+        { type: "url", url: "https://user:secret@found.example/private" }, { type: "url", url: "javascript:alert(1)" }],
+        type: "search" }, id: "ws_1", status: "completed", type: "web_search_call" },
+      { action: { queries: ["aiqsa release notes", "aiqsa 0.4 changelog"], type: "search" }, id: "ws_2", status: "completed",
+        type: "web_search_call" },
+      { action: { type: "open_page", url: "https://opened.example/page#part" }, id: "ws_3", status: "completed", type: "web_search_call" },
+      { arguments: "{}", call_id: "call_1", name: "lookup_order", type: "function_call" },
+      { content: [{ annotations: [cited("https://cited.example/one?utm_source=openai&id=7", "One \u0007 title"),
+        cited("https://found.example/a", "Found A"), cited("https://cited.example/one?id=7&utm_medium=x", "Duplicate")],
+      text: "Answer [1].", type: "output_text" }], role: "assistant", type: "message" }
+    ]);
+    expect(first).toMatchObject({ callId: "call_1", type: "tool_call" });
+    expect(first && "hostedSearch" in first ? first.hostedSearch : null).toEqual({
+      queries: ["aiqsa release notes", "aiqsa 0.4 changelog"],
+      sources: [
+        { title: "Found A", url: "https://found.example/a" },
+        { title: "One title", url: "https://cited.example/one?id=7" },
+        { url: "https://opened.example/page" }
+      ]
+    });
+    // One record per response, on one item.
+    expect(rest).toEqual([{ text: "Answer [1].", type: "assistant_text" }]);
+
+    const many = responsesHistoryFromOutput([
+      { action: { queries: Array.from({ length: 9 }, (_, index) => `q${index} ${"x".repeat(200)}`),
+        sources: Array.from({ length: 12 }, (_, index) => ({ type: "url", url: `https://s${index}.example/` })), type: "search" },
+      id: "ws", status: "completed", type: "web_search_call" },
+      { content: [{ annotations: [cited(`https://long.example/${"p".repeat(300)}`, "Too long"),
+        cited("https://emoji.example/", `${"t".repeat(98)}😀 tail`)], text: "A.", type: "output_text" }],
+      role: "assistant", type: "message" }
+    ])[0];
+    const record = many && "hostedSearch" in many ? many.hostedSearch : null;
+    expect(record?.queries).toHaveLength(HOSTED_SEARCH_RECORD_LIMITS.queries);
+    expect(record?.queries.every((query) => query.length <= HOSTED_SEARCH_RECORD_LIMITS.queryChars && query.endsWith("…"))).toBe(true);
+    expect(record?.sources).toHaveLength(HOSTED_SEARCH_RECORD_LIMITS.sources);
+    // A title cut before an emoji never splits it.
+    expect(record?.sources[0]).toEqual({ title: `${"t".repeat(98)}…`, url: "https://emoji.example/" });
+    expect(JSON.stringify(record)).not.toContain("long.example");
+
+    // A response that did not search keeps no record.
+    expect(responsesHistoryFromOutput([{ content: [{ annotations: [cited("https://a.example/", "A")], text: "A.", type: "output_text" }],
+      role: "assistant", type: "message" }])).toEqual([{ text: "A.", type: "assistant_text" }]);
   });
 
   it("captures a Chat message's reasoning, text and calls", () => {
