@@ -28,7 +28,10 @@ const SENTINEL = "Sentinel Author Name 7f3a";
 const GUILD = 1_300_000_000_000_000_001n;
 const CHANNEL = 1_300_000_000_000_000_010n;
 
+const servers: string[] = [];
+
 afterEach(async () => {
+  await prisma.mcpServer.deleteMany({ where: { id: { in: servers.splice(0) } } });
   await prisma.discordReply.deleteMany({ where: { questionMessageId: { in: loose.splice(0) } } });
   await prisma.user.deleteMany({ where: { id: { in: users.splice(0) } } });
 });
@@ -67,13 +70,24 @@ function reply(input: Partial<Prisma.DiscordReplyCreateManyInput> & Readonly<{ s
 describe("Discord journal reads (stateful)", () => {
   it("aggregates a window without test-mode rows, lists its problems once each, and never returns a name or text", async () => {
     const service = await serviceRun();
+    const server = async (displayName: string, ownerUserId: string | null = null) => {
+      const created = await prisma.mcpServer.create({ data: { displayName, namespace: `mcp_${randomUUID().replaceAll("-", "").slice(0, 20)}`, ownerUserId } });
+      servers.push(created.id);
+      return created.id;
+    };
+    const tracker = await server("Tracker\u0007 tools");
+    const wiki = await server("Wiki");
+    const personal = await server(SENTINEL, service.userId);
+    const deleted = `server-${randomUUID()}`;
     const delivered = (seconds: number, delayS: number, extra: Partial<Prisma.DiscordReplyCreateManyInput> = {}) => reply({
       ackAt: at(seconds + 1), admittedAt: at(seconds + 2), conversationId: service.conversationId, deliveredAt: at(seconds + delayS),
       firstStatusAt: at(seconds + 3), seconds, sources: 2, ...extra
     });
     const rows = [
-      delivered(10, 10, { compactions: 1, mcpByServer: { mcp_tracker: { calls: 3, errors: 1 } }, runId: service.runId, subagents: 2 }),
-      delivered(20, 20, { mcpByServer: { mcp_tracker: { calls: 1, errors: 0 }, mcp_wiki: { calls: 2, errors: 2 } } }),
+      delivered(10, 10, {
+        compactions: 1, mcpByServer: { [personal]: { calls: 1, errors: 1 }, [tracker]: { calls: 3, errors: 1 } }, runId: service.runId, subagents: 2
+      }),
+      delivered(20, 20, { mcpByServer: { [deleted]: { calls: 5, errors: 0 }, [tracker]: { calls: 1, errors: 0 }, [wiki]: { calls: 2, errors: 2 } } }),
       delivered(30, 30, { sources: 0 }),
       delivered(40, 100),
       reply({ code: "discord_busy", kind: "refused", seconds: 50, state: "failed" }),
@@ -103,7 +117,12 @@ describe("Discord journal reads (stateful)", () => {
 
     const telemetry = await readDiscordMonitoringTelemetry(prisma, WINDOW, at(4_000));
     expect(decodeDiscordMonitoringTelemetry(telemetry)).not.toBeNull();
-    expect(telemetry.mcpByServer).toEqual([{ calls: 4, errors: 1, serverId: "mcp_tracker" }, { calls: 2, errors: 2, serverId: "mcp_wiki" }]);
+    // Servers by their administrator's name; a deleted one is `other`, a personal one `personal`; never an id.
+    expect(telemetry.mcpByServer).toEqual([
+      { calls: 5, errors: 0, server: "other" }, { calls: 4, errors: 1, server: "Tracker tools" }, { calls: 2, errors: 2, server: "Wiki" },
+      { calls: 1, errors: 1, server: "personal" }
+    ]);
+    for (const id of [tracker, wiki, personal, deleted]) expect(JSON.stringify(telemetry)).not.toContain(id);
     const kinds = new Map(telemetry.problems.map((problem) => [problem.questionMessageId, problem]));
     const id = (index: number) => rows[index]!.questionMessageId.toString();
     expect(telemetry.problems.map((problem) => problem.questionMessageId)).toEqual([8, 7, 6, 5, 4, 3, 2, 0].map(id));

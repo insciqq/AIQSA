@@ -287,6 +287,6 @@ describe("Discord lifecycle: ratings", () => {
     expect(discordRatedDownComment({ discordUserId: "1100000000000000020", displayName: "Alex", test: false })).toBe("Discord: rated 👎 by Alex");
     expect(discordRatedDownComment({ discordUserId: "1100000000000000020", displayName: "  ", test: true }))
       .toBe("Discord (test): rated 👎 by discord:1100000000000000020");
-    expect(discordRatedDownComment({ discordUserId: "1100000000000000020", displayName: "A\u0007lex‮", test: false })).toBe("Discord: rated 👎 by Alex");
+    expect(discordRatedDownComment({ discordUserId: "1100000000000000020", displayName: "A\u0007lex\u202e", test: false })).toBe("Discord: rated 👎 by Alex");
   });
 });
