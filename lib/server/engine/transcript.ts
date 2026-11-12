@@ -203,7 +203,8 @@ export function hostedSearchNote(search: ProviderHostedSearch): string {
     ? `Queries: ${search.queries.map((query) => JSON.stringify(query)).join("; ")}`
     : "Queries: the search reported none.";
   const sources = search.sources.length > 0
-    ? ["Sources it found:", ...search.sources.map((source) => `- ${source.title ? `${source.title} — ` : ""}${source.url}`)]
+    // A title is quoted like a query, so page text never reads as the record's own words.
+    ? ["Sources it found:", ...search.sources.map((source) => `- ${source.title ? `${JSON.stringify(source.title)} — ` : ""}${source.url}`)]
     : ["Sources: the search reported none."];
   return [
     "[Record added by the server, not part of your reply: in this response you used the built-in web search.",
