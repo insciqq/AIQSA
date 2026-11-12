@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectTranscript } from "../transcript";
+import { hostedSearchNote, selectTranscript } from "../transcript";
 import { CODEX, charTokens, handleFor, transcriptBuilder } from "./compaction.testFixtures";
 import {
   chunkParts,
@@ -55,6 +55,18 @@ describe("serialized span", () => {
       "[Assistant]\nMargins pulled."
     ]);
     expect(parts.join("\n")).not.toMatch(/ENC-|rs_i/u);
+  });
+
+  it("writes a response's hosted Search record before its text, so the summary can keep that the answer searched", () => {
+    const chat = transcriptBuilder();
+    chat.user("What changed?");
+    chat.items.push({ hostedSearch: { queries: ["aiqsa release notes"], sources: [{ title: "Notes", url: "https://cited.example/notes" }] },
+      id: "a-search", kind: "assistant_text", origin: CODEX, text: "It shipped." });
+    expect(serializeEntries(selectTranscript(chat.items, CODEX).entries, OPTIONS)).toEqual([
+      "[User]\nWhat changed?",
+      hostedSearchNote({ queries: ["aiqsa release notes"], sources: [{ title: "Notes", url: "https://cited.example/notes" }] }),
+      "[Assistant]\nIt shipped."
+    ]);
   });
 
   it("leaves run context out and keeps more of a result nothing can read again", () => {
