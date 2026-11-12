@@ -248,6 +248,11 @@ export async function waitForReaction(fake: FakeDiscord, messageId: string, emoj
   await expect.poll(() => botReacted(fake, messageId, emoji), { message: `the bot reacts ${emoji}`, timeout }).toBe(true);
 }
 
+/** Waits until an answered question has no reaction of the bot: its 👀 came off and nothing went on (the answer is the signal). */
+export async function waitForAnsweredReactions(fake: FakeDiscord, messageId: string, timeout = DISCORD_REPLY_TIMEOUT_MS): Promise<void> {
+  await expect.poll(() => fake.reactionsBy(messageId, fake.bot.id), { message: "the bot's reactions are gone", timeout }).toEqual([]);
+}
+
 /** The text of the chat's user turns (what the run was given), oldest first. */
 export async function chatUserText(prisma: PrismaClient, chatId: string): Promise<string> {
   const messages = await prisma.message.findMany({ orderBy: { createdAt: "asc" }, select: { content: true }, where: { chatId, role: "user" } });

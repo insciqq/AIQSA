@@ -11,17 +11,18 @@ import type { DiscordUploadFile } from "../transport";
  * admitted, one status message (a Reply when the question is in the same
  * channel, without pinging anyone) reading "Working · 0:12 — Searching the
  * web", edited at most every 5 s and only when its text changed; at the end
- * the same message is edited into the answer (or the failure), 👀 comes off
- * and ✅ or ❌ goes on. Activities are short fixed labels from the run's
- * events, never tool arguments; an MCP server is named by its display name,
- * redacted and escaped. Every created message has a stable nonce, so a repeat
- * after an ambiguous failure never posts twice.
+ * the same message is edited into the answer (or the failure) and 👀 comes
+ * off. A failure also gets ❌; an answer gets no reaction, since the answer
+ * itself is the signal (owner decision 2026-11-12). Activities are short
+ * fixed labels from the run's events, never tool arguments; an MCP server
+ * is named by its display name, redacted and escaped. Every created message
+ * has a stable nonce, so a repeat after an ambiguous failure never posts
+ * twice.
  */
 
 export const DISCORD_STATUS_EDIT_INTERVAL_MS = 5_000;
 export const DISCORD_TYPING_INTERVAL_MS = 8_000;
 export const DISCORD_REACTION_SEEN = "👀";
-export const DISCORD_REACTION_DONE = "✅";
 export const DISCORD_REACTION_FAILED = "❌";
 
 /** The activity a run event names; undefined keeps the current one. */
