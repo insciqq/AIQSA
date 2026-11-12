@@ -1,5 +1,6 @@
 import type { ConnectorRunStreamEvent } from "../../connectors/runEvents";
 import { DISCORD_BRIDGE_COPY, discordUsingServerText } from "../copy";
+import { discordTransportFailureCode } from "../codes";
 import { formatDiscordStatus } from "../render";
 import { discordStableNonce, type DiscordLinkButton, type DiscordRest, type DiscordRestFailure } from "../rest";
 import type { DiscordUploadFile } from "../transport";
@@ -51,7 +52,15 @@ export type DiscordFinalMessage = Readonly<{
   content: string;
   buttons?: readonly (readonly DiscordLinkButton[])[];
   files?: readonly DiscordUploadFile[];
+  /** The content to send without `files` when Discord refuses them; absent, a refusal fails the message. */
+  withoutFiles?: string;
 }>;
+
+/** Discord refused the files rather than the message: a missing permission, a file it will not take, or too large to send. */
+function filesRefused(failure: DiscordRestFailure): boolean {
+  return (failure.delivery === "refused" && (failure.status === 400 || failure.status === 403 || failure.status === 413)) ||
+    (failure.delivery === "not_sent" && failure.code === discordTransportFailureCode("too_large"));
+}
 
 /** How the final message went: `sent` with its id, or Discord's failure as the REST client reported it. */
 export type DiscordFinalOutcome =
@@ -176,16 +185,21 @@ export function createDiscordStatusMessage(input: DiscordStatusInput): DiscordSt
       stopTicker();
       await chain;
       const rest = input.rest();
-      const payload = { content: message.content, ...(message.buttons ? { buttons: message.buttons } : {}),
-        ...(message.files?.length ? { files: message.files } : {}) };
+      const buttons = message.buttons ? { buttons: message.buttons } : {};
+      const payload = { content: message.content, ...buttons, ...(message.files?.length ? { files: message.files } : {}) };
+      // Refused files never cost the answer: it goes again without them, saying they are in AIQSA.
+      const plain = message.files?.length && message.withoutFiles !== undefined ? { content: message.withoutFiles, ...buttons } : null;
       if (messageId) {
-        const edited = await rest.editMessage(input.answerChannelId, messageId, payload);
+        let edited = await rest.editMessage(input.answerChannelId, messageId, payload);
+        if (!edited.ok && plain && filesRefused(edited)) edited = await rest.editMessage(input.answerChannelId, messageId, plain);
         if (edited.ok) return { kind: "sent" as const, messageId: edited.value.id };
         // The status is gone (deleted by someone): the answer is posted on its own, once.
         if (!(edited.delivery === "refused" && edited.status === 404)) return { failure: edited, kind: "failed" as const };
       }
-      const created = await rest.createMessage(input.answerChannelId, { ...payload, ...(input.replyTo ? { replyTo: input.replyTo } : {}) },
-        { nonce: discordStableNonce(input.questionMessageId, "a") });
+      const replyTo = input.replyTo ? { replyTo: input.replyTo } : {};
+      const nonce = { nonce: discordStableNonce(input.questionMessageId, "a") };
+      let created = await rest.createMessage(input.answerChannelId, { ...payload, ...replyTo }, nonce);
+      if (!created.ok && plain && filesRefused(created)) created = await rest.createMessage(input.answerChannelId, { ...plain, ...replyTo }, nonce);
       if (!created.ok) return { failure: created, kind: "failed" as const };
       messageId = created.value.id;
       return { kind: "sent" as const, messageId: created.value.id };

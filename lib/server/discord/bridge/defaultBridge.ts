@@ -5,6 +5,11 @@ import { prisma } from "../../prisma";
 import { discordControlHooks } from "../control/hooks";
 import { isDiscordBotActive } from "../control/state";
 import type { DiscordDefaults } from "../defaultDiscord";
+import { createDiscordAnswerFiles, createDiscordAttachments } from "../files";
+import { createDiscordTransport, type DiscordTransport } from "../transport";
+import { getRunAttachmentLimits } from "../../runs/attachmentLimits";
+import { defaultTelegramFileReader } from "../../telegram/files";
+import { defaultUploadMaxBytes } from "../../uploads/validation";
 import { createDiscordBridge, type DiscordBridge, type DiscordShareLinks } from "./index";
 import { createPrismaDiscordRunFacts } from "./runFacts";
 import { createDiscordUploads, type DiscordUploadServices } from "./uploads";
@@ -80,7 +85,24 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
       upload: ({ request, userId }) => createUploadHandler({ ...defaultUploadHandlerDeps, resolveAuth: auth(userId) })(request)
     };
   });
+  const uploads = createDiscordUploads({ services: uploadServices });
+  // CDN downloads carry no token: their own transport over the same network settings (allowlist, egress address, test origin).
+  let cdn: DiscordTransport | undefined;
+  const attachments = createDiscordAttachments({
+    download: async (input) => (cdn ??= createDiscordTransport()).download(input),
+    limits: () => {
+      const run = getRunAttachmentLimits();
+      return {
+        runMaxBytes: Math.min(run.maxMaterializedBytes, Math.floor(run.maxEncodedBytes * 3 / 4)), runMaxCount: run.maxCount,
+        uploadMaxBytes: defaultUploadMaxBytes()
+      };
+    },
+    rest: discord.rest,
+    uploads
+  });
   const bridge = createDiscordBridge({
+    answerFiles: createDiscordAnswerFiles({ read: defaultTelegramFileReader() }),
+    attachments,
     control: discord.control,
     conversations: discord.conversations,
     facts: createPrismaDiscordRunFacts(prisma),
@@ -91,7 +113,7 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
     rest: discord.rest,
     setupReady: async () => (await discord.controlService.health()).setupReady,
     shares,
-    uploads: createDiscordUploads({ services: uploadServices })
+    uploads
   });
   const removers = [bridge.register(discord.registry)];
   const unregister = () => {

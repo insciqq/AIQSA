@@ -853,6 +853,17 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
       message.edited_timestamp = timestamp();
       dispatch("MESSAGE_UPDATE", messageEvent(message));
     },
+    /** Signs a message's attachments anew, as Discord's expiry does: the URLs handed out so far answer 404. */
+    expireAttachmentUrls(channelId: string, messageId: string): void {
+      const message = findMessage(channelId, messageId);
+      message.attachments = message.attachments.map((attachment) => {
+        const file = files.get(attachment.id);
+        if (!file) return attachment;
+        const old = file.signature;
+        file.signature = randomBytes(16).toString("hex");
+        return { ...attachment, url: attachment.url.replace(`hm=${old}`, `hm=${file.signature}`), proxy_url: attachment.proxy_url.replace(`hm=${old}`, `hm=${file.signature}`) };
+      });
+    },
     deleteMessage: removeMessage,
     bulkDelete(channelId: string, messageIds: readonly string[]): void {
       const list = messages.get(channelId) ?? [];

@@ -11,13 +11,15 @@ import type { DiscordFinalMessage } from "./status";
  * replaced first; an answer that had to be cut gets an **Open in AIQSA** link
  * button to a read-only share of the chat at that answer (or the link as a
  * line, where the installation has no https address). Answer files and their
- * "only in AIQSA" line come from the files hook (`dc-files`).
+ * "only in AIQSA" line come from the files hook (`lib/server/discord/files.ts`).
  */
 
 export type DiscordAnswerFiles = Readonly<{
   files: readonly DiscordUploadFile[];
   /** A line under the answer, such as "2 files are only in AIQSA". */
   note: string | null;
+  /** The line in place of `note` when Discord refuses the files (every file stays in AIQSA); the answer then goes without them. */
+  fallbackNote?: string | null;
 }>;
 
 /** Outgoing files of a delivered answer (`dc-files`); the default attaches nothing. */
@@ -47,7 +49,8 @@ export async function composeDiscordAnswer(input: Readonly<{
   files: DiscordAnswerFiles;
 }>): Promise<DiscordComposedAnswer> {
   const note = input.files.note ? discordInlineText(input.files.note, 200) : null;
-  const reserve = note?.content ? note.content.length + 2 : 0;
+  const fallback = input.files.files.length > 0 && input.files.fallbackNote ? discordInlineText(input.files.fallbackNote, 200) : null;
+  const reserve = Math.max(note?.content ? note.content.length + 2 : 0, fallback?.content ? fallback.content.length + 2 : 0);
   const rendered = renderDiscordAnswer({
     citations: input.answer.artifactSummary?.citations ?? [], markdown: input.answer.text, maxChars: DISCORD_MESSAGE_MAX_CHARS, reserve
   });
@@ -69,11 +72,13 @@ export async function composeDiscordAnswer(input: Readonly<{
       }
     }
   }
+  // Discord may refuse the files (no Attach Files permission, a file it will not take): the answer then goes alone.
+  const withoutFiles = fallback?.content ? (content ? `${content}\n\n${fallback.content}` : fallback.content) : undefined;
   if (note?.content) content = content ? `${content}\n\n${note.content}` : note.content;
   // A complete answer with nothing to show is no answer: the question is not left blank.
   if (!content.trim() && input.files.files.length === 0) content = discordFailureStatus(DISCORD_COPY.somethingWrong);
   return {
     ...(buttons ? { buttons } : {}), content, ...(input.files.files.length > 0 ? { files: input.files.files } : {}), redactions,
-    shared, truncated: rendered.truncated
+    shared, truncated: rendered.truncated, ...(withoutFiles !== undefined ? { withoutFiles } : {})
   };
 }
