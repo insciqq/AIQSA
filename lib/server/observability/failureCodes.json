@@ -175,6 +175,7 @@
   "discord_mcp_not_granted",
   "discord_message_content_disabled",
   "discord_model_unavailable",
+  "discord_monitoring_failed",
   "discord_monthly_budget",
   "discord_network_after_send",
   "discord_network_before_send",
