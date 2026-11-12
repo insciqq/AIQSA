@@ -40,6 +40,7 @@ async function share(activeLeafMessageId: string) {
   const created: unknown[] = [];
   const tx = {
     answerReviewSession: { findMany: async () => [{ id: "s", sourceAssistantMessageId: "a" }] },
+    discordConversation: { findUnique: async () => null },
     chat: { findFirst: async () => ({ activeLeafMessageId: "v2", id: "c", messages, title: "Chat" }) },
     message: { findMany: async () => [] },
     sharedChatSnapshot: { create: async ({ data }: { data: unknown }) => { created.push(data); return { id: "share" }; } }
@@ -78,6 +79,7 @@ describe("createChatShare with quiet checks", () => {
     const created: Array<{ snapshot: { messages: Array<{ content: { blocks: Array<{ text: string }> }; role: string }> } }> = [];
     const tx = {
       answerReviewSession: { findMany: async () => [] },
+      discordConversation: { findUnique: async () => null },
       chat: { findFirst: async () => ({ activeLeafMessageId: "q2-a", id: "c", messages: checks, title: "Chat" }) },
       message: { findMany: async () => [] },
       modelRun: { findMany: async (args: { where: { userMessageId: { in: string[] } } }) => args.where.userMessageId.in
@@ -105,6 +107,7 @@ describe("createChatShare ownership", () => {
     const create = vi.fn(async () => ({ id: "share" }));
     const tx = {
       answerReviewSession: { findMany: async () => [] },
+      discordConversation: { findUnique: async () => null },
       chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", messages, title: "Chat" })) },
       message: { findMany: async () => [] },
       sharedChatSnapshot: { create }
@@ -114,5 +117,41 @@ describe("createChatShare ownership", () => {
     await repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" });
     expect(tx.chat.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: "c", userId: "u" }) }));
     expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ chatId: "c", ownerUserId: "u" }) });
+  });
+});
+
+describe("createChatShare for a Discord chat", () => {
+  async function shareDiscord(bound: boolean) {
+    const created: Array<{ snapshot: { messages: Array<{ content: { blocks: Array<{ text: string }> } }>; title: string }; title: string }> = [];
+    const tx = {
+      answerReviewSession: { findMany: async () => [] },
+      chat: { findFirst: async () => ({ activeLeafMessageId: "a", id: "c", title: "Thread token=abcd1234efgh5678ijkl", messages: [
+        row("q", null, "user", "Question from Alice (discord:1100000000000000020):\nWhat is DB_PASSWORD?"),
+        row("a", "q", "assistant", "It is DB_PASSWORD=s3cr3t-Value-Only-Here and the key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd")
+      ] }) },
+      discordConversation: { findUnique: vi.fn(async () => (bound ? { id: "conversation-1" } : null)) },
+      message: { findMany: async () => [] },
+      sharedChatSnapshot: { create: async ({ data }: { data: (typeof created)[number] }) => { created.push(data); return { id: "share" }; } }
+    };
+    const repository = createPrismaShareRepository({ $transaction: async (work: (client: typeof tx) => unknown) => work(tx) } as never);
+    await repository.createChatShare({ activeLeafMessageId: "a", chatId: "c", shareToken: "synthetic", slugHash: "synthetic", userId: "u" });
+    expect(tx.discordConversation.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { chatId: "c" } }));
+    return created[0]!;
+  }
+
+  it("redacts the secrets of a chat bound to a Discord conversation, its title included", async () => {
+    const data = await shareDiscord(true);
+    const text = JSON.stringify(data);
+    expect(text).not.toContain("s3cr3t-Value-Only-Here");
+    expect(text).not.toContain("sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    expect(text).not.toContain("abcd1234efgh5678ijkl");
+    expect(text).toContain("[redacted]");
+    expect(data.snapshot.messages[0]!.content.blocks[0]!.text).toContain("What is DB_PASSWORD?");
+    expect(data.title).toBe(data.snapshot.title);
+  });
+
+  it("keeps another chat's text as it is", async () => {
+    const data = await shareDiscord(false);
+    expect(JSON.stringify(data)).toContain("s3cr3t-Value-Only-Here");
   });
 });
