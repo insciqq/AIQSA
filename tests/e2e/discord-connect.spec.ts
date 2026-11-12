@@ -6,7 +6,7 @@ import { FAKE_DISCORD_CHANNEL_TYPES, type FakeDiscordMessage } from "../support/
 import { createAssistantFixture } from "./support/assistants";
 import {
   answerMessage, botMessages, chatUserText, discordCommand, discordReply, discordState, disableDiscord, grantServiceAccountFullAccess, openPeopleThread,
-  say, startDiscordStand, waitForDiscordReply, waitForGateway, waitForReaction, type DiscordReplyView, type DiscordStand
+  say, startDiscordStand, waitForDiscordReply, waitForGateway, waitForAnsweredReactions, type DiscordReplyView, type DiscordStand
 } from "./support/discordStand";
 import { createPeopleFixture, type E2ESession } from "./support/people";
 
@@ -50,7 +50,7 @@ async function afterMergeWindow(previous: FakeDiscordMessage): Promise<void> {
 async function delivered(question: FakeDiscordMessage, since: number): Promise<DiscordReplyView> {
   const reply = await waitForDiscordReply(prisma, stand.fake, question.id, { since });
   expect(reply.state, `answer state (${reply.code ?? "no code"})`).toBe("delivered");
-  await waitForReaction(stand.fake, question.id, "✅");
+  await waitForAnsweredReactions(stand.fake, question.id);
   return reply;
 }
 
@@ -152,7 +152,7 @@ test("an administrator sets the bot up in Admin → Discord: token, server, chan
   expect(fake.violations()).toEqual([]);
 });
 
-test("a mention in a channel opens a thread, its Working status becomes the answer and the question gets ✅", async () => {
+test("a mention in a channel opens a thread, its Working status becomes the answer and the question's 👀 comes off", async () => {
   const { fake } = stand;
   const since = fake.calls().length;
   const topic = marker("release");

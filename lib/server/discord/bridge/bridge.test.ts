@@ -178,7 +178,7 @@ function stages(messageId: string): string[] {
 }
 
 describe("Discord bridge: a mention becomes a run and its answer", () => {
-  it("opens a thread from a channel mention, edits the status into the answer, reacts ✅ and writes the journal", async () => {
+  it("opens a thread from a channel mention, edits the status into the answer, takes its 👀 back with no other reaction and writes the journal", async () => {
     const h = harness();
     const alice = h.user("alice");
     const question = await h.say(mention(h, alice, "what is the release status?"));
@@ -200,8 +200,11 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     const answers = botMessages(h, thread.id);
     expect(answers).toHaveLength(1);
     expect(answers[0]!.content).toBe("The answer.");
-    expect(h.fake.reactions(question.id, "✅")).toEqual([h.fake.bot.id]);
-    expect(h.fake.reactions(question.id, "👀")).toEqual([]);
+    // The answer is the signal: 👀 comes off and nothing goes on (owner decision 2026-11-12).
+    expect(h.fake.calls({ route: "add_own_reaction" }).map((call) => decodeURIComponent(call.path))).toEqual([
+      `/channels/${question.channel_id}/messages/${question.id}/reactions/👀/@me`
+    ]);
+    expect(h.fake.reactionsBy(question.id, h.fake.bot.id)).toEqual([]);
     expect(h.fake.violations()).toEqual([]);
     for (const call of [...h.fake.calls({ route: "create_message" }), ...h.fake.calls({ route: "edit_message" })]) {
       expect(call.json).toMatchObject({ allowed_mentions: { parse: [] }, flags: 4 });
@@ -254,7 +257,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(text).toContain(`carol (discord:${carol}): and the deadlines?`);
     // The call name and its delimiter are not part of the question.
     expect(text).toMatch(/Question from carol \(discord:\d+\), message https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+:\nwhat about the deadlines\?$/u);
-    expect(h.fake.reactions(asked.id, "✅")).toEqual([h.fake.bot.id]);
+    expect(h.fake.reactionsBy(asked.id, h.fake.bot.id)).toEqual([]);
     // A mention and a Reply to the bot still ask there.
     const mentioned = await h.say(mention(h, bob, "and the budget?", threadId));
     await h.settle();
@@ -262,7 +265,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     const replied = await h.say({ authorId: alice, channelId: threadId, content: "shorter please", replyTo: answer.id });
     await h.settle();
     expect(h.runs.runs).toHaveLength(4);
-    for (const id of [mentioned.id, replied.id]) expect(h.fake.reactions(id, "✅"), id).toEqual([h.fake.bot.id]);
+    for (const id of [mentioned.id, replied.id]) expect(h.fake.reactionsBy(id, h.fake.bot.id), id).toEqual([]);
     // Ordinary talk is no log record.
     expect(logs.filter((entry) => entry.event === "discord_intake" && entry.fields.outcome === "ignored")).toEqual([]);
   });
@@ -388,7 +391,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
 });
 
 describe("Discord bridge: follow-ups, order and parallel threads", () => {
-  it("adds a question asked during a run to it (👀 then ✅ on both) and keeps one thread's questions in order", async () => {
+  it("adds a question asked during a run to it (👀 on both, taken back with the answer) and keeps one thread's questions in order", async () => {
     const h = harness({ finish: null });
     const [alice, bob] = [h.user("alice"), h.user("bob")];
     const first = await h.say(mention(h, alice, "start the report"));
@@ -404,9 +407,24 @@ describe("Discord bridge: follow-ups, order and parallel threads", () => {
     expect(h.fake.reactions(second.id, "👀")).toEqual([h.fake.bot.id]);
     run!.finish({ text: "Report with Y and Z." });
     await h.settle();
-    for (const id of [first.id, second.id, third.id]) expect(h.fake.reactions(id, "✅"), id).toEqual([h.fake.bot.id]);
+    for (const id of [first.id, second.id, third.id]) expect(h.fake.reactionsBy(id, h.fake.bot.id), id).toEqual([]);
     expect(h.replies.rows.get(second.id)).toMatchObject({ kind: "follow_up", runId: run!.runId, state: "delivered" });
     expect(botMessages(h, first.id)).toHaveLength(1);
+  });
+
+  it("ends a question asked during a run as the run ends: ❌ on both after a failure, no reaction after a Stop", async () => {
+    for (const [status, expected] of [["error", ["❌"]], ["cancelled", []]] as const) {
+      const h = harness({ finish: null });
+      const alice = h.user("alice");
+      const first = await h.say(mention(h, alice, "start the report"));
+      await h.settle();
+      const second = await h.say({ authorId: alice, channelId: first.id, content: "Agent, include Y" });
+      await h.settle();
+      expect(h.fake.reactions(second.id, "👀"), status).toEqual([h.fake.bot.id]);
+      h.runs.runs[0]!.finish({ code: "provider_unavailable", status });
+      await h.settle();
+      for (const id of [first.id, second.id]) expect(h.fake.reactionsBy(id, h.fake.bot.id), `${status} ${id}`).toEqual(expected);
+    }
   });
 
   it("runs two threads side by side", async () => {
@@ -621,7 +639,7 @@ describe("Discord bridge: one answer per question, across replays and restarts",
     expect(answers).toHaveLength(1);
     expect(answers[0]!.content).toBe("Done after restart.");
     expect(stores.replies.rows.get(question.id)).toMatchObject({ answerMessageId: answers[0]!.id, state: "delivered" });
-    expect(fake.reactions(question.id, "✅")).toEqual([fake.bot.id]);
+    expect(fake.reactionsBy(question.id, fake.bot.id)).toEqual([]);
   });
 
   it("retires a claimed question whose author edited the call name out, with no run, reply or reaction, and takes its 👀 back", async () => {
@@ -775,7 +793,7 @@ describe("Discord bridge: logs stay content-free", () => {
 });
 
 describe("Discord bridge: joined messages, the kill switch, test authors and a full lane", () => {
-  it("joins the same author's next message to the question; a later handler for it gets the answer's ✅, not a second run", async () => {
+  it("joins the same author's next message to the question; a later handler for it gets the answer's ending, not a second run", async () => {
     const h = harness({ finish: null, timing: { mergeWindowMs: 1_500 } });
     const alice = h.user("alice");
     const first = await h.say(mention(h, alice, "first part"));
@@ -789,7 +807,8 @@ describe("Discord bridge: joined messages, the kill switch, test authors and a f
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(h.runs.runs[0]!.followups).toEqual([]);
-    expect(h.fake.reactions(second.id, "✅")).toEqual([h.fake.bot.id]);
+    expect(h.replies.rows.get(second.id)).toMatchObject({ kind: "follow_up", state: "delivered" });
+    expect(h.fake.reactionsBy(second.id, h.fake.bot.id)).toEqual([]);
     expect(h.fake.channel(second.id)).toBeUndefined();
     expect(botMessages(h, first.id)).toHaveLength(1);
   });
@@ -846,7 +865,8 @@ describe("Discord bridge: joined messages, the kill switch, test authors and a f
     await h.settle();
     expect(h.replies.rows.get(addressed.id)).toMatchObject({ kind: "follow_up", runId: h.runs.runs[1]!.runId });
     expect(h.replies.rows.has(aside.id)).toBe(false);
-    expect(h.fake.reactions(second.id, "✅")).toEqual([h.fake.bot.id]);
+    expect(h.replies.rows.get(second.id)).toMatchObject({ state: "delivered" });
+    expect(h.fake.reactionsBy(second.id, h.fake.bot.id)).toEqual([]);
 
     // A direct message always asks, so the same author's plain next message joins it.
     const dm = h.fake.openDm(alice);
@@ -1255,6 +1275,6 @@ describe("Discord bridge: review fixes", () => {
     await h.bridge.recover(new Date(h.now()));
     expect(botMessages(h, question.id).map((message) => message.content)).toEqual(["Delivered later."]);
     expect(h.replies.rows.get(question.id)).toMatchObject({ code: null, state: "delivered" });
-    expect(h.fake.reactions(question.id, "✅")).toEqual([h.fake.bot.id]);
+    expect(h.fake.reactionsBy(question.id, h.fake.bot.id)).toEqual([]);
   });
 });
