@@ -29,10 +29,12 @@ export function createPrismaDiscordSetupSources(deps: Readonly<{
 
   async function credentialSource(userId: string, providerModelId: string): Promise<"own" | "shared" | "unavailable"> {
     const model = await prisma.providerModel.findUnique({
-      select: { connection: { select: { defaultCredentialId: true, id: true, unassignedPolicy: true } } },
+      select: { connection: { select: { defaultCredentialId: true, family: true, id: true, unassignedPolicy: true } } },
       where: { id: providerModelId }
     });
     if (!model) return "unavailable";
+    // Like run admission (`lib/server/providerRuntime/admission.ts`): the fake family needs no key.
+    if (model.connection.family === "fake") return "shared";
     const connectionId = model.connection.id;
     const [credentials, memberships, direct] = await Promise.all([
       prisma.providerCredential.findMany({
