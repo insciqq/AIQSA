@@ -6962,7 +6962,7 @@ model DiscordReply {
   test              Boolean               @default(false)
   runId             String?
   expectedLeafId    String?
-  /// The new chat's id, written before its first send, so recovery asks again into the same chat, never a second one.
+  /// The new chat's id, set once before the send, so every attempt (live or recovered) admits into this one chat.
   plannedChatId     String?
   statusMessageId   BigInt?
   answerMessageId   BigInt?
@@ -6974,8 +6974,8 @@ model DiscordReply {
   admittedAt        DateTime?
   firstStatusAt     DateTime?
   deliveredAt       DateTime?
-  /// When recovery claimed the question to ask it again: once, by one process.
-  readmitAt         DateTime?
+  /// When one attempt, live or recovered, claimed the question's one send: set once, never sent again by another.
+  sendClaimedAt     DateTime?
   /// `{ "<mcp server id>": { "calls": n, "errors": n } }` of the run.
   mcpByServer       Json?
   compactions       Int?
