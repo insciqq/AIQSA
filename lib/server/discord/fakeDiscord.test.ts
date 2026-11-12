@@ -139,3 +139,42 @@ describe("fake Discord REST", () => {
     expect(fake.violations()).toEqual(["gateway:op_3"]);
   });
 });
+
+describe("fake Discord for a browser stand", () => {
+  it("gives current, increasing snowflakes and wall-clock message times with liveClock", () => {
+    const before = Date.now();
+    const fake = createFakeDiscord({ liveClock: true });
+    const author = fake.addUser({ username: "ivy" });
+    const first = fake.postMessage({ channelId: fake.channels.text, authorId: author, content: "one" });
+    const second = fake.postMessage({ channelId: fake.channels.text, authorId: author, content: "two" });
+    const after = Date.now();
+    const snowflakeTime = (id: string) => Number((BigInt(id) >> 22n) + 1_420_070_400_000n);
+    expect(BigInt(second.id)).toBeGreaterThan(BigInt(first.id));
+    expect(snowflakeTime(first.id)).toBeGreaterThanOrEqual(before);
+    expect(snowflakeTime(second.id)).toBeLessThanOrEqual(after);
+    expect(Date.parse(first.timestamp)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(second.timestamp)).toBeGreaterThan(Date.parse(first.timestamp));
+    expect(Date.parse(second.timestamp)).toBeLessThan(after + 1_000);
+    // Without it, ids and times stay the fixed synthetic ones the other scenarios rely on.
+    expect(createFakeDiscord().application.id).toBe("1100000000000000000");
+  });
+
+  it("listens on the ports it is given", async () => {
+    const probe = createFakeDiscord();
+    const free = await probe.start();
+    const port = Number(new URL(free.origin).port);
+    const resumePort = Number(new URL(free.resumeGatewayUrl).port);
+    await free.stop();
+    const fake = createFakeDiscord();
+    const server = await fake.start({ port, resumePort });
+    try {
+      expect(server.origin).toBe(`http://127.0.0.1:${port}`);
+      expect(server.gatewayUrl).toBe(`ws://127.0.0.1:${port}`);
+      expect(server.resumeGatewayUrl).toBe(`ws://localhost:${resumePort}`);
+      const response = await fetch(`${server.origin}/api/v10/users/@me`, { headers: { authorization: `Bot ${fake.token}` } });
+      expect(await response.json()).toMatchObject({ id: fake.bot.id });
+    } finally {
+      await server.stop();
+    }
+  });
+});
