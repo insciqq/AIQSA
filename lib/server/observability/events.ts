@@ -296,6 +296,8 @@ export type EventFields = {
   discord_request: DiscordEventIds & Readonly<{
     stage: "received" | "acked" | "admitted" | "first_status" | "delivered" | "failed" | "interrupted" | "limited";
     kind?: "answer" | "follow_up" | "refused"; duration_ms?: number; code?: string; limit_kind?: "author" | "thread" | "key";
+    /** Secrets replaced in what the stage sent to Discord (a count, never what was found). */
+    redactions?: number;
   }>;
   discord_run_summary: DiscordEventIds & Readonly<{
     mcp_server?: string; mcp_calls?: number; mcp_errors?: number; compactions?: number; subagents?: number;
