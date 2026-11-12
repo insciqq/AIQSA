@@ -836,6 +836,22 @@ describe("a sub-agent's children on PostgreSQL", () => {
     expect(await store.callerAvailable({ ...scope, userId: f.otherId })).toBe(false);
   }));
 
+  it("is not available to a run a Discord question started, whatever the request said", async () => fixture(async (f) => {
+    const scope = { chatId: f.chatId, parentRunId: f.main.runId, userId: f.userId };
+    expect(await store.callerAvailable(scope)).toBe(true);
+    // A synthetic snowflake unique to this run of the test.
+    const questionMessageId = 1_100_000_000_000_000_000n + BigInt(Math.floor(Math.random() * 1_000_000_000));
+    await prisma.discordReply.create({ data: {
+      authorName: "Synthetic author", channelId: 1_100_000_000_000_000_010n, discordUserId: 1_100_000_000_000_000_012n,
+      questionMessageId, runId: f.main.runId
+    } });
+    try {
+      expect(await store.callerAvailable(scope)).toBe(false);
+    } finally {
+      await prisma.discordReply.delete({ where: { questionMessageId } });
+    }
+  }));
+
   it("shows a child on its parent's branch, names its parent, and reads its brief from the call in its parent's run", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const thread = await childThread(f, parent, "one");

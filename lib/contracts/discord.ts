@@ -37,9 +37,8 @@ export const DISCORD_REASON_CODES = [
   "discord_key_limit",
   "discord_mcp_not_granted",
   "discord_message_content_disabled",
-  "discord_message_limit_low",
   "discord_model_unavailable",
-  "discord_no_budget",
+  "discord_monthly_budget",
   "discord_question_deleted",
   "discord_reply_expired",
   "discord_search_disabled",
@@ -66,12 +65,19 @@ export const DISCORD_HEALTH_CODES = [
 export type DiscordHealthCode = (typeof DISCORD_HEALTH_CODES)[number];
 export const discordHealthCodeSchema = z.enum(DISCORD_HEALTH_CODES);
 
-/** Setup check items (D-10), each with its own code; warnings never block Enable. */
+/**
+ * Setup check items (D-10), each with its own code; warnings never block
+ * Enable. An item whose prerequisite failed is left out rather than shown as
+ * passed. `discord_monthly_budget` warns that a monthly budget applies to the
+ * service account (its own, a group's or the installation default): reaching
+ * it stops every Discord thread at once (PRD D-12e). Per-user message limits
+ * never apply to Discord runs, so they have no item.
+ */
 export const DISCORD_SETUP_CHECK_CODES = [
   "discord_token_missing", "discord_token_rejected", "discord_message_content_disabled", "discord_guild_missing",
   "discord_service_account_missing", "discord_service_account_inactive", "discord_assistant_missing",
   "discord_assistant_unavailable", "discord_model_unavailable", "discord_search_disabled", "discord_mcp_not_granted",
-  "discord_shared_key", "discord_no_budget", "discord_message_limit_low"
+  "discord_shared_key", "discord_monthly_budget"
 ] as const satisfies readonly DiscordReasonCode[];
 export type DiscordSetupCheckCode = (typeof DISCORD_SETUP_CHECK_CODES)[number];
 
@@ -207,7 +213,6 @@ export const discordAdminStateSchema = z.strictObject({
   }),
   assistant: z.strictObject({ id: internalId, name: z.string().min(1).max(200) }).nullable(),
   limits: discordLimitsSchema,
-  monitoringKeys: z.array(discordMonitoringKeySchema).max(50),
   health: z.strictObject({
     connected: z.boolean(),
     lastConnectedAt: timestamp.nullable(),
@@ -219,7 +224,6 @@ export const discordAdminStateSchema = z.strictObject({
     ready: z.boolean(),
     items: z.array(discordSetupItemSchema).max(DISCORD_SETUP_CHECK_CODES.length)
   }),
-  activity: discordAdminActivitySchema,
   version
 });
 export type DiscordAdminState = z.infer<typeof discordAdminStateSchema>;
@@ -268,9 +272,7 @@ export const discordAdminCommandSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("set_assistant"), assistantId: internalId, expectedVersion }),
   z.strictObject({ action: z.literal("set_limits"), limits: discordLimitsSchema, expectedVersion }),
   z.strictObject({ action: z.literal("enable"), expectedVersion }),
-  z.strictObject({ action: z.literal("disable"), expectedVersion }),
-  z.strictObject({ action: z.literal("create_monitoring_key"), expectedVersion }),
-  z.strictObject({ action: z.literal("revoke_monitoring_key"), keyId: internalId, expectedVersion })
+  z.strictObject({ action: z.literal("disable"), expectedVersion })
 ]);
 export type DiscordAdminCommand = z.infer<typeof discordAdminCommandSchema>;
 

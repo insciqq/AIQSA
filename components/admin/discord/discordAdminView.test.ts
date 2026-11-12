@@ -22,14 +22,9 @@ import {
 
 const NOW = Date.parse("2026-11-12T12:00:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
-const emptyStats = {
-  delivered: 0, failed: 0, failuresByCode: [], interrupted: 0, latency: { p50Ms: null, p95Ms: null },
-  limitHits: { author: 0, key: 0, thread: 0 }, notFound: 0, ratingsDown: 0, ratingsUp: 0, requests: 0
-};
 
 function state(overrides: Partial<DiscordAdminState> = {}): DiscordAdminState {
   return discordAdminStateSchema.parse({
-    activity: { last24h: emptyStats, last7d: emptyStats, rows: [] },
     assistant: null,
     bot: { applicationId: "100000000000000001", userId: "100000000000000002", username: "fixture_bot" },
     channelMode: "only_listed",
@@ -39,7 +34,6 @@ function state(overrides: Partial<DiscordAdminState> = {}): DiscordAdminState {
     guild: { id: "100000000000000010", name: "Fixture server" },
     health: { connected: true, lastConnectedAt: ago(60_000), lastEventAt: ago(5_000), lastFailureAt: null, lastFailureCode: null },
     limits: DISCORD_LIMIT_DEFAULTS,
-    monitoringKeys: [],
     serviceAccount: { status: "active", userId: "svc_fixture" },
     setup: { items: DISCORD_SETUP_CHECK_CODES.map((code) => ({ action: null, code, status: "ok" })), ready: true },
     testAuthorIds: [],
