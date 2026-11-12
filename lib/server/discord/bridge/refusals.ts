@@ -40,6 +40,12 @@ const CONTEXT_CODES = new Set([
   "context_too_large", "assistant_instructions_expansion_too_large", "instruction_preset_expansion_too_large"
 ]);
 const SETUP_CODES = new Set(["unauthorized", "forbidden", "user_not_available", "user_not_found"]);
+/**
+ * An Assistant whose tools or Search option cannot be used, for example an
+ * exact MCP row over the run plan's tool limit: the Assistant is set up, so
+ * people read that its tools are unavailable, not that nothing is set up.
+ */
+const ASSISTANT_TOOL_CODES = new Set(["assistant_tools_not_available", "assistant_search_option_not_available"]);
 
 function failure(code: string, text: string | null, failureKind: DiscordFailureKind, limitKind?: DiscordLimitKind): DiscordFailure {
   return limitKind ? { code, failureKind, limitKind, text } : { code, failureKind, text };
@@ -60,9 +66,13 @@ function familyFailure(code: string, failureKind: "admission" | "run"): DiscordF
 /** The send handler's refusal of a Discord question. */
 export function discordSendRefusalFailure(refusal: Pick<ConnectorSendRefusal, "code">): DiscordFailure {
   const { code } = refusal;
-  if (SETUP_CODES.has(code) || code.startsWith("assistant_")) return failure(code, DISCORD_COPY.notSetUp, "setup");
+  if (ASSISTANT_TOOL_CODES.has(code)) return failure(code, DISCORD_BRIDGE_COPY.toolsUnavailable, "admission");
+  if (code.startsWith("assistant_model_")) return failure(code, DISCORD_BRIDGE_COPY.modelUnavailable, "admission");
+  // Before the Assistant prefix: `assistant_instructions_expansion_too_large` is a context failure.
   const family = familyFailure(code, "admission");
   if (family) return family;
+  // The remaining Assistant refusals: the Assistant itself is unavailable or archived.
+  if (SETUP_CODES.has(code) || code.startsWith("assistant_")) return failure(code, DISCORD_COPY.notSetUp, "setup");
   if (code === "active_run_in_progress") return failure("discord_busy", DISCORD_COPY.busy, "busy");
   if (code.startsWith("attachment_") || code.startsWith("pdf_") || code.startsWith("chat_pdf_") || code === "unsupported_attachment_type" ||
     code === "image_attachment_not_supported") return failure(code, DISCORD_BRIDGE_COPY.attachmentUnavailable, "admission");

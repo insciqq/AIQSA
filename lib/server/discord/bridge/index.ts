@@ -54,7 +54,8 @@ import type { DiscordUploads } from "./uploads";
  *   `DiscordReply` row keeps it to one answer however often Discord delivers
  *   it; a repeat stops there.
  * - Author and conversation limits refuse with a short text at most once an
- *   hour per author or conversation, then with ❌ only.
+ *   hour per author or conversation, then with ❌ only; test questions are
+ *   neither refused by them nor counted toward them (`store/limits.ts`).
  * - A mention in a channel opens a thread from the message and answers there;
  *   where no thread can be opened (a voice-channel chat, a refusal) it answers
  *   in place, the conversation keyed by the channel.
@@ -348,6 +349,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   }
 
   async function refuseLimit(question: Question, control: DiscordActiveControl, conversationId: string | null): Promise<boolean> {
+    // A test question (PRD D-36) is never held by the author or conversation limits; budgets and the key limit still apply.
+    if (question.ids.test) return false;
     const at = new Date(now());
     const usage = await deps.limits.usage({ conversationId, discordUserId: question.ids.discordUserId, limits: control.limits, now: at });
     const exceeded = discordLimitExceeded(usage);
@@ -396,7 +399,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       attachments: probe.hook, conversationId: run.conversation.id, facts: deps.facts, header: null,
       maxChars: RUN_FOLLOWUP_MAX_CHARS, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
       scope: { afterId: run.includedUpTo, bounded: false, channelId: run.conversation.discordChannelId, kind: "delta" },
-      trigger, uploads: null, userId: control.serviceUserId
+      trigger, uploads: null, userId: control.serviceUserId, guildId: question.ids.guildId
     });
     if (!turn.ok || probe.seen() || run.answered) return false;
     const input = {
@@ -664,7 +667,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       const turn = await readDiscordTurnContext({
         attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
         header: await header(placement, trigger, message.guildId), mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest,
-        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId
+        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId
       });
       if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
       // Files of its own, its Reply target's or in its history, or a history file: a text follow-up would lose them.

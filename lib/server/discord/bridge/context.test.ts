@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createFakeDiscord, type FakeDiscordMessage } from "@/tests/support/fakeDiscord";
 import type { DiscordChannelKind } from "../access";
 import { decodeDiscordIntakeMessage } from "../intake";
+import { DISCORD_BRIDGE_COPY, DISCORD_COPY } from "../copy";
 import { createDiscordRest } from "../rest";
 import {
   DISCORD_CHANNEL_WINDOW_MAX, discordAttachmentNamesOnly, readDiscordTurnContext, type DiscordAttachmentHook, type DiscordContextScope
@@ -218,5 +219,19 @@ describe("Discord refusals and failures", () => {
     }
     expect(discordRunFailure("context_too_large").text).toMatch(/too long/u);
     expect(discordRunFailure(null)).toMatchObject({ code: "run_failed", text: "Something went wrong. Ask again." });
+  });
+
+  it("tells an Assistant whose tools or model cannot run apart from one that is not set up", () => {
+    for (const code of ["assistant_tools_not_available", "assistant_search_option_not_available"]) {
+      expect(discordSendRefusalFailure({ code })).toEqual({ code, failureKind: "admission", text: DISCORD_BRIDGE_COPY.toolsUnavailable });
+    }
+    for (const code of ["assistant_model_not_available", "assistant_model_invalid"]) {
+      expect(discordSendRefusalFailure({ code })).toEqual({ code, failureKind: "admission", text: DISCORD_BRIDGE_COPY.modelUnavailable });
+    }
+    expect(discordSendRefusalFailure({ code: "assistant_instructions_expansion_too_large" }))
+      .toEqual({ code: "assistant_instructions_expansion_too_large", failureKind: "admission", text: DISCORD_BRIDGE_COPY.contextTooLarge });
+    for (const code of ["assistant_not_available", "assistant_archived", "assistant_configuration_unavailable"]) {
+      expect(discordSendRefusalFailure({ code })).toEqual({ code, failureKind: "setup", text: DISCORD_COPY.notSetUp });
+    }
   });
 });

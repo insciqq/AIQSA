@@ -6,6 +6,8 @@ import { loadAssistantCatalogView } from "../../assistants/handlers";
 import { assistantRowsFromStoredColumns } from "../../assistants/storedContent";
 import { findServiceAccount } from "../../auth/serviceAccounts";
 import type { CatalogData } from "../../catalog/currentUserCatalog";
+import { mcpPublishedToolDefinitions } from "../../mcp/definitions";
+import { filterMcpToolsForUser } from "../../mcp/toolAccess";
 import type { DiscordAssistantSetupFacts, DiscordSetupSources } from "./setup";
 
 /**
@@ -17,6 +19,31 @@ import type { DiscordAssistantSetupFacts, DiscordSetupSources } from "./setup";
  */
 
 type AssistantCatalogDeps = Parameters<typeof loadAssistantCatalogView>[0];
+
+function configurationDisabledToolNames(configuration: unknown): string[] {
+  if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) return [];
+  const names = (configuration as { disabledToolNames?: unknown }).disabledToolNames;
+  return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [];
+}
+
+/**
+ * The tools installation MCP servers offer from their active revisions: the
+ * published ones less those switched off on the server. Evidence that does
+ * not verify offers nothing, as at run time.
+ */
+export function publishedMcpServerTools(servers: readonly Readonly<{
+  id: string;
+  activeRevision: Readonly<{ configuration: unknown; validationEvidence: unknown }> | null;
+}>[]): { originalName: string; serverId: string }[] {
+  return servers.flatMap((server) => {
+    const revision = server.activeRevision;
+    if (!revision) return [];
+    const published = mcpPublishedToolDefinitions(revision.validationEvidence);
+    const names = published.kind === "definitions" ? [...published.hashes.keys()] : published.kind === "names" ? [...published.names] : [];
+    const disabled = new Set(configurationDisabledToolNames(revision.configuration));
+    return names.filter((name) => !disabled.has(name)).map((originalName) => ({ originalName, serverId: server.id }));
+  });
+}
 
 export function createPrismaDiscordSetupSources(deps: Readonly<{
   prisma: PrismaClient;
@@ -70,6 +97,21 @@ export function createPrismaDiscordSetupSources(deps: Readonly<{
     return resolution.source === "default" ? "shared" : "own";
   }
 
+  /**
+   * The tools an exact MCP row loads into one request for the service
+   * account, counted as its run plan counts them
+   * (`lib/server/mcp/runPlanRepository.ts`): each server's active revision
+   * publishes them, less those switched off on the server and those a tool
+   * policy keeps from the service account.
+   */
+  async function exactMcpToolCount(serviceUserId: string, serverIds: readonly string[]): Promise<number> {
+    const servers = await prisma.mcpServer.findMany({
+      select: { activeRevision: { select: { configuration: true, validationEvidence: true } }, id: true },
+      where: { id: { in: [...new Set(serverIds)] } }
+    });
+    return (await filterMcpToolsForUser(serviceUserId, publishedMcpServerTools(servers), prisma)).length;
+  }
+
   return Object.freeze({
     async serviceAccount(userId) {
       const account = await findServiceAccount(prisma, userId);
@@ -107,7 +149,8 @@ export function createPrismaDiscordSetupSources(deps: Readonly<{
       // Search inherited from the installation is on: Search is on for everyone.
       const search = searchValue.mode === "off" ? "off" : failures.search ? "unusable" : "on";
       const mcp = toolsValue.mode !== "exact" || toolsValue.serverIds.length === 0 ? "none" : failures.tools ? "not_granted" : "granted";
-      return { credential, mcp, model, search, state: "available" };
+      const mcpToolCount = mcp === "granted" && toolsValue.mode === "exact" ? await exactMcpToolCount(serviceUserId, toolsValue.serverIds) : 0;
+      return { credential, mcp, mcpToolCount, model, search, state: "available" };
     },
 
     async monthlyBudget(serviceUserId) {

@@ -99,6 +99,17 @@ describe("setup items", () => {
       expect(ok.reason).not.toBe(blocking.reason);
     }
   });
+
+  it("names the tool count of an exact MCP row over the limit and sends the administrator to the Assistant", () => {
+    expect(discordSetupItemView({ action: "open_assistant", code: "discord_mcp_too_many_tools", status: "blocking", toolCount: 157 })).toEqual({
+      actionLabel: "Open Assistant",
+      reason: "The Assistant loads every tool of its MCP servers (157) into each request, over the limit of 128. " +
+        "Set its MCP tools to Auto (inherit) so the agent finds the tools it needs.",
+      title: "MCP tools per request"
+    });
+    expect(discordSetupItemView({ action: "open_assistant", code: "discord_mcp_too_many_tools", status: "blocking" }).reason)
+      .toMatch(/^The Assistant loads every tool of its MCP servers into each request, over the limit of 128\./u);
+  });
 });
 
 describe("drafts", () => {

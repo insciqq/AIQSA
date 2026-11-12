@@ -111,6 +111,11 @@ export type DiscordContextInput = Readonly<{
   uploads: DiscordUploads | null;
   attachments: DiscordAttachmentHook;
   maxChars?: number;
+  /**
+   * The question's server, null in a direct message: the question line then carries the message's Discord link, which
+   * tools that need a reference to the asking message (a merge request) can cite. Undefined leaves the link out.
+   */
+  guildId?: string | null;
 }>;
 
 type Read = Readonly<{ messages: DiscordContextMessage[]; omitted: boolean }>;
@@ -194,6 +199,11 @@ function bounded(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/** The message's web link; `@me` stands for a direct message's server. */
+export function discordMessageLink(guildId: string | null, channelId: string, messageId: string): string {
+  return `https://discord.com/channels/${guildId ?? "@me"}/${channelId}/${messageId}`;
+}
+
 export async function readDiscordTurnContext(input: DiscordContextInput): Promise<DiscordTurnContext> {
   const maxChars = input.maxChars ?? DISCORD_CONTEXT_TEXT_MAX;
   const [read, merged] = await Promise.all([readScope(input), mergedAfter(input)]);
@@ -230,7 +240,8 @@ export async function readDiscordTurnContext(input: DiscordContextInput): Promis
       tail.push(`Replying to message ${input.trigger.referenceId}, which can no longer be read.`);
     }
   }
-  tail.push(`Question from ${discordAuthorLabel(input.trigger)}:\n${questionText}`);
+  const link = input.guildId === undefined ? "" : `, message ${discordMessageLink(input.guildId, input.trigger.channelId, input.trigger.id)}`;
+  tail.push(`Question from ${discordAuthorLabel(input.trigger)}${link}:\n${questionText}`);
   if (plan.notes.length > 0) tail.push(plan.notes.join("\n"));
 
   const label = input.scope.kind === "delta" ? "Messages since your last reply:" : "Earlier messages:";

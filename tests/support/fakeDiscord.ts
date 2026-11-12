@@ -41,6 +41,8 @@ export type FakeDiscordUser = { id: string; username: string; global_name: strin
 export type FakeDiscordChannel = {
   id: string; type: number; name: string | null; guild_id?: string; parent_id?: string | null;
   recipients?: FakeDiscordUser[];
+  /** Threads only: a new message unarchives an archived thread, as Discord does for one that is not locked. */
+  thread_metadata?: { archived: boolean };
 };
 export type FakeDiscordAttachment = {
   id: string; filename: string; size: number; content_type: string; url: string; proxy_url: string;
@@ -80,6 +82,7 @@ const ROUTES: readonly (readonly [string, string, RegExp])[] = [
   ["GET", "list_current_user_guilds", /^\/users\/@me\/guilds$/u],
   ["GET", "list_guild_channels", /^\/guilds\/(\d+)\/channels$/u],
   ["GET", "get_channel", /^\/channels\/(\d+)$/u],
+  ["PATCH", "archive_thread", /^\/channels\/(\d+)$/u],
   ["GET", "get_guild_member", /^\/guilds\/(\d+)\/members\/(\d+)$/u],
   ["GET", "get_gateway_bot", /^\/gateway\/bot$/u],
   ["GET", "list_channel_messages", /^\/channels\/(\d+)\/messages$/u],
@@ -512,6 +515,16 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
         return json(200, [...channels.values()].filter((entry) => entry.guild_id && ![10, 11, 12].includes(entry.type)), headers);
       }
       case "get_channel": return json(200, channel(params[0]!), headers);
+      case "archive_thread": {
+        // AIQSA only ever archives a thread through this route; anything else is a violation.
+        const target = channel(params[0]!);
+        const { payload } = await readBody(request);
+        if (!target.thread_metadata) throw new HttpError(400, 50024);
+        if (Object.keys(payload).join() !== "archived" || payload.archived !== true) violations.push("rest:PATCH channel beyond archiving");
+        target.thread_metadata.archived = payload.archived === true;
+        dispatch("THREAD_UPDATE", { ...target });
+        return json(200, target, headers);
+      }
       case "get_guild_member": {
         const member = members.get(params[1]!);
         if (params[0] !== guild.id || !member) throw new HttpError(404, 10007);
@@ -551,6 +564,7 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
           ...(nonce !== undefined ? { nonce } : {})
         };
         messages.get(target.id)!.push(message);
+        if (target.thread_metadata) target.thread_metadata.archived = false;
         if (nonce !== undefined && payload.enforce_nonce === true) nonces.set(`${target.id}|${nonce}`, { messageId: message.id, at: clock });
         dispatch("MESSAGE_CREATE", messageEvent(message));
         return json(200, message, headers);
@@ -585,7 +599,7 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
         if (channels.has(message.id)) throw new HttpError(400, 160004);
         const thread: FakeDiscordChannel = {
           id: message.id, type: parent.type === FAKE_DISCORD_CHANNEL_TYPES.announcement ? 10 : 11, name,
-          guild_id: guild.id, parent_id: parent.id
+          guild_id: guild.id, parent_id: parent.id, thread_metadata: { archived: false }
         };
         channels.set(thread.id, thread);
         messages.set(thread.id, []);
@@ -835,6 +849,7 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
       ...(input.webhookId ? { webhook_id: input.webhookId } : {})
     };
     messages.get(target.id)!.push(message);
+    if (target.thread_metadata) target.thread_metadata.archived = false;
     dispatch("MESSAGE_CREATE", messageEvent(message));
     return message;
   }
@@ -845,7 +860,10 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
     /** A forum post: a thread whose starter message has the thread's id. */
     createForumPost(input: Readonly<{ forumId: string; authorId: string; name: string; content: string }>): Readonly<{ threadId: string; message: FakeDiscordMessage }> {
       const threadId = id();
-      channels.set(threadId, { id: threadId, type: FAKE_DISCORD_CHANNEL_TYPES.publicThread, name: input.name, guild_id: guild.id, parent_id: input.forumId });
+      channels.set(threadId, {
+        id: threadId, type: FAKE_DISCORD_CHANNEL_TYPES.publicThread, name: input.name, guild_id: guild.id, parent_id: input.forumId,
+        thread_metadata: { archived: false }
+      });
       messages.set(threadId, []);
       dispatch("THREAD_CREATE", { ...channels.get(threadId), newly_created: true });
       const author = users.get(input.authorId)!;

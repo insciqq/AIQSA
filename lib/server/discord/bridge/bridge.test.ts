@@ -191,7 +191,10 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     }));
     expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: false } });
     expect(sentText(run!.body)).toContain(`Discord thread "what is the release status?" in #agent-test, server "Example server".`);
-    expect(sentText(run!.body)).toContain(`Question from alice (discord:${alice}):\n@${h.fake.bot.username} what is the release status?`);
+    // The question line links the asking message (a merge request tool cites it).
+    expect(sentText(run!.body)).toContain(
+      `Question from alice (discord:${alice}), message https://discord.com/channels/${question.guild_id}/${question.channel_id}/${question.id}:\n@${h.fake.bot.username} what is the release status?`
+    );
 
     const answers = botMessages(h, thread.id);
     expect(answers).toHaveLength(1);
@@ -240,7 +243,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(text).toContain("Messages since your last reply:");
     expect(text).toContain(`bob (discord:${bob}): @carol take a look`);
     expect(text).not.toContain("The answer.");
-    expect(text.indexOf("Sure, the dates are fine")).toBeLessThan(text.indexOf(`Question from carol (discord:${carol}):`));
+    expect(text.indexOf("Sure, the dates are fine")).toBeLessThan(text.indexOf(`Question from carol (discord:${carol}), message https://discord.com/channels/`));
     expect(h.fake.reactions(asked.id, "✅")).toEqual([h.fake.bot.id]);
     expect(logs.filter((entry) => entry.event === "discord_intake" && entry.fields.reason === "no_trigger")).toHaveLength(2);
   });
@@ -350,7 +353,7 @@ describe("Discord bridge: follow-ups, order and parallel threads", () => {
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(run!.followups.map((entry) => entry.nonce)).toEqual([`dc-${second.id}`, `dc-${third.id}`]);
-    expect(run!.followups[0]!.text).toContain(`Question from bob (discord:${bob}):\ninclude Y`);
+    expect(run!.followups[0]!.text).toMatch(new RegExp(`Question from bob \\(discord:${bob}\\), message https://discord\\.com/channels/\\d+/\\d+/\\d+:\\ninclude Y`, "u"));
     expect(run!.followups[1]!.text).not.toContain("include Y");
     expect(h.fake.reactions(second.id, "👀")).toEqual([h.fake.bot.id]);
     run!.finish({ text: "Report with Y and Z." });
@@ -420,6 +423,44 @@ describe("Discord bridge: limits", () => {
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(botMessages(h, first.id).map((message) => message.content).at(-1)).toMatch(/^❌ This thread has reached its limit of 1 questions per hour\./u);
+  });
+
+  it("never holds a test author's questions by the author or thread limits, nor counts them toward people's", async () => {
+    const fake = createFakeDiscord();
+    const tester = fake.addUser({ bot: true, username: "e2e-bot" });
+    const h = harness({
+      control: {
+        limits: { parallelThreads: 16, perAuthorDaily: 1, perAuthorHourly: 1, perThreadHourly: 1 },
+        testAuthorIds: new Set([tester]), testChannelIds: new Set([fake.channels.text])
+      },
+      fake
+    });
+    const first = await h.say(mention(h, tester, "one"));
+    await h.settle();
+    const second = await h.say(mention(h, tester, "two", first.id));
+    await h.settle();
+    const third = await h.say(mention(h, tester, "three", first.id));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(3);
+    for (const question of [first, second, third]) {
+      expect(h.replies.rows.get(question.id)).toMatchObject({ kind: "answer", state: "delivered", test: true });
+    }
+    // People in the same thread start from zero: the test questions count toward neither the thread nor anyone's limit.
+    const [alice, bob] = [h.user("alice"), h.user("bob")];
+    const fourth = await h.say({ authorId: alice, channelId: first.id, content: "four" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(4);
+    expect(h.replies.rows.get(fourth.id)).toMatchObject({ kind: "answer", test: false });
+    // The thread's limit still holds people: Alice's question filled it.
+    const fifth = await h.say({ authorId: bob, channelId: first.id, content: "five" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(4);
+    expect(h.replies.rows.get(fifth.id)).toMatchObject({ code: "discord_thread_limit", kind: "refused", limitKind: "thread", test: false });
+    // And a test question after it is still answered.
+    const sixth = await h.say(mention(h, tester, "six", first.id));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(5);
+    expect(h.replies.rows.get(sixth.id)).toMatchObject({ kind: "answer", state: "delivered", test: true });
   });
 });
 
