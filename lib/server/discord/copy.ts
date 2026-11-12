@@ -72,6 +72,25 @@ export function discordFilesOnlyInAiqsaText(count: number): string {
   return count === 1 ? "1 file is only in AIQSA" : `${count} files are only in AIQSA`;
 }
 
+/** Why an attachment of the turn went to the model only by name (lines of the run's context, not posted in Discord). */
+export const DISCORD_ATTACHMENT_COPY = Object.freeze({
+  tooLarge: "too large",
+  unsupported: "file type not supported",
+  overLimit: "over this turn's attachment limit",
+  unreadable: "could not be downloaded",
+  uploadRefused: "upload refused:"
+});
+
+/** `Attachments not added (too large): a.zip, b.mov`, with how many more when the list is cut. */
+export function discordAttachmentsNotAddedText(reason: string, names: readonly string[], count: number): string {
+  const more = count > names.length ? ` and ${count - names.length} more` : "";
+  return `Attachments not added (${reason}): ${names.join(", ")}${more}`;
+}
+
+export function discordEarlierAttachmentsNamedText(count: number): string {
+  return count === 1 ? "1 attachment of earlier messages is only named." : `${count} attachments of earlier messages are only named.`;
+}
+
 export function discordEarlierMessagesText(count: number): string {
   return `${count} earlier messages are in the attached file`;
 }
