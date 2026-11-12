@@ -20,7 +20,7 @@ import { createPeopleFixture, type E2ESession } from "./support/people";
  * one that has the model call a foreground sub-agent, and a Reply to a
  * message carrying an image that the model must describe.
  *
- * Runs only with AIQSA_DISCORD_LIVE_PAID=DISPOSABLE, CODEX_LB_API_KEY and
+ * Runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL on a disposable test-mode stand (the fake Discord's
  * origins are honoured only in test mode). The key goes only to the stand's
  * admin API. Assertions and annotations carry states, codes, booleans and
@@ -29,12 +29,12 @@ import { createPeopleFixture, type E2ESession } from "./support/people";
  * disposable stand.
  */
 
-const paid = process.env.AIQSA_DISCORD_LIVE_PAID === "DISPOSABLE" && paidEnv("CODEX_LB_API_KEY") !== null &&
+const paid = process.env.AIQSA_FEATURES_PAID_E2E === "DISPOSABLE" && paidEnv("CODEX_LB_API_KEY") !== null &&
   paidEnv("CODEX_LB_BASE_URL") !== null;
 
 test.describe.configure({ mode: "serial", timeout: PAID_TURN_TIMEOUT_MS + 60_000 });
 test.use({ screenshot: "off", trace: "off", video: "off" });
-test.skip(!paid, "paid Discord check is opt-in: AIQSA_DISCORD_LIVE_PAID=DISPOSABLE, CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
+test.skip(!paid, "paid Discord check is opt-in: AIQSA_FEATURES_PAID_E2E=DISPOSABLE, CODEX_LB_API_KEY and CODEX_LB_BASE_URL");
 
 const prisma = new PrismaClient();
 const people = createPeopleFixture(prisma);
