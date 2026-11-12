@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createFakeDiscord, FAKE_DISCORD_CHANNEL_TYPES, type FakeDiscord, type FakeDiscordMessage } from "@/tests/support/fakeDiscord";
+import {
+  createFakeDiscord, FAKE_DISCORD_CHANNEL_TYPES, type FakeDiscord, type FakeDiscordMessage, type FakeDiscordReply
+} from "@/tests/support/fakeDiscord";
 import { createDiscordChannelDirectory, createDiscordMembership, discordChannelInfo } from "../access";
 import type { DiscordEffectiveControl } from "../control/state";
 import { DISCORD_BRIDGE_COPY, DISCORD_COPY } from "../copy";
 import { createDiscordHandlerRegistry, createDiscordIntake, createDiscordLanes, type DiscordIntake, type DiscordLanes } from "../intake";
 import { createDiscordRest } from "../rest";
+import type { DiscordConversationStore } from "../store/conversations";
 import {
   createFakeDiscordRunGateway, createMemoryDiscordConversationStore, createMemoryDiscordLimitStore, createMemoryDiscordReplyStore,
   createMemoryDiscordRunFacts, type FakeRunFinish
@@ -59,6 +62,8 @@ type HarnessOptions = Readonly<{
   runs?: ReturnType<typeof createFakeDiscordRunGateway>;
   /** Shared by harnesses that stand for one process and the next. */
   clock?: { latest: number };
+  /** The conversation row cannot be written (its link to the chat is missing). */
+  conversationWriteFails?: boolean;
 }>;
 
 type Stores = Readonly<{
@@ -75,10 +80,13 @@ function harness(options: HarnessOptions = {}) {
   const replies = options.stores?.replies ?? createMemoryDiscordReplyStore();
   const conversations = options.stores?.conversations ?? createMemoryDiscordConversationStore();
   const limits = createMemoryDiscordLimitStore(replies);
-  const facts = createMemoryDiscordRunFacts(replies);
   const runs = options.runs ?? createFakeDiscordRunGateway({
     autoFinish: options.finish === undefined ? () => ({ text: "The answer." }) : options.finish, silent: options.silent
   });
+  const facts = createMemoryDiscordRunFacts(replies, { list: () => runs.runs });
+  const conversationStore: DiscordConversationStore = options.conversationWriteFails
+    ? { ...conversations, create: async () => { throw new Error("synthetic write failure"); } }
+    : conversations;
   const shares = { create: vi.fn(async (_input: Readonly<{ userId: string; chatId: string; assistantMessageId: string }>) => SHARE_URL) };
   const published: Array<{ event: DiscordRunEvent; context: DiscordRunEventContext }> = [];
   let control = controlFor(fake, options.control);
@@ -99,7 +107,7 @@ function harness(options: HarnessOptions = {}) {
   });
   const intake = makeIntake();
   const bridge = createDiscordBridge({
-    control: async () => control, conversations, facts, gateway: runs.gateway, lanes: intake.lanes, limits, newChatId: (() => {
+    control: async () => control, conversations: conversationStore, facts, gateway: runs.gateway, lanes: intake.lanes, limits, newChatId: (() => {
       let next = 0;
       return () => `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`;
     })(),
@@ -139,6 +147,8 @@ function harness(options: HarnessOptions = {}) {
     setControl: (next: Partial<DiscordEffectiveControl>) => { control = controlFor(fake, { ...options.control, ...next }); },
     /** The kill switch as the REST client sees it. */
     setSending: (value: boolean) => { sending = value; },
+    /** Time goes on (a later sweep). */
+    advance: (ms: number) => { clock.latest += ms; },
     user
   };
 }
@@ -628,5 +638,168 @@ describe("Discord bridge: joined messages, the kill switch, test authors and a f
     expect(h.runs.runs).toHaveLength(1);
     expect(h.runs.runs[0]!.followups.map((entry) => entry.nonce)).toEqual([`dc-${second.id}`]);
     expect(h.replies.rows.get(second.id)).toMatchObject({ kind: "follow_up", runId: h.runs.runs[0]!.runId, state: "admitted" });
+  });
+});
+
+describe("Discord bridge: review fixes", () => {
+  const longAnswer = Array.from({ length: 12 }, (_, index) => `Paragraph ${index}: ${"detail ".repeat(40)}`).join("\n\n");
+
+  it("delivers a cut answer without a share link when its chat is not linked to the conversation", async () => {
+    const h = harness({ conversationWriteFails: true, finish: () => ({ text: `${longAnswer}\nDB_PASSWORD=hunter2-hunter2-hunter2` }) });
+    const alice = h.user("alice");
+    const question = await h.say(mention(h, alice, "explain"));
+    await h.settle();
+    const [answer] = botMessages(h, question.id);
+    expect(answer!.content.endsWith("…")).toBe(true);
+    expect(answer!.components).toEqual([]);
+    expect(h.shares.create).not.toHaveBeenCalled();
+    expect(h.replies.rows.get(question.id)).toMatchObject({ conversationId: null, state: "delivered" });
+  });
+
+  function claimed(h: Harness, question: FakeDiscordMessage, extra: Partial<Parameters<Harness["replies"]["claim"]>[0]> = {}) {
+    return h.replies.claim({
+      authorName: "alice", channelId: question.channel_id, discordUserId: question.author.id, guildId: h.fake.guild.id, kind: "refused",
+      questionMessageId: question.id, receivedAt: new Date(h.now() - 60_000), test: false, ...extra
+    });
+  }
+
+  it("never asks a recovered question again when the chat its first attempt planned already runs it", async () => {
+    const h = harness({ finish: null });
+    const alice = h.user("alice");
+    const question = h.post(mention(h, alice, "crashed after the send"));
+    await claimed(h, question);
+    const planned = "00000000-0000-4000-8000-00000000aaaa";
+    await h.replies.update(question.id, { plannedChatId: planned });
+    // The first attempt reached the send handler, which made the chat and its run, then the process died.
+    await h.runs.gateway.send({
+      body: discordSendBody({ admissionId: `dc-${question.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1" }),
+      chatId: planned, userId: "svc_1"
+    });
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(1);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ kind: "answer", runId: h.runs.runs[0]!.runId, state: "admitted" });
+    h.runs.runs[0]!.finish({ text: "Answered once." });
+    h.advance(60_000);
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(1);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ state: "delivered" });
+    expect(botMessages(h, question.id).map((message) => message.content)).toEqual(["Answered once."]);
+    expect(await h.conversations.findByChat(planned)).toMatchObject({ discordChannelId: question.id });
+  });
+
+  it("asks a recovered question again into the chat its first attempt planned, when that chat was never made", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    const question = h.post(mention(h, alice, "crashed before the send"));
+    await claimed(h, question);
+    const planned = "00000000-0000-4000-8000-00000000bbbb";
+    await h.replies.update(question.id, { plannedChatId: planned });
+    await h.bridge.recover(new Date(h.now()));
+    await h.settle();
+    expect(h.runs.runs.map((run) => run.chatId)).toEqual([planned]);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ plannedChatId: planned, state: "delivered" });
+  });
+
+  it("ends a recovered question visibly when its acceptance cannot be established, sending nothing", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    const question = h.post(mention(h, alice, "the chat exists without a run"));
+    await claimed(h, question);
+    const planned = "00000000-0000-4000-8000-00000000cccc";
+    await h.replies.update(question.id, { plannedChatId: planned });
+    h.runs.chats.set(planned, { activeLeafMessageId: null, assistantId: "assistant_1", id: planned });
+    await h.bridge.recover(new Date(h.now()));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(0);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_delivery_unknown", state: "failed" });
+    expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
+  });
+
+  it("takes a recovered question's own running first attempt in an existing chat as its answer, never as a follow-up", async () => {
+    const h = harness({ finish: null });
+    const alice = h.user("alice");
+    const voice = h.fake.channels.voice;
+    await h.say(mention(h, alice, "first", voice));
+    await h.settle();
+    h.runs.runs[0]!.finish({ text: "First." });
+    await h.settle();
+    const second = h.post(mention(h, alice, "second", voice));
+    const chatId = h.runs.runs[0]!.chatId;
+    await claimed(h, second, { expectedLeafId: h.runs.runs[0]!.assistantMessageId });
+    // Its first attempt was admitted; the process died before recording the run.
+    await h.runs.gateway.send({
+      body: discordSendBody({ admissionId: `dc-${second.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: h.runs.runs[0]!.assistantMessageId,
+        newChatAssistantId: null }), chatId, userId: "svc_1"
+    });
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(2);
+    expect(h.runs.runs[1]!.followups).toEqual([]);
+    expect(h.replies.rows.get(second.id)).toMatchObject({ kind: "answer", runId: h.runs.runs[1]!.runId, state: "admitted" });
+  });
+
+  it("asks a claimed question again from one process only, while two recover side by side", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const runs = createFakeDiscordRunGateway({ autoFinish: () => ({ text: "Once." }) });
+    const clock = { latest: Date.parse("2026-11-12T09:00:00.000Z") };
+    const one = harness({ clock, fake, runs, stores });
+    const two = harness({ clock, fake, runs, stores });
+    const alice = one.user("alice");
+    const question = one.post(mention(one, alice, "lost in an upgrade"));
+    await claimed(one, question);
+    await Promise.all([one.bridge.recover(new Date(one.now())), two.bridge.recover(new Date(two.now()))]);
+    await one.settle();
+    await two.settle();
+    expect(runs.runs).toHaveLength(1);
+    expect(stores.replies.rows.get(question.id)).toMatchObject({ readmitAt: expect.any(Date), state: "delivered" });
+  });
+
+  it("ends a question asked again earlier and still without a run past the window", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    const question = h.post(mention(h, alice, "stuck"));
+    await claimed(h, question);
+    expect(await h.replies.claimReadmission(question.id, new Date(h.now() - 11 * 60_000))).toBe(true);
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(0);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_reply_expired", state: "failed" });
+    expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
+  });
+
+  it("never leaves a refused final message as Working with 👀", async () => {
+    const h = harness({ finish: null });
+    const alice = h.user("alice");
+    const question = await h.say(mention(h, alice, "permissions change"));
+    await h.settle();
+    h.fake.fail({ method: "PATCH", reply: { code: 50013, status: 403 }, route: "edit_message", times: 1 });
+    h.runs.runs[0]!.finish({ text: "Never shown." });
+    await vi.waitFor(() => expect(h.replies.rows.get(question.id)?.state).toBe("failed"));
+    await h.bridge.idle();
+    expect(botMessages(h, question.id).map((message) => message.content)).toEqual([`❌ ${DISCORD_COPY.somethingWrong}`]);
+    expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
+    expect(h.fake.reactions(question.id, "👀")).toEqual([]);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_api_error", failureKind: "delivery" });
+  });
+
+  const retried: Array<[string, FakeDiscordReply, string]> = [
+    ["an outcome Discord left unknown", { status: 500 }, "discord_delivery_unknown"],
+    ["a rate limit past its repeat", { retryAfter: 0.01, status: 429 }, "discord_rate_limited"]
+  ];
+  it.each(retried)("keeps a final edit that failed with %s for the next sweep, which delivers it", async (_name, reply, code) => {
+    const h = harness({ finish: null });
+    const alice = h.user("alice");
+    const question = await h.say(mention(h, alice, "flaky Discord"));
+    await h.settle();
+    h.fake.fail({ method: "PATCH", reply, route: "edit_message", times: 2 });
+    h.runs.runs[0]!.finish({ text: "Delivered later." });
+    await vi.waitFor(() => expect(h.replies.rows.get(question.id)?.code).toBe(code));
+    await h.bridge.idle();
+    expect(h.replies.rows.get(question.id)).toMatchObject({ failureKind: "delivery", state: "admitted" });
+    expect(botMessages(h, question.id)[0]!.content).toMatch(/^Working/u);
+    h.advance(60_000);
+    await h.bridge.recover(new Date(h.now()));
+    expect(botMessages(h, question.id).map((message) => message.content)).toEqual(["Delivered later."]);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: null, state: "delivered" });
+    expect(h.fake.reactions(question.id, "✅")).toEqual([h.fake.bot.id]);
   });
 });
