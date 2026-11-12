@@ -267,6 +267,7 @@ function startDiscordLifecycle(discord: DiscordDefaults): void {
   const gateway = lazyConnectorLoader(async () => (await import("../connectors/defaultRunGateway"))
     .createDefaultConnectorRunGateway({ auth: (userId) => discordRequestAuth(discord, userId), connectorTurn: "discord" }));
   createDiscordLifecycle({
+    conversations: discord.conversations,
     ratings: createPrismaDiscordRatingStore(prisma),
     replies: discord.replies,
     reports: createPrismaDiscordProblemReports(prisma),

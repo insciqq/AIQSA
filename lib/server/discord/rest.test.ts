@@ -70,7 +70,8 @@ describe("Discord REST client against the fake", () => {
       rest.startThreadFromMessage(fake.channels.text, "1", { name: "x".repeat(101) }),
       rest.listChannelMessages(fake.channels.text, { limit: 101 }),
       rest.addOwnReaction(fake.channels.text, "1", "a/b"),
-      rest.getGuildMember("../x", "1")
+      rest.getGuildMember("../x", "1"),
+      rest.archiveThread("../x")
     ]);
     for (const outcome of cases) expect(outcome).toEqual({ ok: false, code: "discord_request_invalid", delivery: "not_sent" });
     expect(fake.calls()).toEqual([]);
@@ -98,6 +99,21 @@ describe("Discord REST client against the fake", () => {
     expect(fake.calls({ route: "create_message" })).toHaveLength(2);
     expect(fake.messages(fake.channels.text)).toHaveLength(1);
     expect(fake.messages(fake.channels.text)[0]).toMatchObject({ nonce });
+  });
+
+  it("archives a thread with archived: true only", async () => {
+    const fake = createFakeDiscord();
+    const { rest } = restWith(fake.transport);
+    const author = fake.addUser({ username: "alice" });
+    const question = fake.postMessage({ channelId: fake.channels.text, authorId: author, content: "@bot hi" });
+    expect((await rest.startThreadFromMessage(fake.channels.text, question.id, { name: "Question" })).ok).toBe(true);
+    expect(await rest.archiveThread(question.id)).toMatchObject({ ok: true, value: { id: question.id } });
+    expect(fake.calls({ route: "archive_thread" }).map((call) => [call.method, call.path, call.json]))
+      .toEqual([["PATCH", `/channels/${question.id}`, { archived: true }]]);
+    expect(fake.channel(question.id)?.thread_metadata).toEqual({ archived: true });
+    // A text channel is no thread: Discord refuses.
+    expect(await rest.archiveThread(fake.channels.text)).toMatchObject({ ok: false, delivery: "refused", status: 400 });
+    expect(fake.violations()).toEqual([]);
   });
 
   it("never repeats a thread start after an ambiguous failure", async () => {

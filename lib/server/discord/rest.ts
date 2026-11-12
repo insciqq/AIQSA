@@ -130,7 +130,7 @@ type Route = Readonly<{
 export const DISCORD_ROUTE_NAMES = [
   "get_current_user", "get_current_application", "list_current_user_guilds", "list_guild_channels", "get_guild_member",
   "get_gateway_bot", "list_channel_messages", "get_channel_message", "create_message", "edit_message", "delete_message",
-  "start_thread_from_message", "trigger_typing", "add_own_reaction", "remove_own_reaction", "get_channel"
+  "start_thread_from_message", "trigger_typing", "add_own_reaction", "remove_own_reaction", "get_channel", "archive_thread"
 ] as const;
 export type DiscordRouteName = (typeof DISCORD_ROUTE_NAMES)[number];
 
@@ -153,6 +153,8 @@ export type DiscordRest = Readonly<{
   startThreadFromMessage(channelId: string, messageId: string, input: Readonly<{
     name: string; autoArchiveMinutes?: 60 | 1440 | 4320 | 10080;
   }>): Promise<DiscordRestOutcome<DiscordChannel>>;
+  /** Archives a thread (`PATCH /channels/{id}` with `archived: true`); it never deletes one. */
+  archiveThread(threadId: string): Promise<DiscordRestOutcome<DiscordChannel>>;
   triggerTyping(channelId: string): Promise<DiscordRestOutcome<null>>;
   /** `emoji` is a Unicode emoji or `name:id`; it is URL-encoded here. */
   addOwnReaction(channelId: string, messageId: string, emoji: string): Promise<DiscordRestOutcome<null>>;
@@ -442,6 +444,9 @@ export function createDiscordRest(options: DiscordRestOptions): DiscordRest {
       return typed(route("start_thread_from_message", "POST", `/channels/${channelId}/messages/${messageId}/threads`,
         "/channels/:c/messages/:m/threads", channelId, { json: { name: input.name, auto_archive_duration: minutes } }), channelSchema);
     },
+    archiveThread: (threadId) => validId(threadId)
+      ? typed(route("archive_thread", "PATCH", `/channels/${threadId}`, "/channels/:c", threadId, { json: { archived: true } }), channelSchema)
+      : invalid(),
     triggerTyping: (channelId) => validId(channelId)
       ? empty(route("trigger_typing", "POST", `/channels/${channelId}/typing`, "/channels/:c/typing", channelId, { idempotent: true }))
       : invalid(),
