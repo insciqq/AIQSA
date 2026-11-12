@@ -624,7 +624,7 @@ describe("Discord bridge: one answer per question, across replays and restarts",
     expect(fake.reactions(question.id, "✅")).toEqual([fake.bot.id]);
   });
 
-  it("retires a claimed question whose author edited the call name out, with no run, reply or reaction", async () => {
+  it("retires a claimed question whose author edited the call name out, with no run, reply or reaction, and takes its 👀 back", async () => {
     const fake = createFakeDiscord();
     const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
     const h = harness({ fake, stores });
@@ -634,6 +634,10 @@ describe("Discord bridge: one answer per question, across replays and restarts",
       authorName: "alice", channelId: question.channel_id, discordUserId: alice, guildId: fake.guild.id, kind: "refused",
       questionMessageId: question.id, receivedAt: new Date(h.now() - 180_000), test: false
     });
+    // The worker before the restart acknowledged it, then died before preparing it.
+    await h.rest.addOwnReaction(question.channel_id, question.id, "👀");
+    await stores.replies.update(question.id, { ackAt: new Date(h.now()) });
+    expect(fake.reactions(question.id, "👀")).toEqual([fake.bot.id]);
     fake.editUserMessage(fake.channels.text, question.id, "colleagues, lunch is ready");
     await h.bridge.recover(new Date(h.now()));
     await h.settle();
@@ -645,6 +649,73 @@ describe("Discord bridge: one answer per question, across replays and restarts",
     expect(fake.reactions(question.id, "❌")).toEqual([]);
     await h.bridge.recover(new Date(h.now()));
     expect(h.runs.runs).toHaveLength(0);
+  });
+
+  it("leaves an edited question alone when a live worker claimed its send while recovery read it, and delivers that answer", async () => {
+    const fake = createFakeDiscord();
+    const clock = { latest: Date.parse("2026-11-12T09:00:00.000Z") };
+    const memory = createMemoryDiscordReplyStore();
+    const conversations = createMemoryDiscordConversationStore();
+    const runs = createFakeDiscordRunGateway({ autoFinish: null });
+    // The live worker's preparation waits at its attachments until released.
+    let releasePreparation!: () => void;
+    const preparing = new Promise<void>((resolve) => { releasePreparation = resolve; });
+    let preparationReached = false;
+    const gated: DiscordAttachmentHook = async (input) => {
+      preparationReached = true;
+      await preparing;
+      return discordAttachmentNamesOnly(input);
+    };
+    // Recovery in another process writes its retirement once the live worker's send has returned, before that worker
+    // records the run: the row is still `claimed` then, with its send claimed.
+    let releaseRetirement!: () => void;
+    const retiring = new Promise<void>((resolve) => { releaseRetirement = resolve; });
+    let retirementDone!: (retired: boolean) => void;
+    const retirement = new Promise<boolean>((resolve) => { retirementDone = resolve; });
+    let retirementReached = false;
+    const recoveryReplies = {
+      ...memory,
+      retireUnsent: async (id: string, code: string) => {
+        retirementReached = true;
+        await retiring;
+        const retired = await memory.retireUnsent(id, code);
+        retirementDone(retired);
+        return retired;
+      }
+    };
+    const liveRuns = {
+      ...runs,
+      gateway: {
+        ...runs.gateway,
+        send: async (input: Parameters<typeof runs.gateway.send>[0]) => {
+          const response = await runs.gateway.send(input);
+          expect(memory.rows.get(String(input.body.admissionId).replace(/^dc-/u, ""))).toMatchObject({ runId: null, state: "claimed" });
+          releaseRetirement();
+          await retirement;
+          return response;
+        }
+      }
+    };
+    const live = harness({ attachments: gated, clock, fake, runs: liveRuns, stores: { conversations, replies: memory } });
+    const recovery = harness({ clock, fake, runs, stores: { conversations, replies: recoveryReplies } });
+    const alice = live.user("alice");
+    const question = live.post({ authorId: alice, channelId: fake.channels.text, content: "Agent, help" });
+    void live.intake.accept({ data: question, type: "MESSAGE_CREATE" });
+    await vi.waitFor(() => expect(preparationReached).toBe(true));
+    live.advance(180_000);
+    fake.editUserMessage(fake.channels.text, question.id, "colleagues, lunch is ready");
+    const recovered = recovery.bridge.recover(new Date(recovery.now()));
+    await vi.waitFor(() => expect(retirementReached).toBe(true));
+    releasePreparation();
+    expect(await retirement).toBe(false);
+    await recovered;
+    await vi.waitFor(() => expect(memory.rows.get(question.id)).toMatchObject({ runId: runs.runs[0]!.runId, state: "admitted" }));
+    runs.runs[0]!.finish({ text: "The completed answer." });
+    await live.settle();
+    await recovery.bridge.recover(new Date(recovery.now()));
+    expect(runs.runs).toHaveLength(1);
+    expect(botMessages(live, question.id).map((message) => message.content)).toContain("The completed answer.");
+    expect(memory.rows.get(question.id)).toMatchObject({ code: null, state: "delivered" });
   });
 
   it("retires a plain message an earlier release claimed in the bot's thread instead of answering it after the upgrade", async () => {

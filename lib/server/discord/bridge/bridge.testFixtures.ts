@@ -63,6 +63,12 @@ export function createMemoryDiscordReplyStore(): DiscordReplyStore & Readonly<{ 
       if (!row || row.state !== "claimed" || row.runId !== null || row.sendClaimedAt !== null) return false;
       rows.set(id, { ...row, sendClaimedAt: at });
       return true;
+    },
+    async retireUnsent(id, code) {
+      const row = rows.get(id);
+      if (!row || row.state !== "claimed" || row.runId !== null || row.sendClaimedAt !== null) return false;
+      rows.set(id, { ...row, code, state: "interrupted" });
+      return true;
     }
   });
 }

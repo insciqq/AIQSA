@@ -1115,8 +1115,16 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     if (!context) return;
     // The message as it reads now, under today's call names: one edited so it no longer asks, or a claim an earlier
     // release made of a message that no longer asks (plain talk in the bot's thread), ends here with no run or reply.
+    // Only while nobody claimed its send: an attempt that did (a live worker of either release) answers it as usual.
     if (!triggerOf(context)) {
-      await patch(questionOfRow(row), { code: DISCORD_NOT_ADDRESSED_CODE, state: "interrupted" }, ["claimed"]);
+      const retired = await deps.replies.retireUnsent(row.questionMessageId, DISCORD_NOT_ADDRESSED_CODE).catch((error: unknown) => {
+        logDiscordBridgeFailure({ code: "discord_journal_failed", error, stage: "write" });
+        return false;
+      });
+      // The 👀 an attempt before the restart put on it goes too; nothing else is said.
+      if (retired) {
+        await discordReact(deps.rest(), { channelId: row.channelId, messageId: row.questionMessageId, remove: [DISCORD_REACTION_SEEN] });
+      }
       return;
     }
     const existing = await deps.conversations.findByChannel(row.channelId);
