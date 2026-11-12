@@ -114,7 +114,7 @@ function harness(finish: ((run: { runId: string }) => FakeRunFinish | null) | nu
   const ratings = createMemoryRatings();
   const reports = createMemoryReports(runs);
   const stopRun = vi.fn((input: Readonly<{ userId: string; runId: string }>) => runs.gateway.stop(input));
-  const lifecycle = createDiscordLifecycle({ now, ratings, replies, reports, rest: () => rest, stopRun });
+  const lifecycle = createDiscordLifecycle({ conversations, now, ratings, replies, reports, rest: () => rest, stopRun });
   // The real registry and the process-wide delivery hub, as production wires them.
   cleanups.push(lifecycle.register(registry));
 
@@ -124,8 +124,8 @@ function harness(finish: ((run: { runId: string }) => FakeRunFinish | null) | nu
     await intake.lanes.idle();
   }
 
-  async function ask(authorId: string, content: string): Promise<FakeDiscordMessage> {
-    const message = fake.postMessage({ authorId, channelId: fake.channels.text, content: `<@${fake.bot.id}> ${content}`, mentions: [fake.bot.id] });
+  async function ask(authorId: string, content: string, channelId = fake.channels.text): Promise<FakeDiscordMessage> {
+    const message = fake.postMessage({ authorId, channelId, content: `<@${fake.bot.id}> ${content}`, mentions: [fake.bot.id] });
     clock.latest = Math.max(clock.latest, Date.parse(message.timestamp));
     await intake.accept({ data: message, type: "MESSAGE_CREATE" });
     return message;
@@ -213,6 +213,86 @@ describe("Discord lifecycle: a deleted question", () => {
       questionMessageId: question.id, runId: run.runId, source: "live", test: false, userId: "svc_1"
     });
     expect(h.botMessages(question.id).map((message) => message.id)).not.toContain(late.value.id);
+    // The thread opened from the deleted question holds only AIQSA's status: it is archived again.
+    expect(h.fake.channel(question.id)?.thread_metadata).toEqual({ archived: true });
+  });
+
+  it("archives the thread AIQSA opened from the deleted question when no person wrote in it", async () => {
+    const h = harness();
+    const alice = h.fake.addUser({ username: "alice" });
+    const question = await h.ask(alice, "what is the release status?");
+    await vi.waitFor(async () => {
+      await h.idle();
+      expect(row(h, question.id).state).toBe("delivered");
+    });
+    // Discord's system "thread starter" line names the question's author; it is no message of a person.
+    h.fake.postMessage({ authorId: alice, channelId: question.id, content: "", type: 21 });
+
+    await h.deleteQuestion(question);
+
+    expect(h.botMessages(question.id)).toEqual([]);
+    expect(h.fake.calls({ route: "archive_thread" }).map((call) => call.json)).toEqual([{ archived: true }]);
+    expect(h.fake.channel(question.id)?.thread_metadata).toEqual({ archived: true });
+    expect(h.fake.channel(question.id)).toBeDefined();
+    expect(h.fake.violations()).toEqual([]);
+  });
+
+  it("leaves the thread open when a person wrote in it", async () => {
+    const h = harness();
+    const alice = h.fake.addUser({ username: "alice" });
+    const bob = h.fake.addUser({ username: "bob" });
+    const question = await h.ask(alice, "what is the release status?");
+    await vi.waitFor(async () => {
+      await h.idle();
+      expect(row(h, question.id).state).toBe("delivered");
+    });
+    h.fake.postMessage({ authorId: bob, channelId: question.id, content: "thanks" });
+
+    await h.deleteQuestion(question);
+
+    expect(h.botMessages(question.id)).toEqual([]);
+    expect(h.fake.calls({ route: "archive_thread" })).toEqual([]);
+    expect(h.fake.channel(question.id)?.thread_metadata).toEqual({ archived: false });
+  });
+
+  it("never archives a thread for a question asked inside it", async () => {
+    const h = harness();
+    const alice = h.fake.addUser({ username: "alice" });
+    const first = await h.ask(alice, "what is the release status?");
+    await vi.waitFor(async () => {
+      await h.idle();
+      expect(row(h, first.id).state).toBe("delivered");
+    });
+    const thread = first.id;
+    const second = await h.ask(alice, "and the dates?", thread);
+    await vi.waitFor(async () => {
+      await h.idle();
+      expect(row(h, second.id).state).toBe("delivered");
+    });
+
+    await h.deleteQuestion(second);
+
+    expect(row(h, second.id).answerMessageId).not.toBeNull();
+    expect(h.botMessages(thread).map((message) => message.id)).not.toContain(row(h, second.id).answerMessageId);
+    expect(h.fake.calls({ route: "archive_thread" })).toEqual([]);
+    expect(h.fake.channel(thread)?.thread_metadata).toEqual({ archived: false });
+  });
+
+  it("ignores a refused archive with a content-free line and finishes the delete", async () => {
+    const h = harness(null);
+    const alice = h.fake.addUser({ username: "alice" });
+    const question = await h.ask(alice, "what is the release status?");
+    await vi.waitFor(() => expect(h.botMessages(question.id)).toHaveLength(1));
+    h.fake.fail({ reply: { code: 50013, status: 403 }, route: "archive_thread" });
+
+    await h.deleteQuestion(question);
+
+    expect(h.botMessages(question.id)).toEqual([]);
+    expect(row(h, question.id)).toMatchObject({ code: DISCORD_QUESTION_DELETED_CODE, state: "interrupted" });
+    expect(h.fake.channel(question.id)?.thread_metadata).toEqual({ archived: false });
+    expect(logs.filter((entry) => entry.event === "service_operation").map((entry) => entry.fields)).toContainEqual({
+      code: "discord_api_error", outcome: "skipped", stage: "dispatch", subsystem: "discord"
+    });
   });
 
   it("leaves the run alone when the deleted message was a follow-up of another question", async () => {
@@ -225,7 +305,7 @@ describe("Discord lifecycle: a deleted question", () => {
     const stopRun = vi.fn(async () => "stopped" as const);
     const deleteMessage = vi.fn();
     const lifecycle = createDiscordLifecycle({
-      ratings: createMemoryRatings(), replies, reports: createMemoryReports(createFakeDiscordRunGateway()),
+      conversations: createMemoryDiscordConversationStore(), ratings: createMemoryRatings(), replies, reports: createMemoryReports(createFakeDiscordRunGateway()),
       rest: () => ({ deleteMessage }) as unknown as ReturnType<typeof createDiscordRest>, stopRun
     });
     const fake = createFakeDiscord();

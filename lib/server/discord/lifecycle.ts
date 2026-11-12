@@ -6,6 +6,7 @@ import { onDiscordRunEvent, type DiscordRunEvent, type DiscordRunEventContext } 
 import { discordEventIds, logDiscordBridgeFailure, logDiscordRequestStage } from "./bridge/journal";
 import type { DiscordDeleteContext, DiscordHandlerRegistry, DiscordReactionContext } from "./intake";
 import type { DiscordRest } from "./rest";
+import type { DiscordConversationStore } from "./store/conversations";
 import type { DiscordReplyRecord, DiscordReplyState, DiscordReplyStore } from "./store/replies";
 
 /**
@@ -16,7 +17,9 @@ import type { DiscordReplyRecord, DiscordReplyState, DiscordReplyStore } from ".
  *   follow-up joined to another question's run leaves that run alone), the
  *   question is journaled `interrupted` with `discord_question_deleted`, and
  *   the messages AIQSA posted for it (status, answer or refusal notice) are
- *   deleted. Nothing in AIQSA is purged: the turn stays in the service
+ *   deleted. When AIQSA opened a thread from the question and no person wrote
+ *   in it, the thread is archived (never deleted), so no empty thread stays
+ *   behind. Nothing in AIQSA is purged: the turn stays in the service
  *   account's chat (O-31). An answer that still reached Discord in the race
  *   with the delete is removed once its delivery is published.
  * - 👍/👎 on an AIQSA answer by a person (or an allowed test author) is one
@@ -33,6 +36,9 @@ export const DISCORD_QUESTION_DELETED_CODE = "discord_question_deleted";
 const UNSETTLED: readonly DiscordReplyState[] = ["claimed", "admitted"];
 /** `MESSAGE_DELETE_BULK` carries at most 100 ids. */
 const DELETE_IDS_MAX = 100;
+/** Discord's THREAD_STARTER_MESSAGE: the system line a thread opened from a message starts with. */
+const THREAD_STARTER_MESSAGE_TYPE = 21;
+const THREAD_HISTORY_PAGE = 100;
 
 export type DiscordRatingStore = Readonly<{
   /** Records the person's rating of the answer, replacing an earlier one of theirs. */
@@ -56,6 +62,7 @@ export type DiscordProblemReports = Readonly<{
 
 export type DiscordLifecycleDeps = Readonly<{
   replies: Pick<DiscordReplyStore, "find" | "findByAnswerMessage" | "update">;
+  conversations: Pick<DiscordConversationStore, "findByChannel">;
   ratings: DiscordRatingStore;
   reports: DiscordProblemReports;
   rest(): DiscordRest;
@@ -95,6 +102,34 @@ export function createDiscordLifecycle(deps: DiscordLifecycleDeps): DiscordLifec
     }
   }
 
+  /**
+   * Archives the thread AIQSA opened from a deleted question once it holds no
+   * message of a person: a thread opened from a message has that message's
+   * id, so a question asked inside an existing thread never names one. A
+   * failure only skips the archive.
+   */
+  async function archiveUnusedThread(questionMessageId: string, botUserId: () => Promise<string | null>): Promise<void> {
+    try {
+      const conversation = await deps.conversations.findByChannel(questionMessageId);
+      if (!conversation?.botOpened || conversation.kind !== "thread" || conversation.discordChannelId !== questionMessageId) return;
+      const botId = await botUserId();
+      if (!botId) return;
+      const rest = deps.rest();
+      const history = await rest.listChannelMessages(questionMessageId, { limit: THREAD_HISTORY_PAGE });
+      if (!history.ok) {
+        if (history.status !== 404) logDiscordBridgeFailure({ code: history.code, outcome: "skipped" });
+        return;
+      }
+      // A full page may hide older messages of people: such a thread is left alone.
+      if (history.value.length >= THREAD_HISTORY_PAGE) return;
+      if (history.value.some((message) => message.type !== THREAD_STARTER_MESSAGE_TYPE && message.author?.id !== botId)) return;
+      const archived = await rest.archiveThread(questionMessageId);
+      if (!archived.ok) logDiscordBridgeFailure({ code: archived.code, outcome: "skipped" });
+    } catch (error) {
+      logDiscordBridgeFailure({ code: "discord_handler_failed", error, outcome: "skipped" });
+    }
+  }
+
   async function questionDeleted(row: DiscordReplyRecord, context: DiscordDeleteContext): Promise<void> {
     if (UNSETTLED.includes(row.state)) {
       const marked = await deps.replies.update(row.questionMessageId, { code: DISCORD_QUESTION_DELETED_CODE, state: "interrupted" }, UNSETTLED);
@@ -113,6 +148,7 @@ export function createDiscordLifecycle(deps: DiscordLifecycleDeps): DiscordLifec
     }
     const own = [...new Set([row.statusMessageId, row.answerMessageId].filter((id): id is string => id !== null))];
     for (const messageId of own) await deleteOwn(messageId, [row.channelId, row.questionMessageId]);
+    await archiveUnusedThread(row.questionMessageId, async () => context.control.bot.userId);
   }
 
   async function handleDelete(context: DiscordDeleteContext): Promise<void> {
@@ -160,6 +196,13 @@ export function createDiscordLifecycle(deps: DiscordLifecycleDeps): DiscordLifec
     const row = await deps.replies.find(context.questionMessageId);
     if (row?.state !== "interrupted" || row.code !== DISCORD_QUESTION_DELETED_CODE) return;
     await deleteOwn(event.answerMessageId, [context.answerChannelId, context.questionChannelId]);
+    // Posting the late answer unarchived a thread archived on the delete.
+    if (context.answerChannelId === context.questionMessageId) {
+      await archiveUnusedThread(context.questionMessageId, async () => {
+        const me = await deps.rest().getCurrentUser();
+        return me.ok ? me.value.id : null;
+      });
+    }
   }
 
   return Object.freeze({
