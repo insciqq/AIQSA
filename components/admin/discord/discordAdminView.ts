@@ -156,15 +156,11 @@ const SETUP_COPY: Readonly<Record<DiscordSetupItem["code"], Readonly<{ ok: strin
     problem: "Discord runs use the shared key. Assign the service account or its group its own key on the provider connection.",
     title: "Model key"
   },
-  discord_no_budget: {
-    ok: "A monthly budget covers the service account.",
-    problem: "No monthly budget limits Discord spending. Set one for the service account or its group.",
+  discord_monthly_budget: {
+    ok: "No monthly budget can stop Discord answers.",
+    problem: "A monthly budget applies to the service account. When it is reached, every Discord thread stops answering at once. " +
+      "Raise it or exempt the service account under Budgets & limits if that is not intended.",
     title: "Monthly budget"
-  },
-  discord_message_limit_low: {
-    ok: "Message limits fit the expected Discord traffic.",
-    problem: "The service account's message limits are below the expected Discord traffic.",
-    title: "Message limits"
   }
 };
 

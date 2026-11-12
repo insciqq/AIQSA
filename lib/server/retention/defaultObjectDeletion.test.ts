@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   pass: vi.fn(),
   pruneRefusals: vi.fn(async () => 0),
   pruneReports: vi.fn(async () => 0),
+  pruneDiscord: vi.fn(async () => 0),
   pruneTelegram: vi.fn(async () => 0),
   schedulers: [] as SchedulerInput[],
   start: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock("../uploads/storage", () => ({ createS3StorageAdapter: () => mocks.stora
 vi.mock("../answerProblemReports/repository", () => ({ deleteExpiredAnswerProblemReports: mocks.pruneReports }));
 vi.mock("../auth/signInRefusals", () => ({ deleteExpiredSignInRefusals: mocks.pruneRefusals }));
 vi.mock("../telegram/store/retention", () => ({ deleteExpiredTelegramRecords: mocks.pruneTelegram }));
+vi.mock("../discord/store/retention", () => ({ deleteExpiredDiscordRecords: mocks.pruneDiscord }));
 vi.mock("./prune", () => ({
   createPrismaRetentionRepository: (client: unknown) => ({ client, kind: "repository" }),
   runObjectDeletionPass: mocks.pass
@@ -140,7 +142,7 @@ describe("default object deletion worker", () => {
     ]);
   });
 
-  it("prunes the content-free Telegram records on the same hourly pass under their own failure code", async () => {
+  it("prunes the content-free Telegram and Discord records on the same hourly pass under their own failure codes", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-19T12:00:00.000Z"));
     getDefaultObjectDeletionWorker();
@@ -159,6 +161,8 @@ describe("default object deletion worker", () => {
     expect(mocks.pruneTelegram).toHaveBeenCalledTimes(2);
     expect(mocks.pruneReports).toHaveBeenCalledTimes(2);
     expect(mocks.pruneRefusals).toHaveBeenCalledTimes(2);
+    expect(mocks.pruneDiscord).toHaveBeenCalledTimes(2);
+    expect(mocks.pruneDiscord).toHaveBeenCalledWith({ kind: "prisma" }, new Date("2026-10-19T12:00:00.000Z"));
     expect(mocks.log.mock.calls).toEqual([
       ["runtime_lifecycle", { count: 12, outcome: "completed", stage: "cleanup", subsystem: "database" }],
       ["runtime_lifecycle", expect.objectContaining({

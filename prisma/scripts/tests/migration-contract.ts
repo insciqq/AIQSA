@@ -226,6 +226,7 @@ const KNOWLEDGE_RETIRED_PURGE_GUARD_MIGRATION =
   "20260822143300_retired_knowledge_purge_guard";
 const TELEGRAM_CONNECT_MIGRATION = "20261019120000_telegram_connect";
 const SERVICE_ACCOUNTS_MIGRATION = "20261112100000_service_accounts";
+const DISCORD_CONNECT_MIGRATION = "20261112100200_discord_connect";
 const MEMORY_VNEXT_RETRIEVAL_CUTOVER_MIGRATION =
   "20260824014100_memory_vnext_retrieval_cutover";
 const AIQSA_CONNECT_MIGRATION = "20261019020000_aiqsa_connect";
@@ -758,6 +759,12 @@ function bootstrapFoundationDigest(database: string): string {
       'telegram_groups', COALESCE((
         SELECT jsonb_agg("groupId" ORDER BY "groupId")
         FROM "TelegramBotGroup"
+      ), '[]'::jsonb),
+      'discord_control', COALESCE((
+        SELECT jsonb_agg(jsonb_build_array(id, enabled, "tokenEnvelope" IS NOT NULL, "tokenGeneration", "guildId",
+          "channelMode", "channelIds", "dmEnabled", "serviceUserId", "assistantId", "perAuthorHourly", "perAuthorDaily",
+          "perThreadHourly", "parallelThreads", "sessionId" IS NOT NULL, version, "updatedByUserId") ORDER BY id)
+        FROM "DiscordBotControl"
       ), '[]'::jsonb)
     )::text);`,
   );
@@ -792,6 +799,15 @@ function runBootstrapProof(database: string): void {
     "off:everyone:true:0:1",
     "fresh migration history must leave the Telegram bot off and unconfigured before bootstrap",
   );
+  assert.equal(
+    psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || "channelMode"::text
+      || ':' || ("tokenEnvelope" IS NULL)::text || ':' || "tokenGeneration"::text || ':' || cardinality("channelIds")::text
+      || ':' || "perAuthorHourly"::text || '/' || "perAuthorDaily"::text || '/' || "perThreadHourly"::text
+      || '/' || "parallelThreads"::text || ':' || version::text
+      FROM "DiscordBotControl" WHERE id = 'installation';`),
+    "off:only_listed:true:0:0:20/100/60/16:1",
+    "fresh migration history must leave the Discord bot off, unconfigured and listing no channel before bootstrap",
+  );
   const bootstrapEnvironment = {
     AIQSA_INITIAL_ADMIN_DISPLAY_NAME: "Baseline Administrator",
     AIQSA_INITIAL_ADMIN_EMAIL: "baseline-admin@example.invalid",
@@ -825,8 +841,9 @@ function runBootstrapProof(database: string): void {
     "fresh bootstrap must keep AIQSA Connect off",
   );
   const freshDigest = bootstrapFoundationDigest(database);
-  // Adoption recreates missing usage limits, AIQSA Connect and Telegram singletons exactly as the migrations inserted them.
-  psqlScalar(database, `DELETE FROM "UsageLimitPolicy"; DELETE FROM "ConnectPolicy"; DELETE FROM "TelegramBotControl";`);
+  // Adoption recreates missing usage limits, AIQSA Connect, Telegram and Discord singletons exactly as the migrations inserted them.
+  psqlScalar(database, `DELETE FROM "UsageLimitPolicy"; DELETE FROM "ConnectPolicy"; DELETE FROM "TelegramBotControl";
+    DELETE FROM "DiscordBotControl";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
   assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
@@ -844,13 +861,16 @@ function runBootstrapProof(database: string): void {
     UPDATE "UsageLimitPolicy" SET "monthlyCapMicros" = 5000000, "messagesPerHour" = 0, version = version + 1 WHERE id = 'installation';
     UPDATE "ConnectPolicy" SET enabled = true, version = version + 1 WHERE id = 'installation';
     UPDATE "TelegramBotControl" SET restricted = true, version = version + 1 WHERE id = 'installation';
-    INSERT INTO "TelegramBotGroup" ("groupId") SELECT id FROM "Group" ORDER BY id LIMIT 1;`);
+    INSERT INTO "TelegramBotGroup" ("groupId") SELECT id FROM "Group" ORDER BY id LIMIT 1;
+    UPDATE "DiscordBotControl" SET "guildId" = 900000000000000001, "channelMode" = 'all_except',
+      "channelIds" = ARRAY[900000000000000002]::BIGINT[], "dmEnabled" = true, "perAuthorHourly" = 5,
+      "parallelThreads" = 4, version = version + 1 WHERE id = 'installation';`);
   const disabledDigest = bootstrapFoundationDigest(database);
   app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.equal(
     bootstrapFoundationDigest(database),
     disabledDigest,
-    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off, usage limits, AIQSA Connect On and Telegram access",
+    "bootstrap adoption must preserve an administrator's saved Workspace, personal MCP local network Off, usage limits, AIQSA Connect On, Telegram access and Discord choices",
   );
   assert.equal(
     psqlScalar(
@@ -8004,6 +8024,40 @@ function main(
          RAISE EXCEPTION 'service_accounts_email_allowed';
        EXCEPTION WHEN check_violation THEN NULL;
        END;
+     END $$;`);
+  // Expand only: the bot starts off without a token, previous-release writers keep deleting chats
+  // (a Discord conversation goes with its chat), and the checks refuse a bot on without a token,
+  // a second control row and a rating other than up or down.
+  runForwardAdoptionProof(shadowDatabase, migrations, DISCORD_CONNECT_MIGRATION,
+    `INSERT INTO "User" (id, "displayName", status, "updatedAt") VALUES ('discord-adoption-owner', 'Synthetic owner', 'active', now());
+     INSERT INTO "Chat" (id, "userId", title, "updatedAt") VALUES ('discord-adoption-chat', 'discord-adoption-owner', 'Synthetic chat', now());`,
+    `DO $$ BEGIN
+       IF (SELECT count(*) FROM "DiscordBotControl") <> 1 OR NOT EXISTS (SELECT 1 FROM "DiscordBotControl" WHERE id = 'installation'
+           AND NOT enabled AND "tokenEnvelope" IS NULL AND "tokenGeneration" = 0 AND "guildId" IS NULL AND "channelMode" = 'only_listed'
+           AND cardinality("channelIds") = 0 AND NOT "dmEnabled" AND "serviceUserId" IS NULL AND "sessionId" IS NULL AND version = 1)
+         THEN RAISE EXCEPTION 'discord_connect_control_not_off'; END IF;
+       BEGIN
+         UPDATE "DiscordBotControl" SET enabled = true, "enabledAt" = now() WHERE id = 'installation';
+         RAISE EXCEPTION 'discord_connect_enabled_without_token';
+       EXCEPTION WHEN check_violation THEN NULL;
+       END;
+       BEGIN
+         INSERT INTO "DiscordBotControl" (id, "updatedAt") VALUES ('second', now());
+         RAISE EXCEPTION 'discord_connect_second_control';
+       EXCEPTION WHEN check_violation THEN NULL;
+       END;
+       INSERT INTO "DiscordConversation" (id, "discordChannelId", kind, "guildId", "userId", "chatId")
+         VALUES ('discord-adoption-conversation', 900000000000000010, 'thread', 900000000000000001, 'discord-adoption-owner', 'discord-adoption-chat');
+       INSERT INTO "DiscordReply" ("questionMessageId", "conversationId", "guildId", "channelId", "discordUserId", "authorName")
+         VALUES (900000000000000011, 'discord-adoption-conversation', 900000000000000001, 900000000000000010, 900000000000000012, 'Synthetic author');
+       BEGIN
+         INSERT INTO "DiscordAnswerRating" ("replyId", "discordUserId", value) VALUES (900000000000000011, 900000000000000012, 2);
+         RAISE EXCEPTION 'discord_connect_rating_out_of_range';
+       EXCEPTION WHEN check_violation THEN NULL;
+       END;
+       DELETE FROM "Chat" WHERE id = 'discord-adoption-chat';
+       IF EXISTS (SELECT 1 FROM "DiscordConversation") OR EXISTS (SELECT 1 FROM "DiscordReply")
+         THEN RAISE EXCEPTION 'discord_connect_chat_deletion_kept_rows'; END IF;
      END $$;`);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
