@@ -42,6 +42,7 @@ function controlFor(fake: FakeDiscord, overrides: Partial<DiscordEffectiveContro
     session: null,
     testAuthorIds: new Set(),
     testChannelIds: new Set(),
+    callNames: [],
     tokenState: "ready",
     version: 3,
     ...overrides

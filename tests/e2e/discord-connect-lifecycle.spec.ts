@@ -80,7 +80,7 @@ test.beforeAll(async ({ browser }) => {
   const assistant = await assistants.create(request, { name: "Discord lifecycle agent" });
   await assistants.publish(request, assistant.id, "installation");
   await configureDiscordByApi(request, prisma, fake, {
-    assistantId: assistant.id, channelIds: [fake.channels.text, ...Object.values(stand.channels)]
+    assistantId: assistant.id, callNames: ["Agent"], channelIds: [fake.channels.text, ...Object.values(stand.channels)]
   });
 });
 
@@ -102,7 +102,7 @@ test.afterAll(async () => {
   }
 });
 
-test("a message in the thread while the answer runs joins that run: 👀, then ✅ on both", async () => {
+test("a call-name message in the thread while the answer runs joins that run: 👀, then ✅ on both", async () => {
   const { fake } = stand;
   const since = fake.calls().length;
   const question = say(fake, {
@@ -110,7 +110,7 @@ test("a message in the thread while the answer runs joins that run: 👀, then �
   });
   const main = await running(question, since);
   await afterMergeWindow(question);
-  const followUp = say(fake, { authorId: alice, channelId: question.id, text: `And consider ${marker("constraint")}.` });
+  const followUp = say(fake, { authorId: alice, channelId: question.id, text: `Agent, and consider ${marker("constraint")}.` });
   await waitForReaction(fake, followUp.id, "👀", 30_000);
 
   await delivered(question, since);

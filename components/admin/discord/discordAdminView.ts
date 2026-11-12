@@ -2,8 +2,11 @@ import { adminDiscordReasonMessage } from "@/components/admin/discord/adminDisco
 import {
   DISCORD_BOT_TOKEN_MAX_LENGTH,
   DISCORD_BOT_TOKEN_PATTERN,
+  DISCORD_CALL_NAME_MAX_LENGTH,
+  DISCORD_CALL_NAMES_MAX,
   DISCORD_SNOWFLAKE_PATTERN,
   DISCORD_TEST_IDS_MAX,
+  discordCallNamesSchema,
   discordLimitsSchema,
   type DiscordAdminState,
   type DiscordChannelMode,
@@ -288,6 +291,26 @@ export function parseDiscordIds(text: string):
   const ids = [...new Set(parts)];
   if (ids.length > DISCORD_TEST_IDS_MAX) return { message: `Enter at most ${DISCORD_TEST_IDS_MAX} ids.`, ok: false };
   return { ids, ok: true };
+}
+
+/** Call names typed one per line or separated by commas; a name typed twice (ignoring case) counts once. */
+export function parseDiscordCallNames(text: string):
+  | Readonly<{ names: string[]; ok: true }>
+  | Readonly<{ message: string; ok: false }> {
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const part of text.split(/[\r\n,]+/u)) {
+    const name = part.trim().replace(/\s+/gu, " ");
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    names.push(name);
+  }
+  if (names.some((name) => name.length > DISCORD_CALL_NAME_MAX_LENGTH)) {
+    return { message: `A call name has at most ${DISCORD_CALL_NAME_MAX_LENGTH} characters.`, ok: false };
+  }
+  if (names.length > DISCORD_CALL_NAMES_MAX) return { message: `Enter at most ${DISCORD_CALL_NAMES_MAX} names.`, ok: false };
+  if (!discordCallNamesSchema.safeParse(names).success) return { message: "Use plain names, one per line or separated by commas.", ok: false };
+  return { names, ok: true };
 }
 
 export function formatDiscordLatency(ms: number | null): string {

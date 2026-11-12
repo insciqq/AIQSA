@@ -42,6 +42,7 @@ function adminState(overrides: Partial<DiscordAdminState> = {}): DiscordAdminSta
     setup: { items: okItems(), ready: true },
     testAuthorIds: [],
     testChannelIds: [],
+    callNames: [],
     tokenConfigured: true,
     version: 7,
     ...overrides
@@ -183,6 +184,39 @@ describe("AdminDiscordSection", () => {
       { action: "set_test_access", expectedVersion: 7, testAuthorIds: ["100000000000000501"], testChannelIds: [CHANNEL_B.id] }
     ]);
     expect(document.body.innerHTML).not.toContain(TOKEN);
+  });
+
+  it("saves call names typed by line or comma, refuses an overlong one and explains what they do", async () => {
+    const { patches } = mockFetch(adminState({ callNames: ["Agent"] }), (body, state) => {
+      state.current = adminState({ ...state.current, callNames: body.callNames as string[], version: state.current.version + 1 });
+      return Response.json(state.current);
+    });
+    renderSection();
+    const field = await screen.findByLabelText("Names");
+    const form = screen.getByTestId("discord-call-names-form");
+    expect(field).toHaveValue("Agent");
+    expect(form).toHaveTextContent(
+      "A message that starts with one of these names, then a comma, colon, space or dash, counts as addressing the bot in channels and threads. Direct messages are always answered."
+    );
+    expect(screen.getByTestId("discord-save-call-names")).toBeDisabled();
+
+    fireEvent.change(field, { target: { value: `Agent, ${"x".repeat(49)}` } });
+    fireEvent.click(screen.getByTestId("discord-save-call-names"));
+    expect(await within(form).findByText("A call name has at most 48 characters.")).toBeVisible();
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(patches()).toEqual([]);
+
+    fireEvent.change(field, { target: { value: "Agent, Агент\n agent \nAgent Smith" } });
+    fireEvent.click(screen.getByTestId("discord-save-call-names"));
+    await waitFor(() => expect(patches()).toEqual([{ action: "set_call_names", callNames: ["Agent", "Агент", "Agent Smith"], expectedVersion: 7 }]));
+    await waitFor(() => expect(field).toHaveValue("Agent\nАгент\nAgent Smith"));
+    expect(screen.getByTestId("discord-save-call-names")).toBeDisabled();
+
+    // Clearing the field leaves only mentions and replies.
+    fireEvent.change(field, { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("discord-save-call-names"));
+    await waitFor(() => expect(patches()).toHaveLength(2));
+    expect(patches()[1]).toEqual({ action: "set_call_names", callNames: [], expectedVersion: 8 });
   });
 
   it("creates the missing service account from the section", async () => {

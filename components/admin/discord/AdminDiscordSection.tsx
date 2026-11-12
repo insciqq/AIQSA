@@ -5,6 +5,7 @@ import { useAdminSectionTopbar } from "@/components/admin/AdminShell";
 import {
   DiscordAgentForm,
   DiscordChannelsForm,
+  DiscordCallNamesForm,
   DiscordDirectMessages,
   DiscordLimitsForm,
   DiscordServerForm,
@@ -304,7 +305,7 @@ export function AdminDiscordSection({ feedback, onNavigateSection, requestConfir
   return (
     <div className="flex max-w-[1120px] min-w-0 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8" data-testid="admin-discord-section">
       <p className="max-w-2xl text-sm leading-6 text-ink-secondary">
-        Let people ask AIQSA in Discord: they mention the bot, reply to it or message it, and get an answer in a thread. Every
+        Let people ask AIQSA in Discord: they mention the bot, call it by name, reply to it or message it, and get an answer in a thread. Every
         answer runs as the Discord service account with the Assistant chosen here.
       </p>
       {stale ? (
@@ -323,6 +324,7 @@ export function AdminDiscordSection({ feedback, onNavigateSection, requestConfir
       <DiscordTokenForm controller={controller} discord={discord} />
       <DiscordServerForm controller={controller} discord={discord} />
       <DiscordChannelsForm controller={controller} discord={discord} />
+      <DiscordCallNamesForm controller={controller} discord={discord} />
       <DiscordDirectMessages controller={controller} discord={discord} />
       <DiscordAgentForm controller={controller} discord={discord} onNavigate={onNavigateSection} />
       <DiscordLimitsForm controller={controller} discord={discord} />

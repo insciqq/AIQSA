@@ -99,10 +99,11 @@ export async function waitForGateway(fake: FakeDiscord, request: APIRequestConte
  * The whole setup through the admin API (the UI path is covered by
  * `discord-connect.spec.ts`): token, the fake's server, Only listed channels,
  * Direct messages, the service account with full access, the Assistant,
- * default limits, then Enable and a ready gateway session.
+ * default limits, the call names (none unless given), then Enable and a ready
+ * gateway session.
  */
 export async function configureDiscordByApi(request: APIRequestContext, prisma: PrismaClient, fake: FakeDiscord, input: Readonly<{
-  assistantId: string; channelIds: readonly string[]; dmEnabled?: boolean;
+  assistantId: string; channelIds: readonly string[]; dmEnabled?: boolean; callNames?: readonly string[];
 }>): Promise<DiscordAdminState> {
   await disableDiscord(request);
   await discordCommand(request, { action: "test_and_save", token: fake.token });
@@ -116,6 +117,7 @@ export async function configureDiscordByApi(request: APIRequestContext, prisma: 
   await discordCommand(request, { action: "set_assistant", assistantId: input.assistantId });
   await discordCommand(request, { action: "set_limits", limits: { ...DISCORD_LIMIT_DEFAULTS } });
   await discordCommand(request, { action: "set_test_access", testAuthorIds: [], testChannelIds: [] });
+  await discordCommand(request, { action: "set_call_names", callNames: [...(input.callNames ?? [])] });
   state = await discordState(request);
   expect(state.setup.items.filter((item) => item.status === "blocking").map((item) => item.code), "no setup item blocks Enable").toEqual([]);
   state = await discordCommand(request, { action: "enable" });

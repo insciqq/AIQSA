@@ -18,7 +18,7 @@ function blank(): DiscordControlRecord {
     applicationId: null, assistantId: null, botRoleId: null, botUserId: null, botUsername: null, channelIds: [], channelMode: "only_listed",
     dmEnabled: false, enabled: false, enabledAt: null, guildId: null, guildName: null, identifyAt: [], lastConnectedAt: null, lastEventAt: null,
     lastFailureAt: null, lastFailureCode: null, limits: { ...DISCORD_LIMIT_DEFAULTS }, serviceUserId: null, session: null, testAuthorIds: [],
-    testChannelIds: [], tokenEnvelope: null, tokenGeneration: 0, version: 1
+    testChannelIds: [], callNames: [], tokenEnvelope: null, tokenGeneration: 0, version: 1
   };
 }
 
@@ -46,6 +46,7 @@ function memoryRepository(seed: Partial<DiscordControlRecord> = {}) {
     setChannels: (input) => write(input.expectedVersion, async () => ({ channelIds: [...input.channelIds], channelMode: input.channelMode })),
     setDirectMessages: (input) => write(input.expectedVersion, async () => ({ dmEnabled: input.dmEnabled })),
     setTestAccess: (input) => write(input.expectedVersion, async () => ({ testAuthorIds: [...input.testAuthorIds], testChannelIds: [...input.testChannelIds] })),
+    setCallNames: (input) => write(input.expectedVersion, async () => ({ callNames: [...input.callNames] })),
     async bindServiceAccount(input) {
       let created = false;
       const result = await write(input.expectedVersion, async (current) => {
@@ -221,6 +222,18 @@ describe("Discord control service", () => {
     await h.service.read();
     // Names are kept a minute per token and server.
     expect(fake.calls({ route: "list_guild_channels" })).toHaveLength(1);
+  });
+
+  it("saves call names, answers them in the state and drops the bridge's snapshot", async () => {
+    const fake = createFakeDiscord();
+    const h = harness(fake);
+    expect((await h.service.read()).callNames).toEqual([]);
+    const result = await h.service.setCallNames({ ...actor(1), callNames: ["Agent", "Агент"] });
+    expect(result.ok && result.state).toMatchObject({ callNames: ["Agent", "Агент"], version: 2 });
+    expect(h.memory.current().callNames).toEqual(["Agent", "Агент"]);
+    expect((await h.deps.cache.get()).callNames).toEqual(["Agent", "Агент"]);
+    expect(h.changed).toHaveBeenCalledOnce();
+    expect(await h.service.setCallNames({ ...actor(1), callNames: [] })).toEqual({ code: "discord_control_stale", ok: false });
   });
 
   it("lists the bot's servers, a server's channels without threads, and the Assistants the service account can use", async () => {

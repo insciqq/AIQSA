@@ -12,7 +12,7 @@ function record(overrides: Partial<DiscordControlRecord> = {}): DiscordControlRe
     applicationId: "1000000000000000002", assistantId: null, botRoleId: null, botUserId: "1000000000000000001", botUsername: "aiqsa-test",
     channelIds: ["1000000000000000010"], channelMode: "only_listed", dmEnabled: false, enabled: true, enabledAt: new Date(), guildId: null,
     guildName: null, identifyAt: [], lastConnectedAt: null, lastEventAt: null, lastFailureAt: null, lastFailureCode: null,
-    limits: DISCORD_LIMIT_DEFAULTS, serviceUserId: null, session: null, testAuthorIds: [], testChannelIds: [], tokenEnvelope: null,
+    limits: DISCORD_LIMIT_DEFAULTS, serviceUserId: null, session: null, testAuthorIds: [], testChannelIds: [], callNames: [], tokenEnvelope: null,
     tokenGeneration: 0, version: 1, ...overrides
   };
 }
