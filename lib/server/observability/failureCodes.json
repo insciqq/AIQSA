@@ -181,6 +181,7 @@
   "discord_network_after_send",
   "discord_network_before_send",
   "discord_question_deleted",
+  "discord_question_not_addressed",
   "discord_rate_limited",
   "discord_record_prune_failed",
   "discord_recovery_failed",

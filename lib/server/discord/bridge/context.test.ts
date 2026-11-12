@@ -9,7 +9,7 @@ import {
 } from "./context";
 import { decodeDiscordContextMessage, type DiscordMentionNames } from "./messages";
 import { discordRunFailure, discordSendRefusalFailure } from "./refusals";
-import { discordCallNameMatch, discordTrigger } from "./triggers";
+import { discordCallNameMatch, discordContextTrigger, discordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
 
 function setup() {
@@ -211,6 +211,31 @@ describe("Discord triggers", () => {
     expect(ask({ content: "Agent" }, "thread", names)).toBeNull();
     // A direct message is always a question.
     expect(ask({ content: "anything" }, "dm", names)).toBe("dm");
+  });
+});
+
+describe("Discord triggers of context messages", () => {
+  const botUserId = "1100000000000000002";
+  const botRoleId = "1100000000000000003";
+  const names: DiscordMentionNames = { botName: "aiqsa-test", botRoleId, botUserId };
+  const ask = (fields: Record<string, unknown>, kind: DiscordChannelKind = "thread") => discordContextTrigger({
+    botRoleId, botUserId, callNames: ["Agent"], kind,
+    message: decodeDiscordContextMessage({
+      author: { id: "1100000000000000050", username: "alice" }, channel_id: "1100000000000000010", content: "x", id: "1100000000000000100",
+      mention_roles: [], mentions: [], timestamp: "2026-11-12T09:00:00.000Z", type: 0, ...fields
+    }, names)!
+  });
+
+  it("applies the intake rule to a message read from Discord, a Reply's author included", () => {
+    expect(ask({ content: "colleagues, lunch is ready" })).toBeNull();
+    expect(ask({ content: "Agent, include the schedule" })).toBe("call_name");
+    expect(ask({ content: `<@${botUserId}> include it`, mentions: [{ id: botUserId }] })).toBe("mention");
+    expect(ask({ content: `<@&${botRoleId}> include it`, mention_roles: [botRoleId] })).toBe("role_mention");
+    expect(ask({ message_reference: { message_id: "1100000000000000090" }, referenced_message: { author: { id: botUserId } }, type: 19 }))
+      .toBe("reply_to_bot");
+    expect(ask({ message_reference: { message_id: "1100000000000000090" }, referenced_message: { author: { id: "1100000000000000051" } }, type: 19 }))
+      .toBeNull();
+    expect(ask({ content: "colleagues, lunch is ready" }, "dm")).toBe("dm");
   });
 });
 

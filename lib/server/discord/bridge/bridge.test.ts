@@ -624,6 +624,49 @@ describe("Discord bridge: one answer per question, across replays and restarts",
     expect(fake.reactions(question.id, "✅")).toEqual([fake.bot.id]);
   });
 
+  it("retires a claimed question whose author edited the call name out, with no run, reply or reaction", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const h = harness({ fake, stores });
+    const alice = h.user("alice");
+    const question = h.post({ authorId: alice, channelId: fake.channels.text, content: "Agent, check the release" });
+    await stores.replies.claim({
+      authorName: "alice", channelId: question.channel_id, discordUserId: alice, guildId: fake.guild.id, kind: "refused",
+      questionMessageId: question.id, receivedAt: new Date(h.now() - 180_000), test: false
+    });
+    fake.editUserMessage(fake.channels.text, question.id, "colleagues, lunch is ready");
+    await h.bridge.recover(new Date(h.now()));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(0);
+    expect(stores.replies.rows.get(question.id)).toMatchObject({ code: "discord_question_not_addressed", runId: null, state: "interrupted" });
+    expect(botMessages(h, fake.channels.text)).toEqual([]);
+    expect(fake.channel(question.id)).toBeUndefined();
+    expect(fake.reactions(question.id, "👀")).toEqual([]);
+    expect(fake.reactions(question.id, "❌")).toEqual([]);
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(0);
+  });
+
+  it("retires a plain message an earlier release claimed in the bot's thread instead of answering it after the upgrade", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const h = harness({ fake, stores });
+    const [alice, bob] = [h.user("alice"), h.user("bob")];
+    const first = await h.say(mention(h, alice, "plan the launch"));
+    await h.settle();
+    const plain = h.post({ authorId: bob, channelId: first.id, content: "and the deadlines?" });
+    await stores.replies.claim({
+      authorName: "bob", channelId: first.id, discordUserId: bob, guildId: fake.guild.id, kind: "refused",
+      questionMessageId: plain.id, receivedAt: new Date(h.now() - 60_000), test: false
+    });
+    await h.bridge.recover(new Date(h.now()));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(1);
+    expect(stores.replies.rows.get(plain.id)).toMatchObject({ code: "discord_question_not_addressed", runId: null, state: "interrupted" });
+    expect(botMessages(h, first.id)).toHaveLength(1);
+    expect(fake.reactions(plain.id, "👀")).toEqual([]);
+  });
+
   it("asks a claimed question with no run again once, from recovery", async () => {
     const fake = createFakeDiscord();
     const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
@@ -678,6 +721,72 @@ describe("Discord bridge: joined messages, the kill switch, test authors and a f
     expect(h.fake.reactions(second.id, "✅")).toEqual([h.fake.bot.id]);
     expect(h.fake.channel(second.id)).toBeUndefined();
     expect(botMessages(h, first.id)).toHaveLength(1);
+  });
+
+  it("joins only an addressed message to a follow-up; the author's plain talk right after it waits for the next turn", async () => {
+    const h = harness({ finish: null, timing: { mergeWindowMs: 1_500 } });
+    const [alice, bob] = [h.user("alice"), h.user("bob")];
+    const first = await h.say(mention(h, alice, "plan the launch"));
+    await vi.waitFor(() => expect(h.runs.runs).toHaveLength(1), { timeout: 5_000 });
+    const [run] = h.runs.runs;
+    const asked = h.post({ authorId: alice, channelId: first.id, content: "Agent, include the schedule" });
+    const lunch = h.post({ authorId: alice, channelId: first.id, content: "colleagues, lunch is ready" });
+    expect(Date.parse(lunch.timestamp) - Date.parse(asked.timestamp)).toBeLessThanOrEqual(1_500);
+    await h.intake.accept({ data: asked, type: "MESSAGE_CREATE" });
+    await h.intake.accept({ data: lunch, type: "MESSAGE_CREATE" });
+    await h.intake.lanes.idle();
+    await h.bridge.idle();
+    expect(run!.followups).toHaveLength(1);
+    expect(run!.followups[0]!.text).toMatch(/:\ninclude the schedule$/u);
+    expect(run!.followups.map((entry) => entry.text).join("\n")).not.toContain("lunch is ready");
+    expect(h.replies.rows.has(lunch.id)).toBe(false);
+    run!.finish({ text: "Plan with the schedule." });
+    await h.settle();
+
+    // The plain talk was not lost: the next question reads it as context.
+    await h.say(mention(h, bob, "anything else?", first.id));
+    await vi.waitFor(() => expect(h.runs.runs).toHaveLength(2), { timeout: 5_000 });
+    const next = sentText(h.runs.runs[1]!.body);
+    expect(next).toContain(`alice (discord:${alice}): colleagues, lunch is ready`);
+    expect(next).not.toContain("include the schedule");
+  });
+
+  it("joins only an addressed message to a new question, a call name stripped, while a direct message joins everything", async () => {
+    const h = harness({ finish: null, timing: { mergeWindowMs: 1_500 } });
+    const [alice, bob] = [h.user("alice"), h.user("bob")];
+    const first = await h.say(mention(h, alice, "plan the launch"));
+    const lunch = h.post({ authorId: alice, channelId: h.fake.channels.text, content: "colleagues, lunch is ready" });
+    await vi.waitFor(() => expect(h.runs.runs).toHaveLength(1), { timeout: 5_000 });
+    expect(sentText(h.runs.runs[0]!.body)).toMatch(/:\n@aiqsa-test plan the launch$/u);
+    await h.intake.accept({ data: lunch, type: "MESSAGE_CREATE" });
+    h.runs.runs[0]!.finish({ text: "Plan." });
+    await h.settle();
+    expect(h.replies.rows.has(lunch.id)).toBe(false);
+
+    // In the thread: an addressed second message joins, without its call name; plain talk after it stops the joining.
+    const second = await h.say(mention(h, bob, "first part", first.id));
+    const addressed = h.post({ authorId: bob, channelId: first.id, content: "agent: second part" });
+    const aside = h.post({ authorId: bob, channelId: first.id, content: "brb, coffee" });
+    await vi.waitFor(() => expect(h.runs.runs).toHaveLength(2), { timeout: 5_000 });
+    expect(sentText(h.runs.runs[1]!.body)).toMatch(/first part\nsecond part$/u);
+    await h.intake.accept({ data: addressed, type: "MESSAGE_CREATE" });
+    await h.intake.accept({ data: aside, type: "MESSAGE_CREATE" });
+    h.runs.runs[1]!.finish({ text: "Both parts." });
+    await h.settle();
+    expect(h.replies.rows.get(addressed.id)).toMatchObject({ kind: "follow_up", runId: h.runs.runs[1]!.runId });
+    expect(h.replies.rows.has(aside.id)).toBe(false);
+    expect(h.fake.reactions(second.id, "✅")).toEqual([h.fake.bot.id]);
+
+    // A direct message always asks, so the same author's plain next message joins it.
+    const dm = h.fake.openDm(alice);
+    await h.say({ authorId: alice, channelId: dm, content: "hello there" });
+    const more = h.post({ authorId: alice, channelId: dm, content: "and one more thing" });
+    await vi.waitFor(() => expect(h.runs.runs).toHaveLength(3), { timeout: 5_000 });
+    expect(sentText(h.runs.runs[2]!.body)).toMatch(/hello there\nand one more thing$/u);
+    await h.intake.accept({ data: more, type: "MESSAGE_CREATE" });
+    h.runs.runs[2]!.finish({ text: "Hi." });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(3);
   });
 
   it("sends nothing once the bot is switched off mid-run, and records why", async () => {
