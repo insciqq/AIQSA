@@ -16,6 +16,7 @@ export type AdminAttentionCode =
   | "assistants_listing_pending"
   | "background_failures"
   | "discord_disconnected"
+  | "discord_failures_rising"
   | "discord_intents_disallowed"
   | "discord_session_limit"
   | "discord_setup_incomplete"
@@ -142,6 +143,7 @@ export type AdminAttentionSummaryResponse = {
 export const adminHealthAttentionCodes = [
   "background_failures",
   "discord_disconnected",
+  "discord_failures_rising",
   "discord_intents_disallowed",
   "discord_session_limit",
   "discord_setup_incomplete",

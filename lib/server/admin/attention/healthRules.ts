@@ -48,7 +48,11 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   /** Every failed run created within this window raises the failed-runs item. */
   runsFailedWindowMs: 24 * 3_600_000,
   /** An enabled Discord bot without a gateway session this long is disconnected (PRD D-34). */
-  discordDisconnectedMs: 5 * 60_000
+  discordDisconnectedMs: 5 * 60_000,
+  /** Discord questions of the last hour that failed (limit hits and test mode left out, PRD D-34, D-36)... */
+  discordFailuresMin: 5,
+  /** ...and their share among the hour's questions. */
+  discordFailuresMinShare: 0.25
 });
 
 /**
@@ -138,7 +142,8 @@ export type HealthFinding =
   | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
   | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>
   | Readonly<{ code: "discord_disconnected"; minutes: number; reason: "connect_address" | "gateway_refused" | "network" }>
-  | Readonly<{ code: "discord_token_rejected" | "discord_intents_disallowed" | "discord_session_limit" | "discord_setup_incomplete" }>;
+  | Readonly<{ code: "discord_token_rejected" | "discord_intents_disallowed" | "discord_session_limit" | "discord_setup_incomplete" }>
+  | Readonly<{ code: "discord_failures_rising"; failures: number; requests: number }>;
 
 /** The Discord bot's switch, its session's recorded health and whether its setup passes. */
 export type DiscordSessionHealth = Readonly<{
@@ -147,6 +152,8 @@ export type DiscordSessionHealth = Readonly<{
   lastFailureAt: Date | null;
   lastFailureCode: string | null;
   setupReady: boolean;
+  /** People's questions of the last hour and how many failed (`lib/server/discord/monitoring.ts`); absent when not read. */
+  lastHour?: Readonly<{ requests: number; failures: number }> | null;
 }>;
 
 export type ProviderFailureKind = "network" | "other" | "rate_limited" | "server_error" | "timeout";
@@ -492,7 +499,9 @@ export function memoryRebuildFindings(
  * process's session: only while the bot is on. A rejected token, refused
  * intents and a spent connection budget are news at once; a lost connection
  * only after it stayed lost past the grace, since the session reconnects on
- * its own; a failing setup item means every question is refused.
+ * its own; a failing setup item means every question is refused. Failing
+ * answers are news once they are both many and a large share of the hour's
+ * questions.
  */
 export function discordSessionFindings(
   health: DiscordSessionHealth | null,
@@ -513,6 +522,11 @@ export function discordSessionFindings(
     }
   }
   if (!health.setupReady) findings.push({ code: "discord_setup_incomplete" });
+  const hour = health.lastHour;
+  if (hour && hour.requests > 0 && hour.failures >= thresholds.discordFailuresMin &&
+    hour.failures / hour.requests >= thresholds.discordFailuresMinShare) {
+    findings.push({ code: "discord_failures_rising", failures: hour.failures, requests: hour.requests });
+  }
   return findings;
 }
 
@@ -672,6 +686,12 @@ export function healthAttentionItems(
         items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "warn",
           detail: "The bot's daily Discord connection budget is spent — it connects again when Discord resets it",
           target: { section: "discord" }, title: "Discord connection budget used up" });
+        break;
+      case "discord_failures_rising":
+        items.push({ action: "Open Discord", code: finding.code, count: finding.failures, id: finding.code, severity: "warn",
+          detail: `${finding.failures} of ${plural(finding.requests, "Discord question")} failed in the last hour — ` +
+            "the Discord activity lists them with their reasons",
+          target: { section: "discord" }, title: "Discord answers are failing" });
         break;
       case "discord_setup_incomplete":
         items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",
