@@ -1,5 +1,6 @@
 import type { DiscordChannelKind } from "../access";
 import type { DiscordIntakeMessage } from "../intake";
+import type { DiscordContextMessage } from "./messages";
 
 /**
  * Whether a message that passed intake asks the bot (PRD D-11, O-37): a direct
@@ -56,17 +57,37 @@ export function discordCallNameMatch(text: string, callNames: readonly string[])
   return best ? { name: best.name, rest: text.slice(best.length) } : null;
 }
 
-export function discordTrigger(input: Readonly<{
-  message: DiscordIntakeMessage;
+type TriggerRules = Readonly<{
   kind: DiscordChannelKind;
   botUserId: string;
   botRoleId: string | null;
   callNames: readonly string[];
+}>;
+
+function classify(rules: TriggerRules, message: Readonly<{
+  mentionUserIds: readonly string[]; mentionRoleIds: readonly string[]; repliesTo: string | null; replied: boolean; text: string;
 }>): DiscordTrigger | null {
+  if (rules.kind === "dm") return "dm";
+  if (message.mentionUserIds.includes(rules.botUserId)) return "mention";
+  if (rules.botRoleId && message.mentionRoleIds.includes(rules.botRoleId)) return "role_mention";
+  if (message.replied && message.repliesTo === rules.botUserId) return "reply_to_bot";
+  return discordCallNameMatch(message.text, rules.callNames) ? "call_name" : null;
+}
+
+/** Whether a message intake handed on asks the bot. */
+export function discordTrigger(input: TriggerRules & Readonly<{ message: DiscordIntakeMessage }>): DiscordTrigger | null {
   const { message } = input;
-  if (input.kind === "dm") return "dm";
-  if (message.mentionUserIds.includes(input.botUserId)) return "mention";
-  if (input.botRoleId && message.mentionRoleIds.includes(input.botRoleId)) return "role_mention";
-  if (message.reference && message.referencedAuthorId === input.botUserId) return "reply_to_bot";
-  return discordCallNameMatch(message.content, input.callNames) ? "call_name" : null;
+  return classify(input, {
+    mentionRoleIds: message.mentionRoleIds, mentionUserIds: message.mentionUserIds, replied: message.reference !== null,
+    repliesTo: message.referencedAuthorId, text: message.content
+  });
+}
+
+/** The same rule for a message read from Discord for a turn's context (one joining a question, say). */
+export function discordContextTrigger(input: TriggerRules & Readonly<{ message: DiscordContextMessage }>): DiscordTrigger | null {
+  const { message } = input;
+  return classify(input, {
+    mentionRoleIds: message.mentionRoleIds, mentionUserIds: message.mentionUserIds, replied: message.referenceId !== null,
+    repliesTo: message.referencedAuthorId, text: message.text
+  });
 }

@@ -11,7 +11,7 @@ import { followConnectorRunEvents } from "../../connectors/runObserver";
 import { RUN_STREAM_IDLE_MS } from "../../connectors/sse";
 import { logEvent, runInBackground } from "../../observability";
 import { discordChannelInfo, discordChannelKind, type DiscordChannelInfo } from "../access";
-import { DISCORD_DISABLED_CODE, DISCORD_RATE_LIMITED_CODE, DISCORD_REQUEST_INVALID_CODE } from "../codes";
+import { DISCORD_DISABLED_CODE, DISCORD_NOT_ADDRESSED_CODE, DISCORD_RATE_LIMITED_CODE, DISCORD_REQUEST_INVALID_CODE } from "../codes";
 import { isDiscordBotActive, type DiscordActiveControl, type DiscordEffectiveControl } from "../control/state";
 import {
   DISCORD_COPY, discordAuthorDailyLimitText, discordAuthorLimitText, discordFailureStatus, discordQuestionFallbackThreadName,
@@ -42,7 +42,7 @@ import {
   createDiscordStatusMessage, discordActivityLabel, discordReact, DISCORD_REACTION_DONE, DISCORD_REACTION_FAILED, DISCORD_REACTION_SEEN,
   DISCORD_STATUS_EDIT_INTERVAL_MS, DISCORD_TYPING_INTERVAL_MS, type DiscordFinalMessage, type DiscordStatusMessage
 } from "./status";
-import { discordCallNameMatch, discordTrigger, type DiscordTrigger } from "./triggers";
+import { discordCallNameMatch, discordContextTrigger, discordTrigger, type DiscordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
 
 /**
@@ -317,6 +317,23 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     return discordCallNameMatch(text, context.control.callNames)?.rest ?? text;
   }
 
+  /**
+   * Which of the author's next messages join the question (PRD O-37): in a server only one that itself asks the bot,
+   * read without its call name; the first that does not stops the joining, so it stays for the next turn's context.
+   * A direct message always asks, so every one joins there.
+   */
+  function joinable(context: Pick<DiscordMessageContext, "control" | "kind">): (message: DiscordContextMessage) => DiscordContextMessage | null {
+    const { control } = context;
+    return (message) => {
+      const asked = discordContextTrigger({
+        botRoleId: control.bot.roleId, botUserId: control.bot.userId, callNames: control.callNames, kind: context.kind, message
+      });
+      if (!asked) return null;
+      if (asked !== "call_name") return message;
+      return { ...message, text: discordCallNameMatch(message.text, control.callNames)?.rest ?? message.text };
+    };
+  }
+
   function questionOf(message: DiscordIntakeMessage, input: Readonly<{ receivedAt: Date; test: boolean }>): Question {
     return {
       chatId: null,
@@ -398,7 +415,10 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   }
 
   /** Adds the question to the running answer; false when the run no longer takes it and it must be the next turn. */
-  async function followUp(question: Question, run: ActiveRun, control: DiscordActiveControl, trigger: DiscordContextMessage): Promise<boolean> {
+  async function followUp(
+    question: Question, run: ActiveRun, control: DiscordActiveControl, trigger: DiscordContextMessage,
+    merge: (message: DiscordContextMessage) => DiscordContextMessage | null
+  ): Promise<boolean> {
     if (compareDiscordIds(question.ids.questionMessageId, run.includedUpTo) <= 0) {
       await join(question, run);
       return true;
@@ -410,7 +430,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     const probe = filesProbe(discordAttachmentNamesOnly);
     const turn = await readDiscordTurnContext({
       attachments: probe.hook, conversationId: run.conversation.id, facts: deps.facts, header: null,
-      maxChars: RUN_FOLLOWUP_MAX_CHARS, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
+      maxChars: RUN_FOLLOWUP_MAX_CHARS, merge, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
       scope: { afterId: run.includedUpTo, bounded: false, channelId: run.conversation.discordChannelId, kind: "delta" },
       trigger, uploads: null, userId: control.serviceUserId, guildId: question.ids.guildId
     });
@@ -656,7 +676,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       const running = conversation ? active.get(conversation.discordChannelId) : undefined;
       if (running && !running.answered) {
         if (await refuseLimit(question, control, running.conversation.id)) return;
-        if (await followUp(question, running, control, trigger)) return;
+        if (await followUp(question, running, control, trigger, joinable(context))) return;
         // The run no longer takes it: it becomes the next turn once that run's answer is out.
         await running.settled;
         conversation = await deps.conversations.findByChannel(running.conversation.discordChannelId) ?? running.conversation;
@@ -680,7 +700,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       const probe = filesProbe(attachments);
       const turn = await readDiscordTurnContext({
         attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
-        header: await header(placement, trigger, message.guildId), mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest,
+        header: await header(placement, trigger, message.guildId), merge: joinable(context), mergeWindowMs: timing.mergeWindowMs,
+        names: mentionNames(control), rest,
         scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId
       });
       if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
@@ -1092,6 +1113,12 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       return;
     }
     if (!context) return;
+    // The message as it reads now, under today's call names: one edited so it no longer asks, or a claim an earlier
+    // release made of a message that no longer asks (plain talk in the bot's thread), ends here with no run or reply.
+    if (!triggerOf(context)) {
+      await patch(questionOfRow(row), { code: DISCORD_NOT_ADDRESSED_CODE, state: "interrupted" }, ["claimed"]);
+      return;
+    }
     const existing = await deps.conversations.findByChannel(row.channelId);
     inFlight.add(row.questionMessageId);
     try {
