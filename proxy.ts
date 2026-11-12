@@ -72,6 +72,9 @@ const publicPrefixes = [
   "/mcp",
   // SCIM provisioning: the bearer token is the only credential, checked by the route.
   "/scim/v2",
+  // Installation monitoring (Discord telemetry and metrics): a monitoring key in `Authorization: Bearer`
+  // is the only credential, checked by the route; anything else gets its 404. Read-only GETs.
+  "/api/monitoring",
   // AIQSA Connect device API: pairing and the device's Bearer token only, never cookies; the
   // routes refuse any request carrying `Origin`. The `/connect` pages stay behind sign-in.
   "/connect-api"

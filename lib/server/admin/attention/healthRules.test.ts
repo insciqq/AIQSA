@@ -393,4 +393,16 @@ describe("Discord session health rules", () => {
     expect(items[0]!.detail).toContain("7 minutes");
     expect(JSON.stringify(items.map(({ detail, title }) => ({ detail, title })))).not.toMatch(/discord_/u);
   });
+
+  it("raises failing answers at five failures that are a quarter of the hour's questions, and only while the bot is on", () => {
+    const hour = (failures: number, requests: number) => ({ ...healthy, lastHour: { failures, requests } });
+    expect(discordSessionFindings(hour(5, 20), now)).toEqual([{ code: "discord_failures_rising", failures: 5, requests: 20 }]);
+    expect(discordSessionFindings(hour(4, 4), now)).toEqual([]);
+    expect(discordSessionFindings(hour(5, 21), now)).toEqual([]);
+    expect(discordSessionFindings({ ...hour(9, 9), enabled: false }, now)).toEqual([]);
+    expect(discordSessionFindings({ ...healthy, lastHour: null }, now)).toEqual([]);
+    const [item] = healthAttentionItems([{ code: "discord_failures_rising", failures: 5, requests: 20 }], null);
+    expect(item).toMatchObject({ count: 5, severity: "warn", target: { section: "discord" }, title: "Discord answers are failing" });
+    expect(item!.detail).toContain("5 of 20 Discord questions failed in the last hour");
+  });
 });
