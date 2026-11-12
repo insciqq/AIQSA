@@ -297,7 +297,7 @@ function controlFor(fake: FakeDiscord): DiscordEffectiveControl {
     bot: { applicationId: fake.application.id, generation: 1, roleId: fake.botRoleId, token: fake.token, userId: fake.bot.id, username: fake.bot.username },
     channelIds: new Set(), channelMode: "all_except", dmEnabled: true, enabled: true, enabledAt: new Date("2026-11-12T08:00:00.000Z"),
     guildId: fake.guild.id, limits: { parallelThreads: 16, perAuthorDaily: 100, perAuthorHourly: 20, perThreadHourly: 60 },
-    serviceUserId: "svc_1", session: null, testAuthorIds: new Set(), testChannelIds: new Set(), tokenState: "ready", version: 3
+    serviceUserId: "svc_1", session: null, testAuthorIds: new Set(), testChannelIds: new Set(), callNames: [], tokenState: "ready", version: 3
   };
 }
 
@@ -378,15 +378,15 @@ describe("Discord files through the bridge", () => {
     const first = await h.say({ ...mentionOf(h.fake, "start"), authorId: alice, channelId: h.fake.channels.text });
     await h.settle();
     const threadId = first.id;
-    // In its own thread the bot answers every message: bob's is a turn of its own.
+    // Bob's plain message in the bot's thread asks nothing: it reaches the next turn as context.
     const theirs = await h.say({ attachments: [png("diagram")], authorId: bob, channelId: threadId, content: "current diagram" });
     await h.settle();
-    expect(imageNames(h.blocks(1))).toEqual(["diagram.png"]);
+    expect(h.runs.runs).toHaveLength(1);
     await h.say({ ...mentionOf(h.fake, "redo this"), attachments: [png("notes")], authorId: alice, channelId: threadId, replyTo: theirs.id });
     await h.settle();
 
-    expect(h.runs.runs).toHaveLength(3);
-    expect(imageNames(h.blocks(2))).toEqual(["diagram.png", "notes.png"]);
+    expect(h.runs.runs).toHaveLength(2);
+    expect(imageNames(h.blocks(1))).toEqual(["diagram.png", "notes.png"]);
   });
 
   it("attaches a generated image to the final edit and counts what stays in AIQSA", async () => {

@@ -5,7 +5,7 @@ import { DISCORD_COPY } from "../../lib/server/discord/copy";
 import { FAKE_DISCORD_CHANNEL_TYPES, type FakeDiscordMessage } from "../support/fakeDiscord";
 import { createAssistantFixture } from "./support/assistants";
 import {
-  answerMessage, botMessages, chatUserText, discordReply, discordState, disableDiscord, grantServiceAccountFullAccess, openPeopleThread,
+  answerMessage, botMessages, chatUserText, discordCommand, discordReply, discordState, disableDiscord, grantServiceAccountFullAccess, openPeopleThread,
   say, startDiscordStand, waitForDiscordReply, waitForGateway, waitForReaction, type DiscordReplyView, type DiscordStand
 } from "./support/discordStand";
 import { createPeopleFixture, type E2ESession } from "./support/people";
@@ -63,8 +63,9 @@ test.beforeAll(async ({ browser }) => {
   carol = fake.addUser({ globalName: "Carol", username: `carol_${people.suffix}` });
   dana = fake.addUser({ globalName: "Dana", username: `dana_${people.suffix}` });
   adminSession = await people.signIn(browser, (await people.admin("Discord admin"))!);
-  // A previous run on a reused stand may have left the singleton bot on.
+  // A previous run on a reused stand may have left the singleton bot on, and call names saved.
   await disableDiscord(adminSession.page.request);
+  await discordCommand(adminSession.page.request, { action: "set_call_names", callNames: [] });
 });
 
 test.afterAll(async () => {
@@ -181,36 +182,51 @@ test("a mention in a channel opens a thread, its Working status becomes the answ
   botThread = { chatId: reply.chatId!, id: question.id, question };
 });
 
-test("in the bot's thread a plain message is answered, people replying or pinging each other are not, and the next answer reads them", async () => {
+test("in the bot's thread only a call name, a mention or a Reply to the bot asks; plain talk is not answered and the next answer reads it", async () => {
   test.skip(!botThread, "needs the bot's thread from the previous scenario");
   const { fake } = stand;
+  const { page } = adminSession;
   const thread = botThread!;
-  let since = fake.calls().length;
-  const followTopic = marker("rollout");
-  const bobQuestion = say(fake, { authorId: bob, channelId: thread.id, text: `Is ${followTopic} on track?` });
-  const bobReply = await delivered(bobQuestion, since);
-  expect(bobReply.chatId).toBe(thread.chatId);
-  expect(answerMessage(fake, bobReply).content).toContain(followTopic);
+  // The administrator gives the bot call names (synthetic ones; an installation chooses its own).
+  await openDiscordSection(page);
+  await page.getByTestId("discord-call-names").fill("Agent, Агент");
+  await page.getByTestId("discord-save-call-names").click();
+  await expect.poll(async () => (await discordState(page.request)).callNames).toEqual(["Agent", "Агент"]);
+  await expect(page.getByTestId("discord-call-names")).toHaveValue("Agent\nАгент");
 
+  const plainTopic = marker("rollout");
+  const plain = say(fake, { authorId: bob, channelId: thread.id, text: `Is ${plainTopic} on track?` });
   const aside = marker("aside");
   const ping = marker("ping");
-  const replyToBob = say(fake, { authorId: carol, channelId: thread.id, replyTo: bobQuestion.id, text: `Bob, ${aside} is mine.` });
+  const replyToBob = say(fake, { authorId: carol, channelId: thread.id, replyTo: plain.id, text: `Bob, ${aside} is mine.` });
   const pingDana = fake.postMessage({ authorId: carol, channelId: thread.id, content: `<@${dana}> have a look at ${ping}`, mentions: [dana] });
-  since = fake.calls().length;
+  // A word that only starts with a call name asks nothing either.
+  const lookalike = say(fake, { authorId: dana, channelId: thread.id, text: `Agents of ${marker("other")} met today.` });
+  let since = fake.calls().length;
   const deadline = marker("deadline");
-  // Lanes keep one thread's messages in order, so once this question is answered the two before it were seen.
-  const aliceQuestion = say(fake, { authorId: alice, channelId: thread.id, text: `And the ${deadline}?` });
+  // Lanes keep one thread's messages in order, so once this question is answered the ones before it were seen.
+  const aliceQuestion = say(fake, { authorId: alice, channelId: thread.id, text: `agent: and the ${deadline}?` });
   const aliceReply = await delivered(aliceQuestion, since);
 
-  for (const ignored of [replyToBob, pingDana]) {
-    expect(await discordReply(prisma, ignored.id), "people talking to each other are not claimed").toBeNull();
+  for (const ignored of [plain, replyToBob, pingDana, lookalike]) {
+    expect(await discordReply(prisma, ignored.id), "a message that does not ask the bot is not claimed").toBeNull();
     expect(fake.reactions(ignored.id, "👀")).toEqual([]);
   }
   expect(aliceReply.chatId).toBe(thread.chatId);
-  const context = await chatUserText(prisma, thread.chatId);
-  expect(context).toContain(aside);
-  expect(context).toContain(ping);
-  expect(context).toContain(deadline);
+  let context = await chatUserText(prisma, thread.chatId);
+  for (const text of [plainTopic, aside, ping, `and the ${deadline}?`]) expect(context).toContain(text);
+  // The call name and its delimiter are not part of the question.
+  expect(context).not.toContain(`agent: and the ${deadline}`);
+
+  // A Reply to the bot's answer asks as before, without a call name.
+  await afterMergeWindow(aliceQuestion);
+  since = fake.calls().length;
+  const shorter = marker("shorter");
+  const replyToBot = say(fake, { authorId: dana, channelId: thread.id, replyTo: aliceReply.answerMessageId!, text: `Shorter, ${shorter}?` });
+  const replyAnswer = await delivered(replyToBot, since);
+  expect(replyAnswer.chatId).toBe(thread.chatId);
+  context = await chatUserText(prisma, thread.chatId);
+  expect(context).toContain(shorter);
 });
 
 test("a mention in a thread people started reads the whole thread and answers there as a Reply", async () => {

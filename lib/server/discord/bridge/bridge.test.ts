@@ -46,6 +46,7 @@ function controlFor(fake: FakeDiscord, overrides: Partial<DiscordEffectiveContro
     session: null,
     testAuthorIds: new Set(),
     testChannelIds: new Set(),
+    callNames: ["Agent", "Агент"],
     tokenState: "ready",
     version: 3,
     ...overrides
@@ -220,18 +221,24 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(h.published.map((entry) => entry.event.type)).toContain("delivered");
   });
 
-  it("answers people in its own thread without a mention, stays out of their talk and reads it as context", async () => {
+  it("answers in its own thread only when called by name, mentioned or replied to, and reads the rest as context", async () => {
     const h = harness();
     const [alice, bob, carol] = [h.user("alice"), h.user("bob"), h.user("carol")];
     const first = await h.say(mention(h, alice, "plan the launch"));
     await h.settle();
     const threadId = first.id;
-    // People talking to each other: a mention of someone else, a Reply to someone else.
+    // People talking to each other: a mention of someone else, a Reply to someone else, and a plain message.
     const toCarol = await h.say({ authorId: bob, channelId: threadId, content: `<@${carol}> take a look`, mentions: [carol] });
     await h.say({ authorId: alice, channelId: threadId, content: "Sure, the dates are fine", replyTo: toCarol.id });
+    const plain = await h.say({ authorId: carol, channelId: threadId, content: "and the deadlines?" });
+    // A name that only starts with a call name, and a call name with nothing after it, ask nothing either.
+    await h.say({ authorId: bob, channelId: threadId, content: "Agents, all of you are late" });
+    await h.say({ authorId: bob, channelId: threadId, content: "Agent," });
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
-    const asked = await h.say({ authorId: carol, channelId: threadId, content: "and the deadlines?" });
+    expect(h.fake.reactions(plain.id, "👀")).toEqual([]);
+    expect(h.replies.rows.has(plain.id)).toBe(false);
+    const asked = await h.say({ authorId: carol, channelId: threadId, content: "agent: what about the deadlines?" });
     await h.settle();
 
     expect(h.runs.runs).toHaveLength(2);
@@ -244,8 +251,47 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(text).toContain(`bob (discord:${bob}): @carol take a look`);
     expect(text).not.toContain("The answer.");
     expect(text.indexOf("Sure, the dates are fine")).toBeLessThan(text.indexOf(`Question from carol (discord:${carol}), message https://discord.com/channels/`));
+    expect(text).toContain(`carol (discord:${carol}): and the deadlines?`);
+    // The call name and its delimiter are not part of the question.
+    expect(text).toMatch(/Question from carol \(discord:\d+\), message https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+:\nwhat about the deadlines\?$/u);
     expect(h.fake.reactions(asked.id, "✅")).toEqual([h.fake.bot.id]);
-    expect(logs.filter((entry) => entry.event === "discord_intake" && entry.fields.reason === "no_trigger")).toHaveLength(2);
+    // A mention and a Reply to the bot still ask there.
+    const mentioned = await h.say(mention(h, bob, "and the budget?", threadId));
+    await h.settle();
+    const answer = botMessages(h, threadId).at(-1)!;
+    const replied = await h.say({ authorId: alice, channelId: threadId, content: "shorter please", replyTo: answer.id });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(4);
+    for (const id of [mentioned.id, replied.id]) expect(h.fake.reactions(id, "✅"), id).toEqual([h.fake.bot.id]);
+    // Ordinary talk is no log record.
+    expect(logs.filter((entry) => entry.event === "discord_intake" && entry.fields.outcome === "ignored")).toEqual([]);
+  });
+
+  it("opens a thread from a call name in a channel, its name and question without the call name; plain talk asks nothing", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    await h.say({ authorId: alice, channelId: h.fake.channels.text, content: "who knows the release date?" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(0);
+    const asked = await h.say({ authorId: alice, channelId: h.fake.channels.text, content: "Агент, когда релиз?" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(1);
+    expect(h.fake.channel(asked.id).name).toBe("когда релиз?");
+    const text = sentText(h.runs.runs[0]!.body);
+    expect(text).toMatch(/:\nкогда релиз\?$/u);
+    expect(text).toContain("who knows the release date?");
+    expect(await h.conversations.findByChannel(asked.id)).toMatchObject({ botOpened: true, kind: "thread" });
+  });
+
+  it("answers no call name while the installation has none", async () => {
+    const h = harness({ control: { callNames: [] } });
+    const alice = h.user("alice");
+    const first = await h.say(mention(h, alice, "start"));
+    await h.settle();
+    await h.say({ authorId: alice, channelId: first.id, content: "Agent, and then?" });
+    await h.say({ authorId: alice, channelId: h.fake.channels.text, content: "Agent, hello" });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(1);
   });
 
   it("imports a whole existing thread of 300 messages, its starter message from the parent channel included", async () => {
@@ -348,8 +394,8 @@ describe("Discord bridge: follow-ups, order and parallel threads", () => {
     const first = await h.say(mention(h, alice, "start the report"));
     await h.settle();
     const [run] = h.runs.runs;
-    const second = await h.say({ authorId: bob, channelId: first.id, content: "include Y" });
-    const third = await h.say({ authorId: alice, channelId: first.id, content: "and Z" });
+    const second = await h.say({ authorId: bob, channelId: first.id, content: "Agent, include Y" });
+    const third = await h.say({ authorId: alice, channelId: first.id, content: "Agent: and Z" });
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(run!.followups.map((entry) => entry.nonce)).toEqual([`dc-${second.id}`, `dc-${third.id}`]);
@@ -384,7 +430,7 @@ describe("Discord bridge: follow-ups, order and parallel threads", () => {
     const first = await h.say(mention(h, alice, "first"));
     await h.settle();
     h.runs.runs[0]!.status = "complete";
-    const later = h.say({ authorId: alice, channelId: first.id, content: "next please" });
+    const later = h.say({ authorId: alice, channelId: first.id, content: "Agent next please" });
     await vi.waitFor(() => expect(h.runs.runs).toHaveLength(1));
     h.runs.runs[0]!.status = "streaming";
     h.runs.runs[0]!.finish({ text: "First answer." });
@@ -419,7 +465,7 @@ describe("Discord bridge: limits", () => {
     const [alice, bob] = [h.user("alice"), h.user("bob")];
     const first = await h.say(mention(h, alice, "one"));
     await h.settle();
-    await h.say({ authorId: bob, channelId: first.id, content: "two" });
+    await h.say({ authorId: bob, channelId: first.id, content: "Agent, two" });
     await h.settle();
     expect(h.runs.runs).toHaveLength(1);
     expect(botMessages(h, first.id).map((message) => message.content).at(-1)).toMatch(/^❌ This thread has reached its limit of 1 questions per hour\./u);
@@ -447,12 +493,12 @@ describe("Discord bridge: limits", () => {
     }
     // People in the same thread start from zero: the test questions count toward neither the thread nor anyone's limit.
     const [alice, bob] = [h.user("alice"), h.user("bob")];
-    const fourth = await h.say({ authorId: alice, channelId: first.id, content: "four" });
+    const fourth = await h.say({ authorId: alice, channelId: first.id, content: "Agent, four" });
     await h.settle();
     expect(h.runs.runs).toHaveLength(4);
     expect(h.replies.rows.get(fourth.id)).toMatchObject({ kind: "answer", test: false });
     // The thread's limit still holds people: Alice's question filled it.
-    const fifth = await h.say({ authorId: bob, channelId: first.id, content: "five" });
+    const fifth = await h.say({ authorId: bob, channelId: first.id, content: "Agent, five" });
     await h.settle();
     expect(h.runs.runs).toHaveLength(4);
     expect(h.replies.rows.get(fifth.id)).toMatchObject({ code: "discord_thread_limit", kind: "refused", limitKind: "thread", test: false });
@@ -603,7 +649,7 @@ describe("Discord bridge: logs stay content-free", () => {
     const alice = h.fake.addUser({ globalName: "SENTINEL_NAME", username: "sentinel_user" });
     const question = await h.say(mention(h, alice, "SENTINEL_QUESTION_TEXT"));
     await h.settle();
-    await h.say({ authorId: alice, channelId: question.id, content: "SENTINEL_FOLLOWUP_TEXT" });
+    await h.say({ authorId: alice, channelId: question.id, content: "Agent, SENTINEL_FOLLOWUP_TEXT" });
     await h.settle();
     expect(botMessages(h, question.id).length).toBeGreaterThan(0);
     const serialized = JSON.stringify(logs);
@@ -849,7 +895,7 @@ describe("Discord bridge: review fixes", () => {
     await h.settle();
     const withFile = await h.say({
       attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
-      content: "use this image"
+      content: "Agent, use this image"
     });
     await vi.waitFor(() => expect(h.fake.reactions(withFile.id, "👀")).toEqual([h.fake.bot.id]));
     expect(h.runs.runs[0]!.followups).toEqual([]);
@@ -867,7 +913,7 @@ describe("Discord bridge: review fixes", () => {
     const [alice, bob, carol] = [h.user("alice"), h.user("bob"), h.user("carol")];
     const first = await h.say(mention(h, alice, "start"));
     await h.settle();
-    const plain = await h.say({ authorId: carol, channelId: first.id, content: "plain text" });
+    const plain = await h.say({ authorId: carol, channelId: first.id, content: "Agent, plain text" });
     await vi.waitFor(() => expect(h.runs.runs[0]!.followups.map((entry) => entry.nonce)).toEqual([`dc-${plain.id}`]));
     const picture = await h.say({
       attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "chart.png" }], authorId: bob, channelId: first.id,
@@ -962,7 +1008,7 @@ describe("Discord bridge: review fixes", () => {
     await one.settle();
     const file = await two.say({
       attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
-      content: "describe this image"
+      content: "Agent, describe this image"
     });
     await two.intake.lanes.idle();
     await two.bridge.idle();
@@ -985,7 +1031,7 @@ describe("Discord bridge: review fixes", () => {
     await one.settle();
     const file = await two.say({
       attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
-      content: "describe this image"
+      content: "Agent, describe this image"
     });
     await vi.waitFor(() => expect(stores.replies.rows.get(file.id)?.sendClaimedAt).toBeInstanceOf(Date));
     runs.runs[0]!.finish({ text: "First." });

@@ -10,7 +10,7 @@ const STATE: DiscordAdminState = {
   health: { connected: false, lastConnectedAt: null, lastEventAt: null, lastFailureAt: null, lastFailureCode: null },
   limits: DISCORD_LIMIT_DEFAULTS, serviceAccount: { status: "missing", userId: null },
   setup: { items: [{ action: "enter_token", code: "discord_token_missing", status: "blocking" }], ready: false },
-  testAuthorIds: [], testChannelIds: [], tokenConfigured: false, version: 2
+  callNames: [], testAuthorIds: [], testChannelIds: [], tokenConfigured: false, version: 2
 };
 
 function session(role: string, status = "active"): AuthenticatedSession {
@@ -24,7 +24,7 @@ function service(overrides: Partial<DiscordControlService> = {}): DiscordControl
   const ok = vi.fn(async () => ({ ok: true, state: STATE }) as const);
   return {
     createServiceAccount: ok, disable: ok, enable: ok, setAssistant: ok, setChannels: ok, setDirectMessages: ok, setGuild: ok, setLimits: ok,
-    setTestAccess: ok, testAndSave: ok,
+    setCallNames: ok, setTestAccess: ok, testAndSave: ok,
     health: vi.fn(),
     listAssistants: vi.fn(async () => ({ ok: true as const, state: { assistants: [] } })),
     listChannels: vi.fn(async () => ({ ok: true as const, state: { channels: [] } })),
@@ -72,6 +72,7 @@ describe("admin Discord control routes", () => {
       [{ action: "set_direct_messages", dmEnabled: true, expectedVersion: 2 }, "setDirectMessages", { dmEnabled: true }],
       [{ action: "set_test_access", expectedVersion: 2, testAuthorIds: ["9"], testChannelIds: ["1"] }, "setTestAccess",
         { testAuthorIds: ["9"], testChannelIds: ["1"] }],
+      [{ action: "set_call_names", callNames: [" Agent ", "Агент"], expectedVersion: 2 }, "setCallNames", { callNames: ["Agent", "Агент"] }],
       [{ action: "create_service_account", expectedVersion: 2 }, "createServiceAccount", {}],
       [{ action: "set_assistant", assistantId: "asst_1", expectedVersion: 2 }, "setAssistant", { assistantId: "asst_1" }],
       [{ action: "set_limits", expectedVersion: 2, limits: { ...DISCORD_LIMIT_DEFAULTS, parallelThreads: 4 } }, "setLimits",

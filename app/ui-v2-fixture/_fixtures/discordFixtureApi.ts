@@ -106,6 +106,7 @@ function adminState(scenario: DiscordAdminFixtureScenario, now: number): Discord
     },
     testAuthorIds: [],
     testChannelIds: [],
+    callNames: [],
     tokenConfigured: false,
     version: 1
   };
@@ -161,6 +162,7 @@ function adminState(scenario: DiscordAdminFixtureScenario, now: number): Discord
     setup: { items: setupItems({ discord_shared_key: { action: "open_provider_keys", status: "warning" } }), ready: true },
     testAuthorIds: ["900000000000000501"],
     testChannelIds: [CHANNELS[2].id],
+    callNames: ["Agent", "Агент"],
     version: 9
   };
   if (scenario === "disconnected") {
@@ -240,6 +242,7 @@ export function installDiscordFixtureApi(scenario: DiscordAdminFixtureScenario):
         if (body.action === "create_service_account") state = { ...state, serviceAccount: { status: "active", userId: SERVICE_USER_ID } };
         if (body.action === "set_assistant") state = { ...state, assistant: ASSISTANT };
         if (body.action === "set_limits") state = { ...state, limits: body.limits as DiscordAdminState["limits"] };
+        if (body.action === "set_call_names") state = { ...state, callNames: body.callNames as string[] };
         if (body.action === "set_test_access") {
           state = { ...state, testAuthorIds: body.testAuthorIds as string[], testChannelIds: body.testChannelIds as string[] };
         }

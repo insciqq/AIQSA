@@ -16,6 +16,7 @@ import {
   discordTokenError,
   formatDiscordLatency,
   orderedSetupItems,
+  parseDiscordCallNames,
   parseDiscordIds,
   parseDiscordLimits
 } from "./discordAdminView";
@@ -37,6 +38,7 @@ function state(overrides: Partial<DiscordAdminState> = {}): DiscordAdminState {
     serviceAccount: { status: "active", userId: "svc_fixture" },
     setup: { items: DISCORD_SETUP_CHECK_CODES.map((code) => ({ action: null, code, status: "ok" })), ready: true },
     testAuthorIds: [],
+    callNames: [],
     testChannelIds: [],
     tokenConfigured: true,
     version: 3,
@@ -135,6 +137,16 @@ describe("drafts", () => {
     expect(parseDiscordIds("")).toEqual({ ids: [], ok: true });
     expect(parseDiscordIds("12a")).toMatchObject({ ok: false });
     expect(parseDiscordIds(Array.from({ length: 11 }, (_, index) => String(index + 1)).join(","))).toEqual({ message: "Enter at most 10 ids.", ok: false });
+  });
+
+  it("parses call names by line or comma, trims them, collapses repeats ignoring case and enforces the bounds", () => {
+    expect(parseDiscordCallNames("Agent, Агент\n  Agent   Smith \nagent")).toEqual({ names: ["Agent", "Агент", "Agent Smith"], ok: true });
+    expect(parseDiscordCallNames("")).toEqual({ names: [], ok: true });
+    expect(parseDiscordCallNames(" ,\n ")).toEqual({ names: [], ok: true });
+    expect(parseDiscordCallNames("x".repeat(49))).toEqual({ message: "A call name has at most 48 characters.", ok: false });
+    expect(parseDiscordCallNames(Array.from({ length: 11 }, (_, index) => `Agent ${index}`).join("\n")))
+      .toEqual({ message: "Enter at most 10 names.", ok: false });
+    expect(parseDiscordCallNames("Agent\u0007")).toMatchObject({ ok: false });
   });
 
   it("compares channel drafts by mode and set", () => {

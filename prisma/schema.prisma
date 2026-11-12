@@ -6893,6 +6893,8 @@ model DiscordBotControl {
   /// Bot authors whose messages count as a person's, only in `testChannelIds` and their threads.
   testAuthorIds     BigInt[]             @default([])
   testChannelIds    BigInt[]             @default([])
+  /// Names that address the bot when a server message starts with one, then a comma, colon, space or dash.
+  callNames         String[]             @default([])
   serviceUserId     String?
   assistantId       String?
   perAuthorHourly   Int                  @default(20)
