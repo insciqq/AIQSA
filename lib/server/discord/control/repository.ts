@@ -100,8 +100,13 @@ export type DiscordControlRepository = Readonly<{
   }>): Promise<DiscordControlWrite>;
   setLimits(input: Readonly<{ actorUserId: string; expectedVersion: number; limits: DiscordLimits }>): Promise<DiscordControlWrite>;
   recordHealth(input: DiscordHealthWrite): Promise<void>;
-  /** The session to resume after a restart, or `null` when it can no longer be resumed. */
-  saveSession(input: Readonly<{ generation: number; session: Omit<DiscordPersistedSession, "generation"> | null }>): Promise<void>;
+  /** The session to resume after a restart (READY's new session). */
+  saveSession(input: Readonly<{ generation: number; session: Omit<DiscordPersistedSession, "generation"> }>): Promise<void>;
+  /**
+   * Clears the stored session only while it is still `sessionId`: a stale
+   * process giving up its own session never wipes a newer one another process stored.
+   */
+  forgetSession(input: Readonly<{ generation: number; sessionId: string }>): Promise<void>;
   /** The latest sequence and event time of the persisted session `sessionId`. */
   saveProgress(input: Readonly<{ generation: number; sessionId: string; seq: number | null; lastEventAt: Date }>): Promise<void>;
   /** Takes one IDENTIFY permit unless `limit` were granted within `windowMs` (any token, any process). */
@@ -319,14 +324,19 @@ export function createPrismaDiscordControlRepository(prisma: ControlClient): Dis
     },
 
     async saveSession(input) {
-      await sessionWrite(input.generation, input.session
-        ? {
-          resumeGatewayUrl: input.session.resumeGatewayUrl,
-          sessionGeneration: input.generation,
-          sessionId: input.session.sessionId,
-          sessionSeq: input.session.seq
-        }
-        : NO_SESSION);
+      await sessionWrite(input.generation, {
+        resumeGatewayUrl: input.session.resumeGatewayUrl,
+        sessionGeneration: input.generation,
+        sessionId: input.session.sessionId,
+        sessionSeq: input.session.seq
+      });
+    },
+
+    async forgetSession(input) {
+      await prisma.discordBotControl.updateMany({
+        data: NO_SESSION,
+        where: { id: DISCORD_CONTROL_ID, sessionGeneration: input.generation, sessionId: input.sessionId, tokenGeneration: input.generation }
+      }).catch(retainDatabaseFailure);
     },
 
     async saveProgress(input) {

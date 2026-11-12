@@ -65,6 +65,7 @@ function memoryRepository(seed: Partial<DiscordControlRecord> = {}) {
     setLimits: (input) => write(input.expectedVersion, async () => ({ limits: input.limits })),
     recordHealth: async () => undefined,
     saveSession: async () => undefined,
+    forgetSession: async () => undefined,
     saveProgress: async () => undefined,
     reserveIdentify: async () => ({ count: 1, ok: true }),
     recordBotRole: async () => undefined
