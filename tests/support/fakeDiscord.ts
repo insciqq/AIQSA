@@ -59,7 +59,7 @@ export type FakeDiscordCall = Readonly<{
 }>;
 export type FakeDiscordReply =
   | Readonly<{ status: 429; retryAfter: number; global?: boolean; scope?: "user" | "global" | "shared" }>
-  | Readonly<{ status: 400 | 401 | 403 | 404 | 500 | 502; code?: number }>
+  | Readonly<{ status: 400 | 401 | 403 | 404 | 500 | 502 | 503; code?: number }>
   | Readonly<{ drop: "before_send" | "after_send" }>
   | Readonly<{ delayMs: number }>;
 export type FakeDiscordFailureRule = Readonly<{ route?: string; method?: string; times?: number; reply: FakeDiscordReply }>;
