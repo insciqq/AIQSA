@@ -862,7 +862,9 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       ...(context.test ? { test: true } : {})
     };
     if (!trigger) {
-      logEvent("discord_intake", { ...ids, outcome: "ignored", reason: "no_trigger" });
+      // Only a thread the bot opened logs a skipped message (people talking to each other there); every other channel
+      // message is ordinary conversation and would flood the logs.
+      if (existing?.botOpened) logEvent("discord_intake", { ...ids, outcome: "ignored", reason: "no_trigger" });
       return "ignored";
     }
     const question = questionOf(message, { receivedAt: context.receivedAt, test: context.test });
