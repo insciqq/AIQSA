@@ -11,6 +11,7 @@ import { usageLimitsRepository } from "../usageLimits/defaultRepository";
 import {
   createDiscordChannelDirectory, createDiscordMembership, discordChannelInfo, type DiscordChannelDirectory, type DiscordChannelInfo
 } from "./access";
+import { startDiscordBridge } from "./bridge/defaultBridge";
 import { discordControlHooks } from "./control/hooks";
 import { createPrismaDiscordControlRepository, type DiscordControlRepository } from "./control/repository";
 import {
@@ -206,14 +207,16 @@ export function getDefaultDiscord(): DiscordDefaults {
 }
 
 /**
- * Starts the gateway session when the bot is on, re-evaluated after every
- * administrator change (within seconds) and once a minute. Handlers register
- * through the registry before or after; intake reads it on every event.
+ * Starts the bridge (its handlers before the first event, and the recovery of
+ * interrupted deliveries), then the gateway session when the bot is on,
+ * re-evaluated after every administrator change (within seconds) and once a
+ * minute. Intake reads the handler registry on every event.
  */
 export function startDefaultDiscord(): void {
   const discord = getDefaultDiscord();
   if (!globalForDiscord.__aiqsaDiscordStarted) {
     globalForDiscord.__aiqsaDiscordStarted = true;
+    startDiscordBridge(discord);
     const reevaluate = () => {
       void discord.session.reevaluate().catch((error: unknown) => {
         logEvent("service_operation", { code: "discord_session_failed", error, outcome: "failed", stage: "reconcile", subsystem: "discord" });
