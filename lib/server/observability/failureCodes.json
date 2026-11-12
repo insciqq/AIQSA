@@ -173,6 +173,7 @@
   "discord_key_limit",
   "discord_mcp_enable_failed",
   "discord_mcp_not_granted",
+  "discord_mcp_too_many_tools",
   "discord_message_content_disabled",
   "discord_model_unavailable",
   "discord_monitoring_failed",

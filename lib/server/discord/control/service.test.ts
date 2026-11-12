@@ -73,7 +73,7 @@ function memoryRepository(seed: Partial<DiscordControlRecord> = {}) {
   return { current: () => row, repository };
 }
 
-const AVAILABLE: DiscordAssistantSetupFacts = { credential: "own", mcp: "granted", model: "ok", search: "on", state: "available" };
+const AVAILABLE: DiscordAssistantSetupFacts = { credential: "own", mcp: "granted", mcpToolCount: 12, model: "ok", search: "on", state: "available" };
 
 function harness(fake: FakeDiscord, seed: Partial<DiscordControlRecord> = {}, overrides: Partial<DiscordControlServiceDeps> = {}) {
   const key = randomBytes(32);
@@ -196,6 +196,17 @@ describe("Discord control service", () => {
     state = await h.service.read();
     expect(state.setup).toMatchObject({ ready: false });
     expect(state.setup.items.find((item) => item.status === "blocking")).toEqual({ action: "open_mcp_grants", code: "discord_mcp_not_granted", status: "blocking" });
+    // An exact MCP row whose one server publishes 157 tools: admission would refuse every question.
+    h.setAssistantFacts({ ...AVAILABLE, mcpToolCount: 157 });
+    state = await h.service.read();
+    expect(state.setup).toMatchObject({ ready: false });
+    expect(state.setup.items.filter((item) => item.status === "blocking")).toEqual([
+      { action: "open_assistant", code: "discord_mcp_too_many_tools", status: "blocking", toolCount: 157 }
+    ]);
+    h.setAssistantFacts({ ...AVAILABLE, mcpToolCount: 100 });
+    expect((await h.service.read()).setup.ready).toBe(true);
+    h.setAssistantFacts({ ...AVAILABLE, mcp: "none", mcpToolCount: 0 });
+    expect((await h.service.read()).setup.items.map((item) => item.code)).not.toContain("discord_mcp_too_many_tools");
   });
 
   it("names stored channels from Discord for display, keeping ids Discord no longer shows", async () => {

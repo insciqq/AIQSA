@@ -122,6 +122,7 @@ export function discordReasonText(code: DiscordReasonCode): string | null {
     case "discord_assistant_unavailable":
     case "discord_model_unavailable":
     case "discord_mcp_not_granted":
+    case "discord_mcp_too_many_tools":
     case "discord_search_disabled":
     case "discord_guild_missing":
     case "discord_token_missing":
