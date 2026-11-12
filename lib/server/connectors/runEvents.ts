@@ -10,20 +10,41 @@ import type { RunStreamFrame } from "./sse";
  * Stream events: `answerDelta` (answer text as it arrives), `answerReset`
  * (the text so far is replaced, e.g. after a follow-up), `approvalRequested`
  * (an MCP approval card), `workspaceActivity` (a projected Workspace activity
- * entry), `preparing` (a deferred admission the run waits in), `done`
- * (`complete` or `cancelled`) and `failed`.
+ * entry), `toolActivity` (a tool call the run started or settled, as its
+ * live status names it: origin, server and tool display names, never
+ * arguments or results), `searchActivity` (hosted Search at work),
+ * `compaction` (the context is being compacted), `preparing` (a deferred
+ * admission the run waits in), `done` (`complete` or `cancelled`) and `failed`.
  */
 export type ConnectorRunStreamEvent =
   | Readonly<{ type: "answerDelta"; delta: string }>
   | Readonly<{ type: "answerReset" }>
   | Readonly<{ type: "approvalRequested"; card: unknown }>
   | Readonly<{ type: "workspaceActivity"; entry: unknown }>
+  | Readonly<{
+    type: "toolActivity"; origin: string | null; serverName: string | null; toolName: string | null; settled: boolean;
+  }>
+  | Readonly<{ type: "searchActivity" }>
+  | Readonly<{ type: "compaction" }>
   | Readonly<{ type: "preparing"; status: string }>
   | Readonly<{ type: "done"; status: "complete" | "cancelled" }>
   | Readonly<{ type: "failed"; code: string | null; message: string | null }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function boundedName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, 160) : null;
+}
+
+/** A live `tool_call` status as its display facts only (`lib/server/runs/liveToolStatus.ts`). */
+function toolActivity(payload: unknown): ConnectorRunStreamEvent | null {
+  if (!isRecord(payload)) return null;
+  return {
+    origin: boundedName(payload.origin), serverName: boundedName(payload.serverName), settled: payload.status === "complete" || payload.status === "error",
+    toolName: boundedName(payload.name), type: "toolActivity"
+  };
 }
 
 /** The stream frames a connector follows, as typed events; everything else stays with the web. */
@@ -37,6 +58,9 @@ export function connectorRunEvent(frame: RunStreamFrame): ConnectorRunStreamEven
     case "artifact":
       if (data.artifactType === "mcp_approval") return { card: data.payload, type: "approvalRequested" };
       if (data.artifactType === "workspace_activity") return { entry: data.payload, type: "workspaceActivity" };
+      if (data.artifactType === "tool_call") return toolActivity(data.payload);
+      if (data.artifactType === "search_activity") return { type: "searchActivity" };
+      if (data.artifactType === "context_compaction") return { type: "compaction" };
       return null;
     case "done":
       return { status: data.status === "cancelled" ? "cancelled" : "complete", type: "done" };

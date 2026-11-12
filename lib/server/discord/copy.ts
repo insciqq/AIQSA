@@ -19,6 +19,30 @@ export const DISCORD_COPY = Object.freeze({
   historyAttachmentName: "discord-history.md"
 });
 
+/** The bridge's own texts (PRD D-19, §10): status activities and the short reasons of refused or failed answers. */
+export const DISCORD_BRIDGE_COPY = Object.freeze({
+  activityThinking: "Thinking",
+  activityWriting: "Writing the answer",
+  activitySearching: "Searching the web",
+  activityReading: "Reading a web page",
+  activityFindingTools: "Looking for tools",
+  activitySkill: "Reading a Skill",
+  activityImage: "Generating an image",
+  activitySubagent: "Working with a sub-agent",
+  activityCompacting: "Compacting the conversation",
+  activityTool: "Using a tool",
+  modelUnavailable: "The model for Discord answers is unavailable right now. Ask your AIQSA administrator.",
+  toolsUnavailable: "A tool this answer needs is unavailable right now. Try again later.",
+  contextTooLarge: "This conversation is too long to answer here. Start a new thread.",
+  attachmentUnavailable: "An attachment of this question could not be read.",
+  tooLong: "This question is too long. Shorten it and ask again."
+});
+
+/** An MCP server at work, by its display name (redacted and escaped by the status formatter). */
+export function discordUsingServerText(serverName: string): string {
+  return `Using ${serverName}`;
+}
+
 /** The status line while a run works: `Working · 0:12 — Searching the web`. */
 export function discordWorkingStatus(elapsedMs: number, activity?: string): string {
   const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
@@ -55,6 +79,9 @@ export function discordEarlierMessagesText(count: number): string {
 export function discordOmittedMessagesText(count: number): string {
   return `${count} earlier messages omitted`;
 }
+
+/** Earlier messages past the read bound, whose number was not counted. */
+export const DISCORD_EARLIER_MESSAGES_OMITTED = "Earlier messages omitted";
 
 /** A thread name for a question with no usable text. */
 export function discordQuestionFallbackThreadName(authorName: string): string {
