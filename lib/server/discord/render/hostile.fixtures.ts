@@ -24,5 +24,5 @@ export const discordHostileMarkdown = [
   "<".repeat(5_000),
   "@".repeat(3_000) + "everyone",
   "`".repeat(3_000),
-  "​<​@1> <⁠@1>"
+  "\u200b<\u200b@1> <\u2060@1>"
 ];
