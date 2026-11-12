@@ -202,6 +202,18 @@ function authorName(author: DiscordIntakeMessage["author"]): string {
   return author.nick ?? author.globalName ?? author.username ?? "Discord user";
 }
 
+/** An attachment hook that also notes whether the turn's messages (the question, its Reply target, its history) carry files. */
+function filesProbe(hook: DiscordAttachmentHook): Readonly<{ hook: DiscordAttachmentHook; seen(): boolean }> {
+  let seen = false;
+  return {
+    hook: async (input) => {
+      seen = [...input.question, ...(input.reference ? [input.reference] : []), ...input.history].some((message) => message.attachments.length > 0);
+      return hook(input);
+    },
+    seen: () => seen
+  };
+}
+
 /** A thread name from the question: mentions and markup out, secrets redacted, at most 80 characters. */
 export function discordThreadName(text: string, author: string): Readonly<{ name: string; redactions: number }> {
   const plain = text.replace(/<@[!&]?[0-9]{1,20}>|<#[0-9]{1,20}>|<a?:[A-Za-z0-9_]{1,32}:[0-9]{1,20}>|<t:[^>]{1,40}>/gu, " ")
@@ -379,19 +391,14 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     // A follow-up carries text only: a question with files (its own, its Reply target's, or the history it would
     // include) waits for the run and becomes the next turn, whose attachments go with it; the cursor stays before it.
     if (trigger.attachments.length > 0) return false;
-    const files = { seen: false };
-    const probe: DiscordAttachmentHook = async (input) => {
-      files.seen = [...input.question, ...(input.reference ? [input.reference] : []), ...input.history]
-        .some((message) => message.attachments.length > 0);
-      return discordAttachmentNamesOnly(input);
-    };
+    const probe = filesProbe(discordAttachmentNamesOnly);
     const turn = await readDiscordTurnContext({
-      attachments: probe, conversationId: run.conversation.id, facts: deps.facts, header: null,
+      attachments: probe.hook, conversationId: run.conversation.id, facts: deps.facts, header: null,
       maxChars: RUN_FOLLOWUP_MAX_CHARS, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
       scope: { afterId: run.includedUpTo, bounded: false, channelId: run.conversation.discordChannelId, kind: "delta" },
       trigger, uploads: null, userId: control.serviceUserId
     });
-    if (!turn.ok || files.seen || run.answered) return false;
+    if (!turn.ok || probe.seen() || run.answered) return false;
     const input = {
       assistantMessageId: run.assistantMessageId, chatId: run.chatId, nonce: `dc-${question.ids.questionMessageId}`, runId: run.runId,
       text: turn.text, userId: control.serviceUserId
@@ -525,6 +532,11 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
    */
   async function admit(question: Question, placement: Placement, input: Readonly<{
     userId: string; assistantId: string; blocks: readonly ContentBlock[]; includedUpTo: string;
+    /**
+     * The turn carries files: when another process's answer holds the chat (`active_run_in_progress`), it is not
+     * joined as a text follow-up; this attempt, holding the send, waits for that run and sends as the next turn.
+     */
+    carriesFiles: boolean;
   }>): Promise<Admitted | Readonly<{ kind: "refused"; refusal: ConnectorSendRefusal }> | Readonly<{ kind: "taken" }>> {
     const id = question.ids.questionMessageId;
     const conversation = placement.conversation;
@@ -563,21 +575,17 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
         userId: input.userId, waitForRun
       });
       if (followed.kind === "admitted") return { ...followed, chatId };
-      // The chat moved on since its leaf was fixed: a definite refusal, nothing ran, and this attempt holds the send,
-      // so it reads the new leaf and sends once more.
-      if (followed.refusal.code !== "active_leaf_changed" || !conversation || attempt > 0) return followed;
+      // Definite refusals, so nothing ran and this attempt, holding the send, may send again (twice at most): the chat
+      // moved on since its leaf was fixed, or another process's answer holds it while this turn carries files.
+      const { activeRunId, code } = followed.refusal;
+      const waits = code === "active_run_in_progress" && input.carriesFiles && activeRunId !== undefined;
+      if (!conversation || attempt > 1 || (code !== "active_leaf_changed" && !waits)) return followed;
+      if (waits && !await waitForRun({ deadline: now() + timing.followMs, runId: activeRunId!, userId: input.userId })) return followed;
       const chat = await deps.gateway.chat(input.userId, chatId);
       if (!chat) return { kind: "refused", refusal: { code: "chat_not_found", status: 404 } };
       expected = chat.activeLeafMessageId;
       await patch(question, { expectedLeafId: expected }, ["claimed"]);
     }
-  }
-
-  /** A run that streams nothing here, followed through its state until it settles. */
-  async function* polled(runId: string, userId: string): AsyncGenerator<ConnectorRunStreamEvent> {
-    const settled = await waitForRun({ deadline: now() + timing.followMs, runId, userId });
-    if (settled === "complete" || settled === "cancelled") yield { status: settled, type: "done" };
-    else if (settled) yield { code: settled === "gone" ? "model_run_not_found" : null, message: null, type: "failed" };
   }
 
   /** A question for a run already holding its chat (`active_run_in_progress`): joined to it as a follow-up when it takes one. */
@@ -602,26 +610,6 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
 
   // -------------------------------------------------------------------------
   // The question's whole way
-
-  /** Follows a run that is this question's own first attempt (found by recovery) as its answer. */
-  async function takeOver(context: DiscordMessageContext, question: Question, placement: Placement, status: DiscordStatusMessage,
-    input: Readonly<{ runId: string; chatId: string; includedUpTo: string; mergedIds: readonly string[]; userId: string }>): Promise<void> {
-    const answer = await deps.gateway.answer({ runId: input.runId, userId: input.userId }).catch(() => null);
-    await recordRun(question, placement, { chatId: input.chatId, includedUpTo: input.includedUpTo, runId: input.runId, userId: input.userId });
-    stage(question, "admitted", { kind: "answer" });
-    await status.post();
-    start(context, question, placement, status, {
-      assistantMessageId: answer?.status === "streaming" ? answer.assistantMessageId : null, chatId: input.chatId,
-      events: polled(input.runId, input.userId), runId: input.runId
-    }, input.includedUpTo, input.mergedIds, input.userId);
-  }
-
-  /** A run no question owns yet: in the chat of a question whose send was claimed, that send's run. */
-  async function unowned(runId: string | null): Promise<boolean> {
-    if (!runId) return false;
-    const owners = await deps.facts.questionsOfRun(runId).catch(() => null);
-    return owners?.length === 0;
-  }
 
   async function answerQuestion(context: DiscordMessageContext, question: Question, existing: DiscordConversationRecord | null): Promise<void> {
     const { control, message } = context;
@@ -672,14 +660,17 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       // The same author's next messages within the window join this question.
       const wait = message.createdAt.getTime() + timing.mergeWindowMs - now();
       if (wait > 0 && context.source === "live") await sleep(Math.min(wait, timing.mergeWindowMs));
+      const probe = filesProbe(attachments);
       const turn = await readDiscordTurnContext({
-        attachments, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
+        attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
         header: await header(placement, trigger, message.guildId), mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest,
         scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId
       });
       if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
+      // Files of its own, its Reply target's or in its history, or a history file: a text follow-up would lose them.
+      const carriesFiles = probe.seen() || turn.blocks.length > 1;
       const admitted = await admit(question, placement, {
-        assistantId, blocks: turn.blocks, includedUpTo: turn.includedUpTo, userId: serviceUserId
+        assistantId, blocks: turn.blocks, carriesFiles, includedUpTo: turn.includedUpTo, userId: serviceUserId
       });
       if (admitted.kind === "taken") {
         // Another attempt (recovery, or the worker it took over from) holds this question's send: that one answers.
@@ -689,6 +680,12 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       }
       if (admitted.kind === "refused") {
         const { refusal } = admitted;
+        if (refusal.code === "active_run_in_progress" && refusal.activeRunId && carriesFiles) {
+          // The other answer is still running past the follow window: the claim stays, and recovery ends it visibly.
+          status.stop();
+          logDiscordBridgeFailure({ code: "discord_followup_refused", outcome: "waiting" });
+          return;
+        }
         if (refusal.code === "active_run_in_progress" && refusal.activeRunId &&
           await adopt(question, placement, refusal.activeRunId, turn.text, serviceUserId)) {
           status.stop();
@@ -1065,57 +1062,15 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   }
 
   /**
-   * A question whose send was claimed but whose run was never recorded: the claimer died, or is still at it. Past the
-   * grace its run, when one can be found (the planned chat's first run, or the existing chat's running one) and no
-   * other question owns it, becomes its answer; it is never sent again.
-   */
-  async function adoptClaimed(row: DiscordReplyRecord, control: DiscordActiveControl, userId: string): Promise<boolean> {
-    const existing = await deps.conversations.findByChannel(row.channelId);
-    let chatId: string | null = null;
-    let runId: string | null = null;
-    if (row.plannedChatId && await deps.gateway.chat(userId, row.plannedChatId)) {
-      chatId = row.plannedChatId;
-      runId = await deps.facts.firstRunOfChat(chatId).catch(() => null);
-    } else if (!row.plannedChatId && existing && row.expectedLeafId) {
-      chatId = existing.chatId;
-      runId = (await deps.gateway.activeRun({ chatId, userId }).catch(() => null))?.runId ?? null;
-    }
-    if (!chatId || !runId || !await unowned(runId)) return false;
-    const context = await contextOfRow(row, control);
-    if (!context || context === "deleted") return false;
-    const question = questionOfRow(row);
-    inFlight.add(row.questionMessageId);
-    try {
-      // A conversation another question opened here since belongs to another chat: this run stays unlinked to it.
-      const placement = await place(context, question, existing && existing.chatId === chatId ? existing : null);
-      const linked = placement.conversation && placement.conversation.chatId !== chatId ? { ...placement, conversation: null, create: null } : placement;
-      question.threadId = linked.kind === "thread" || linked.kind === "forum_post" ? linked.answerChannelId : null;
-      const status = createDiscordStatusMessage({
-        answerChannelId: linked.answerChannelId, editIntervalMs: timing.statusIntervalMs, now, questionMessageId: row.questionMessageId,
-        replyTo: linked.replyTo, rest: deps.rest, startedAt: now(), typingIntervalMs: timing.typingIntervalMs,
-        onPosted: (messageId, at) => {
-          void patch(question, { firstStatusAt: new Date(at), statusMessageId: messageId });
-          stage(question, "first_status");
-        }
-      });
-      await takeOver(context, question, linked, status, { chatId, includedUpTo: row.questionMessageId, mergedIds: [], runId, userId });
-      return true;
-    } finally {
-      inFlight.delete(row.questionMessageId);
-    }
-  }
-
-  /**
    * A claimed question without a run. One whose send was never claimed went no further than its preparation, so it
-   * is asked again from the start (its preparation may fail and be tried by the next sweep); the send claim keeps it
-   * to one send whoever else still works on it. One whose send was claimed is never sent again: its run is adopted,
-   * or it ends visibly ten minutes after the claim.
+   * is asked again from the start into its fixed target (its preparation may fail and be tried by the next sweep);
+   * the send claim keeps it to one send whoever else still works on it. One whose send was claimed but whose run was
+   * never recorded is neither sent again nor matched to a run (nothing proves which run is its own, integrator
+   * decision 2026-11-12: the window is milliseconds): ten minutes after the claim it ends visibly with ❌.
    */
-  async function readmit(row: DiscordReplyRecord, control: DiscordActiveControl, userId: string): Promise<void> {
+  async function readmit(row: DiscordReplyRecord, control: DiscordActiveControl): Promise<void> {
     if (inFlight.has(row.questionMessageId)) return;
     if (row.sendClaimedAt) {
-      if (now() - row.sendClaimedAt.getTime() < timing.claimGraceMs) return;
-      if (await adoptClaimed(row, control, userId)) return;
       if (now() - row.sendClaimedAt.getTime() > DISCORD_STALE_MESSAGE_MS) await expire([row], "discord_reply_expired", ["claimed"]);
       return;
     }
@@ -1171,7 +1126,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       now, waitForRun
     }, { startedAt });
     for (const row of waiting) {
-      await readmit(row, control, userId).catch((error: unknown) => logDiscordBridgeFailure({ code: "discord_recovery_failed", error, stage: "recovery" }));
+      await readmit(row, control).catch((error: unknown) => logDiscordBridgeFailure({ code: "discord_recovery_failed", error, stage: "recovery" }));
     }
   }
 
