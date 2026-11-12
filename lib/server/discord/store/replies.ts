@@ -41,6 +41,8 @@ export type DiscordReplyRecord = Readonly<{
   test: boolean;
   runId: string | null;
   expectedLeafId: string | null;
+  /** A new chat's id, written before its first send: recovery asks again only into this chat. */
+  plannedChatId: string | null;
   statusMessageId: string | null;
   answerMessageId: string | null;
   code: string | null;
@@ -51,6 +53,8 @@ export type DiscordReplyRecord = Readonly<{
   admittedAt: Date | null;
   firstStatusAt: Date | null;
   deliveredAt: Date | null;
+  /** When recovery claimed the question to ask it again (once, by one process). */
+  readmitAt: Date | null;
   mcpByServer: DiscordMcpTotals | null;
   compactions: number | null;
   subagents: number | null;
@@ -64,6 +68,7 @@ export type DiscordReplyPatch = Partial<Readonly<{
   state: DiscordReplyState;
   runId: string | null;
   expectedLeafId: string | null;
+  plannedChatId: string | null;
   statusMessageId: string | null;
   answerMessageId: string | null;
   code: string | null;
@@ -89,6 +94,11 @@ export type DiscordReplyStore = Readonly<{
   update(questionMessageId: string, patch: DiscordReplyPatch, whenState?: readonly DiscordReplyState[]): Promise<boolean>;
   /** Questions still `claimed` or `admitted` that arrived before `before`, oldest first, for recovery. */
   listUnsettled(input: Readonly<{ before: Date; limit: number }>): Promise<DiscordReplyRecord[]>;
+  /**
+   * Claims a question still `claimed`, with no run and never claimed so before, for recovery to ask again; true for
+   * the one caller (across processes) that may.
+   */
+  claimReadmission(questionMessageId: string, at: Date): Promise<boolean>;
 }>;
 
 type ReplyClient = Pick<PrismaClient, "discordReply">;
@@ -132,7 +142,9 @@ export function discordReplyRecord(row: DiscordReply): DiscordReplyRecord {
     kind: row.kind,
     limitKind: row.limitKind,
     mcpByServer: mcpTotals(row.mcpByServer),
+    plannedChatId: row.plannedChatId,
     questionMessageId: row.questionMessageId.toString(),
+    readmitAt: row.readmitAt,
     receivedAt: row.receivedAt,
     runId: row.runId,
     sources: row.sources,
@@ -156,6 +168,7 @@ function patchData(patch: DiscordReplyPatch): Prisma.DiscordReplyUncheckedUpdate
   if (patch.state !== undefined) data.state = patch.state;
   if (patch.runId !== undefined) data.runId = patch.runId;
   if (patch.expectedLeafId !== undefined) data.expectedLeafId = patch.expectedLeafId;
+  if (patch.plannedChatId !== undefined) data.plannedChatId = patch.plannedChatId;
   if (patch.statusMessageId !== undefined) data.statusMessageId = optionalSnowflake(patch.statusMessageId);
   if (patch.answerMessageId !== undefined) data.answerMessageId = optionalSnowflake(patch.answerMessageId);
   if (patch.code !== undefined) data.code = patch.code === null ? null : patch.code.slice(0, 80);
@@ -222,6 +235,14 @@ export function createPrismaDiscordReplyStore(prisma: ReplyClient): DiscordReply
         where: { receivedAt: { lt: input.before }, state: { in: ["claimed", "admitted"] } }
       }).catch(retainDatabaseFailure);
       return rows.map(discordReplyRecord);
+    },
+
+    async claimReadmission(questionMessageId, at) {
+      const updated = await prisma.discordReply.updateMany({
+        data: { readmitAt: at },
+        where: { questionMessageId: BigInt(questionMessageId), readmitAt: null, runId: null, state: "claimed" }
+      }).catch(retainDatabaseFailure);
+      return updated.count === 1;
     }
   });
 }
