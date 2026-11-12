@@ -114,6 +114,48 @@ describe("Discord gateway client against the in-memory fake", () => {
     expect(fake.gateway.connections()).toHaveLength(1);
   });
 
+  it("asks reserveIdentify only after HELLO and never for a RESUME; a refusal closes and waits without sending op 2", async () => {
+    vi.useFakeTimers();
+    const fake = createFakeDiscord();
+    const helloSeen: boolean[] = [];
+    let grant = false;
+    const reserveIdentify = vi.fn(async () => {
+      // The connection already got HELLO: the client is identifying on an open socket.
+      helloSeen.push(fake.gateway.connections().length > 0);
+      return grant ? { ok: true as const } : { code: "discord_session_limit", ok: false as const, retryAfterMs: 60_000 };
+    });
+    const h = harness(fake, { reserveIdentify });
+    h.client.start();
+    await settle();
+    expect(reserveIdentify).toHaveBeenCalledOnce();
+    expect(fake.gateway.identifyCount()).toBe(0);
+    expect(h.client.state()).toEqual({ code: "discord_session_limit", status: "waiting" });
+    grant = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fake.gateway.identifyCount()).toBe(1);
+    expect(h.client.state().status).toBe("ready");
+    fake.gateway.reconnect();
+    await settle();
+    expect(fake.gateway.received().filter((entry) => entry.op === 6)).toHaveLength(1);
+    expect(reserveIdentify).toHaveBeenCalledTimes(2);
+    expect(helloSeen).toEqual([true, true]);
+    h.client.stop();
+  });
+
+  it("names the forgotten session when it gives one up", async () => {
+    vi.useFakeTimers();
+    const fake = createFakeDiscord();
+    const forgotten: Array<string | undefined> = [];
+    const h = harness(fake, { onSession: (session, previous) => { if (!session) forgotten.push(previous?.sessionId); } });
+    h.client.start();
+    await settle();
+    const sessionId = fake.gateway.sessionId();
+    fake.gateway.invalidateSession(false);
+    await settle();
+    expect(forgotten).toEqual([sessionId]);
+    h.client.stop();
+  });
+
   it("stops with discord_intents_disallowed when Message Content is off for the application", async () => {
     vi.useFakeTimers();
     const fake = createFakeDiscord({ messageContentEnabled: false });

@@ -5,7 +5,7 @@ import type { DiscordEffectiveControl } from "./control/state";
 import type { DiscordIntakeDispatch } from "./intake";
 import { createDiscordRest, type DiscordGatewayBot, type DiscordRestOutcome } from "./rest";
 import { createDiscordSession, DISCORD_IDENTIFY_DAILY_LIMIT, type DiscordSessionDeps, type DiscordSessionStore } from "./session";
-import { createDiscordTransport, resolveDiscordNetwork, type DiscordNetwork } from "./transport";
+import { createDiscordTransport, resolveDiscordNetwork, type DiscordNetwork, type DiscordWebSocketLike } from "./transport";
 
 const NETWORK = resolveDiscordNetwork({});
 
@@ -21,7 +21,10 @@ function memoryStore() {
   };
   const store: DiscordSessionStore = {
     async recordHealth(input) { state.health.push(input); },
-    async saveSession({ generation, session }) { state.session = session ? { ...session, generation } : null; },
+    async saveSession({ generation, session }) { state.session = { ...session, generation }; },
+    async forgetSession({ generation, sessionId }) {
+      if (state.session?.generation === generation && state.session.sessionId === sessionId) state.session = null;
+    },
     async saveProgress(input) {
       state.progress.push({ seq: input.seq, sessionId: input.sessionId });
       if (state.session?.sessionId === input.sessionId) state.session = { ...state.session, seq: input.seq };
@@ -254,6 +257,62 @@ describe("Discord gateway session on the in-memory gateway", () => {
     expect(fake.gateway.connections()).toEqual([]);
     expect(h.memory.state.health).toEqual([expect.objectContaining({ failure: expect.objectContaining({ code: "discord_token_rejected" }) })]);
   });
+
+  it("spends no IDENTIFY permit on connections that close before HELLO, however long they keep failing", async () => {
+    vi.useFakeTimers();
+    const fake = createFakeDiscord();
+    let reachable = false;
+    let opened = 0;
+    // A WSS path that fails before HELLO (TLS, a misrouted SNI forwarder) while REST works.
+    const deadSocket = (): DiscordWebSocketLike => {
+      const closes: Array<(event: { code: number }) => void> = [];
+      const socket = {
+        readyState: 0,
+        send() { throw new Error("not open"); },
+        close() { socket.readyState = 3; },
+        addEventListener(type: string, listener: (event: never) => void) { if (type === "close") closes.push(listener); }
+      };
+      queueMicrotask(() => { socket.readyState = 3; for (const listener of closes) listener({ code: 1006 }); });
+      return socket as unknown as DiscordWebSocketLike;
+    };
+    const h = harness(fake, { openSocket: (url) => { opened += 1; return reachable ? fake.gateway.openSocket(url) : deadSocket(); } });
+    await h.session.reevaluate();
+    await settle(30 * 60_000);
+    expect(opened).toBeGreaterThan(DISCORD_IDENTIFY_DAILY_LIMIT);
+    expect(h.memory.state.identifyAt).toEqual([]);
+    expect(h.bot.mock.calls.length).toBe(opened);
+    expect(h.session.connected()).toBe(false);
+    // Once the path works, the IDENTIFY Discord receives is the one permit spent.
+    reachable = true;
+    await settle(60_000);
+    expect(h.session.connected()).toBe(true);
+    expect(fake.gateway.identifyCount()).toBe(1);
+    expect(h.memory.state.identifyAt).toHaveLength(1);
+    await h.session.stop();
+  });
+
+  it("forgets only its own session, never a newer one another process stored", async () => {
+    vi.useFakeTimers();
+    const fake = createFakeDiscord();
+    const h = harness(fake);
+    await h.session.reevaluate();
+    await settle();
+    const newer: DiscordPersistedSession = { generation: 1, resumeGatewayUrl: "wss://gateway-test.discord.gg/?v=10&encoding=json", seq: 4, sessionId: "newer" };
+    h.memory.state.session = newer;
+    fake.gateway.invalidateSession(false);
+    await settle();
+    expect(h.memory.state.session).toEqual(newer);
+
+    const own = harness(fake);
+    await own.session.reevaluate();
+    await settle();
+    expect(own.memory.state.session?.sessionId).toBe(fake.gateway.sessionId());
+    fake.gateway.invalidateSession(false);
+    await settle();
+    expect(own.memory.state.session).toBeNull();
+    await h.session.stop();
+    await own.session.stop();
+  });
 });
 
 describe("Discord gateway session over loopback (restart and deploy)", () => {
@@ -297,6 +356,8 @@ describe("Discord gateway session over loopback (restart and deploy)", () => {
         expect.objectContaining({ d: { seq: memory.state.progress.at(-1)?.seq, session_id: memory.state.session?.sessionId, tokenMatched: true } })
       ]);
       expect(fake.calls({ route: "get_gateway_bot" })).toHaveLength(1);
+      // The RESUME spent no permit: only the first IDENTIFY did.
+      expect(memory.state.identifyAt).toHaveLength(1);
       expect(fake.gateway.connections().map((entry) => entry.via)).toEqual(["main", "resume"]);
       expect(fake.violations()).toEqual([]);
       await second.session.stop();

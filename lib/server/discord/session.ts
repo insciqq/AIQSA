@@ -4,7 +4,7 @@ import type { DiscordControlRepository } from "./control/repository";
 import { isDiscordBotActive, type DiscordEffectiveControl } from "./control/state";
 import {
   createDiscordGatewayClient, type DiscordDispatch, type DiscordGatewayClient, type DiscordGatewayOptions,
-  type DiscordGatewayState, type DiscordIdentifyPermit
+  type DiscordGatewayState, type DiscordIdentifyPermit, type DiscordIdentifyGrant
 } from "./gatewayClient";
 import type { DiscordIntakeDispatch } from "./intake";
 import type { DiscordGatewayBot, DiscordRestOutcome } from "./rest";
@@ -20,10 +20,12 @@ import type { DiscordNetwork, DiscordWebSocketFactory } from "./transport";
  *
  * IDENTIFY is a hard budget: Discord allows 1000 a day for the whole
  * application, shared with another service on the same bot, and resets the
- * token past it. Before every IDENTIFY the session asks `GET /gateway/bot` and
- * identifies only while `session_start_limit.remaining` is at least 200, and
- * only within AIQSA's own ceiling of 30 in any 24 hours (counted on the control
- * row across processes); otherwise it waits with `discord_session_limit`.
+ * token past it. Before connecting for an IDENTIFY the session asks `GET
+ * /gateway/bot` and goes on only while `session_start_limit.remaining` is at
+ * least 200; once HELLO arrived, right before op 2, it takes one of AIQSA's own
+ * 30 permits in any 24 hours (counted on the control row across processes), so
+ * only IDENTIFYs Discord receives are counted; otherwise it waits with
+ * `discord_session_limit`. A RESUME spends nothing.
  * Health (connected, last event, failure code) is written without bumping the
  * control version.
  */
@@ -40,7 +42,7 @@ export const DISCORD_PERMIT_RETRY_MAX_MS = 5 * 60_000;
 const SESSION_LIMIT_WAIT_MIN_MS = 60_000;
 const SESSION_LIMIT_WAIT_MAX_MS = 24 * 3_600_000;
 
-export type DiscordSessionStore = Pick<DiscordControlRepository, "recordHealth" | "saveSession" | "saveProgress" | "reserveIdentify">;
+export type DiscordSessionStore = Pick<DiscordControlRepository, "recordHealth" | "saveSession" | "forgetSession" | "saveProgress" | "reserveIdentify">;
 
 export type DiscordSessionStatus = Readonly<{
   state: DiscordGatewayState["status"] | "off";
@@ -152,16 +154,25 @@ export function createDiscordSession(deps: DiscordSessionDeps): DiscordSession {
       log({ code: DISCORD_GATEWAY_CODES.identifyRefused, delay_ms: delay, outcome: "blocked", stage: "identify" });
       return { code: DISCORD_GATEWAY_CODES.identifyRefused, ok: false, retryAfterMs: delay };
     }
+    return { ok: true, url: answer.value.url };
+  }
+
+  /**
+   * The local ceiling, asked only once HELLO arrived and right before op 2:
+   * Discord counts only IDENTIFYs it received, so a connection that failed
+   * before HELLO (TLS, a misrouted forwarder) spends nothing, and a RESUME
+   * never asks.
+   */
+  async function reserve(target: () => Running | null): Promise<DiscordIdentifyGrant> {
     const reservation = await deps.store.reserveIdentify({
       limit: DISCORD_IDENTIFY_DAILY_LIMIT, now: new Date(now()), windowMs: DISCORD_IDENTIFY_WINDOW_MS
     });
-    if (!reservation.ok) {
-      const delay = Math.min(SESSION_LIMIT_WAIT_MAX_MS, Math.max(SESSION_LIMIT_WAIT_MIN_MS, reservation.retryAt.getTime() - now()));
-      if (current) health(current, DISCORD_GATEWAY_CODES.identifyRefused);
-      log({ attempt: reservation.count, code: DISCORD_GATEWAY_CODES.identifyRefused, delay_ms: delay, outcome: "blocked", stage: "identify" });
-      return { code: DISCORD_GATEWAY_CODES.identifyRefused, ok: false, retryAfterMs: delay };
-    }
-    return { ok: true, url: answer.value.url };
+    if (reservation.ok) return { ok: true };
+    const delay = Math.min(SESSION_LIMIT_WAIT_MAX_MS, Math.max(SESSION_LIMIT_WAIT_MIN_MS, reservation.retryAt.getTime() - now()));
+    const current = target();
+    if (current) health(current, DISCORD_GATEWAY_CODES.identifyRefused);
+    log({ attempt: reservation.count, code: DISCORD_GATEWAY_CODES.identifyRefused, delay_ms: delay, outcome: "blocked", stage: "identify" });
+    return { code: DISCORD_GATEWAY_CODES.identifyRefused, ok: false, retryAfterMs: delay };
   }
 
   function onState(target: Running, state: DiscordGatewayState): void {
@@ -250,9 +261,14 @@ export function createDiscordSession(deps: DiscordSessionDeps): DiscordSession {
       beforeIdentify: () => permit(() => target, token),
       network,
       onDispatch: (dispatch) => { if (target) onDispatch(target, dispatch); },
-      onSession: (session) => {
-        void quietly(() => deps.store.saveSession({ generation, session }), "discord_session_write_failed");
+      onSession: (session, forgotten) => {
+        // Forgetting clears only the session this client gave up, never a newer one another process stored.
+        if (session) void quietly(() => deps.store.saveSession({ generation, session }), "discord_session_write_failed");
+        else if (forgotten) {
+          void quietly(() => deps.store.forgetSession({ generation, sessionId: forgotten.sessionId }), "discord_session_write_failed");
+        }
       },
+      reserveIdentify: () => reserve(() => target),
       onState: (state) => { if (target) onState(target, state); },
       ...(deps.openSocket ? { openSocket: deps.openSocket } : {}),
       ...(deps.random ? { random: deps.random } : {}),
