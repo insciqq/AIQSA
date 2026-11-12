@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  DISCORD_MONITORING_KEYS_MAX, DISCORD_MONITORING_WINDOW_MAX_DAYS, DISCORD_PROBLEM_ROWS_MAX, discordMessageLink,
+  DISCORD_MCP_SERVER_LABEL_MAX, DISCORD_MONITORING_KEYS_MAX, DISCORD_MONITORING_WINDOW_MAX_DAYS, DISCORD_PROBLEM_ROWS_MAX, discordMessageLink,
   discordMonitoringKeyCreatedSchema, discordMonitoringKeyListSchema, discordMonitoringTelemetrySchema, type DiscordMonitoringKey,
   type DiscordMonitoringTelemetry, type DiscordProblemRow
 } from "../../contracts/discord";
@@ -25,8 +25,9 @@ import {
  * - `GET /api/monitoring/discord/metrics`: Prometheus text over the last hour.
  *
  * Both take `Authorization: Bearer <key>`; a missing, malformed, unknown or
- * revoked key gets one indistinguishable 404. Responses hold
- * Discord ids, AIQSA chat ids, codes, counts and delays, never names or text
+ * revoked key gets one indistinguishable 404. Responses hold Discord ids,
+ * AIQSA chat ids, codes, counts, delays and installation MCP servers by their
+ * administrator-chosen names, never people's names, text or MCP server ids
  * (a public projection, `agent_docs/ARCHITECTURE.md`). Test-mode requests are
  * left out of the aggregates and of the failure ratio, and labelled
  * `test="true"` where the metrics count requests.
@@ -199,20 +200,46 @@ export async function readDiscordProblemRows(db: Pick<PrismaClient, "$queryRaw">
   });
 }
 
-/** MCP calls and errors by server over the window's non-test requests, busiest first. */
+/** A server's name as the projection shows it: control and formatting characters out, bounded; `other` when nothing is left. */
+export function discordMcpServerLabel(name: string | null): string {
+  const cleaned = Array.from((name ?? "").replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim())
+    .slice(0, DISCORD_MCP_SERVER_LABEL_MAX).join("").trim();
+  return cleaned || "other";
+}
+
+/**
+ * MCP calls and errors by server over the window's non-test requests, busiest
+ * first. The journal keeps server ids; the projection names an installation
+ * server by its administrator's display name, read now (a renamed server shows
+ * its current name), sums a deleted server's counts under `other` and a
+ * personal server's under `personal`, so no id leaves the installation.
+ */
 export async function readDiscordMcpTotals(db: Pick<PrismaClient, "$queryRaw">, window: DiscordJournalWindow): Promise<DiscordMonitoringTelemetry["mcpByServer"]> {
   const number = (field: "calls" | "errors") => Prisma.raw(
     `CASE WHEN jsonb_typeof(e."value" -> '${field}') = 'number' THEN (e."value" ->> '${field}')::numeric ELSE 0 END`);
-  const rows = await db.$queryRaw<Array<{ serverId: string; calls: number; errors: number }>>(Prisma.sql`
-    SELECT e."key" AS "serverId", sum(${number("calls")})::float8 AS "calls", sum(${number("errors")})::float8 AS "errors"
-    FROM "DiscordReply" q CROSS JOIN LATERAL jsonb_each(q."mcpByServer") e
+  const rows = await db.$queryRaw<Array<{ kind: "installation" | "personal" | "other"; name: string | null; calls: number; errors: number }>>(Prisma.sql`
+    SELECT
+      CASE WHEN s."id" IS NULL THEN 'other' WHEN s."ownerUserId" IS NOT NULL THEN 'personal' ELSE 'installation' END AS "kind",
+      CASE WHEN s."id" IS NOT NULL AND s."ownerUserId" IS NULL THEN s."displayName" END AS "name",
+      sum(${number("calls")})::float8 AS "calls", sum(${number("errors")})::float8 AS "errors"
+    FROM "DiscordReply" q
+    CROSS JOIN LATERAL jsonb_each(q."mcpByServer") e
+    LEFT JOIN "McpServer" s ON s."id" = e."key"
     WHERE q."receivedAt" >= ${window.since} AND q."receivedAt" < ${window.until} AND q."test" = false AND q."mcpByServer" IS NOT NULL
-    GROUP BY e."key"
-    ORDER BY 2 DESC, e."key" ASC
-    LIMIT 200`).catch(retainDatabaseFailure);
-  return rows.filter((row) => INTERNAL_ID.test(row.serverId)).map((row) => ({
-    calls: Math.max(0, Math.round(Number(row.calls))), errors: Math.max(0, Math.round(Number(row.errors))), serverId: row.serverId
-  }));
+    GROUP BY 1, 2
+    ORDER BY 3 DESC, 2 ASC
+    LIMIT 1000`).catch(retainDatabaseFailure);
+  const totals = new Map<string, { calls: number; errors: number }>();
+  for (const row of rows) {
+    const server = row.kind === "installation" ? discordMcpServerLabel(row.name) : row.kind;
+    const entry = totals.get(server) ?? { calls: 0, errors: 0 };
+    entry.calls += Math.max(0, Math.round(Number(row.calls)));
+    entry.errors += Math.max(0, Math.round(Number(row.errors)));
+    totals.set(server, entry);
+  }
+  return [...totals].map(([server, counts]) => ({ calls: counts.calls, errors: counts.errors, server }))
+    .sort((left, right) => right.calls - left.calls || (left.server < right.server ? -1 : left.server > right.server ? 1 : 0))
+    .slice(0, 200);
 }
 
 /** The monitoring projection of one window. */

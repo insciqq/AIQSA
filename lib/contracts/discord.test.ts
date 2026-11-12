@@ -115,7 +115,7 @@ describe("Discord contract", () => {
       requests: 10, delivered: 8, failed: 1, interrupted: 1, failuresByCode: [{ code: "discord_busy", count: 1 }],
       limitHits: { author: 1, thread: 0, key: 0 }, notFound: 1, ratingsUp: 2, ratingsDown: 1,
       latency: { acked: { p50Ms: 300, p95Ms: 900 }, admitted: { p50Ms: 1000, p95Ms: 2000 }, firstStatus: { p50Ms: 2000, p95Ms: 3000 }, delivered: { p50Ms: 9000, p95Ms: 30000 } },
-      mcpByServer: [{ serverId: "mcp_1", calls: 4, errors: 1 }], compactions: 0, subagents: 2,
+      mcpByServer: [{ server: "Tracker", calls: 4, errors: 1 }], compactions: 0, subagents: 2,
       problems: [{
         questionMessageId: "500000000000000002", kind: "rated_down", receivedAt: NOW, guildId: null, channelId: "600000000000000001",
         messageLink: discordMessageLink(null, "600000000000000001", "500000000000000002"), chatId: "chat_1", code: null,
