@@ -11,6 +11,7 @@ import {
   type DiscordLimits,
   type DiscordSetupItem
 } from "@/lib/contracts/discord";
+import { MCP_RUN_PLAN_LIMITS } from "@/lib/contracts/mcp";
 
 export type DiscordStatusAction = "enter_token" | "review_setup" | null;
 
@@ -95,6 +96,13 @@ export type DiscordSetupItemView = Readonly<{
   title: string;
 }>;
 
+/** An exact MCP row over the run plan's tool limit; the count is the server's, when it sent one. */
+function mcpTooManyToolsReason(toolCount: number | null): string {
+  const count = toolCount === null ? "" : ` (${toolCount})`;
+  return `The Assistant loads every tool of its MCP servers${count} into each request, over the limit of ${MCP_RUN_PLAN_LIMITS.maxTools}. ` +
+    "Set its MCP tools to Auto (inherit) so the agent finds the tools it needs.";
+}
+
 const SETUP_COPY: Readonly<Record<DiscordSetupItem["code"], Readonly<{ ok: string; problem: string; title: string }>>> = {
   discord_token_missing: {
     ok: "A bot token is saved.",
@@ -151,6 +159,11 @@ const SETUP_COPY: Readonly<Record<DiscordSetupItem["code"], Readonly<{ ok: strin
     problem: "Grant the Assistant's MCP servers to the service account or its group.",
     title: "MCP servers"
   },
+  discord_mcp_too_many_tools: {
+    ok: `The Assistant's MCP tools fit in one request (at most ${MCP_RUN_PLAN_LIMITS.maxTools}).`,
+    problem: mcpTooManyToolsReason(null),
+    title: "MCP tools per request"
+  },
   discord_shared_key: {
     ok: "Discord runs use their own provider key.",
     problem: "Discord runs use the shared key. Assign the service account or its group its own key on the provider connection.",
@@ -180,7 +193,9 @@ export function discordSetupItemView(item: DiscordSetupItem): DiscordSetupItemVi
   const copy = SETUP_COPY[item.code];
   return {
     actionLabel: item.status !== "ok" && item.action ? ACTION_LABELS[item.action] : null,
-    reason: item.status === "ok" ? copy.ok : copy.problem,
+    reason: item.status === "ok"
+      ? copy.ok
+      : item.code === "discord_mcp_too_many_tools" ? mcpTooManyToolsReason(item.toolCount ?? null) : copy.problem,
     title: copy.title
   };
 }

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { DISCORD_SETUP_CHECK_CODES, discordSetupItemSchema } from "../../../contracts/discord";
+import { MCP_RUN_PLAN_LIMITS } from "../../../contracts/mcp";
 import { discordSetupCheck, type DiscordSetupFacts } from "./setup";
 
 const READY: DiscordSetupFacts = {
-  assistant: { credential: "own", mcp: "granted", model: "ok", search: "on", state: "available" },
+  assistant: { credential: "own", mcp: "granted", mcpToolCount: 12, model: "ok", search: "on", state: "available" },
   assistantId: "asst_1",
   guildId: "100000000000000010",
   monthlyBudget: false,
@@ -43,6 +44,25 @@ describe("Discord setup check", () => {
       .toEqual([["discord_mcp_not_granted", "blocking", "open_mcp_grants"]]);
     expect(failing({ ...READY, assistant: { ...READY.assistant!, search: "unusable" } as DiscordSetupFacts["assistant"] }))
       .toEqual([["discord_search_disabled", "blocking", "open_assistant"]]);
+  });
+
+  it("blocks an exact MCP row whose servers publish more tools than one request takes, and only then", () => {
+    const withTools = (mcp: "none" | "granted" | "not_granted", mcpToolCount: number) =>
+      discordSetupCheck({ ...READY, assistant: { ...READY.assistant!, mcp, mcpToolCount } as DiscordSetupFacts["assistant"] });
+    const tooMany = withTools("granted", 157);
+    expect(tooMany.ready).toBe(false);
+    expect(tooMany.items.filter((item) => item.status !== "ok")).toEqual([
+      { action: "open_assistant", code: "discord_mcp_too_many_tools", status: "blocking", toolCount: 157 }
+    ]);
+    expect(discordSetupItemSchema.safeParse(tooMany.items.find((item) => item.code === "discord_mcp_too_many_tools")).success).toBe(true);
+    for (const count of [100, MCP_RUN_PLAN_LIMITS.maxTools]) {
+      const fits = withTools("granted", count);
+      expect(fits.ready).toBe(true);
+      expect(fits.items.find((item) => item.code === "discord_mcp_too_many_tools")).toEqual({ action: null, code: "discord_mcp_too_many_tools", status: "ok" });
+    }
+    // Auto or inherited MCP loads no fixed set, and ungranted servers fail their own item first.
+    expect(withTools("none", 0).items.map((item) => item.code)).not.toContain("discord_mcp_too_many_tools");
+    expect(withTools("not_granted", 157).items.map((item) => item.code)).not.toContain("discord_mcp_too_many_tools");
   });
 
   it("only warns about Search off, the shared key and a monthly budget, which never block Enable", () => {
