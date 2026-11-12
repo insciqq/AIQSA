@@ -2,6 +2,7 @@ import { defaultAssistantRepository } from "../assistants/defaultAssistants";
 import { availableAssistantIdentities, isAssistantAvailable } from "../assistants/bindingAccess";
 import { createServiceAccount } from "../auth/serviceAccounts";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
+import { lazyConnectorLoader } from "../connectors/runGateway";
 import { mcpRepository } from "../mcp/defaultMcp";
 import { kickDefaultMcpRuntime } from "../mcp/defaultRuntime";
 import { logEvent } from "../observability";
@@ -11,7 +12,8 @@ import { usageLimitsRepository } from "../usageLimits/defaultRepository";
 import {
   createDiscordChannelDirectory, createDiscordMembership, discordChannelInfo, type DiscordChannelDirectory, type DiscordChannelInfo
 } from "./access";
-import { startDiscordBridge } from "./bridge/defaultBridge";
+import { readDiscordAdminActivity } from "./activity";
+import { discordRequestAuth, startDiscordBridge } from "./bridge/defaultBridge";
 import { discordControlHooks } from "./control/hooks";
 import { createPrismaDiscordControlRepository, type DiscordControlRepository } from "./control/repository";
 import {
@@ -20,6 +22,11 @@ import {
 import { createPrismaDiscordSetupSources, discordAssistantMcpServerIds } from "./control/setupSources";
 import { createDiscordControlCache, effectiveDiscordControl, isDiscordBotActive, type DiscordEffectiveControl } from "./control/state";
 import { createDiscordIntake, discordHandlerRegistry, type DiscordHandlerRegistry, type DiscordIntake } from "./intake";
+import { createDiscordLifecycle, createPrismaDiscordProblemReports, createPrismaDiscordRatingStore } from "./lifecycle";
+import {
+  createDiscordMonitoringHandlers, createPrismaDiscordMonitoringKeyStore, formatDiscordMetrics, readDiscordHourLoad,
+  readDiscordMonitoringTelemetry
+} from "./monitoring";
 import { createDiscordRest, type DiscordRest } from "./rest";
 import { createDiscordSession, type DiscordSession } from "./session";
 import { createPrismaDiscordConversationStore, type DiscordConversationKind, type DiscordConversationStore } from "./store/conversations";
@@ -217,6 +224,7 @@ export function startDefaultDiscord(): void {
   if (!globalForDiscord.__aiqsaDiscordStarted) {
     globalForDiscord.__aiqsaDiscordStarted = true;
     startDiscordBridge(discord);
+    startDiscordLifecycle(discord);
     const reevaluate = () => {
       void discord.session.reevaluate().catch((error: unknown) => {
         logEvent("service_operation", { code: "discord_session_failed", error, outcome: "failed", stage: "reconcile", subsystem: "discord" });
@@ -250,7 +258,70 @@ export const defaultDiscordControlService: DiscordControlService = Object.freeze
   testAndSave: (input) => getDefaultDiscord().controlService.testAndSave(input)
 });
 
-/** What the Control Center's attention rules read about Discord: the switch, recorded session health and setup. */
-export async function readDiscordHealthSnapshot(): Promise<DiscordHealthSnapshot> {
-  return getDefaultDiscord().controlService.health();
+/**
+ * Deleted questions and ratings of answers (`lifecycle.ts`): their handlers in
+ * the registry and the delivery listener. Stop goes through the shared
+ * connector gateway as the service account, loaded on the first delete.
+ */
+function startDiscordLifecycle(discord: DiscordDefaults): void {
+  const gateway = lazyConnectorLoader(async () => (await import("../connectors/defaultRunGateway"))
+    .createDefaultConnectorRunGateway({ auth: (userId) => discordRequestAuth(discord, userId), connectorTurn: "discord" }));
+  createDiscordLifecycle({
+    ratings: createPrismaDiscordRatingStore(prisma),
+    replies: discord.replies,
+    reports: createPrismaDiscordProblemReports(prisma),
+    rest: discord.rest,
+    stopRun: async (input) => (await gateway()).stop(input)
+  }).register(discord.registry);
 }
+
+/**
+ * What the Control Center's attention rules read about Discord: the switch,
+ * recorded session health, setup and, while the bot is on, the last hour's
+ * questions and failures.
+ */
+export async function readDiscordHealthSnapshot(): Promise<DiscordHealthSnapshot & Readonly<{
+  lastHour: Readonly<{ requests: number; failures: number }> | null;
+}>> {
+  const health = await getDefaultDiscord().controlService.health();
+  if (!health.enabled) return { ...health, lastHour: null };
+  // The hour's journal is one more read: when it fails, the session findings still stand.
+  const hour = await readDiscordHourLoad(prisma, new Date()).catch((error: unknown) => {
+    logEvent("service_operation", { code: "discord_monitoring_failed", error, outcome: "failed", stage: "read", subsystem: "discord" });
+    return null;
+  });
+  return { ...health, lastHour: hour ? { failures: hour.people.failures, requests: hour.people.requests } : null };
+}
+
+/** The display names of the server's channels for Activity rows; none when Discord cannot be read. */
+async function activityChannelNames(): Promise<ReadonlyMap<string, string>> {
+  const discord = getDefaultDiscord();
+  const control = await discord.control();
+  if (!control.guildId) return new Map();
+  const listed = await discord.controlService.listChannels(control.guildId).catch(() => null);
+  return listed?.ok ? new Map(listed.state.channels.map((channel) => [channel.id, channel.name])) : new Map();
+}
+
+/** `GET /api/admin/discord/activity`. */
+export async function readDefaultDiscordActivity(now: Date) {
+  return readDiscordAdminActivity(prisma, { channelNames: await activityChannelNames(), now });
+}
+
+export const defaultDiscordMonitoringKeys = createPrismaDiscordMonitoringKeyStore(prisma);
+
+/** The monitoring projection of one window. */
+export function readDefaultDiscordTelemetry(window: Readonly<{ since: Date; until: Date }>, now: Date) {
+  return readDiscordMonitoringTelemetry(prisma, window, now);
+}
+
+/** Prometheus text: this process's session (one replica) and the recorded last event, then the last hour. */
+export async function readDefaultDiscordMetrics(now: Date): Promise<string> {
+  const discord = getDefaultDiscord();
+  const [record, hour] = await Promise.all([discord.repository.read(), readDiscordHourLoad(prisma, now)]);
+  return formatDiscordMetrics({ connected: discord.session.connected() === true, enabled: record.enabled, hour, lastEventAt: record.lastEventAt, now });
+}
+
+/** `GET /api/monitoring/discord` and `/metrics`, public by path, with a monitoring key. */
+export const defaultDiscordMonitoringHandlers = createDiscordMonitoringHandlers({
+  keys: defaultDiscordMonitoringKeys, metrics: readDefaultDiscordMetrics, telemetry: readDefaultDiscordTelemetry
+});
