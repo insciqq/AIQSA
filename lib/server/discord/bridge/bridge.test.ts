@@ -86,7 +86,7 @@ function harness(options: HarnessOptions = {}) {
   const runs = options.runs ?? createFakeDiscordRunGateway({
     autoFinish: options.finish === undefined ? () => ({ text: "The answer." }) : options.finish, silent: options.silent
   });
-  const facts = createMemoryDiscordRunFacts(replies, { list: () => runs.runs });
+  const facts = createMemoryDiscordRunFacts(replies);
   const conversationStore: DiscordConversationStore = options.conversationWriteFails
     ? { ...conversations, create: async () => { throw new Error("synthetic write failure"); } }
     : conversations;
@@ -667,7 +667,7 @@ describe("Discord bridge: review fixes", () => {
     });
   }
 
-  it("never sends again a question whose send was claimed: past the grace, the planned chat's run is its answer", async () => {
+  it("neither sends again nor adopts a question whose send was claimed but never recorded; it ends visibly after ten minutes", async () => {
     const h = harness({ finish: null });
     const alice = h.user("alice");
     const question = h.post(mention(h, alice, "crashed after the send"));
@@ -681,15 +681,13 @@ describe("Discord bridge: review fixes", () => {
       chatId: planned, userId: "svc_1"
     });
     await h.bridge.recover(new Date(h.now()));
-    expect(h.runs.runs).toHaveLength(1);
-    expect(h.replies.rows.get(question.id)).toMatchObject({ kind: "answer", runId: h.runs.runs[0]!.runId, state: "admitted" });
-    h.runs.runs[0]!.finish({ text: "Answered once." });
-    h.advance(60_000);
+    expect(h.replies.rows.get(question.id)).toMatchObject({ runId: null, state: "claimed" });
+    h.runs.runs[0]!.finish({ text: "Never delivered." });
+    h.advance(10 * 60_000);
     await h.bridge.recover(new Date(h.now()));
     expect(h.runs.runs).toHaveLength(1);
-    expect(h.replies.rows.get(question.id)).toMatchObject({ state: "delivered" });
-    expect(botMessages(h, question.id).map((message) => message.content)).toEqual(["Answered once."]);
-    expect(await h.conversations.findByChat(planned)).toMatchObject({ discordChannelId: question.id });
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_reply_expired", runId: null, state: "failed" });
+    expect(botMessages(h, h.fake.channels.text).map((message) => message.content)).toEqual([`❌ ${DISCORD_COPY.somethingWrong}`]);
   });
 
   it("asks a question whose send was never claimed again from the start, into the chat it planned", async () => {
@@ -721,29 +719,6 @@ describe("Discord bridge: review fixes", () => {
     expect(h.runs.runs).toHaveLength(0);
     expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_reply_expired", state: "failed" });
     expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
-  });
-
-  it("takes the running run of a claimed send in an existing chat as the question's answer, never as a follow-up", async () => {
-    const h = harness({ finish: null });
-    const alice = h.user("alice");
-    const voice = h.fake.channels.voice;
-    await h.say(mention(h, alice, "first", voice));
-    await h.settle();
-    h.runs.runs[0]!.finish({ text: "First." });
-    await h.settle();
-    const second = h.post(mention(h, alice, "second", voice));
-    const chatId = h.runs.runs[0]!.chatId;
-    await claimed(h, second, { expectedLeafId: h.runs.runs[0]!.assistantMessageId });
-    await h.replies.claimSend(second.id, new Date(h.now() - 60_000));
-    // Its send was admitted; the process died before recording the run.
-    await h.runs.gateway.send({
-      body: discordSendBody({ admissionId: `dc-${second.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: h.runs.runs[0]!.assistantMessageId,
-        newChatAssistantId: null }), chatId, userId: "svc_1"
-    });
-    await h.bridge.recover(new Date(h.now()));
-    expect(h.runs.runs).toHaveLength(2);
-    expect(h.runs.runs[1]!.followups).toEqual([]);
-    expect(h.replies.rows.get(second.id)).toMatchObject({ kind: "answer", runId: h.runs.runs[1]!.runId, state: "admitted" });
   });
 
   it("asks a claimed question again from one process only, while two recover side by side", async () => {
@@ -868,6 +843,115 @@ describe("Discord bridge: review fixes", () => {
     const next = sentText(h.runs.runs[1]!.body);
     expect(next).toContain(`Replying to bob (discord:${bob}), message ${picture.id}:\n@carol look [attachments: chart.png]`);
     expect(next).not.toContain("plain text");
+  });
+
+  it("never gives a question whose send was claimed another question's unrecorded run (reviewer: wrong owner)", async () => {
+    const h = harness({ finish: null, timing: { claimGraceMs: 120_000 } });
+    const alice = h.user("alice");
+    await h.say(mention(h, alice, "baseline", h.fake.channels.voice));
+    await h.settle();
+    const baseline = h.runs.runs[0]!;
+    baseline.finish({ text: "Baseline." });
+    await h.settle();
+    const old = h.post(mention(h, alice, "old question", h.fake.channels.voice));
+    await claimed(h, old, { expectedLeafId: baseline.assistantMessageId });
+    await h.replies.claimSend(old.id, new Date(h.now()));
+    // The worker dies before sending the old question.
+    h.advance(121_000);
+    const newer = h.post(mention(h, alice, "different question", h.fake.channels.voice));
+    await claimed(h, newer, { expectedLeafId: baseline.assistantMessageId });
+    await h.replies.claimSend(newer.id, new Date(h.now()));
+    // The newer question's run commits before its journal row names it.
+    await h.runs.gateway.send({
+      body: discordSendBody({ admissionId: `dc-${newer.id}`, blocks: [{ text: "different question", type: "text" }],
+        expectedActiveLeafId: baseline.assistantMessageId, newChatAssistantId: null }),
+      chatId: baseline.chatId, userId: "svc_1"
+    });
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.replies.rows.get(old.id)?.runId).toBeNull();
+    h.runs.runs[1]!.finish({ text: "Answer to the different question." });
+    h.advance(10 * 60_000);
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.replies.rows.get(old.id)).toMatchObject({ code: "discord_reply_expired", runId: null, state: "failed" });
+    expect(h.fake.reactions(old.id, "❌")).toEqual([h.fake.bot.id]);
+    const posted = botMessages(h, h.fake.channels.voice).map((message) => message.content);
+    expect(posted).not.toContain("Answer to the different question.");
+  });
+
+  it("answers no message twice when a claimed merged send was lost (reviewer: merged replay)", async () => {
+    const h = harness({ timing: { claimGraceMs: 120_000, mergeWindowMs: 1_500 } });
+    const alice = h.user("alice");
+    const first = h.post(mention(h, alice, "first part", h.fake.channels.voice));
+    const second = h.post(mention(h, alice, "second part", h.fake.channels.voice));
+    await claimed(h, first);
+    expect(Date.parse(second.timestamp) - Date.parse(first.timestamp)).toBeLessThanOrEqual(1_500);
+    const chatId = "00000000-0000-4000-8000-00000000aaaa";
+    await h.replies.fixAdmissionTarget(first.id, { plannedChatId: chatId });
+    await h.replies.claimSend(first.id, new Date(h.now()));
+    // The merged send went out; the process died before recording its run.
+    await h.runs.gateway.send({
+      body: discordSendBody({ admissionId: `dc-${first.id}`, blocks: [{ text: "first part\nsecond part", type: "text" }],
+        expectedActiveLeafId: null, newChatAssistantId: "assistant_1" }),
+      chatId, userId: "svc_1"
+    });
+    h.advance(121_000);
+    await h.bridge.recover(new Date(h.now()));
+    await h.intake.accept({ data: second, type: "MESSAGE_CREATE" });
+    // The lost one stays claimed until its ending, so only the second message's own answer is waited for.
+    await vi.waitFor(() => expect(h.replies.rows.get(second.id)?.state).toBe("delivered"));
+    await h.intake.lanes.idle();
+    await h.bridge.idle();
+    h.advance(10 * 60_000);
+    await h.bridge.recover(new Date(h.now()));
+    // The lost send's run is never adopted; the second message, its own trigger, is answered once on its own.
+    expect(h.runs.runs).toHaveLength(2);
+    expect(h.replies.rows.get(first.id)).toMatchObject({ code: "discord_reply_expired", runId: null, state: "failed" });
+    expect(h.replies.rows.get(second.id)).toMatchObject({ runId: h.runs.runs[1]!.runId, state: "delivered" });
+    expect(botMessages(h, h.fake.channels.voice).filter((message) => message.message_reference?.message_id === second.id)).toHaveLength(1);
+  });
+
+  it("never sends a turn with files as a text follow-up into another process's running answer (reviewer: remote files)", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const runs = createFakeDiscordRunGateway({ autoFinish: null });
+    const one = harness({ fake, runs, stores });
+    const two = harness({ fake, runs, stores });
+    const alice = one.user("alice");
+    const first = await one.say(mention(one, alice, "start"));
+    await one.settle();
+    const file = await two.say({
+      attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
+      content: "describe this image"
+    });
+    await two.intake.lanes.idle();
+    await two.bridge.idle();
+    expect(runs.runs[0]!.followups).toEqual([]);
+    expect(stores.replies.rows.get(file.id)?.state).toBe("claimed");
+  });
+
+  it("sends a turn with files as the next turn, with its blocks, once another process's answer settles", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const runs = createFakeDiscordRunGateway({ autoFinish: null });
+    const imageBlock = { alt: "diagram.png", attachmentId: "attachment-image-1", type: "image" as const };
+    const attachments: DiscordAttachmentHook = async (input) => ({
+      blocks: input.question.some((message) => message.attachments.length > 0) ? [imageBlock] : [], notes: []
+    });
+    const one = harness({ fake, runs, stores });
+    const two = harness({ attachments, fake, runs, stores, timing: { followMs: 30_000 } });
+    const alice = one.user("alice");
+    const first = await one.say(mention(one, alice, "start"));
+    await one.settle();
+    const file = await two.say({
+      attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
+      content: "describe this image"
+    });
+    await vi.waitFor(() => expect(stores.replies.rows.get(file.id)?.sendClaimedAt).toBeInstanceOf(Date));
+    runs.runs[0]!.finish({ text: "First." });
+    await vi.waitFor(() => expect(runs.runs).toHaveLength(2), { timeout: 5_000 });
+    expect(runs.runs[0]!.followups).toEqual([]);
+    expect((runs.runs[1]!.body.content as { blocks: unknown[] }).blocks).toContainEqual(imageBlock);
+    expect(stores.replies.rows.get(file.id)).toMatchObject({ kind: "answer", runId: runs.runs[1]!.runId });
   });
 
   it("never leaves a refused final message as Working with 👀", async () => {
