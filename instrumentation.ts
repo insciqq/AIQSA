@@ -70,6 +70,15 @@ export async function register(): Promise<void> {
       reportSubsystemFailure({ error, subsystem: "telegram", stage: "startup", code: "telegram_startup_failed", action: "degrade" });
     }
     try {
+      const { startDefaultDiscord } = await import("./lib/server/discord/defaultDiscord");
+      startDefaultDiscord();
+      reportSubsystemHealthy("discord", "startup");
+    } catch (error) {
+      // Discord is feature-local: the bot stays silent and every product path, the admin
+      // section included, works without it; the session records its own health.
+      reportSubsystemFailure({ error, subsystem: "discord", stage: "startup", code: "discord_startup_failed", action: "degrade" });
+    }
+    try {
       const { startDefaultUsageLimitAlerts } = await import("./lib/server/usageLimits/defaultAlerts");
       startDefaultUsageLimitAlerts();
       reportSubsystemHealthy("usage_alerts", "startup");

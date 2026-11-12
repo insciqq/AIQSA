@@ -130,7 +130,7 @@ type Route = Readonly<{
 export const DISCORD_ROUTE_NAMES = [
   "get_current_user", "get_current_application", "list_current_user_guilds", "list_guild_channels", "get_guild_member",
   "get_gateway_bot", "list_channel_messages", "get_channel_message", "create_message", "edit_message", "delete_message",
-  "start_thread_from_message", "trigger_typing", "add_own_reaction", "remove_own_reaction"
+  "start_thread_from_message", "trigger_typing", "add_own_reaction", "remove_own_reaction", "get_channel"
 ] as const;
 export type DiscordRouteName = (typeof DISCORD_ROUTE_NAMES)[number];
 
@@ -139,6 +139,8 @@ export type DiscordRest = Readonly<{
   getCurrentApplication(): Promise<DiscordRestOutcome<DiscordApplication>>;
   listCurrentUserGuilds(): Promise<DiscordRestOutcome<DiscordGuild[]>>;
   listGuildChannels(guildId: string): Promise<DiscordRestOutcome<DiscordChannel[]>>;
+  /** One channel or thread: its type, server and parent, when no gateway event named them in this process. */
+  getChannel(channelId: string): Promise<DiscordRestOutcome<DiscordChannel>>;
   getGuildMember(guildId: string, userId: string): Promise<DiscordRestOutcome<DiscordGuildMember>>;
   getGatewayBot(): Promise<DiscordRestOutcome<DiscordGatewayBot>>;
   /** History newest first, at most 100 per page. */
@@ -395,6 +397,9 @@ export function createDiscordRest(options: DiscordRestOptions): DiscordRest {
       { query: { limit: 200 } }), z.array(guildSchema).max(200)),
     listGuildChannels: (guildId) => validId(guildId)
       ? typed(route("list_guild_channels", "GET", `/guilds/${guildId}/channels`, "/guilds/:g/channels", guildId), z.array(channelSchema).max(1_000))
+      : invalid(),
+    getChannel: (channelId) => validId(channelId)
+      ? typed(route("get_channel", "GET", `/channels/${channelId}`, "/channels/:c", channelId), channelSchema)
       : invalid(),
     getGuildMember: (guildId, userId) => validId(guildId) && validId(userId)
       ? typed(route("get_guild_member", "GET", `/guilds/${guildId}/members/${userId}`, "/guilds/:g/members/:u", guildId), memberSchema)

@@ -85,7 +85,6 @@ function activityRows(count: number, now: number): DiscordActivityRow[] {
 function adminState(scenario: DiscordAdminFixtureScenario, now: number): DiscordAdminState {
   const ago = (ms: number) => new Date(now - ms).toISOString();
   const base: DiscordAdminState = {
-    activity: { last24h: stats(0), last7d: stats(0), rows: [] },
     assistant: null,
     bot: null,
     channelMode: "only_listed",
@@ -95,7 +94,6 @@ function adminState(scenario: DiscordAdminFixtureScenario, now: number): Discord
     guild: null,
     health: { connected: false, lastConnectedAt: null, lastEventAt: null, lastFailureAt: null, lastFailureCode: null },
     limits: { ...DISCORD_LIMIT_DEFAULTS },
-    monitoringKeys: [],
     serviceAccount: { status: "missing", userId: null },
     setup: {
       items: setupItems({
@@ -138,7 +136,7 @@ function adminState(scenario: DiscordAdminFixtureScenario, now: number): Discord
         items: setupItems({
           discord_mcp_not_granted: { action: "open_mcp_grants", status: "blocking" },
           discord_message_content_disabled: { action: "enter_token", status: "blocking" },
-          discord_no_budget: { action: "open_usage_limits", status: "warning" },
+          discord_monthly_budget: { action: "open_usage_limits", status: "warning" },
           discord_search_disabled: { action: "open_assistant", status: "blocking" },
           discord_shared_key: { action: "open_provider_keys", status: "warning" }
         }),

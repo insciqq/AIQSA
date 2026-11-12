@@ -47,7 +47,10 @@ const nextConfig = {
     "microsandbox",
     "microsandbox-mcp",
     "pdf-lib",
-    "unpdf"
+    "unpdf",
+    // Discord Connect's gateway WebSocket and pinned dispatcher: the pinned
+    // package loads from node_modules as published, never re-bundled.
+    "undici"
   ],
   // Framework redirects discard configured headers. Public-share redirects
   // belong to proxy.ts so even their 308 responses retain the privacy policy.
