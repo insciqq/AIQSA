@@ -12,6 +12,7 @@ import {
   createFakeDiscordRunGateway, createMemoryDiscordConversationStore, createMemoryDiscordLimitStore, createMemoryDiscordReplyStore,
   createMemoryDiscordRunFacts, type FakeRunFinish
 } from "./bridge.testFixtures";
+import { discordAttachmentNamesOnly, type DiscordAttachmentHook } from "./context";
 import { createDiscordBridge, discordSendBody, type DiscordBridgeTiming } from "./index";
 import type { DiscordRunEvent, DiscordRunEventContext } from "./events";
 
@@ -64,6 +65,8 @@ type HarnessOptions = Readonly<{
   clock?: { latest: number };
   /** The conversation row cannot be written (its link to the chat is missing). */
   conversationWriteFails?: boolean;
+  attachments?: DiscordAttachmentHook;
+  newChatId?: () => string;
 }>;
 
 type Stores = Readonly<{
@@ -107,12 +110,13 @@ function harness(options: HarnessOptions = {}) {
   });
   const intake = makeIntake();
   const bridge = createDiscordBridge({
-    control: async () => control, conversations: conversationStore, facts, gateway: runs.gateway, lanes: intake.lanes, limits, newChatId: (() => {
+    control: async () => control, conversations: conversationStore, facts, gateway: runs.gateway, lanes: intake.lanes, limits,
+    newChatId: options.newChatId ?? (() => {
       let next = 0;
       return () => `00000000-0000-4000-8000-${String(++next).padStart(12, "0")}`;
     })(),
     now, publish: async (event, context) => { published.push({ context, event }); }, replies, rest: () => rest,
-    setupReady: async () => options.setupReady ?? true, shares,
+    setupReady: async () => options.setupReady ?? true, shares, ...(options.attachments ? { attachments: options.attachments } : {}),
     timing: { claimGraceMs: 0, followMs: 0, mergeWindowMs: 0, statusIntervalMs: 60_000, typingIntervalMs: 60_000, ...options.timing }
   });
   bridge.register(registry);
@@ -663,14 +667,15 @@ describe("Discord bridge: review fixes", () => {
     });
   }
 
-  it("never asks a recovered question again when the chat its first attempt planned already runs it", async () => {
+  it("never sends again a question whose send was claimed: past the grace, the planned chat's run is its answer", async () => {
     const h = harness({ finish: null });
     const alice = h.user("alice");
     const question = h.post(mention(h, alice, "crashed after the send"));
     await claimed(h, question);
     const planned = "00000000-0000-4000-8000-00000000aaaa";
-    await h.replies.update(question.id, { plannedChatId: planned });
-    // The first attempt reached the send handler, which made the chat and its run, then the process died.
+    await h.replies.fixAdmissionTarget(question.id, { plannedChatId: planned });
+    expect(await h.replies.claimSend(question.id, new Date(h.now() - 60_000))).toBe(true);
+    // The claimer reached the send handler, which made the chat and its run, then the process died.
     await h.runs.gateway.send({
       body: discordSendBody({ admissionId: `dc-${question.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1" }),
       chatId: planned, userId: "svc_1"
@@ -687,35 +692,38 @@ describe("Discord bridge: review fixes", () => {
     expect(await h.conversations.findByChat(planned)).toMatchObject({ discordChannelId: question.id });
   });
 
-  it("asks a recovered question again into the chat its first attempt planned, when that chat was never made", async () => {
+  it("asks a question whose send was never claimed again from the start, into the chat it planned", async () => {
     const h = harness();
     const alice = h.user("alice");
     const question = h.post(mention(h, alice, "crashed before the send"));
     await claimed(h, question);
     const planned = "00000000-0000-4000-8000-00000000bbbb";
-    await h.replies.update(question.id, { plannedChatId: planned });
+    await h.replies.fixAdmissionTarget(question.id, { plannedChatId: planned });
     await h.bridge.recover(new Date(h.now()));
     await h.settle();
     expect(h.runs.runs.map((run) => run.chatId)).toEqual([planned]);
-    expect(h.replies.rows.get(question.id)).toMatchObject({ plannedChatId: planned, state: "delivered" });
+    expect(h.replies.rows.get(question.id)).toMatchObject({ plannedChatId: planned, sendClaimedAt: expect.any(Date), state: "delivered" });
   });
 
-  it("ends a recovered question visibly when its acceptance cannot be established, sending nothing", async () => {
+  it("waits for a claimed send whose run is not found, then ends it visibly ten minutes after the claim, sending nothing", async () => {
     const h = harness();
     const alice = h.user("alice");
     const question = h.post(mention(h, alice, "the chat exists without a run"));
     await claimed(h, question);
     const planned = "00000000-0000-4000-8000-00000000cccc";
-    await h.replies.update(question.id, { plannedChatId: planned });
+    await h.replies.fixAdmissionTarget(question.id, { plannedChatId: planned });
+    await h.replies.claimSend(question.id, new Date(h.now() - 60_000));
     h.runs.chats.set(planned, { activeLeafMessageId: null, assistantId: "assistant_1", id: planned });
     await h.bridge.recover(new Date(h.now()));
-    await h.settle();
+    expect(h.replies.rows.get(question.id)).toMatchObject({ state: "claimed" });
+    h.advance(10 * 60_000);
+    await h.bridge.recover(new Date(h.now()));
     expect(h.runs.runs).toHaveLength(0);
-    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_delivery_unknown", state: "failed" });
+    expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_reply_expired", state: "failed" });
     expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
   });
 
-  it("takes a recovered question's own running first attempt in an existing chat as its answer, never as a follow-up", async () => {
+  it("takes the running run of a claimed send in an existing chat as the question's answer, never as a follow-up", async () => {
     const h = harness({ finish: null });
     const alice = h.user("alice");
     const voice = h.fake.channels.voice;
@@ -726,7 +734,8 @@ describe("Discord bridge: review fixes", () => {
     const second = h.post(mention(h, alice, "second", voice));
     const chatId = h.runs.runs[0]!.chatId;
     await claimed(h, second, { expectedLeafId: h.runs.runs[0]!.assistantMessageId });
-    // Its first attempt was admitted; the process died before recording the run.
+    await h.replies.claimSend(second.id, new Date(h.now() - 60_000));
+    // Its send was admitted; the process died before recording the run.
     await h.runs.gateway.send({
       body: discordSendBody({ admissionId: `dc-${second.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: h.runs.runs[0]!.assistantMessageId,
         newChatAssistantId: null }), chatId, userId: "svc_1"
@@ -751,19 +760,114 @@ describe("Discord bridge: review fixes", () => {
     await one.settle();
     await two.settle();
     expect(runs.runs).toHaveLength(1);
-    expect(stores.replies.rows.get(question.id)).toMatchObject({ readmitAt: expect.any(Date), state: "delivered" });
+    expect(stores.replies.rows.get(question.id)).toMatchObject({ sendClaimedAt: expect.any(Date), state: "delivered" });
   });
 
-  it("ends a question asked again earlier and still without a run past the window", async () => {
+  it("ends a question whose send was claimed long ago and has no run", async () => {
     const h = harness();
     const alice = h.user("alice");
     const question = h.post(mention(h, alice, "stuck"));
     await claimed(h, question);
-    expect(await h.replies.claimReadmission(question.id, new Date(h.now() - 11 * 60_000))).toBe(true);
+    expect(await h.replies.claimSend(question.id, new Date(h.now() - 11 * 60_000))).toBe(true);
     await h.bridge.recover(new Date(h.now()));
     expect(h.runs.runs).toHaveLength(0);
     expect(h.replies.rows.get(question.id)).toMatchObject({ code: "discord_reply_expired", state: "failed" });
     expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
+  });
+
+  it("sends a slow live question once while recovery in another process asks it again", async () => {
+    const fake = createFakeDiscord();
+    const stores = { conversations: createMemoryDiscordConversationStore(), replies: createMemoryDiscordReplyStore() };
+    const runs = createFakeDiscordRunGateway({ autoFinish: () => ({ text: "Once." }) });
+    const clock = { latest: Date.parse("2026-11-12T09:00:00.000Z") };
+    let release!: () => void;
+    const transfer = new Promise<void>((resolve) => { release = resolve; });
+    let preparing = 0;
+    // The attachments' transfer takes longer than the recovery grace.
+    const attachments: DiscordAttachmentHook = async (input) => {
+      preparing += 1;
+      await transfer;
+      return discordAttachmentNamesOnly(input);
+    };
+    const live = harness({ attachments, clock, fake, newChatId: () => "00000000-0000-4000-8000-000000000001", runs, stores, timing: { claimGraceMs: 120_000 } });
+    const recovery = harness({
+      attachments, clock, fake, newChatId: () => "00000000-0000-4000-8000-000000000002", runs, stores, timing: { claimGraceMs: 120_000 }
+    });
+    const alice = live.user("alice");
+    const question = await live.say(mention(live, alice, "summarize", fake.channels.voice));
+    await vi.waitFor(() => expect(preparing).toBe(1));
+    live.advance(121_000);
+    const sweep = recovery.bridge.recover(new Date(recovery.now()));
+    await vi.waitFor(() => expect(preparing).toBe(2));
+    release();
+    await sweep;
+    await live.settle();
+    await recovery.settle();
+    expect(runs.runs).toHaveLength(1);
+    expect(stores.replies.rows.get(question.id)).toMatchObject({ plannedChatId: runs.runs[0]!.chatId, state: "delivered" });
+    expect(botMessages(live, fake.channels.voice).map((message) => message.content)).toEqual(["Once."]);
+  });
+
+  it("keeps a question whose preparation failed in recovery for the next sweep", async () => {
+    const h = harness();
+    const question = h.post(mention(h, h.user("alice"), "recover me"));
+    await claimed(h, question);
+    h.fake.fail({ reply: { status: 503 as const }, route: "get_channel_message", times: 2 });
+    await h.bridge.recover(new Date(h.now()));
+    expect(h.runs.runs).toHaveLength(0);
+    h.advance(60_000);
+    await h.bridge.recover(new Date(h.now()));
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(1);
+  });
+
+  it("makes a follow-up with a file the next turn, its file through the attachment hook, not a text-only follow-up", async () => {
+    const seen: string[][] = [];
+    const attachments: DiscordAttachmentHook = async (input) => {
+      seen.push(input.question.flatMap((message) => message.attachments.map((attachment) => attachment.filename)));
+      return discordAttachmentNamesOnly(input);
+    };
+    const h = harness({ attachments, finish: null });
+    const alice = h.user("alice");
+    const first = await h.say(mention(h, alice, "start"));
+    await h.settle();
+    const withFile = await h.say({
+      attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "diagram.png" }], authorId: alice, channelId: first.id,
+      content: "use this image"
+    });
+    await vi.waitFor(() => expect(h.fake.reactions(withFile.id, "👀")).toEqual([h.fake.bot.id]));
+    expect(h.runs.runs[0]!.followups).toEqual([]);
+    h.runs.runs[0]!.finish({ text: "Done." });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(2);
+    expect(seen.at(-1)).toEqual(["diagram.png"]);
+    expect(sentText(h.runs.runs[1]!.body)).toContain("use this image [attachments: diagram.png]");
+    expect(h.replies.rows.get(withFile.id)).toMatchObject({ kind: "answer", runId: h.runs.runs[1]!.runId, state: "admitted" });
+    expect(h.replies.rows.get(first.id)).toMatchObject({ state: "delivered" });
+  });
+
+  it("makes a Reply to a message with a file the next turn, while plain text joins the run", async () => {
+    const h = harness({ finish: null });
+    const [alice, bob, carol] = [h.user("alice"), h.user("bob"), h.user("carol")];
+    const first = await h.say(mention(h, alice, "start"));
+    await h.settle();
+    const plain = await h.say({ authorId: carol, channelId: first.id, content: "plain text" });
+    await vi.waitFor(() => expect(h.runs.runs[0]!.followups.map((entry) => entry.nonce)).toEqual([`dc-${plain.id}`]));
+    const picture = await h.say({
+      attachments: [{ contentType: "image/png", data: Buffer.from("png"), filename: "chart.png" }], authorId: bob, channelId: first.id,
+      content: `<@${carol}> look`, mentions: [carol]
+    });
+    const reply = await h.say({
+      authorId: alice, channelId: first.id, content: `<@${h.fake.bot.id}> make it blue`, mentions: [h.fake.bot.id], replyTo: picture.id
+    });
+    await vi.waitFor(() => expect(h.fake.reactions(reply.id, "👀")).toEqual([h.fake.bot.id]));
+    expect(h.runs.runs[0]!.followups).toHaveLength(1);
+    h.runs.runs[0]!.finish({ text: "Done." });
+    await h.settle();
+    expect(h.runs.runs).toHaveLength(2);
+    const next = sentText(h.runs.runs[1]!.body);
+    expect(next).toContain(`Replying to bob (discord:${bob}), message ${picture.id}:\n@carol look [attachments: chart.png]`);
+    expect(next).not.toContain("plain text");
   });
 
   it("never leaves a refused final message as Working with 👀", async () => {

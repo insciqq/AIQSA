@@ -183,9 +183,6 @@ type Placement = {
 
 type RecoveryLink = ConnectorRecoveryLink & Readonly<{ rows: readonly DiscordReplyRecord[] }>;
 
-/** What a claimed question's first attempt recorded before its send, for asking it again (`readmit`). */
-type Recovered = Readonly<{ expectedLeafId: string | null; plannedChatId: string | null }>;
-
 const MERGED_MAX = 4_096;
 const THREAD_NAME_MAX = 80;
 const SETTLED_STATES: Readonly<Record<"complete" | "cancelled" | "error", DiscordReplyState>> = {
@@ -379,13 +376,22 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       return true;
     }
     if (!run.assistantMessageId || !control.serviceUserId) return false;
+    // A follow-up carries text only: a question with files (its own, its Reply target's, or the history it would
+    // include) waits for the run and becomes the next turn, whose attachments go with it; the cursor stays before it.
+    if (trigger.attachments.length > 0) return false;
+    const files = { seen: false };
+    const probe: DiscordAttachmentHook = async (input) => {
+      files.seen = [...input.question, ...(input.reference ? [input.reference] : []), ...input.history]
+        .some((message) => message.attachments.length > 0);
+      return discordAttachmentNamesOnly(input);
+    };
     const turn = await readDiscordTurnContext({
-      attachments: discordAttachmentNamesOnly, conversationId: run.conversation.id, facts: deps.facts, header: null,
+      attachments: probe, conversationId: run.conversation.id, facts: deps.facts, header: null,
       maxChars: RUN_FOLLOWUP_MAX_CHARS, mergeWindowMs: timing.mergeWindowMs, names: mentionNames(control), rest: deps.rest(),
       scope: { afterId: run.includedUpTo, bounded: false, channelId: run.conversation.discordChannelId, kind: "delta" },
       trigger, uploads: null, userId: control.serviceUserId
     });
-    if (!turn.ok || run.answered) return false;
+    if (!turn.ok || files.seen || run.answered) return false;
     const input = {
       assistantMessageId: run.assistantMessageId, chatId: run.chatId, nonce: `dc-${question.ids.questionMessageId}`, runId: run.runId,
       text: turn.text, userId: control.serviceUserId
@@ -512,33 +518,42 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   }
 
   /**
-   * Sends the turn once its acceptance can be told apart from a new one later: a new chat's id, or the existing chat's
-   * expected leaf, is written on the question's row before the send, and nothing is sent when it cannot be. A recovered
-   * question is asked again only into the chat its first attempt planned; when that chat exists, its first attempt
-   * arrived (`arrived`), and nothing is sent again.
+   * Sends the turn at most once per question, whichever attempt (live, or recovery in any process) gets there:
+   * the admission target, a new chat's planned id or the existing chat's expected leaf, is fixed once on the
+   * question's row and read back, so every attempt admits the same way; then the send itself is claimed once, right
+   * before it. An attempt that does not win the claim sends nothing (`taken`): the claim's holder answers.
    */
   async function admit(question: Question, placement: Placement, input: Readonly<{
-    userId: string; assistantId: string; blocks: readonly ContentBlock[]; includedUpTo: string; recovered: Recovered | undefined;
-  }>): Promise<Admitted | Readonly<{ kind: "refused"; refusal: ConnectorSendRefusal }> | Readonly<{ kind: "arrived"; chatId: string }>> {
-    const planned = input.recovered?.plannedChatId ?? null;
-    if (planned && await deps.gateway.chat(input.userId, planned)) return { chatId: planned, kind: "arrived" };
+    userId: string; assistantId: string; blocks: readonly ContentBlock[]; includedUpTo: string;
+  }>): Promise<Admitted | Readonly<{ kind: "refused"; refusal: ConnectorSendRefusal }> | Readonly<{ kind: "taken" }>> {
+    const id = question.ids.questionMessageId;
     const conversation = placement.conversation;
-    const chatId = conversation?.chatId ?? planned ?? newChatId();
     const unrecorded = { kind: "refused", refusal: { code: "discord_journal_failed", status: 500 } } as const;
-    if (!conversation && !await patch(question, { expectedLeafId: null, plannedChatId: chatId }, ["claimed"])) return unrecorded;
+    let leaf: string | null = null;
+    if (conversation) {
+      const chat = await deps.gateway.chat(input.userId, conversation.chatId);
+      if (!chat) return { kind: "refused", refusal: { code: "chat_not_found", status: 404 } };
+      leaf = chat.activeLeafMessageId;
+    }
+    const target = await deps.replies.fixAdmissionTarget(id, conversation ? { expectedLeafId: leaf } : { plannedChatId: newChatId() })
+      .catch((error: unknown) => {
+        logDiscordBridgeFailure({ code: "discord_journal_failed", error, stage: "write" });
+        return null;
+      });
+    const chatId = conversation ? conversation.chatId : target?.plannedChatId ?? null;
+    if (!target || !chatId) return unrecorded;
+    if (target.sendClaimedAt) return { kind: "taken" };
+    const claimed = await deps.replies.claimSend(id, new Date(now())).catch((error: unknown) => {
+      logDiscordBridgeFailure({ code: "discord_journal_failed", error, stage: "write" });
+      return null;
+    });
+    if (claimed === null) return unrecorded;
+    if (!claimed) return { kind: "taken" };
+    let expected = conversation ? target.expectedLeafId ?? leaf : null;
     for (let attempt = 0; ; attempt += 1) {
-      let expected: string | null = null;
-      if (conversation) {
-        const chat = await deps.gateway.chat(input.userId, chatId);
-        if (!chat) return { kind: "refused", refusal: { code: "chat_not_found", status: 404 } };
-        const recoveredLeaf = input.recovered?.expectedLeafId ?? null;
-        expected = attempt === 0 && recoveredLeaf !== null ? recoveredLeaf : chat.activeLeafMessageId;
-        if (!await patch(question, { expectedLeafId: expected }, ["claimed"])) return unrecorded;
-      }
       const response = await deps.gateway.send({
         body: discordSendBody({
-          admissionId: `dc-${question.ids.questionMessageId}`, blocks: input.blocks, expectedActiveLeafId: expected,
-          newChatAssistantId: conversation ? null : input.assistantId
+          admissionId: `dc-${id}`, blocks: input.blocks, expectedActiveLeafId: expected, newChatAssistantId: conversation ? null : input.assistantId
         }),
         chatId, userId: input.userId
       });
@@ -548,10 +563,13 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
         userId: input.userId, waitForRun
       });
       if (followed.kind === "admitted") return { ...followed, chatId };
-      // Someone else's turn moved the chat on meanwhile: read the new leaf and try once more; a recovered question's
-      // own first attempt that arrived reads the same way, and is found instead (`readmit`).
-      if (followed.refusal.code === "active_leaf_changed" && conversation && attempt === 0 && input.recovered === undefined) continue;
-      return followed;
+      // The chat moved on since its leaf was fixed: a definite refusal, nothing ran, and this attempt holds the send,
+      // so it reads the new leaf and sends once more.
+      if (followed.refusal.code !== "active_leaf_changed" || !conversation || attempt > 0) return followed;
+      const chat = await deps.gateway.chat(input.userId, chatId);
+      if (!chat) return { kind: "refused", refusal: { code: "chat_not_found", status: 404 } };
+      expected = chat.activeLeafMessageId;
+      await patch(question, { expectedLeafId: expected }, ["claimed"]);
     }
   }
 
@@ -598,15 +616,14 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     }, input.includedUpTo, input.mergedIds, input.userId);
   }
 
-  /** A run no question owns yet: in a recovered question's chat, its own first attempt. */
+  /** A run no question owns yet: in the chat of a question whose send was claimed, that send's run. */
   async function unowned(runId: string | null): Promise<boolean> {
     if (!runId) return false;
     const owners = await deps.facts.questionsOfRun(runId).catch(() => null);
     return owners?.length === 0;
   }
 
-  async function answerQuestion(context: DiscordMessageContext, question: Question, existing: DiscordConversationRecord | null,
-    recovered?: Recovered): Promise<void> {
+  async function answerQuestion(context: DiscordMessageContext, question: Question, existing: DiscordConversationRecord | null): Promise<void> {
     const { control, message } = context;
     const rest = deps.rest();
     if (await discordReact(rest, { add: [DISCORD_REACTION_SEEN], channelId: message.channelId, messageId: message.id })) {
@@ -662,40 +679,20 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       });
       if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
       const admitted = await admit(question, placement, {
-        assistantId, blocks: turn.blocks, includedUpTo: turn.includedUpTo, recovered, userId: serviceUserId
+        assistantId, blocks: turn.blocks, includedUpTo: turn.includedUpTo, userId: serviceUserId
       });
-      const own = { includedUpTo: turn.includedUpTo, mergedIds: turn.mergedIds, userId: serviceUserId };
-      // Acceptance a recovered question cannot establish ends visibly; it is never asked a second time.
-      const unestablished = () => refuse(question, {
-        code: "discord_delivery_unknown", failureKind: "delivery", text: DISCORD_COPY.somethingWrong
-      }, { status });
-      if (admitted.kind === "arrived") {
-        // The chat its first attempt planned exists, so that attempt arrived: the chat's first run is this question's.
-        const runId = await deps.facts.firstRunOfChat(admitted.chatId).catch(() => null);
-        if (!runId || !await unowned(runId)) return unestablished();
-        // A conversation another question opened here since belongs to another chat: this run stays unlinked to it.
-        const linked = placement.conversation && placement.conversation.chatId !== admitted.chatId
-          ? { ...placement, conversation: null, create: null } : placement;
-        return takeOver(context, question, linked, status, { ...own, chatId: admitted.chatId, runId });
+      if (admitted.kind === "taken") {
+        // Another attempt (recovery, or the worker it took over from) holds this question's send: that one answers.
+        status.stop();
+        logDiscordBridgeFailure({ code: "discord_send_taken", outcome: "skipped" });
+        return;
       }
       if (admitted.kind === "refused") {
         const { refusal } = admitted;
-        const chatId = placement.conversation?.chatId;
-        if (refusal.code === "active_run_in_progress" && refusal.activeRunId) {
-          // A recovered question's own first attempt, still running and recorded nowhere yet, is its answer.
-          if (recovered?.expectedLeafId && chatId && await unowned(refusal.activeRunId)) {
-            return takeOver(context, question, placement, status, { ...own, chatId, runId: refusal.activeRunId });
-          }
-          if (await adopt(question, placement, refusal.activeRunId, turn.text, serviceUserId)) {
-            status.stop();
-            return;
-          }
-        }
-        if (refusal.code === "active_leaf_changed" && recovered && chatId) {
-          // A recovered question whose first attempt arrived: its run is the chat's active one, if it still runs.
-          const found = await deps.gateway.activeRun({ chatId, userId: serviceUserId }).catch(() => null);
-          if (found && await unowned(found.runId)) return takeOver(context, question, placement, status, { ...own, chatId, runId: found.runId });
-          return unestablished();
+        if (refusal.code === "active_run_in_progress" && refusal.activeRunId &&
+          await adopt(question, placement, refusal.activeRunId, turn.text, serviceUserId)) {
+          status.stop();
+          return;
         }
         logDiscordBridgeFailure({ code: "discord_run_refused", outcome: "skipped" });
         return refuse(question, discordSendRefusalFailure(refusal), { status });
@@ -1050,13 +1047,76 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     });
   }
 
-  /** A claimed question without a run: asked again once, with the expected leaf its first attempt recorded. */
-  async function readmit(row: DiscordReplyRecord, control: DiscordActiveControl): Promise<void> {
+  /** The question of a row, read again from Discord, as intake would hand it on; null when it cannot be read now. */
+  async function contextOfRow(row: DiscordReplyRecord, control: DiscordActiveControl): Promise<DiscordMessageContext | "deleted" | null> {
+    const rest = deps.rest();
+    const fetched = await rest.getChannelMessage(row.channelId, row.questionMessageId);
+    if (!fetched.ok) return fetched.delivery === "refused" && fetched.status === 404 ? "deleted" : null;
+    const decoded = decodeDiscordIntakeMessage(fetched.value);
+    const channelAnswer = await rest.getChannel(row.channelId);
+    const channel: DiscordChannelInfo | null = channelAnswer.ok ? discordChannelInfo(channelAnswer.value, row.guildId) : null;
+    if (!decoded || !channel) return null;
+    const parentAnswer = channel.parentId ? await rest.getChannel(channel.parentId) : null;
+    const parent = parentAnswer?.ok ? discordChannelInfo(parentAnswer.value, row.guildId) : null;
+    return {
+      channel, control, hold: () => undefined, kind: discordChannelKind(channel, parent ?? undefined),
+      message: { ...decoded, guildId: row.guildId }, parent, receivedAt: row.receivedAt, source: "backfill", test: row.test
+    };
+  }
+
+  /**
+   * A question whose send was claimed but whose run was never recorded: the claimer died, or is still at it. Past the
+   * grace its run, when one can be found (the planned chat's first run, or the existing chat's running one) and no
+   * other question owns it, becomes its answer; it is never sent again.
+   */
+  async function adoptClaimed(row: DiscordReplyRecord, control: DiscordActiveControl, userId: string): Promise<boolean> {
+    const existing = await deps.conversations.findByChannel(row.channelId);
+    let chatId: string | null = null;
+    let runId: string | null = null;
+    if (row.plannedChatId && await deps.gateway.chat(userId, row.plannedChatId)) {
+      chatId = row.plannedChatId;
+      runId = await deps.facts.firstRunOfChat(chatId).catch(() => null);
+    } else if (!row.plannedChatId && existing && row.expectedLeafId) {
+      chatId = existing.chatId;
+      runId = (await deps.gateway.activeRun({ chatId, userId }).catch(() => null))?.runId ?? null;
+    }
+    if (!chatId || !runId || !await unowned(runId)) return false;
+    const context = await contextOfRow(row, control);
+    if (!context || context === "deleted") return false;
+    const question = questionOfRow(row);
+    inFlight.add(row.questionMessageId);
+    try {
+      // A conversation another question opened here since belongs to another chat: this run stays unlinked to it.
+      const placement = await place(context, question, existing && existing.chatId === chatId ? existing : null);
+      const linked = placement.conversation && placement.conversation.chatId !== chatId ? { ...placement, conversation: null, create: null } : placement;
+      question.threadId = linked.kind === "thread" || linked.kind === "forum_post" ? linked.answerChannelId : null;
+      const status = createDiscordStatusMessage({
+        answerChannelId: linked.answerChannelId, editIntervalMs: timing.statusIntervalMs, now, questionMessageId: row.questionMessageId,
+        replyTo: linked.replyTo, rest: deps.rest, startedAt: now(), typingIntervalMs: timing.typingIntervalMs,
+        onPosted: (messageId, at) => {
+          void patch(question, { firstStatusAt: new Date(at), statusMessageId: messageId });
+          stage(question, "first_status");
+        }
+      });
+      await takeOver(context, question, linked, status, { chatId, includedUpTo: row.questionMessageId, mergedIds: [], runId, userId });
+      return true;
+    } finally {
+      inFlight.delete(row.questionMessageId);
+    }
+  }
+
+  /**
+   * A claimed question without a run. One whose send was never claimed went no further than its preparation, so it
+   * is asked again from the start (its preparation may fail and be tried by the next sweep); the send claim keeps it
+   * to one send whoever else still works on it. One whose send was claimed is never sent again: its run is adopted,
+   * or it ends visibly ten minutes after the claim.
+   */
+  async function readmit(row: DiscordReplyRecord, control: DiscordActiveControl, userId: string): Promise<void> {
     if (inFlight.has(row.questionMessageId)) return;
-    if (row.readmitAt) {
-      // Asked again once already (by another process, or here before a restart): still without a run past the window,
-      // it gets its ending, never a second try.
-      if (now() - row.readmitAt.getTime() > DISCORD_STALE_MESSAGE_MS) await expire([row], "discord_reply_expired", ["claimed"]);
+    if (row.sendClaimedAt) {
+      if (now() - row.sendClaimedAt.getTime() < timing.claimGraceMs) return;
+      if (await adoptClaimed(row, control, userId)) return;
+      if (now() - row.sendClaimedAt.getTime() > DISCORD_STALE_MESSAGE_MS) await expire([row], "discord_reply_expired", ["claimed"]);
       return;
     }
     if (now() - row.receivedAt.getTime() < timing.claimGraceMs) return;
@@ -1064,31 +1124,16 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       await expire([row], "discord_reply_expired", ["claimed"]);
       return;
     }
-    // One process asks it again, once: two run side by side while an upgrade replaces the container.
-    if (!await deps.replies.claimReadmission(row.questionMessageId, new Date(now()))) return;
-    const rest = deps.rest();
-    const fetched = await rest.getChannelMessage(row.channelId, row.questionMessageId);
-    if (!fetched.ok) {
-      if (fetched.delivery === "refused" && fetched.status === 404) {
-        await patch(questionOfRow(row), { code: "discord_question_deleted", state: "interrupted" }, ["claimed"]);
-      }
+    const context = await contextOfRow(row, control);
+    if (context === "deleted") {
+      await patch(questionOfRow(row), { code: "discord_question_deleted", state: "interrupted" }, ["claimed"]);
       return;
     }
-    const decoded = decodeDiscordIntakeMessage(fetched.value);
-    const channelAnswer = await rest.getChannel(row.channelId);
-    const channel: DiscordChannelInfo | null = channelAnswer.ok ? discordChannelInfo(channelAnswer.value, row.guildId) : null;
-    if (!decoded || !channel) return;
-    const parentAnswer = channel.parentId ? await rest.getChannel(channel.parentId) : null;
-    const parent = parentAnswer?.ok ? discordChannelInfo(parentAnswer.value, row.guildId) : null;
-    const context: DiscordMessageContext = {
-      channel, control, hold: () => undefined, kind: discordChannelKind(channel, parent ?? undefined),
-      message: { ...decoded, guildId: row.guildId }, parent, receivedAt: row.receivedAt, source: "backfill", test: row.test
-    };
+    if (!context) return;
     const existing = await deps.conversations.findByChannel(row.channelId);
-    const question = questionOfRow(row);
     inFlight.add(row.questionMessageId);
     try {
-      await answerQuestion(context, question, existing, { expectedLeafId: row.expectedLeafId, plannedChatId: row.plannedChatId });
+      await answerQuestion(context, questionOfRow(row), existing);
     } finally {
       inFlight.delete(row.questionMessageId);
     }
@@ -1126,7 +1171,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       now, waitForRun
     }, { startedAt });
     for (const row of waiting) {
-      await readmit(row, control).catch((error: unknown) => logDiscordBridgeFailure({ code: "discord_recovery_failed", error, stage: "recovery" }));
+      await readmit(row, control, userId).catch((error: unknown) => logDiscordBridgeFailure({ code: "discord_recovery_failed", error, stage: "recovery" }));
     }
   }
 

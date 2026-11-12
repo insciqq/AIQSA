@@ -106,7 +106,7 @@ CREATE TABLE "DiscordReply" (
     "admittedAt" TIMESTAMP(3),
     "firstStatusAt" TIMESTAMP(3),
     "deliveredAt" TIMESTAMP(3),
-    "readmitAt" TIMESTAMP(3),
+    "sendClaimedAt" TIMESTAMP(3),
     "mcpByServer" JSONB,
     "compactions" INTEGER,
     "subagents" INTEGER,
