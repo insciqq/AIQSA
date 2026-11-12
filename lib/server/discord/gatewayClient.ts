@@ -8,10 +8,12 @@ import { discordGatewayUrl, openDiscordWebSocket, type DiscordNetwork, type Disc
  * without presence (PRD D-01). HELLO starts a jittered heartbeat; a beat
  * whose predecessor was never acknowledged is a zombie connection, closed
  * with a non-1000 code and resumed. IDENTIFY happens only when no session can
- * be resumed and only after `beforeIdentify` (the IDENTIFY budget, owned by
- * the session lifecycle) allows it; RESUME uses the session's
- * `resume_gateway_url`. Close codes 4004 and 4010–4014 stop for good with a
- * health code. Outgoing payloads stay within 4096 bytes and 100 commands a
+ * be resumed: `beforeIdentify` (Discord's remaining starts, owned by the
+ * session lifecycle) is asked before connecting, and `reserveIdentify` (the
+ * local daily budget) only once HELLO arrived, right before op 2 is sent, so a
+ * connection that never reaches HELLO and every RESUME spend nothing; RESUME
+ * uses the session's `resume_gateway_url`. Close codes 4004 and 4010–4014
+ * stop for good with a health code. Outgoing payloads stay within 4096 bytes and 100 commands a
  * minute. The token is only ever inside IDENTIFY and RESUME payloads, which
  * are never logged.
  */
@@ -48,6 +50,10 @@ export type DiscordDispatch = Readonly<{ type: string; seq: number; data: unknow
 export type DiscordIdentifyPermit =
   | Readonly<{ ok: true; url: string }>
   | Readonly<{ ok: false; code: string; retryAfterMs: number }>;
+/** The local budget's answer right before op 2: send it, or close and ask again later. */
+export type DiscordIdentifyGrant =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: string; retryAfterMs: number }>;
 export type DiscordGatewaySendResult = Readonly<{ ok: true }> | Readonly<{ ok: false; code: string }>;
 
 export type DiscordGatewayOptions = Readonly<{
@@ -57,11 +63,20 @@ export type DiscordGatewayOptions = Readonly<{
   openSocket?: DiscordWebSocketFactory;
   /** A persisted session to RESUME first. */
   session?: DiscordGatewaySession | null;
-  /** Asked before every IDENTIFY: the gateway URL, or when to ask again. */
+  /** Asked before connecting for an IDENTIFY: the gateway URL, or when to ask again. Spends no IDENTIFY. */
   beforeIdentify: () => Promise<DiscordIdentifyPermit>;
+  /**
+   * Asked after HELLO, right before op 2 is sent, and never for a RESUME; a
+   * refusal closes the connection (resumable code) and waits. Without it op 2
+   * is sent at once.
+   */
+  reserveIdentify?: () => Promise<DiscordIdentifyGrant>;
   onDispatch?: (dispatch: DiscordDispatch) => void;
-  /** READY's new session, or `null` when the session became unusable. */
-  onSession?: (session: DiscordGatewaySession | null) => void;
+  /**
+   * READY's new session, or `null` when the session became unusable; then
+   * `forgotten` is the session given up, so a store clears only that one.
+   */
+  onSession?: (session: DiscordGatewaySession | null, forgotten?: DiscordGatewaySession) => void;
   onState?: (state: DiscordGatewayState) => void;
   intents?: number;
   random?: () => number;
@@ -157,8 +172,9 @@ export function createDiscordGatewayClient(options: DiscordGatewayOptions): Disc
 
   function forgetSession(): void {
     if (!session) return;
+    const forgotten = { ...session };
     session = null;
-    options.onSession?.(null);
+    options.onSession?.(null, forgotten);
   }
 
   function schedule(delayMs: number, code?: string): void {
@@ -198,11 +214,30 @@ export function createDiscordGatewayClient(options: DiscordGatewayOptions): Disc
       logEvent("discord_gateway", { stage: "resume", outcome: "started" });
     } else {
       setState({ status: "identifying" });
-      send(DISCORD_GATEWAY_OPCODES.identify, {
-        token, intents, shard: [0, 1], properties: { os: "linux", browser: "aiqsa", device: "aiqsa" }
+      if (!options.reserveIdentify) return identify(token);
+      const mine = generation;
+      options.reserveIdentify().then((answer) => {
+        // The connection closed or was replaced while the budget was asked: nothing goes out on it.
+        if (mine !== generation || !socket || state.status === "stopped") return;
+        if (!answer.ok) {
+          dropSocket(DISCORD_GATEWAY_RECONNECT_CLOSE_CODE);
+          schedule(Math.max(DISCORD_GATEWAY_BACKOFF_MIN_MS, answer.retryAfterMs), answer.code);
+          return;
+        }
+        identify(token);
+      }, () => {
+        if (mine !== generation || state.status === "stopped") return;
+        dropSocket(DISCORD_GATEWAY_RECONNECT_CLOSE_CODE);
+        schedule(backoff(), DISCORD_GATEWAY_CODES.disconnected);
       });
-      logEvent("discord_gateway", { stage: "identify", outcome: "started" });
     }
+  }
+
+  function identify(token: string): void {
+    send(DISCORD_GATEWAY_OPCODES.identify, {
+      token, intents, shard: [0, 1], properties: { os: "linux", browser: "aiqsa", device: "aiqsa" }
+    });
+    logEvent("discord_gateway", { stage: "identify", outcome: "started" });
   }
 
   function onMessage(payload: Record<string, unknown>): void {

@@ -93,6 +93,12 @@ describe("Discord control repository (stateful)", () => {
     await repository.recordHealth({ failure: { at: new Date("2026-11-12T09:20:00.000Z"), code: "discord_disconnected", keepEarlier: true }, generation: 1 });
     read = await repository.read();
     expect(read).toMatchObject({ lastFailureAt: new Date("2026-11-12T09:10:00.000Z"), lastFailureCode: "discord_disconnected", version });
+    // A stale process giving up another session, or one of a replaced token, leaves the stored one alone.
+    await repository.forgetSession({ generation: 1, sessionId: "session-b" });
+    await repository.forgetSession({ generation: 7, sessionId: "session-a" });
+    expect((await repository.read()).session?.sessionId).toBe("session-a");
+    await repository.forgetSession({ generation: 1, sessionId: "session-a" });
+    expect(await repository.read()).toMatchObject({ session: null, version });
     // A new token starts without the old one's session and health.
     const second = await save(actor, version, "1100000000000000009");
     expect(second).toMatchObject({ kind: "ok", record: { lastFailureCode: null, session: null, tokenGeneration: 2 } });
