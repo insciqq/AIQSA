@@ -270,7 +270,7 @@ describe("Discord gateway session on the in-memory gateway", () => {
         readyState: 0,
         send() { throw new Error("not open"); },
         close() { socket.readyState = 3; },
-        addEventListener(type: string, listener: (event: never) => void) { if (type === "close") closes.push(listener); }
+        addEventListener(type: string, listener: (event: { code: number }) => void) { if (type === "close") closes.push(listener); }
       };
       queueMicrotask(() => { socket.readyState = 3; for (const listener of closes) listener({ code: 1006 }); });
       return socket as unknown as DiscordWebSocketLike;
