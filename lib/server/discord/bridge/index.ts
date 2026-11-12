@@ -42,12 +42,12 @@ import {
   createDiscordStatusMessage, discordActivityLabel, discordReact, DISCORD_REACTION_DONE, DISCORD_REACTION_FAILED, DISCORD_REACTION_SEEN,
   DISCORD_STATUS_EDIT_INTERVAL_MS, DISCORD_TYPING_INTERVAL_MS, type DiscordFinalMessage, type DiscordStatusMessage
 } from "./status";
-import { discordTrigger } from "./triggers";
+import { discordCallNameMatch, discordTrigger, type DiscordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
 
 /**
  * Discord messages become runs of the installation's service account, one
- * AIQSA chat per Discord conversation (PRD O-04…O-07, O-13…O-19, O-26, D-11,
+ * AIQSA chat per Discord conversation (PRD O-04…O-07, O-13…O-19, O-26, O-37, D-11,
  * D-13…D-22, D-25, D-26, D-28):
  *
  * - A message that asks the bot (`triggers.ts`) is claimed first: its
@@ -304,6 +304,19 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     return { botName: control.bot.username, botRoleId: control.bot.roleId, botUserId: control.bot.userId };
   }
 
+  function triggerOf(context: Pick<DiscordMessageContext, "control" | "kind" | "message">): DiscordTrigger | null {
+    const { control } = context;
+    return discordTrigger({
+      botRoleId: control.bot.roleId, botUserId: control.bot.userId, callNames: control.callNames, kind: context.kind, message: context.message
+    });
+  }
+
+  /** A question asked by a call name is read without the name and its delimiter (PRD O-37). */
+  function withoutCallName(context: DiscordMessageContext, text: string): string {
+    if (triggerOf(context) !== "call_name") return text;
+    return discordCallNameMatch(text, context.control.callNames)?.rest ?? text;
+  }
+
   function questionOf(message: DiscordIntakeMessage, input: Readonly<{ receivedAt: Date; test: boolean }>): Question {
     return {
       chatId: null,
@@ -433,7 +446,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
 
   async function threadFrom(context: DiscordMessageContext, question: Question): Promise<string | null> {
     const rest = deps.rest();
-    const named = discordThreadName(context.message.content, authorName(context.message.author));
+    const named = discordThreadName(withoutCallName(context, context.message.content), authorName(context.message.author));
     question.redactions += named.redactions;
     const started = await rest.startThreadFromMessage(context.message.channelId, context.message.id, { autoArchiveMinutes: 1440, name: named.name });
     if (started.ok) return started.value.id;
@@ -631,8 +644,9 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       return refuse(question, { code: "discord_setup_incomplete", failureKind: "setup", text: DISCORD_COPY.notSetUp });
     }
     const assistantId = control.assistantId;
-    const trigger = decodeDiscordContextMessage(message.raw, mentionNames(control));
-    if (!trigger) return refuse(question, { code: "discord_context_unavailable", failureKind: "context", text: DISCORD_COPY.contextUnavailable });
+    const decoded = decodeDiscordContextMessage(message.raw, mentionNames(control));
+    if (!decoded) return refuse(question, { code: "discord_context_unavailable", failureKind: "context", text: DISCORD_COPY.contextUnavailable });
+    const trigger: DiscordContextMessage = { ...decoded, text: withoutCallName(context, decoded.text) };
     // A channel mention opens a thread keyed by the message's own id; everything else is keyed by its channel.
     const opensThread = !existing && (context.kind === "text" || context.kind === "announcement");
     const key = existing?.discordChannelId ?? (opensThread ? message.id : message.channelId);
@@ -923,25 +937,15 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
   async function claimed(context: DiscordMessageContext): Promise<Readonly<{
     question: Question; existing: DiscordConversationRecord | null;
   }> | "ignored" | "duplicate"> {
-    const { control, message } = context;
-    const triggerOf = (botOpenedThread: boolean) => discordTrigger({
-      botOpenedThread, botRoleId: control.bot.roleId, botUserId: control.bot.userId, kind: context.kind, message
-    });
-    // Only a thread can be one AIQSA opened; elsewhere a message that asks nothing costs no read.
-    let trigger = triggerOf(false);
-    const thread = context.kind === "thread" || context.kind === "forum_post";
-    const existing = trigger || thread ? await deps.conversations.findByChannel(message.channelId) : null;
-    if (!trigger && existing?.botOpened) trigger = triggerOf(true);
+    const { message } = context;
+    // A message that asks nothing is ordinary conversation, a thread the bot opened included (PRD O-37): it costs no
+    // read and no log record, and the next turn reads it as context.
+    if (!triggerOf(context)) return "ignored";
+    const existing = await deps.conversations.findByChannel(message.channelId);
     const ids = {
       author_id: message.author.id, channel_id: message.channelId, ...(message.guildId ? { guild_id: message.guildId } : {}), message_id: message.id,
       ...(context.test ? { test: true } : {})
     };
-    if (!trigger) {
-      // Only a thread the bot opened logs a skipped message (people talking to each other there); every other channel
-      // message is ordinary conversation and would flood the logs.
-      if (existing?.botOpened) logEvent("discord_intake", { ...ids, outcome: "ignored", reason: "no_trigger" });
-      return "ignored";
-    }
     const question = questionOf(message, { receivedAt: context.receivedAt, test: context.test });
     const claim = await deps.replies.claim({
       authorName: authorName(message.author), channelId: message.channelId, conversationId: existing?.id ?? null, discordUserId: message.author.id,

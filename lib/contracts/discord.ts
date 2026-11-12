@@ -97,6 +97,8 @@ export const DISCORD_PROBLEM_KINDS = ["failed", "interrupted", "limit", "not_fou
 
 export const DISCORD_CHANNELS_MAX = 200;
 export const DISCORD_TEST_IDS_MAX = 10;
+export const DISCORD_CALL_NAMES_MAX = 10;
+export const DISCORD_CALL_NAME_MAX_LENGTH = 48;
 export const DISCORD_ACTIVITY_ROWS_MAX = 50;
 export const DISCORD_MONITORING_KEYS_MAX = 5;
 export const DISCORD_PROBLEM_ROWS_MAX = 500;
@@ -121,6 +123,16 @@ const botUsername = z.string().min(2).max(32).regex(/^[^@#:`\u0000-\u001f]+$/u);
 /** A message link: `https://discord.com/channels/<guild or @me>/<channel>/<message>`. */
 export const DISCORD_MESSAGE_LINK_PATTERN = /^https:\/\/discord\.com\/channels\/(?:[0-9]{1,20}|@me)\/[0-9]{1,20}\/[0-9]{1,20}$/u;
 const messageLink = z.string().max(120).regex(DISCORD_MESSAGE_LINK_PATTERN);
+
+/**
+ * A call name (PRD O-37): a guild message that starts with it, then a comma,
+ * colon, space or dash, addresses the bot. Trimmed, 1–48 characters, one line;
+ * a list holds at most 10 names, none twice ignoring case.
+ */
+export const discordCallNameSchema = z.string().trim().min(1).max(DISCORD_CALL_NAME_MAX_LENGTH)
+  .regex(/^[^\p{Cc}\p{Zl}\p{Zp}]+$/u);
+export const discordCallNamesSchema = z.array(discordCallNameSchema).max(DISCORD_CALL_NAMES_MAX)
+  .refine((names) => new Set(names.map((name) => name.toLowerCase())).size === names.length, "duplicate name");
 
 export const discordLimitsSchema = z.strictObject({
   perAuthorHourly: z.number().int().min(1).max(1_000),
@@ -212,6 +224,8 @@ export const discordAdminStateSchema = z.strictObject({
   /** Bot authors whose messages count as a person's, only in `testChannelIds`; their runs are marked `test`. */
   testAuthorIds: uniqueSnowflakes(DISCORD_TEST_IDS_MAX),
   testChannelIds: uniqueSnowflakes(DISCORD_TEST_IDS_MAX),
+  /** Names that address the bot in channels and threads (PRD O-37); empty: only mentions and Replies do. */
+  callNames: discordCallNamesSchema,
   serviceAccount: z.strictObject({
     status: z.enum(["missing", "active", "inactive"]),
     userId: internalId.nullable()
@@ -273,6 +287,7 @@ export const discordAdminCommandSchema = z.discriminatedUnion("action", [
     action: z.literal("set_test_access"), testAuthorIds: uniqueSnowflakes(DISCORD_TEST_IDS_MAX),
     testChannelIds: uniqueSnowflakes(DISCORD_TEST_IDS_MAX), expectedVersion
   }),
+  z.strictObject({ action: z.literal("set_call_names"), callNames: discordCallNamesSchema, expectedVersion }),
   z.strictObject({ action: z.literal("create_service_account"), expectedVersion }),
   z.strictObject({ action: z.literal("set_assistant"), assistantId: internalId, expectedVersion }),
   z.strictObject({ action: z.literal("set_limits"), limits: discordLimitsSchema, expectedVersion }),
