@@ -25,8 +25,8 @@ export function createMemoryDiscordReplyStore(): DiscordReplyStore & Readonly<{ 
         ackAt: null, admittedAt: null, answerMessageId: null, authorName: input.authorName.slice(0, 100) || "Discord user", channelId: input.channelId,
         code: null, compactions: null, conversationId: input.conversationId ?? null, deliveredAt: null, discordUserId: input.discordUserId,
         expectedLeafId: input.expectedLeafId ?? null, failureKind: null, firstStatusAt: null, guildId: input.guildId, kind: input.kind ?? "answer",
-        limitKind: null, mcpByServer: null, questionMessageId: input.questionMessageId, receivedAt: input.receivedAt, runId: null, sources: null,
-        state: "claimed", statusMessageId: null, subagents: null, test: input.test
+        limitKind: null, mcpByServer: null, plannedChatId: null, questionMessageId: input.questionMessageId, readmitAt: null, receivedAt: input.receivedAt,
+        runId: null, sources: null, state: "claimed", statusMessageId: null, subagents: null, test: input.test
       });
       return "claimed" as const;
     },
@@ -48,6 +48,12 @@ export function createMemoryDiscordReplyStore(): DiscordReplyStore & Readonly<{ 
       return [...rows.values()]
         .filter((row) => (row.state === "claimed" || row.state === "admitted") && row.receivedAt.getTime() < input.before.getTime())
         .sort((left, right) => left.receivedAt.getTime() - right.receivedAt.getTime()).slice(0, input.limit);
+    },
+    async claimReadmission(id, at) {
+      const row = rows.get(id);
+      if (!row || row.state !== "claimed" || row.runId !== null || row.readmitAt !== null) return false;
+      rows.set(id, { ...row, readmitAt: at });
+      return true;
     }
   });
 }
@@ -113,7 +119,10 @@ export function createMemoryDiscordLimitStore(replies: Readonly<{ rows: Map<stri
   });
 }
 
-export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string, DiscordReplyRecord> }>): DiscordRunFacts & Readonly<{
+export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string, DiscordReplyRecord> }>, runs: Readonly<{
+  /** The runs of the fake run gateway, oldest first. */
+  list(): readonly Readonly<{ runId: string; chatId: string }>[];
+}> = { list: () => [] }): DiscordRunFacts & Readonly<{
   summaries: Map<string, DiscordRunSummary>;
 }> {
   const summaries = new Map<string, DiscordRunSummary>();
@@ -131,6 +140,9 @@ export function createMemoryDiscordRunFacts(replies: Readonly<{ rows: Map<string
     },
     async questionsOfRun(runId) {
       return [...replies.rows.values()].filter((row) => row.runId === runId).map((row) => row.questionMessageId);
+    },
+    async firstRunOfChat(chatId) {
+      return runs.list().find((run) => run.chatId === chatId)?.runId ?? null;
     }
   });
 }

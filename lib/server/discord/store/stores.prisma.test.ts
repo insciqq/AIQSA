@@ -62,6 +62,23 @@ describe("Discord stores (stateful)", () => {
       .some((row) => row.questionMessageId === question.questionMessageId)).toBe(false);
   });
 
+  it("keeps a new chat's planned id and lets one caller claim a question's readmission, once", async () => {
+    const question = claim();
+    await replies.claim(question);
+    expect(await replies.update(question.questionMessageId, { plannedChatId: "00000000-0000-4000-8000-000000000001" }, ["claimed"])).toBe(true);
+    const at = new Date();
+    const outcomes = await Promise.all(Array.from({ length: 3 }, () => replies.claimReadmission(question.questionMessageId, at)));
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    expect(await replies.claimReadmission(question.questionMessageId, new Date())).toBe(false);
+    expect(await replies.find(question.questionMessageId)).toMatchObject({
+      plannedChatId: "00000000-0000-4000-8000-000000000001", readmitAt: at, state: "claimed"
+    });
+    const admitted = claim();
+    await replies.claim(admitted);
+    await replies.update(admitted.questionMessageId, { state: "admitted" });
+    expect(await replies.claimReadmission(admitted.questionMessageId, new Date())).toBe(false);
+  });
+
   it("keeps one conversation per Discord channel, bound to the service account's chat and gone with it", async () => {
     const { chatId, userId } = await serviceChat();
     const channelId = snowflake();

@@ -80,4 +80,10 @@ describe("Discord run facts (stateful)", () => {
     expect([...own.entries()].sort()).toEqual([[refusal.toString(), null], [status.toString(), null]].sort());
     await expect(facts.questionsOfRun(runId)).resolves.toEqual([question.toString()]);
   });
+
+  it("names a chat's first run", async () => {
+    const { chatId, runId } = await run({ status: "complete" });
+    await expect(facts.firstRunOfChat(chatId)).resolves.toBe(runId);
+    await expect(facts.firstRunOfChat(randomUUID())).resolves.toBeNull();
+  });
 });

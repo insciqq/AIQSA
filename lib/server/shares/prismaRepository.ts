@@ -10,6 +10,7 @@ import { prisma } from "../prisma";
 import { collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
 import { quietCheckOmission } from "../chats/quietScheduledChecks";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
+import { isServiceAccount } from "../auth/serviceAccounts";
 import { redactOutgoing } from "../discord/redaction";
 import type { ShareRepository } from "./handlers";
 import type { PublicShareSnapshot } from "../../domain/shareSnapshot";
@@ -19,9 +20,11 @@ function json(value: unknown): Prisma.InputJsonValue {
 }
 
 /**
- * A Discord chat's snapshot with every recognized secret replaced (PRD D-21,
- * D-22): its text came from Discord threads and an agent reading cluster
- * state, and its link is posted to Discord. Other chats' shares keep their text.
+ * A service account's chat (Discord Connect's) is shared with every recognized
+ * secret replaced, its title too (PRD D-21, D-22): its text came from Discord
+ * threads and an agent reading cluster state, and its link is posted to
+ * Discord. The decision reads the owner's kind, which every such chat has,
+ * never the optional link to a Discord conversation. People's shares keep their text.
  */
 export function redactDiscordShareSnapshot(snapshot: PublicShareSnapshot): PublicShareSnapshot {
   return {
@@ -39,7 +42,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
     createChatShare: async ({ activeLeafMessageId, chatId, shareToken, slugHash, userId }) =>
       prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
-          include: { messages: true },
+          include: { messages: true, user: { select: { kind: true } } },
           where: {
             archived: false,
             id: chatId,
@@ -99,9 +102,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
           })),
           title: chat.title
         });
-        // A chat bound to a Discord conversation is shared with its secrets redacted, its title too.
-        const discord = await tx.discordConversation.findUnique({ select: { id: true }, where: { chatId: chat.id } });
-        const snapshot = discord ? redactDiscordShareSnapshot(built) : built;
+        const snapshot = isServiceAccount(chat.user) ? redactDiscordShareSnapshot(built) : built;
 
         const share = await tx.sharedChatSnapshot.create({
           data: {
