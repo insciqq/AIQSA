@@ -10,7 +10,9 @@ import {
   measureContext,
   type ContextMeasureCalibration
 } from "./contextMeasure";
-import { IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget } from "./transcript";
+import {
+  hostedSearchNote, IMAGE_REFERENCE_NOTE, IMAGE_VIEW_NOTE, modelResponseItems, type TranscriptItem, type TranscriptOrigin, type TranscriptTarget
+} from "./transcript";
 
 const codex: TranscriptTarget = { model: "gpt-6-astra", provider: "codex-lb" };
 const deepseek: TranscriptTarget = { model: "deepseek-flash", provider: "deepseek" };
@@ -202,6 +204,22 @@ describe("items later runs read in a smaller form", () => {
     const next = conversation.items.map(recorded);
     expect(measureContext({ anchor, estimate, fixedTokens: 300, items: next, recorded, target: codex }).tokens)
       .toBe(20_000 - 10_000 + note.length);
+  });
+});
+
+describe("hosted Search records", () => {
+  it("weighs a response's record by the note every target reads in it", () => {
+    const conversation = chat();
+    conversation.user("hello");
+    conversation.respond(codex, responsesHistoryFromOutput([
+      { action: { query: "aiqsa", type: "search" }, id: "ws", status: "completed", type: "web_search_call" },
+      { content: [{ text: "Hi.", type: "output_text" }], role: "assistant", type: "message" }
+    ]), { outputTokens: 3, reasoningTokens: 0 });
+    const [, answer] = conversation.items;
+    const note = hostedSearchNote({ queries: ["aiqsa"], sources: [] });
+    expect(contextItemTokens(answer!, codex, estimate, "opaque")).toBe(3 + FRAMING.assistant_text + note.length + FRAMING.assistant_text);
+    expect(measureContext({ estimate, fixedTokens: 0, items: conversation.items, target: deepseek }).tokens)
+      .toBe(5 + FRAMING.user + "Hi.".length + FRAMING.assistant_text + note.length + FRAMING.assistant_text);
   });
 });
 
