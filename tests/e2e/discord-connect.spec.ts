@@ -131,8 +131,9 @@ test("an administrator sets the bot up in Admin → Discord: token, server, chan
   await page.getByTestId("discord-assistant-select").selectOption(assistant.id);
   await page.getByTestId("discord-save-assistant").click();
   await expect(page.getByTestId("discord-setup-summary")).toHaveText(/^Ready/u);
-  await expect(setup.locator('[data-code="discord_assistant_missing"]')).toHaveCount(0);
+  // Passed checks fold under "N checks passed"; the Assistant check is one of them now.
   await expect(page.getByTestId("discord-setup-passed")).toContainText(/checks? passed/u);
+  await expect(page.getByTestId("discord-setup-passed").locator('[data-code="discord_assistant_missing"]')).toHaveCount(1);
 
   await page.getByTestId("discord-enable").click();
   await expect(page.getByTestId("discord-disable")).toBeVisible();
