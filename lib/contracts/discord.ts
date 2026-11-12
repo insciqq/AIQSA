@@ -100,6 +100,8 @@ export const DISCORD_ACTIVITY_ROWS_MAX = 50;
 export const DISCORD_MONITORING_KEYS_MAX = 5;
 export const DISCORD_PROBLEM_ROWS_MAX = 500;
 export const DISCORD_MONITORING_WINDOW_MAX_DAYS = 31;
+/** The longest MCP server name the monitoring projection carries. */
+export const DISCORD_MCP_SERVER_LABEL_MAX = 100;
 /** Discord's own limit for guild, channel and thread names. */
 export const DISCORD_NAME_MAX_LENGTH = 100;
 export const DISCORD_LIMIT_DEFAULTS = Object.freeze({ perAuthorHourly: 20, perAuthorDaily: 100, perThreadHourly: 60, parallelThreads: 16 });
@@ -316,7 +318,12 @@ export const discordMonitoringTelemetrySchema = z.strictObject({
   ratingsUp: count,
   ratingsDown: count,
   latency: stageLatency,
-  mcpByServer: z.array(z.strictObject({ serverId: internalId, calls: count, errors: count })).max(200),
+  /**
+   * MCP calls and errors by installation server, named by the administrator's
+   * display name, never its id; a server since deleted is `other`, a personal
+   * one (a service account has none) `personal`.
+   */
+  mcpByServer: z.array(z.strictObject({ server: z.string().min(1).max(DISCORD_MCP_SERVER_LABEL_MAX), calls: count, errors: count })).max(200),
   compactions: count,
   subagents: count,
   problems: z.array(discordProblemRowSchema).max(DISCORD_PROBLEM_ROWS_MAX)

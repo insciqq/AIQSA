@@ -5,7 +5,7 @@ import { proxyWithEnv } from "../../../proxy";
 import type { AuthenticatedSession } from "../auth/requestAuth";
 import { createAdminDiscordActivityHandler, discordActivityStats, type DiscordJournalStats } from "./activity";
 import {
-  createAdminDiscordMonitoringKeyHandlers, createDiscordMonitoringHandlers, discordFailureRatio, formatDiscordMetrics,
+  createAdminDiscordMonitoringKeyHandlers, createDiscordMonitoringHandlers, discordFailureRatio, discordMcpServerLabel, formatDiscordMetrics,
   hashDiscordMonitoringSecret, matchesDiscordKeyHash, newDiscordMonitoringSecret, parseDiscordMonitoringWindow, type DiscordHourLoad,
   type DiscordMonitoringKeyStore
 } from "./monitoring";
@@ -30,7 +30,7 @@ function telemetry(window: Readonly<{ since: Date; until: Date }>): DiscordMonit
   return {
     compactions: 1, delivered: 3, failed: 1, failuresByCode: [{ code: "discord_busy", count: 1 }], generatedAt: NOW.toISOString(), interrupted: 0,
     latency: { acked: latency, admitted: latency, delivered: latency, firstStatus: latency }, limitHits: { author: 1, key: 0, thread: 0 },
-    mcpByServer: [{ calls: 4, errors: 1, serverId: "mcp_1" }], notFound: 1,
+    mcpByServer: [{ calls: 4, errors: 1, server: "Tracker" }], notFound: 1,
     problems: [{
       channelId: "1100000000000000010", chatId: "chat-1", code: "discord_busy", guildId: "1100000000000000001", kind: "failed", latencyMs: null,
       limitKind: null, messageLink: "https://discord.com/channels/1100000000000000001/1100000000000000010/1100000000000000030",
@@ -145,6 +145,15 @@ describe("Discord metrics", () => {
     expect(idle).toContain("aiqsa_discord_last_event_age_seconds NaN\n");
     expect(idle).toContain("aiqsa_discord_latency_p95_seconds_1h NaN\n");
     expect(discordFailureRatio({ failures: 0, requests: 0 })).toBe(0);
+  });
+});
+
+describe("Discord MCP server labels", () => {
+  it("show an administrator's name without control or formatting characters, bounded, and `other` for nothing", () => {
+    expect(discordMcpServerLabel("Tracker\u0007  tools\u202e")).toBe("Tracker tools");
+    expect(discordMcpServerLabel("x".repeat(150))).toBe("x".repeat(100));
+    expect(discordMcpServerLabel("\u200b ")).toBe("other");
+    expect(discordMcpServerLabel(null)).toBe("other");
   });
 });
 
