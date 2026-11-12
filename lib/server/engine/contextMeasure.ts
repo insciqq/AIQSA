@@ -2,10 +2,12 @@ import type { TokenEstimateProfile } from "../../domain/tokenEstimate";
 import type { TokenUsage } from "../../domain/usage";
 import {
   compactionSummaryText,
+  hostedSearchNote,
   IMAGE_REFERENCE_NOTE,
   replaysNativeCompaction,
   sameTranscriptOrigin,
   selectTranscript,
+  transcriptHostedSearch,
   transcriptUserText,
   type SelectedTranscriptItem,
   type TranscriptImages,
@@ -140,6 +142,9 @@ export function contextItemTokens(
   images?: TranscriptImages
 ): number {
   const framing = calibration.framing;
+  // A hosted Search record replays as the server's note in its response, which every target reads as model text.
+  const search = transcriptHostedSearch(item);
+  const note = search ? estimate(hostedSearchNote(search)) + framing.assistant_text : 0;
   if (item.kind === "tool_result" && (item.image || images?.attached(item))) {
     const attached = images?.attached(item);
     return estimate(item.name) + estimate(item.output) + framing.tool_result +
@@ -150,12 +155,12 @@ export function contextItemTokens(
       return estimate(transcriptUserText(item)) + framing.user;
     case "assistant_text":
       return (sameTranscriptOrigin(item.origin, target) && item.outputTokens !== undefined
-        ? item.outputTokens : estimate(item.text)) + framing.assistant_text;
+        ? item.outputTokens : estimate(item.text)) + framing.assistant_text + note;
     case "reasoning":
       return reasoning === "reported" ? item.outputTokens ?? 0 : 0;
     case "tool_call":
       return (calibration.replayedCalls === "reported_output" && sameTranscriptOrigin(item.origin, target) &&
-        item.outputTokens !== undefined ? item.outputTokens : estimate(item.name) + estimate(item.arguments)) + framing.tool_call;
+        item.outputTokens !== undefined ? item.outputTokens : estimate(item.name) + estimate(item.arguments)) + framing.tool_call + note;
     case "tool_result":
       return estimate(item.name) + estimate(item.output) + framing.tool_result;
     case "compaction":

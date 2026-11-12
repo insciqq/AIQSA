@@ -1,4 +1,4 @@
-import type { SelectedTranscriptItem } from "../transcript";
+import { hostedSearchNote, type SelectedTranscriptItem } from "../transcript";
 import { itemRules, type CompactionItemRules } from "./items";
 import { defaultResultHandle, resultLength, type CompactionResultHandle } from "./retained";
 
@@ -145,11 +145,14 @@ export function serializeEntries(entries: readonly SelectedTranscriptItem[], opt
         parts.push(`[User${item.followup ? ", follow-up during the work" : ""}]\n${excerptText(item.text, options.userChars)}`);
         break;
       case "assistant_text":
+        // A response's hosted Search goes before the item carrying it, as replay puts it.
+        if (item.hostedSearch) parts.push(hostedSearchNote(item.hostedSearch));
         parts.push(`[Assistant]\n${excerptText(item.text, options.assistantChars)}`);
         break;
       case "tool_call": {
         const number = numbers.get(item.callId) ?? numbers.size + 1;
         numbers.set(item.callId, number);
+        if (item.hostedSearch) parts.push(hostedSearchNote(item.hostedSearch));
         parts.push(`[Tool call #${number} ${item.name}]\n${excerptText(item.arguments, options.argumentChars)}`);
         break;
       }

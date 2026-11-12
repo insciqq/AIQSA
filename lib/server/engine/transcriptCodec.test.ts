@@ -26,6 +26,10 @@ const items: TranscriptItem[] = [
     provider: "connection-2" } },
   { arguments: "{\"order_id\":\"A-17\"}", callId: "call_1", id: "c1", kind: "tool_call", name: "lookup_order",
     native: { fields: { id: "fc_1" }, format: "openai_responses" }, origin },
+  // What the response's hosted Search did, on its first text or call.
+  { hostedSearch: { queries: ["aiqsa release notes"], sources: [{ title: "Notes", url: "https://cited.example/notes" },
+    { url: "https://found.example/" }] }, id: "a4", kind: "assistant_text", origin, text: "It shipped." },
+  { arguments: "{}", callId: "call_5", hostedSearch: { queries: [], sources: [] }, id: "c2", kind: "tool_call", name: "lookup_order", origin },
   { callId: "call_1", handle: "tor1_0123456789abcdef0123456789abcdef", id: "t1", kind: "tool_result", name: "lookup_order",
     outcome: "complete", output: "{\"status\":\"shipped\"}" },
   { callId: "call_2", id: "t2", kind: "tool_result", name: "lookup_order", outcome: "unknown", output: "No result." },
@@ -84,9 +88,27 @@ describe("transcript codec", () => {
         kind: "assistant_text" },
       { body: { origin, requestAnchor: { attachmentIds: [""], baseId: null, fixedTokens: 1, inputTokens: 1 }, text: "x" }, callId: null,
         id: "x", kind: "assistant_text" },
-      { body: [], callId: null, id: "x", kind: "user" }
+      { body: [], callId: null, id: "x", kind: "user" },
+      // A hosted Search record within its bounds only.
+      { body: { hostedSearch: { queries: ["q"] }, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
+      { body: { hostedSearch: { queries: [7], sources: [] }, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
+      { body: { hostedSearch: { queries: Array.from({ length: 7 }, () => "q"), sources: [] }, text: "x" }, callId: null, id: "x",
+        kind: "assistant_text" },
+      { body: { hostedSearch: { queries: [], sources: [{ title: "t" }] }, text: "x" }, callId: null, id: "x", kind: "assistant_text" },
+      { body: { arguments: "{}", hostedSearch: { queries: [], sources: [{ title: "", url: "https://a.example/" }] }, name: "lookup" },
+        callId: "call_1", id: "x", kind: "tool_call" },
+      { body: { arguments: "{}", hostedSearch: { queries: ["x".repeat(161)], sources: [] }, name: "lookup" }, callId: "call_1", id: "x",
+        kind: "tool_call" }
     ];
     for (const row of invalid) expect(() => decodeTranscriptItem(row)).toThrow(TranscriptItemInvalidError);
+  });
+
+  it("keeps a hosted Search record as one more body field, which an older row lacks", () => {
+    expect(decodeTranscriptItem({ body: { origin, text: "x" }, callId: null, id: "a", kind: "assistant_text" })).not.toHaveProperty("hostedSearch");
+    // No new kind: a release before the record builds the item from the fields it knows and leaves this one unread.
+    const row = encodeTranscriptItem({ hostedSearch: { queries: ["q"], sources: [] }, id: "a", kind: "assistant_text", origin, text: "x" });
+    expect(row.kind).toBe("assistant_text");
+    expect(Object.keys(row.body).sort()).toEqual(["hostedSearch", "origin", "text"]);
   });
 
   it("refuses an item too large to store", () => {
