@@ -73,13 +73,16 @@ export function normalizeImageModelConfiguration(value: unknown): ImageModelConf
 export function imageParameterDefinitions(image: ImageModelConfiguration, modelId: string): ImageParameterDefinitions {
   if (image.profile === "openrouter") return image.parameters ?? {};
   if (image.profile === "gemini") {
-    const modern = modelId.startsWith("gemini-3");
+    // https://ai.google.dev/gemini-api/docs/image-generation (Nano Banana 2.1 checked 2026-11-13)
+    const nanoBanana = modelId.startsWith("gemini-nano-banana-2.1");
+    const modern = modelId.startsWith("gemini-3") || nanoBanana;
     const flashLite = modelId.startsWith("gemini-3.1-flash-lite-image");
     return {
       aspect_ratio: enumeration("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"),
       ...(modern ? { image_size: flashLite ? enumeration("1K") : enumeration("1K", "2K", "4K") } : {}),
       mime_type: enumeration("image/jpeg"),
-      ...(flashLite || modelId.includes("3.1-flash-image") ? { thinking_level: enumeration("minimal", "high") } : {})
+      ...(nanoBanana ? { thinking_level: enumeration("minimal", "medium", "high") }
+        : flashLite || modelId.includes("3.1-flash-image") ? { thinking_level: enumeration("minimal", "high") } : {})
     };
   }
   const secondGeneration = modelId.startsWith("gpt-image-2");

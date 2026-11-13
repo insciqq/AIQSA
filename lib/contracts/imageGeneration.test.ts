@@ -23,6 +23,10 @@ describe("image model controls", () => {
         expect(normalizeImageGenerationParameters({ image_size }, image, id)).toEqual({ image_size });
       }
     }
+    expect(normalizeImageGenerationParameters({ image_size: "4K", thinking_level: "medium" }, image, "gemini-nano-banana-2.1"))
+      .toEqual({ image_size: "4K", thinking_level: "medium" });
+    expect(() => normalizeImageGenerationParameters({ thinking_level: "medium" }, image, "gemini-3.1-flash-image"))
+      .toThrow("image_parameters_invalid");
     expect(imageParameterDefinitions(image, "gemini-2.5-flash-image")).not.toHaveProperty("image_size");
     expect(imageParameterDefinitions(image, "gemini-2.5-flash-image")).not.toHaveProperty("thinking_level");
   });
