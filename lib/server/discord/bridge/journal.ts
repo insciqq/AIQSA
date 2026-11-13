@@ -60,13 +60,21 @@ export type DiscordRunTotals = Readonly<{
   sources: number;
 }>;
 
-/** A delivered run's totals: one record per MCP server, then one with the run's own counts (0 sources is "not found"). */
-export function logDiscordRunSummary(ids: DiscordEventIds, totals: DiscordRunTotals): void {
+/**
+ * "Not found" for one run's totals, the rule `discordNotFoundSql` (`../activity.ts`) reads from the journal: no source
+ * cited and no MCP server with more calls than errors, since answers built from MCP results cite nothing.
+ */
+export function discordFoundNothing(totals: Pick<DiscordRunTotals, "mcpByServer" | "sources">): boolean {
+  return totals.sources === 0 && !Object.values(totals.mcpByServer).some((counts) => counts.calls > counts.errors);
+}
+
+/** A settled run's totals: one record per MCP server, then one with the run's own counts ("not found" only when delivered). */
+export function logDiscordRunSummary(ids: DiscordEventIds, totals: DiscordRunTotals, delivered: boolean): void {
   for (const [serverId, counts] of Object.entries(totals.mcpByServer).slice(0, 50)) {
     logEvent("discord_run_summary", { ...ids, mcp_calls: counts.calls, mcp_errors: counts.errors, mcp_server: serverId });
   }
   logEvent("discord_run_summary", {
-    ...ids, compactions: totals.compactions, not_found: totals.sources === 0, sources: totals.sources, subagents: totals.subagents
+    ...ids, compactions: totals.compactions, not_found: delivered && discordFoundNothing(totals), sources: totals.sources, subagents: totals.subagents
   });
 }
 
