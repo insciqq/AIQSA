@@ -8,8 +8,8 @@ import {
 import type { RequestAuthResolver } from "../auth/requestAuth";
 import { retainDatabaseFailure } from "../observability/databaseFailure";
 import {
-  DISCORD_FAILURE_SQL, discordPrivateJson, discordReadFailed, readDiscordJournalStats, requireDiscordAdmin, type DiscordJournalDb,
-  type DiscordJournalWindow
+  DISCORD_FAILURE_SQL, discordMcpCountSql, discordNotFoundSql, discordPrivateJson, discordReadFailed, readDiscordJournalStats,
+  requireDiscordAdmin, type DiscordJournalDb, type DiscordJournalWindow
 } from "./activity";
 
 /**
@@ -138,7 +138,7 @@ export function createPrismaDiscordMonitoringKeyStore(prisma: Pick<PrismaClient,
 
 type ProblemQueryRow = {
   questionMessageId: string; receivedAt: Date; guildId: string | null; channelId: string; chatId: string | null; code: string | null;
-  limitKind: string | null; state: string; sources: number | null; test: boolean; latencyMs: number | null; ratedDown: boolean;
+  limitKind: string | null; state: string; notFound: boolean; test: boolean; latencyMs: number | null; ratedDown: boolean;
 };
 
 function problemKind(row: ProblemQueryRow, slowMs: number | null): DiscordProblemRow["kind"] | null {
@@ -146,7 +146,7 @@ function problemKind(row: ProblemQueryRow, slowMs: number | null): DiscordProble
   if (row.state === "failed" || row.state === "unknown") return "failed";
   if (row.state === "interrupted") return "interrupted";
   if (row.ratedDown) return "rated_down";
-  if (row.state === "delivered" && row.sources === 0) return "not_found";
+  if (row.notFound) return "not_found";
   if (slowMs !== null && row.latencyMs !== null && row.latencyMs > slowMs) return "slow";
   return null;
 }
@@ -157,7 +157,7 @@ function limitKindOf(value: string | null): DiscordProblemRow["limitKind"] {
 
 /**
  * Problem rows of a window, newest first: failures, interruptions, limit hits,
- * 👎, answers that cited nothing, and deliveries slower than `slowMs` (the
+ * 👎, answers that found nothing, and deliveries slower than `slowMs` (the
  * window's p95). Each row is listed once, under its most telling kind; test
  * rows are included and labelled.
  */
@@ -166,19 +166,19 @@ export async function readDiscordProblemRows(db: Pick<PrismaClient, "$queryRaw">
   const delivered = Prisma.sql`GREATEST(0, EXTRACT(EPOCH FROM (q."deliveredAt" - q."receivedAt")) * 1000)`;
   const ratedDown = Prisma.sql`EXISTS (SELECT 1 FROM "DiscordAnswerRating" r WHERE r."replyId" = q."questionMessageId" AND r."value" = -1)`;
   const slow = slowMs === null ? Prisma.empty : Prisma.sql`OR (q."deliveredAt" IS NOT NULL AND ${delivered} > ${slowMs}::float8)`;
+  const notFound = discordNotFoundSql("q");
   const rows = await db.$queryRaw<ProblemQueryRow[]>(Prisma.sql`
     SELECT
       q."questionMessageId"::text AS "questionMessageId", q."receivedAt", q."guildId"::text AS "guildId", q."channelId"::text AS "channelId",
-      coalesce(c."chatId", m."chatId") AS "chatId", q."code", q."limitKind"::text AS "limitKind", q."state"::text AS "state", q."sources",
-      q."test",
+      coalesce(c."chatId", m."chatId") AS "chatId", q."code", q."limitKind"::text AS "limitKind", q."state"::text AS "state",
+      ${notFound} AS "notFound", q."test",
       CASE WHEN q."deliveredAt" IS NULL THEN NULL ELSE ${delivered}::float8 END AS "latencyMs",
       ${ratedDown} AS "ratedDown"
     FROM "DiscordReply" q
     LEFT JOIN "DiscordConversation" c ON c."id" = q."conversationId"
     LEFT JOIN "ModelRun" m ON m."id" = q."runId"
     WHERE q."receivedAt" >= ${window.since} AND q."receivedAt" < ${window.until}
-      AND (q."state" IN ('failed', 'unknown', 'interrupted') OR q."limitKind" IS NOT NULL OR (q."state" = 'delivered' AND q."sources" = 0)
-        OR ${ratedDown} ${slow})
+      AND (q."state" IN ('failed', 'unknown', 'interrupted') OR q."limitKind" IS NOT NULL OR ${notFound} OR ${ratedDown} ${slow})
     ORDER BY q."receivedAt" DESC, q."questionMessageId" DESC
     LIMIT ${Math.max(1, Math.min(limit, DISCORD_PROBLEM_ROWS_MAX))}`).catch(retainDatabaseFailure);
   return rows.flatMap((row) => {
@@ -215,8 +215,7 @@ export function discordMcpServerLabel(name: string | null): string {
  * personal server's under `personal`, so no id leaves the installation.
  */
 export async function readDiscordMcpTotals(db: Pick<PrismaClient, "$queryRaw">, window: DiscordJournalWindow): Promise<DiscordMonitoringTelemetry["mcpByServer"]> {
-  const number = (field: "calls" | "errors") => Prisma.raw(
-    `CASE WHEN jsonb_typeof(e."value" -> '${field}') = 'number' THEN (e."value" ->> '${field}')::numeric ELSE 0 END`);
+  const number = (field: "calls" | "errors") => discordMcpCountSql("e", field);
   const rows = await db.$queryRaw<Array<{ kind: "installation" | "personal" | "other"; name: string | null; calls: number; errors: number }>>(Prisma.sql`
     SELECT
       CASE WHEN s."id" IS NULL THEN 'other' WHEN s."ownerUserId" IS NOT NULL THEN 'personal' ELSE 'installation' END AS "kind",
