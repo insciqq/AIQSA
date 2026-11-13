@@ -502,4 +502,31 @@ describe("native model call", () => {
     await callModel(ports(provider), request);
     expect(keys).toEqual([undefined]);
   });
+
+  it("sends a request again on a new key when the gateway's connection expired, as an HTTP 400 or a failed response", async () => {
+    const expired = (body: Record<string, unknown>) => providerResponseFailure("provider_response_failed",
+      { error: { code: "websocket_connection_limit_reached", message: "connection limit reached", type: "invalid_request_error" }, ...body });
+    // Codex LB answers the request on an expired connection with HTTP 400 (the transport keeps the status) or a failed response.
+    for (const fail of [Object.assign(expired({}), { status: 400 }), markProviderStreamDrop(expired({ status: "failed" }), "response_failed")]) {
+      const keys: (string | undefined)[] = [];
+      const provider = adapter([{ fail }, { text: "Checked" }]);
+      const stream = provider.stream.bind(provider);
+      provider.stream = (value, options) => {
+        keys.push(options?.routingKey);
+        return stream(value, options);
+      };
+      const routing = gatewayRoutingLane({ chatId: "chat-connection-expired", name: "loop" },
+        { env: { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: Buffer.alloc(32, 7).toString("base64") } });
+      await expect(callModel(ports(provider, { routing }), request)).resolves.toMatchObject({ finalText: "Checked" });
+      expect(provider.calls).toBe(2);
+      expect(keys[1]).not.toBe(keys[0]);
+      expect(modelCallRetryDecision(fail, new AbortController().signal)).toEqual({ retryAfterMs: null });
+    }
+    // Any other rejection with that type is still the request's own.
+    const rejected = Object.assign(providerResponseFailure("provider_response_failed",
+      { error: { code: "invalid_request_error", message: "bad input", type: "invalid_request_error" } }), { status: 400 });
+    const provider = adapter([{ fail: rejected }, { text: "never" }]);
+    await expect(callModel(ports(provider), request)).rejects.toBe(rejected);
+    expect(provider.calls).toBe(1);
+  });
 });

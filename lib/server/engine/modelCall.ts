@@ -13,7 +13,7 @@ import {
   sleepWithSignal,
   type ProviderRetryBackoff
 } from "../providers/providerRetry";
-import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import { isProviderConnectionExpired, PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import { providerStreamProgress } from "../providers/streamProgress";
 import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -103,14 +103,18 @@ function ownNumber(error: unknown, key: string): number | null {
  * Whether a failed model request may be sent again, with the provider's Retry-After. A stream silent past its idle
  * timeout is sent again like a dropped one. A request deadline is sent again only when it passed before the response
  * started (no headers, or no first event, within the response timeout: a stuck upstream, decision 2026-11-11); one
- * that passed while events flowed is the stream's ceiling, which another attempt would only meet again.
+ * that passed while events flowed is the stream's ceiling, which another attempt would only meet again. A gateway
+ * connection that expired (`isProviderConnectionExpired`) is sent again whatever its status: the attempt sent again
+ * carries a new routing key and so a new connection.
  */
 export function modelCallRetryDecision(error: unknown, signal: AbortSignal): Readonly<{ retryAfterMs: number | null }> | null {
   if (signal.aborted) return null;
   if (isProviderDeadlineExceededError(error)) return providerStreamProgress(error)?.response_started === false ? { retryAfterMs: null } : null;
   const failure = observedFailure(error);
   if (DETERMINISTIC_CODES.has(failure.code)) return null;
-  if (failure.stream_drop !== undefined || error instanceof ProviderStreamIdleTimeoutError) return { retryAfterMs: null };
+  if (failure.stream_drop !== undefined || error instanceof ProviderStreamIdleTimeoutError || isProviderConnectionExpired(error)) {
+    return { retryAfterMs: null };
+  }
   if (isRetryableProviderNetworkError(error) || failure.reason === "network") return { retryAfterMs: null };
   if (failure.httpStatus !== undefined && isRetryableProviderHttpStatus(failure.httpStatus)) {
     return { retryAfterMs: ownNumber(error, "retryAfterMs") };
