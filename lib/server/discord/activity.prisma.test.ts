@@ -152,18 +152,17 @@ describe("Discord journal reads (stateful)", () => {
       // Only failed calls, or none: nothing found.
       reply({ mcpByServer: { a: { calls: 1, errors: 1 }, b: { calls: 0, errors: 0 } }, seconds: 20, sources: 0 }),
       reply({ seconds: 30, sources: 0 }),
-      // Not an object, or counts that are not numbers: no call counts.
-      reply({ mcpByServer: [], seconds: 40, sources: 0 }),
-      reply({ mcpByServer: { a: { calls: "2", errors: 0 } }, seconds: 50, sources: 0 }),
-      reply({ seconds: 60, sources: 1 }),
-      reply({ code: "discord_busy", kind: "refused", seconds: 70, sources: 0, state: "failed" })
+      // A count that is not a number counts as no call.
+      reply({ mcpByServer: { a: { calls: "2", errors: 0 } }, seconds: 40, sources: 0 }),
+      reply({ seconds: 50, sources: 1 }),
+      reply({ code: "discord_busy", kind: "refused", seconds: 60, sources: 0, state: "failed" })
     ];
     await prisma.discordReply.createMany({ data: rows });
     const id = (index: number) => rows[index]!.questionMessageId.toString();
-    expect((await readDiscordJournalStats(prisma, WINDOW)).notFound).toBe(4);
+    expect((await readDiscordJournalStats(prisma, WINDOW)).notFound).toBe(3);
     const problems = await readDiscordProblemRows(prisma, WINDOW, null);
     expect(problems.map((problem) => [problem.questionMessageId, problem.kind])).toEqual([
-      [id(6), "failed"], [id(4), "not_found"], [id(3), "not_found"], [id(2), "not_found"], [id(1), "not_found"]
+      [id(5), "failed"], [id(3), "not_found"], [id(2), "not_found"], [id(1), "not_found"]
     ]);
   });
 

@@ -66,11 +66,10 @@ export function discordMcpCountSql(entry: string, field: "calls" | "errors"): Pr
  * too; `discordFoundNothing` is the same rule for one run's totals.
  */
 export function discordNotFoundSql(table: string): Prisma.Sql {
+  // `DiscordReply_totals_check` keeps `mcpByServer` NULL (no rows) or an object.
   const column = (name: string) => Prisma.raw(`${table}."${name}"`);
-  const servers = column("mcpByServer");
   return Prisma.sql`(${column("state")} = 'delivered' AND ${column("sources")} = 0 AND NOT EXISTS (
-    SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof(${servers}) = 'object' THEN ${servers} ELSE '{}'::jsonb END) e
-    WHERE ${discordMcpCountSql("e", "calls")} > ${discordMcpCountSql("e", "errors")}))`;
+    SELECT 1 FROM jsonb_each(${column("mcpByServer")}) e WHERE ${discordMcpCountSql("e", "calls")} > ${discordMcpCountSql("e", "errors")}))`;
 }
 
 type StatsRow = {
