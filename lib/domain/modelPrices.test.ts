@@ -29,6 +29,19 @@ describe("catalog token tariffs", () => {
     ] as const) for (const key of keys) expect(tariff(key), key).toEqual(expected);
   });
 
+  it("prices Gemini 4 Carbon at its list price and Hydrogen directly and through OpenRouter", () => {
+    const tariff = (key: string) => {
+      const { inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion,
+        cacheWriteInputTokenPriceUsdPerMillion, outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand } = catalogModelTokenPricing(key);
+      return [inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion, cacheWriteInputTokenPriceUsdPerMillion,
+        outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand];
+    };
+    expect(tariff("gemini:gemini-4-carbon")).toEqual([4, 0.2, null, 20, 14]);
+    expect(tariff("gemini:gemini-4-hydrogen")).toEqual([1.5, 0.075, null, 7.5, 14]);
+    expect(tariff("openrouter:google/gemini-4-carbon")).toEqual([4, 0.2, null, 20, null]);
+    expect(tariff("openrouter:google/gemini-4-hydrogen")).toEqual([1.5, 0.075, null, 7.5, null]);
+  });
+
   it("carries OpenRouter's published default DeepSeek tariffs and keeps codex-lb out of the key space", () => {
     expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4-pro-0813")).toEqual({ inputTokenPriceUsdPerMillion: 0.66,
       cachedInputTokenPriceUsdPerMillion: 0.022, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 1.98,

@@ -284,7 +284,9 @@ describe("catalog capability matrix", () => {
 
     const geminiModels = defaultProviderModels.filter(({ provider }) => provider === "gemini");
     expect(geminiModels.map(({ modelId }) => modelId)).toEqual([
+      "gemini-4-carbon",
       "gemini-4-argon",
+      "gemini-4-hydrogen",
       "gemini-3.8-flash",
       "gemini-3.6-flash",
       "gemini-3.5-flash",
@@ -565,13 +567,26 @@ describe("catalog capability matrix", () => {
     expect(buildCatalogModel(flash!, defaultSearchStrategies).capabilities.background).toBe(false);
   });
 
-  it.each(["gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-4-argon", "google/gemini-4-argon"])(
+  it.each(["gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-4-argon", "google/gemini-4-argon",
+    "gemini-4-carbon", "google/gemini-4-carbon"])(
     "offers only the supported thinking levels for %s while retaining medium by default", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       expect(model.parameterControls.reasoningEffort).toEqual({
         defaultValue: "medium", options: ["low", "medium", "high"], supported: true
       });
       expect(model.defaultParams.reasoning).toMatchObject({ effort: "medium" });
+    }
+  );
+
+  it.each(["gemini-4-hydrogen", "google/gemini-4-hydrogen"])(
+    "offers Gemini 4 Hydrogen its xhigh level, never minimal, and keeps medium by default for %s", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      expect(model.parameterControls.reasoningEffort).toEqual({
+        defaultValue: "medium", options: ["low", "medium", "high", "xhigh"], supported: true
+      });
+      expect(model.defaultParams.reasoning).toMatchObject({ effort: "medium" });
+      expect(model.parameterControls.maxOutputTokens.maxValue).toBe(65_536);
+      expect(model.contextWindow).toBe(1_000_000);
     }
   );
 

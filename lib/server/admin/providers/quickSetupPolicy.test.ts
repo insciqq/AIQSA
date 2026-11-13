@@ -7,7 +7,7 @@ import {
 
 describe("provider Quick setup policy", () => {
   it("keeps the current-model candidates, defaults, and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(11);
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(12);
     expect(adminProviderQuickSetupPolicy("openai").connection.configuration.responseTimeoutMs)
       .toBe(300_000);
     const definitions = (provider: Parameters<typeof adminProviderQuickSetupPolicy>[0]) =>
@@ -38,7 +38,9 @@ describe("provider Quick setup policy", () => {
     ]);
     expect(definitions("gemini")).toEqual([
       { id: "p2-g1", recommended: true, templateKey: "gemini:gemini-3.8-flash" },
+      { id: "p12-g7", recommended: false, templateKey: "gemini:gemini-4-carbon" },
       { id: "p10-g6", recommended: false, templateKey: "gemini:gemini-4-argon" },
+      { id: "p12-g8", recommended: false, templateKey: "gemini:gemini-4-hydrogen" },
       { id: "p2-g3", recommended: false, templateKey: "gemini:gemini-3.5-flash-lite" },
       { id: "p7-g5", legacy: true, recommended: false, templateKey: "gemini:gemini-3.6-flash" },
       { id: "p2-g2", legacy: true, recommended: false, templateKey: "gemini:gemini-3.5-flash" },
@@ -50,7 +52,9 @@ describe("provider Quick setup policy", () => {
       { id: "p10-r13", recommended: false, templateKey: "openrouter:anthropic/claude-haiku-5.5" },
       { id: "p10-r14", recommended: false, templateKey: "openrouter:openai/gpt-6.1-sol" },
       { id: "p10-r15", recommended: false, templateKey: "openrouter:openai/gpt-6.1-sol-pro" },
+      { id: "p12-r18", recommended: false, templateKey: "openrouter:google/gemini-4-carbon" },
       { id: "p10-r16", recommended: false, templateKey: "openrouter:google/gemini-4-argon" },
+      { id: "p12-r19", recommended: false, templateKey: "openrouter:google/gemini-4-hydrogen" },
       { id: "p9-r8", recommended: false, templateKey: "openrouter:openai/gpt-6-sol" },
       { id: "p9-r9", recommended: false, templateKey: "openrouter:openai/gpt-6-luna" },
       { id: "p9-r10", recommended: false, templateKey: "openrouter:openai/gpt-6-sol-pro" },
@@ -108,7 +112,7 @@ describe("provider Quick setup policy", () => {
       modelIds: ["gpt-5.6-terra", "gpt-6-sol"], policy: openai
     })).toMatchObject({ candidate: { candidateId: "p9-o6" }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({
-      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 11 }
+      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 12 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["anthropic/claude-opus-5", "google/gemini-3.8-flash"], policy: adminProviderQuickSetupPolicy("openrouter")
@@ -120,9 +124,9 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter }))
       .toMatchObject({ candidate: { candidateId: "p11-r17", configuration: { upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" } }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
-      selectedModel: { candidateId: "p11-r17", policyVersion: 11 } })).toMatchObject({ candidate: { candidateId: "p11-r17" }, kind: "selected" });
+      selectedModel: { candidateId: "p11-r17", policyVersion: 12 } })).toMatchObject({ candidate: { candidateId: "p11-r17" }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
-      selectedModel: { candidateId: "p8-r6", policyVersion: 11 } })).toEqual({ kind: "selection_invalid" });
+      selectedModel: { candidateId: "p8-r6", policyVersion: 12 } })).toEqual({ kind: "selection_invalid" });
   });
 
   it("requires an exact policy-owned selected candidate observed by the repeated check", () => {
@@ -130,12 +134,12 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.8-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 11 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 12 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 11 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 12 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["openai/gpt-6-sol"],

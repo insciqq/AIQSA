@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 11;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 12;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -116,9 +116,19 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "gemini:gemini-3.8-flash"
     }),
     Object.freeze({
+      candidateId: "p12-g7",
+      recommended: false,
+      templateKey: "gemini:gemini-4-carbon"
+    }),
+    Object.freeze({
       candidateId: "p10-g6",
       recommended: false,
       templateKey: "gemini:gemini-4-argon"
+    }),
+    Object.freeze({
+      candidateId: "p12-g8",
+      recommended: false,
+      templateKey: "gemini:gemini-4-hydrogen"
     }),
     Object.freeze({
       candidateId: "p2-g3",
@@ -217,9 +227,19 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "openrouter:openai/gpt-6.1-sol-pro"
     }),
     Object.freeze({
+      candidateId: "p12-r18",
+      recommended: false,
+      templateKey: "openrouter:google/gemini-4-carbon"
+    }),
+    Object.freeze({
       candidateId: "p10-r16",
       recommended: false,
       templateKey: "openrouter:google/gemini-4-argon"
+    }),
+    Object.freeze({
+      candidateId: "p12-r19",
+      recommended: false,
+      templateKey: "openrouter:google/gemini-4-hydrogen"
     }),
     Object.freeze({
       candidateId: "p9-r8",

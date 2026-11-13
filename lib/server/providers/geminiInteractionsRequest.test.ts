@@ -560,10 +560,23 @@ describe("Gemini Interactions thinking level admission", () => {
     ["gemini-3.8-flash", "low"],
     ["gemini-3.8-flash", "high"],
     ["gemini-3.6-flash", "minimal"],
-    ["gemini-3.1-pro-preview", "low"]
+    ["gemini-3.1-pro-preview", "low"],
+    ["gemini-4-carbon", "high"],
+    ["gemini-4-hydrogen", "xhigh"]
   ])("sends the supported %s level %s unchanged", (modelId, effort) => {
     expect(buildGeminiInteractionsRequest(withEffort(modelId, effort)).generation_config.thinking_level)
       .toBe(effort);
+  });
+
+  it.each([
+    ["gemini-4-hydrogen", "minimal"],
+    ["gemini-4-carbon", "minimal"],
+    ["gemini-4-carbon", "xhigh"],
+    ["gemini-4-argon", "xhigh"],
+    ["gemini-3.8-flash", "xhigh"]
+  ])("refuses %s level %s before dispatch", (modelId, effort) => {
+    expect(() => buildGeminiInteractionsRequest(withEffort(modelId, effort)))
+      .toThrow("gemini_interactions_reasoning_effort_unsupported");
   });
 
   it("uses saved capability levels for a model without a catalog template", () => {

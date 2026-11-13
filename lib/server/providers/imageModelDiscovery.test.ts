@@ -16,6 +16,12 @@ describe("image discovery", () => {
     } } });
     expect(models[0]!.image.parameters).not.toHaveProperty("url");
   });
+  it("recognizes native Gemini image models, Nano Banana 2.1 included, and leaves answer models out", () => {
+    expect(imageModelsFromCatalog({ models: [
+      { name: "models/gemini-nano-banana-2.1", displayName: "Nano Banana 2.1" }, { name: "models/gemini-3.1-flash-image" },
+      { name: "models/gemini-4-hydrogen" }, { name: "models/gemini-3.8-flash-tts" }
+    ] }, "gemini").map(({ id }) => id)).toEqual(["gemini-nano-banana-2.1", "gemini-3.1-flash-image"]);
+  });
   it("offers explicitly unverified gateway candidates only for an unambiguous codex-lb catalog", () => {
     expect(imageModelsFromCatalog({ data: [{ id: "chat", owned_by: "codex-lb" }] }, "openai_compatible"))
       .toContainEqual(expect.objectContaining({ id: "gpt-image-2", source: "preset", image: { profile: "codex_lb" } }));

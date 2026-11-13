@@ -160,14 +160,14 @@ describe("image adapters", () => {
     expect(Buffer.from(await (form.get("image[]") as Blob).arrayBuffer())).toEqual(png);
     expect(init!.headers).not.toHaveProperty("content-type");
   });
-  it.each(["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"])(
+  it.each(["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "gemini-3-pro-image", "gemini-2.5-flash-image"])(
     "sends %s controls and omits thought images from the output", async (upstreamModelId) => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ status: "completed", steps: [
       { type: "thought", content: [{ type: "image", data: "private-draft" }] },
       { type: "model_output", content: [{ type: "image", data: png.toString("base64"), mime_type: "image/png" }] }
     ] }));
-    const modern = upstreamModelId.startsWith("gemini-3");
-    const thinking = upstreamModelId.startsWith("gemini-3.1-");
+    const modern = upstreamModelId.startsWith("gemini-3") || upstreamModelId.startsWith("gemini-nano-banana-");
+    const thinking = upstreamModelId.startsWith("gemini-3.1-") || upstreamModelId.startsWith("gemini-nano-banana-");
     const result = await createImageGenerationAdapter({ connection, model: { ...model("gemini"), upstreamModelId }, secret: "fixture-secret", fetchFn }).generate({ prompt: "Add a circle", images: [{ bytes: png, mimeType: "image/png" }], parameters: {
       ...(modern ? { image_size: "1K" } : {}), ...(thinking ? { thinking_level: "minimal" } : {})
     } });
