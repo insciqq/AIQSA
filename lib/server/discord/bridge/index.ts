@@ -942,7 +942,7 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
       input.run.outcome = outcome;
     }
     await settleFollowUps(input.followUps, sent.kind === "sent" ? outcome : "error", failure?.code ?? (sent.kind === "sent" ? null : "discord_delivery_failed"));
-    logDiscordRunSummary(eventIds(question), totals);
+    logDiscordRunSummary(eventIds(question), totals, result === "delivered");
     if (answer) {
       await publish({
         answerMessageId: sent.kind === "sent" ? sent.messageId : null, sent: sent.kind === "sent", status: outcome, type: "delivered",

@@ -8,6 +8,7 @@ import { DISCORD_BRIDGE_COPY, DISCORD_COPY } from "../copy";
 import { createDiscordHandlerRegistry, createDiscordIntake, createDiscordLanes, type DiscordIntake, type DiscordLanes } from "../intake";
 import { createDiscordRest } from "../rest";
 import type { DiscordConversationStore } from "../store/conversations";
+import type { DiscordMcpTotals } from "../store/replies";
 import {
   createFakeDiscordRunGateway, createMemoryDiscordConversationStore, createMemoryDiscordLimitStore, createMemoryDiscordReplyStore,
   createMemoryDiscordRunFacts, type FakeRunFinish
@@ -579,6 +580,35 @@ describe("Discord bridge: answers", () => {
       expect.objectContaining({ mcp_calls: 2, mcp_errors: 1, mcp_server: "mcp_tracker" }),
       expect.objectContaining({ compactions: 1, not_found: false, sources: 1, subagents: 1 })
     ]);
+  });
+
+  it("counts an answer from MCP results as found though it cites nothing, and a failed run as not an answer (operator decision 2026-11-13)", async () => {
+    const summaryOf = (messageId: string) => logs.find((entry) =>
+      entry.event === "discord_run_summary" && entry.fields.message_id === messageId && !("mcp_server" in entry.fields))?.fields;
+    const h = harness({ finish: null });
+    const alice = h.user("alice");
+    const cases: Array<{ mcpByServer: DiscordMcpTotals; notFound: boolean }> = [
+      { mcpByServer: { mcp_tracker: { calls: 2, errors: 1 } }, notFound: false },
+      { mcpByServer: { mcp_tracker: { calls: 1, errors: 1 } }, notFound: true },
+      { mcpByServer: {}, notFound: true }
+    ];
+    for (const [index, { mcpByServer, notFound }] of cases.entries()) {
+      const question = await h.say(mention(h, alice, `question ${index}`));
+      await h.settle();
+      const run = h.runs.runs[index]!;
+      h.facts.summaries.set(run.runId, { compactions: 0, errorCode: null, mcpByServer, subagents: 0 });
+      run.finish({ text: "From the tracker." });
+      await h.settle();
+      expect(h.replies.rows.get(question.id), `case ${index}`).toMatchObject({ mcpByServer, sources: 0, state: "delivered" });
+      expect(summaryOf(question.id), `case ${index}`).toMatchObject({ not_found: notFound, sources: 0 });
+    }
+
+    const failing = harness({ finish: () => ({ code: "provider_rate_limited", status: "error" }) });
+    const asked = await failing.say(mention(failing, failing.user("bob"), "anything"));
+    await failing.settle();
+    expect(failing.replies.rows.get(asked.id)).toMatchObject({ state: "failed" });
+    expect(logs.filter((entry) => entry.event === "discord_run_summary" && entry.fields.message_id === asked.id).at(-1)?.fields)
+      .toMatchObject({ not_found: false, sources: 0 });
   });
 
   it("names the Discord model key's limit when the provider refused the run with it", async () => {
