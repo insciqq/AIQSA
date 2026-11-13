@@ -37,6 +37,9 @@ export function SubagentLivenessV2({
   const activeLeaf = useWorkspaceStore((state) => state.activeChatId
     ? state.chats.find((chat) => chat.id === state.activeChatId)?.activeLeafMessageId ?? null
     : null);
+  // A new chat exists on the server only once its first send is accepted: its own route would answer 404 until then.
+  const activeUnsaved = useWorkspaceStore((state) => Boolean(state.activeChatId &&
+    state.chats.find((chat) => chat.id === state.activeChatId)?.pendingPersonalDraft));
   const listKey = useWorkspaceStore((state) => state.navigationChats
     .slice(0, SUBAGENT_VIEW_LIMITS.chatsPerSummary - 1).map((chat) => chat.id).join("\0"));
   const navigationReady = useWorkspaceStore((state) => state.navigationReady);
@@ -82,8 +85,8 @@ export function SubagentLivenessV2({
   // A new branch (or message) of the open chat drops what earlier requests
   // say about the old one; its rows refresh for the branch now shown.
   useEffect(() => {
-    if (activeChatId) void invalidateChatSubagents(activeChatId);
-  }, [activeChatId, activeLeaf]);
+    if (activeChatId && !activeUnsaved) void invalidateChatSubagents(activeChatId);
+  }, [activeChatId, activeLeaf, activeUnsaved]);
 
   useEffect(() => {
     const ids = [...new Set([...split(runningKey), ...split(streamKey)])];
