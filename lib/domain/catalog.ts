@@ -252,6 +252,15 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
   };
 }
 
+// Thinking levels each model accepts (https://ai.google.dev/gemini-api/docs/thinking, checked
+// 2026-11-13): Gemini rejects `minimal` on Gemini 4 and 3.8 Flash, and only Hydrogen has `xhigh`.
+function geminiThinkingLevels(input: Readonly<{ modelId: string; pro?: boolean }>): string[] {
+  if (input.modelId === "gemini-4-hydrogen") return ["low", "medium", "high", "xhigh"];
+  return input.pro || ["gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon"].includes(input.modelId)
+    ? ["low", "medium", "high"]
+    : ["minimal", "low", "medium", "high"];
+}
+
 function geminiModel(input: Readonly<{
   displayName: string;
   effort: "high" | "medium" | "minimal";
@@ -288,9 +297,7 @@ function geminiModel(input: Readonly<{
       },
       reasoningEffort: {
         defaultValue: input.effort,
-        options: input.pro || input.modelId === "gemini-3.8-flash" || input.modelId === "gemini-4-argon"
-          ? ["low", "medium", "high"]
-          : ["minimal", "low", "medium", "high"],
+        options: geminiThinkingLevels(input),
         supported: true
       },
       stream: {
@@ -535,9 +542,20 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     })
   },
   geminiModel({
+    displayName: "Gemini 4 Carbon",
+    effort: "medium",
+    modelId: "gemini-4-carbon"
+  }),
+  geminiModel({
     displayName: "Gemini 4 Argon",
     effort: "medium",
     modelId: "gemini-4-argon"
+  }),
+  // Google defaults Hydrogen to high thinking; the catalog keeps medium like the 3.8 Flash it succeeds.
+  geminiModel({
+    displayName: "Gemini 4 Hydrogen",
+    effort: "medium",
+    modelId: "gemini-4-hydrogen"
   }),
   geminiModel({
     displayName: "Gemini 3.8 Flash",
@@ -607,8 +625,16 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     "google/gemini-3.8-flash"
   ),
   openRouterModel(
+    geminiModel({ displayName: "Gemini 4 Carbon", effort: "medium", modelId: "gemini-4-carbon" }),
+    "google/gemini-4-carbon"
+  ),
+  openRouterModel(
     geminiModel({ displayName: "Gemini 4 Argon", effort: "medium", modelId: "gemini-4-argon" }),
     "google/gemini-4-argon"
+  ),
+  openRouterModel(
+    geminiModel({ displayName: "Gemini 4 Hydrogen", effort: "medium", modelId: "gemini-4-hydrogen" }),
+    "google/gemini-4-hydrogen"
   ),
   openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra"),
   openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"), "openai/gpt-6.1-sol", { temperature: false }),

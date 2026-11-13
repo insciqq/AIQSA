@@ -143,6 +143,8 @@ describe("Gemini Interactions query-only Search adapter", () => {
   it.each([
     ["gemini-3.8-flash", "low"],
     ["gemini-4-argon", "low"],
+    ["gemini-4-carbon", "low"],
+    ["gemini-4-hydrogen", "low"],
     ["gemini-3.5-flash", "minimal"]
   ])("sends the lowest catalog level when the saved %s capabilities list none (%s)", (modelId, expected) => {
     const { reasoningEfforts: _saved, ...capabilities } = (request().searchPolicy as GeminiSearchPolicy).modelCapabilities;

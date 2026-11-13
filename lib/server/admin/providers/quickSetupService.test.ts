@@ -330,14 +330,16 @@ describe("provider Quick setup service", () => {
     expect(JSON.stringify(value.onCompleted.mock.calls[0])).not.toContain("sk-current-catalog");
   });
 
-  it("turns on Gemini 4 Argon but no legacy Gemini model in a fresh Gemini setup", async () => {
+  it("turns on Gemini 4 Carbon, Argon and Hydrogen but no legacy Gemini model in a fresh Gemini setup", async () => {
     const value = fixture({
       modelIds: [
         "gemini-3.1-pro-preview",
         "remote-unknown",
         "gemini-3.5-flash-lite",
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-4-argon",
+        "gemini-4-carbon",
         "gemini-3.6-flash",
         "gemini-3.5-flash"
       ]
@@ -357,7 +359,9 @@ describe("provider Quick setup service", () => {
       upstreamModelId: configuration.upstreamModelId
     }))).toEqual([
       { candidateId: "p2-g1", upstreamModelId: "gemini-3.8-flash" },
+      { candidateId: "p12-g7", upstreamModelId: "gemini-4-carbon" },
       { candidateId: "p10-g6", upstreamModelId: "gemini-4-argon" },
+      { candidateId: "p12-g8", upstreamModelId: "gemini-4-hydrogen" },
       { candidateId: "p2-g3", upstreamModelId: "gemini-3.5-flash-lite" }
     ]);
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
@@ -365,12 +369,14 @@ describe("provider Quick setup service", () => {
     );
     expect(plan.candidates.every(({ configuration }) =>
       configuration.capabilities.nativePdfInput)).toBe(true);
-    expect(value.pdfInputProbe).toHaveBeenCalledTimes(3);
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(5);
     expect(result).toMatchObject({
       model: { displayName: "Gemini 3.8 Flash" },
       models: [
         { displayName: "Gemini 3.8 Flash" },
+        { displayName: "Gemini 4 Carbon" },
         { displayName: "Gemini 4 Argon" },
+        { displayName: "Gemini 4 Hydrogen" },
         { displayName: "Gemini 3.5 Flash-Lite" }
       ],
       outcome: "ready",
@@ -483,7 +489,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 11 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 12 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -499,7 +505,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-legacy-choice",
-        selectedModel: { candidateId: "p2-o1", policyVersion: 11 }
+        selectedModel: { candidateId: "p2-o1", policyVersion: 12 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -991,7 +997,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 11 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 12 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
