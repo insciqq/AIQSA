@@ -253,10 +253,10 @@ const watchChecks: readonly Readonly<{ answer: string; at: string; outcome?: Sch
   { at: "2026-10-04T09:00:00.000Z", answer: "" }
 ];
 
-function watchChatFixture(): ChatDetailWire {
-  const updatedAt = "2026-10-04T09:30:00.000Z";
+/** Each check's scheduled turn and its answer, chained; a check without an outcome is a run that errored. */
+function watchTurns(checks: typeof watchChecks): ChatMessageWire[] {
   const messages: ChatMessageWire[] = [];
-  watchChecks.forEach((check, index) => {
+  checks.forEach((check, index) => {
     const turn = `watch-${index + 1}`;
     const marker = { taskId: "watch", taskRunId: `watch-run-${index + 1}`, title: "Release watch", unseen: false };
     const outcome = check.outcome ? { scheduledOutcome: check.outcome } : {};
@@ -266,6 +266,12 @@ function watchChatFixture(): ChatDetailWire {
     messages.push(message(`${turn}-answer`, "assistant", check.answer, `${turn}-question`,
       { createdAt: answeredAt, ...outcome, ...(check.outcome ? {} : { status: "error" }) }));
   });
+  return messages;
+}
+
+function watchChatFixture(): ChatDetailWire {
+  const updatedAt = "2026-10-04T09:30:00.000Z";
+  const messages = watchTurns(watchChecks);
   // The user's own turn in the task chat stays an ordinary, editable question.
   messages.push(message("watch-reply-question", "user", "Which release should I install today?", messages.at(-1)!.id,
     { createdAt: "2026-10-04T09:20:00.000Z" }));
@@ -277,6 +283,29 @@ function watchChatFixture(): ChatDetailWire {
     activeLeafMessageId: leaf, defaultModelId: model.modelId, defaultProvider: model.provider, folderId: null,
     pinned: false, messageCount: messages.length, usageStats: null, contextStats: { approximateActiveBranchInputTokens: 900 },
     pageInfo: { activeLeafMessageId: leaf, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: updatedAt },
+    workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
+    messages
+  };
+}
+
+/**
+ * The monitoring chat as its history is served since checks with no update are left out (operator decision 2026-11-11):
+ * the first check, three failed runs that quiet checks followed, and a latest failed run after the last quiet check.
+ * Only the summary tells the browser about the quiet checks (production 2026-11-14: every failure stayed open).
+ */
+function servedWatchChatFixture(): ChatDetailWire {
+  const updatedAt = "2026-10-04T09:30:00.000Z";
+  const messages = watchTurns([
+    watchChecks[0]!, { at: "2026-10-03T12:00:00.000Z", answer: "" }, { at: "2026-10-03T20:00:00.000Z", answer: "" },
+    { at: "2026-10-04T04:00:00.000Z", answer: "" }, { at: "2026-10-04T09:00:00.000Z", answer: "" }
+  ]);
+  const leaf = messages.at(-1)!.id;
+  return {
+    assistant: null, id: watchChatId, title: "Release watch", createdAt: "2026-09-28T08:00:00.000Z", updatedAt,
+    activeLeafMessageId: leaf, defaultModelId: model.modelId, defaultProvider: model.provider, folderId: null,
+    pinned: false, messageCount: messages.length, usageStats: null, contextStats: { approximateActiveBranchInputTokens: 900 },
+    pageInfo: { activeLeafMessageId: leaf, beforeCursor: null, hasOlder: false, snapshotUpdatedAt: updatedAt },
+    quietChecks: { count: 24, lastAt: "2026-10-04T08:00:00.000Z" },
     workspace: { available: false, enabled: false, internetEnabled: false, sessionState: null },
     messages
   };
@@ -883,6 +912,33 @@ test("a monitoring chat folds checks with no update and recovered failures into 
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await expect(thread.getByText(/^Still 1\.4\.0/u)).toHaveCount(0);
   await expect(failures).toHaveCount(1);
+});
+
+test("a monitoring chat whose quiet checks are left out folds the failures they followed and keeps a later one open", async ({ page }, info) => {
+  await prepare(page, monitoringFixture, "light", [chatFixture(), servedWatchChatFixture()]);
+  if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
+  await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
+  const thread = page.getByTestId("conversation-thread");
+  await expect(page.getByTestId("scheduled-quiet-checks")).toContainText("Checked 24 times, no change · last 09:00");
+  const groups = page.getByTestId("scheduled-checks-row");
+  await expect(groups).toHaveCount(1);
+  // The three failures before the latest quiet check fold into one row; the failure after it stays open.
+  await expect(groups.nth(0)).toHaveText(/^3 failed checks · last 05:00\s*·\s*Show$/u);
+  const failures = thread.getByRole("region", { name: "Run failed" });
+  await expect(failures).toHaveCount(1);
+  await expect(page.locator('[data-message-id="watch-5-answer"]').getByRole("region", { name: "Run failed" })).toBeVisible();
+  await expect(thread.getByText("Watching: the latest release is 1.4.0")).toBeVisible();
+  const show = page.getByRole("button", { name: "Show 3 failed checks", exact: true });
+  await captureState(page, info, "scheduled-transcript-quiet-left-out-failures", {
+    anchor: groups.nth(0),
+    atEachSize: async () => {
+      await expectWithinViewport(page, show);
+      await expectNoHorizontalOverflow(page);
+    }
+  });
+  await show.click();
+  await expect(failures).toHaveCount(4);
+  await expect(page.getByRole("button", { name: "Hide 3 failed checks", exact: true })).toHaveAttribute("aria-expanded", "true");
 });
 
 test.describe("touch controls", () => {

@@ -66,8 +66,18 @@ function checkState<T extends TranscriptMessage>(unit: Unit<T>, last: boolean): 
  * once, by its scheduled turn, or by its answer when an earlier page holds
  * the turn. The group id follows its first message, so an open group stays
  * open while later checks join it.
+ *
+ * The served history leaves quiet checks out (operator decision 2026-11-11),
+ * so `quietCheckedAt`, when the chat's latest quiet check started
+ * (`ChatQuietChecksSummary.lastAt`), stands for them: a failed check that
+ * started before it was followed by a successful one and folds too. Without
+ * it every failure between hidden quiet checks stayed open, and a working
+ * hourly monitor showed only its failures (production 2026-11-14).
  */
-export function groupScheduledChecks<T extends TranscriptMessage>(messages: readonly T[]): ScheduledTranscriptItem<T>[] {
+export function groupScheduledChecks<T extends TranscriptMessage>(
+  messages: readonly T[],
+  options: Readonly<{ quietCheckedAt?: string | null }> = {}
+): ScheduledTranscriptItem<T>[] {
   const units: Unit<T>[] = [];
   for (const message of messages) {
     const current = units.at(-1);
@@ -77,12 +87,18 @@ export function groupScheduledChecks<T extends TranscriptMessage>(messages: read
   }
   const noun = messages.some((message) => message.scheduledOutcome) ? "check" : "run";
   const folds: boolean[] = new Array<boolean>(units.length).fill(false);
+  const quietAt = options.quietCheckedAt ? Date.parse(options.quietCheckedAt) : Number.NaN;
+  // A check started before the latest hidden quiet check has a successful check after it.
+  const quietCheckFollows = (unit: Unit<T>) => {
+    const startedAt = Date.parse(unit.messages.find((message) => message.createdAt)?.createdAt ?? "");
+    return Number.isFinite(quietAt) && Number.isFinite(startedAt) && startedAt < quietAt;
+  };
   let laterSuccess = false;
   for (let index = units.length - 1; index >= 0; index -= 1) {
     const unit = units[index]!;
     if (!unit.check) continue;
     const state = checkState(unit, index === units.length - 1);
-    folds[index] = state === "quiet" || (state === "failed" && laterSuccess);
+    folds[index] = state === "quiet" || (state === "failed" && (laterSuccess || quietCheckFollows(unit)));
     if (state === "quiet" || state === "success") laterSuccess = true;
   }
 

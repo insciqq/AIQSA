@@ -739,6 +739,29 @@ describe("compatible dropped-round decision", () => {
     }
   });
 
+  it("sends a request on an expired gateway connection again", async () => {
+    const sentinel = "PRIVATE_GATEWAY_MESSAGE_CANARY";
+    // Codex LB's answer when the upstream WebSocket a routing key held passed its 60 minutes.
+    const error = { code: "websocket_connection_limit_reached", message: `Responses websocket connection limit reached. ${sentinel}`,
+      param: null, type: "invalid_request_error" };
+    let sent = 0;
+    const http = await failureOf(() => {
+      sent += 1;
+      return Response.json({ error }, { status: 400 });
+    });
+    // The transport never replays it itself; the round owner sends it again.
+    expect(sent).toBe(1);
+    expect(http).toMatchObject({ connectionExpired: true, status: 400 });
+    expect(compatibleDroppedRoundDecision(http)).toEqual({ retryAfterMs: null });
+    expect(observedFailure(http)).toMatchObject({ httpStatus: 400, provider_error_code: "websocket_connection_limit_reached" });
+    expect(JSON.stringify(http)).not.toContain(sentinel);
+    expect(String(http)).not.toContain(sentinel);
+    // Another 400 of that type stays the request's own.
+    const other = await failureOf(() => Response.json({ error: { ...error, code: "invalid_request_error" } }, { status: 400 }));
+    expect(other).not.toHaveProperty("connectionExpired");
+    expect(compatibleDroppedRoundDecision(other)).toBeNull();
+  });
+
   it("sends a silent stream and a response that never started again, but not a stream cut at its ceiling", () => {
     expect(compatibleDroppedRoundDecision(new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_000 }))).toEqual({ retryAfterMs: null });
     const late = markProviderStreamProgress(new ProviderRequestTimeoutError(300_000), providerStreamProgressFacts({ responseStarted: false }));
