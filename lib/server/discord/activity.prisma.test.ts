@@ -8,7 +8,7 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { prisma } from "../prisma";
 import { discordActivityStats, readDiscordActivityRows, readDiscordJournalStats } from "./activity";
 import { createPrismaDiscordProblemReports, createPrismaDiscordRatingStore } from "./lifecycle";
-import { formatDiscordMetrics, readDiscordHourLoad, readDiscordMonitoringTelemetry } from "./monitoring";
+import { formatDiscordMetrics, readDiscordHourLoad, readDiscordMonitoringTelemetry, readDiscordProblemRows } from "./monitoring";
 
 /**
  * The journal's aggregates, problem rows, Activity rows, hour load, ratings and
@@ -144,6 +144,26 @@ describe("Discord journal reads (stateful)", () => {
     expect(listed[0]).toMatchObject({ authorName: SENTINEL, channelName: "agent-test", code: "discord_busy", kind: "refused", latencyMs: null,
       state: "failed", test: true });
     expect(listed[8]).toMatchObject({ latencyMs: 10_000, state: "delivered", test: false });
+  });
+
+  it("counts an answer from MCP results as found though it cites nothing, from the stored totals (operator decision 2026-11-13)", async () => {
+    const rows = [
+      reply({ mcpByServer: { a: { calls: 2, errors: 1 } }, seconds: 10, sources: 0 }),
+      // Only failed calls, or none: nothing found.
+      reply({ mcpByServer: { a: { calls: 1, errors: 1 }, b: { calls: 0, errors: 0 } }, seconds: 20, sources: 0 }),
+      reply({ seconds: 30, sources: 0 }),
+      // A count that is not a number counts as no call.
+      reply({ mcpByServer: { a: { calls: "2", errors: 0 } }, seconds: 40, sources: 0 }),
+      reply({ seconds: 50, sources: 1 }),
+      reply({ code: "discord_busy", kind: "refused", seconds: 60, sources: 0, state: "failed" })
+    ];
+    await prisma.discordReply.createMany({ data: rows });
+    const id = (index: number) => rows[index]!.questionMessageId.toString();
+    expect((await readDiscordJournalStats(prisma, WINDOW)).notFound).toBe(3);
+    const problems = await readDiscordProblemRows(prisma, WINDOW, null);
+    expect(problems.map((problem) => [problem.questionMessageId, problem.kind])).toEqual([
+      [id(5), "failed"], [id(3), "not_found"], [id(2), "not_found"], [id(1), "not_found"]
+    ]);
   });
 
   it("counts the last hour's requests, failures and limit hits apart for test mode, as the metrics and the attention rule read them", async () => {

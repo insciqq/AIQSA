@@ -19,7 +19,8 @@ import { databaseFailureCode, retainDatabaseFailure } from "../observability/dat
  * - a request is a question row received in the window;
  * - a failure is a row that ended `failed` or `unknown` without a limit hit
  *   (limit hits are counted by kind on their own, never as failures);
- * - "not found" is a delivered answer that cited no source;
+ * - "not found" is a delivered answer that cited no source and had no MCP
+ *   call that did not fail (`discordNotFoundSql`);
  * - a stage's delay counts from `receivedAt`;
  * - ratings count when they were given.
  * Aggregates leave out test-mode requests (PRD D-36): they are synthetic
@@ -52,6 +53,24 @@ const HOUR_MS = 3_600_000;
 
 /** The SQL condition of a failure: ended badly, and not a limit hit. */
 export const DISCORD_FAILURE_SQL = Prisma.sql`"state" IN ('failed', 'unknown') AND "limitKind" IS NULL`;
+
+/** One count of an `mcpByServer` entry (`entry` is the `jsonb_each` alias); anything but a number counts as 0. */
+export function discordMcpCountSql(entry: string, field: "calls" | "errors"): Prisma.Sql {
+  return Prisma.raw(`CASE WHEN jsonb_typeof(${entry}."value" -> '${field}') = 'number' THEN (${entry}."value" ->> '${field}')::numeric ELSE 0 END`);
+}
+
+/**
+ * The SQL condition of "not found" for the `DiscordReply` row named `table`: delivered, no source cited, and no MCP
+ * server with more calls than errors. Answers built from MCP results cite nothing, so counting citations alone marked
+ * most complete answers "not found" (operator decision 2026-11-13). It reads the stored totals, so older rows follow it
+ * too; `discordFoundNothing` is the same rule for one run's totals.
+ */
+export function discordNotFoundSql(table: string): Prisma.Sql {
+  // `DiscordReply_totals_check` keeps `mcpByServer` NULL (no rows) or an object.
+  const column = (name: string) => Prisma.raw(`${table}."${name}"`);
+  return Prisma.sql`(${column("state")} = 'delivered' AND ${column("sources")} = 0 AND NOT EXISTS (
+    SELECT 1 FROM jsonb_each(${column("mcpByServer")}) e WHERE ${discordMcpCountSql("e", "calls")} > ${discordMcpCountSql("e", "errors")}))`;
+}
 
 type StatsRow = {
   requests: number; delivered: number; failed: number; interrupted: number; limitAuthor: number; limitThread: number; limitKey: number;
@@ -93,7 +112,7 @@ export async function readDiscordJournalStats(db: DiscordJournalDb, window: Disc
         (count(*) FILTER (WHERE "limitKind" = 'author'))::int AS "limitAuthor",
         (count(*) FILTER (WHERE "limitKind" = 'thread'))::int AS "limitThread",
         (count(*) FILTER (WHERE "limitKind" = 'key'))::int AS "limitKey",
-        (count(*) FILTER (WHERE "state" = 'delivered' AND "sources" = 0))::int AS "notFound",
+        (count(*) FILTER (WHERE ${discordNotFoundSql('"DiscordReply"')}))::int AS "notFound",
         coalesce(sum("compactions"), 0)::float8 AS "compactions",
         coalesce(sum("subagents"), 0)::float8 AS "subagents",
         ${percentiles("ackAt", "acked")},
