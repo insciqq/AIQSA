@@ -98,6 +98,24 @@ describe("groupScheduledChecks", () => {
       .toEqual(["c1-q", "c1-a", "reply", "reply-a"]);
   });
 
+  it("folds failures that a quiet check the history leaves out followed, and keeps a later failure open", () => {
+    // The production shape since quiet checks are not served: a baseline, then only failures, each followed by hidden quiet checks.
+    const failures = [...failedRun("c2", "2026-11-10T15:31:00.000Z"), ...failedRun("c3", "2026-11-11T13:02:00.000Z"),
+      ...check("c4", "could_not_check", {}, "2026-11-13T01:02:00.000Z")];
+    const messages = [...check("c1", "baseline", {}, "2026-11-02T10:18:00.000Z"), ...failures];
+    const grouped = groupScheduledChecks(messages, { quietCheckedAt: "2026-11-13T21:03:00.000Z" });
+    expect(grouped.map((item) => item.kind === "message" ? item.message.id : { ...item.summary, id: item.id }))
+      .toEqual(["c1-q", "c1-a", { checks: 3, failed: 3, id: "scheduled-checks:c2-q", lastAt: "2026-11-13T01:02:00.000Z", noun: "check" }]);
+    // A failure after the latest quiet check stays open, and so does every failure without that time or its own.
+    const late = groupScheduledChecks(messages, { quietCheckedAt: "2026-11-12T00:00:00.000Z" });
+    expect(late.map((item) => item.kind === "message" ? item.message.id : item.id))
+      .toEqual(["c1-q", "c1-a", "scheduled-checks:c2-q", "c4-q", "c4-a"]);
+    expect(shape(messages)).toEqual(messages.map((message) => message.id));
+    expect(groupScheduledChecks([...failedRun("c5"), ...failedRun("c6", "2026-11-13T01:02:00.000Z")],
+      { quietCheckedAt: "2026-11-13T21:03:00.000Z" }).map((item) => item.kind === "message" ? item.message.id : item.id))
+      .toEqual(["c5-q", "c5-a", "scheduled-checks:c6-q"]);
+  });
+
   it("never folds a first check, an update, a reached goal or a running check", () => {
     const messages = [...check("c1", "baseline"), ...check("c2", "update"), ...check("c3", "goal_reached"),
       ...check("c4", undefined, { status: "streaming" })];

@@ -760,10 +760,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     selectNavigationChatV2(target.chatId, workspace.pane.actions);
     openSubagentThread(target, "replace");
   };
+  // A new chat exists on the server only once its first send is accepted; until then nothing of it can be read.
+  const activeChatUnsaved = useWorkspaceStore(state => Boolean(session.activeChatId &&
+    state.chats.find((chat) => chat.id === session.activeChatId)?.pendingPersonalDraft));
   const memoryCommands = useMemoryCommands({
     accountId: session.accountId,
     chatId: session.activeChatId,
-    enabled: composer.memory.mode === "NORMAL",
+    enabled: composer.memory.mode === "NORMAL" && !activeChatUnsaved,
     messageKey: thread.visibleMessages.filter((message) => message.role === "user")
       .map((message) => message.id).join(",")
   });
@@ -1263,7 +1266,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const quietChecks = thread.quietChecks ?? null;
   const conversationMessages: ConversationMessageV2[] = [
     ...(quietChecks ? [{ content: "", id: QUIET_CHECKS_ITEM_ID, role: "assistant" as const }] : []),
-    ...groupScheduledChecks(thread.visibleMessages).flatMap((item) => {
+    ...groupScheduledChecks(thread.visibleMessages, { quietCheckedAt: quietChecks?.lastAt ?? null }).flatMap((item) => {
       if (item.kind === "message") return [conversationMessage(item.message)];
       scheduledCheckGroups.set(item.id, item.summary);
       const row: ConversationMessageV2 = { content: "", id: item.id, role: "assistant" };
