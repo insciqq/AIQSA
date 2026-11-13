@@ -104,6 +104,33 @@ describe("sub-agent liveness", () => {
     expect(onActiveChatSettled).toHaveBeenCalledWith("a");
   });
 
+  it("asks a new chat's own route only once its first send is accepted, so it never reads one the server has not made", async () => {
+    const { calls, fetch } = subagentFetch([
+      { path: "/api/subagents", respond: () => jsonResponse({ chats: [] }) },
+      { path: "/api/chats/new-chat/subagents", respond: () => jsonResponse(subagentChat("new-chat", [])) }
+    ]);
+    vi.stubGlobal("fetch", fetch);
+    const workspace = useWorkspaceStore.getState();
+    const draft = { activeLeafMessageId: null, createdAt: "2026-10-30T08:00:00.000Z", defaultModelId: "m", defaultProvider: "p",
+      folderId: null, id: "new-chat", messageCount: 0, pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" as const },
+      title: "New Chat", updatedAt: "2026-10-30T08:00:00.000Z" };
+    workspace.setChats([draft]);
+    workspace.setActiveChatId("new-chat");
+    render(<SubagentLivenessV2 />);
+    // The first message appears at once, before the server has the chat.
+    await act(async () => {
+      useWorkspaceStore.getState().setChats([{ ...draft, activeLeafMessageId: "optimistic-question" }]);
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    const own = () => calls.filter((call) => call.url.pathname === "/api/chats/new-chat/subagents");
+    expect(own()).toHaveLength(0);
+    await act(async () => {
+      useWorkspaceStore.getState().setChats([{ ...draft, activeLeafMessageId: "optimistic-question", pendingPersonalDraft: undefined }]);
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(own()).toHaveLength(1);
+  });
+
   it("reports a sub-agent that starts waiting for the main agent, whose question may wake it", async () => {
     let asking = false;
     const { fetch } = subagentFetch([

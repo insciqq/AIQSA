@@ -35,6 +35,20 @@ const quotaCodes = new Set([
 // that, and the rejection arrives as a failed response on an HTTP 200, so no status says it either.
 const rejectedRequestCodes = new Set(["invalid_value"]);
 
+// The gateway's upstream connection outlived its limit, not the request: Codex LB keeps one upstream Responses
+// WebSocket per routing key, the upstream ends it after 60 minutes, and the gateway answers the next request on that key
+// with this code, as an HTTP 400 or a failed response. A new connection takes the same request, and the attempt sent
+// again carries a new routing key (production 2026-11-14: an hourly task failed about once a day on the HTTP 400).
+const connectionExpiredCodes = new Set(["websocket_connection_limit_reached"]);
+
+/** The gateway closed its upstream connection, not the request (`connectionExpired`): sent again like a dropped stream. */
+export function isProviderConnectionExpired(error: unknown): boolean {
+  try {
+    return typeof error === "object" && error !== null &&
+      Object.getOwnPropertyDescriptor(error, "connectionExpired")?.value === true;
+  } catch { return false; }
+}
+
 const unsupportedMessage = /\b(?:does not support|do not support|not supported|unsupported)\b/iu;
 const capabilityMessage = /\b(?:inputs?|output formats?|response formats?|images?|vision|pdfs?|documents?|files?|json|schemas?|structured outputs?|tools?|function calling|response_format|input_image|input_file)\b|\b(?:this|the|requested) (?:request|feature|input|capability)\b/iu;
 // Bare "input" may refer to an unrelated input parameter such as reasoning.
@@ -193,7 +207,9 @@ export function providerResponseFailure(
     choiceRecord?.finish_reason === "content_filter" || typeof choiceMessage?.refusal === "string" && choiceMessage.refusal.length > 0;
   const capabilityFailureReason = refusal ? "refusal" : incomplete?.reason === "max_output_tokens" || choiceRecord?.finish_reason === "length" ? "budget_exhausted" : undefined;
   const quotaExhausted = code === "provider_response_not_retryable" && typeof detail?.code === "string" && quotaCodes.has(detail.code);
+  const connectionExpired = code === undefined && typeof detail?.code === "string" && connectionExpiredCodes.has(detail.code);
   return markProviderErrorDetail(Object.assign(responseError(message), code ? { code } : {}, contextLength ?? {},
     unsupportedInput ? { unsupportedInput: true } : {}, capabilityFailureReason ? { capabilityFailureReason } : {},
-    quotaExhausted ? { quotaExhausted: true } : {}), detail ?? (response.type === "error" ? response : null));
+    quotaExhausted ? { quotaExhausted: true } : {}, connectionExpired ? { connectionExpired: true } : {}),
+    detail ?? (response.type === "error" ? response : null));
 }

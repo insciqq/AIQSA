@@ -62,5 +62,6 @@
   "unsupported_parameter",
   "unsupported_value",
   "upstream_error",
-  "usage_limit_reached"
+  "usage_limit_reached",
+  "websocket_connection_limit_reached"
 ]

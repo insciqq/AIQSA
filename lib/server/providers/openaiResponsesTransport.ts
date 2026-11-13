@@ -1,5 +1,6 @@
 import { observeJsonParse } from "./providerObservability";
 import {
+  isProviderConnectionExpired,
   PROVIDER_CONTEXT_LENGTH_EXCEEDED,
   providerContextLengthFacts,
   providerContextLengthRejection,
@@ -180,6 +181,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
   let unsupportedInput = false;
   let capabilityFailureReason: "refusal" | "budget_exhausted" | undefined;
   let quotaExhausted = false;
+  let connectionExpired = false;
   let decoded: Error | undefined;
   try {
     const text = await readBoundedResponseText(response, { signal });
@@ -192,6 +194,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
         contextLength = providerContextLengthFacts(failure);
         unsupportedInput = "unsupportedInput" in failure && failure.unsupportedInput === true;
         quotaExhausted = "quotaExhausted" in failure && failure.quotaExhausted === true;
+        connectionExpired = isProviderConnectionExpired(failure);
         if ("capabilityFailureReason" in failure && (failure.capabilityFailureReason === "refusal" || failure.capabilityFailureReason === "budget_exhausted")) capabilityFailureReason = failure.capabilityFailureReason;
       }
     } catch { /* An undecodable error body never changes the HTTP classification. */ }
@@ -207,7 +210,7 @@ async function throwOpenAIHttpError(response: Response, signal: AbortSignal): Pr
     retryAfterMs
   ), failureCode && response.status !== 401 && response.status !== 403
     ? { code: failureCode, ...contextLength, ...(unsupportedInput ? { unsupportedInput: true } : {}), ...(capabilityFailureReason ? { capabilityFailureReason } : {}), ...(quotaExhausted ? { quotaExhausted: true } : {}) }
-    : {}), decoded);
+    : {}, connectionExpired ? { connectionExpired: true } : {}), decoded);
 }
 
 /**
@@ -244,14 +247,16 @@ function ownErrorValue(error: object, key: string): unknown {
 
 /**
  * The Codex LB dropped-round decision (PROVIDERS.md): a compatible Responses
- * round whose request failed with HTTP 502, or whose stream dropped before
- * its completion event, may be sent again unless a reviewed classification
- * makes the failure deterministic. A 502's Retry-After shapes the wait. The
- * transport itself never replays either; the round owner decides.
+ * round whose request failed with HTTP 502, whose stream dropped before its
+ * completion event, or whose gateway connection expired, may be sent again
+ * unless a reviewed classification makes the failure deterministic. A 502's
+ * Retry-After shapes the wait. The transport itself never replays either; the
+ * round owner decides.
  */
 export function compatibleDroppedRoundDecision(error: unknown): ProviderRetryDecision | null {
   if (typeof error !== "object" || error === null || deterministicFailureCodes.has(ownErrorValue(error, "code")) ||
     ownErrorValue(error, "capabilityFailureReason") !== undefined) return null;
+  if (isProviderConnectionExpired(error)) return { retryAfterMs: null };
   if (error instanceof OpenAIHttpError) return error.status === 502 ? { retryAfterMs: error.retryAfterMs } : null;
   // A silent stream, and a deadline that passed before the response started, are a stuck upstream: sent again like a
   // drop, as a run's model calls are (decision 2026-11-11, `modelCallRetryDecision`). A deadline met while events flowed
