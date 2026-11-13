@@ -46,7 +46,9 @@ export function imageModelsFromCatalog(value: unknown, family: string): AdminIma
       if (!imageOutput || vectorOnly) continue;
       models.push({ id, name: safeText(entry.name) ?? id, source: "catalog", image: { profile: "openrouter", parameters: imageParametersFromCatalog(parameters) },
         editing: Array.isArray(architecture.input_modalities) && architecture.input_modalities.includes("image") });
-    } else if (family === "gemini" && id.startsWith("gemini-") && id.includes("-image")) {
+    // Gemini's listing names no output modality: image models carry "-image", except the
+    // Nano Banana line from 2.1 on (gemini-nano-banana-2.1).
+    } else if (family === "gemini" && id.startsWith("gemini-") && (id.includes("-image") || id.startsWith("gemini-nano-banana-"))) {
       models.push({ id, name: safeText(entry.displayName) ?? id, source: "catalog", image: { profile: "gemini" }, editing: true });
     } else if ((family === "openai" || family === "openai_compatible") && (id.startsWith("gpt-image-") || imageOutput)) {
       models.push({ id, name: safeText(entry.name) ?? id, source: "catalog", image: { profile: family === "openai" ? "openai" : gateway ? "codex_lb" : "openai_compatible" }, editing: true });

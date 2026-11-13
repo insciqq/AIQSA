@@ -30,9 +30,12 @@ const anthropic: Record<string, Tariff> = {
   "claude-sonnet-5": [2, 0.2, 2.5, 10]
 };
 const gemini: Record<string, Tariff> = {
-  // List prices after the introductory windows (Argon from 2026-12-01, 3.6/3.8 Flash from
-  // 2027-01-01); estimates overstate the cost until then instead of needing a later migration.
+  // List prices after the introductory windows (Argon and Carbon from 2026-12-01, 3.6/3.8 Flash
+  // from 2027-01-01); estimates overstate the cost until then instead of needing a later migration.
+  // Carbon and Hydrogen checked 2026-11-13; Hydrogen announces no price change.
+  "gemini-4-carbon": [4, 0.2, null, 20],
   "gemini-4-argon": [4, 0.2, null, 20],
+  "gemini-4-hydrogen": [1.5, 0.075, null, 7.5],
   "gemini-3.8-flash": [1.5, 0.15, null, 7.5],
   "gemini-3.6-flash": [1.5, 0.15, null, 7.5],
   "gemini-3.5-flash": [1.5, 0.15, null, 9],
@@ -59,7 +62,9 @@ const openrouter: Record<string, Tariff> = {
   "anthropic/claude-haiku-5.5": anthropic["claude-haiku-5-5"],
   "anthropic/claude-opus-5": anthropic["claude-opus-5"],
   "anthropic/claude-opus-4.8": anthropic["claude-opus-4-8"],
+  "google/gemini-4-carbon": gemini["gemini-4-carbon"],
   "google/gemini-4-argon": gemini["gemini-4-argon"],
+  "google/gemini-4-hydrogen": gemini["gemini-4-hydrogen"],
   "google/gemini-3.8-flash": gemini["gemini-3.8-flash"],
   "google/gemini-3.5-flash": gemini["gemini-3.5-flash"],
   "~google/gemini-pro-latest": gemini["gemini-3.1-pro-preview"],

@@ -1,5 +1,6 @@
 // Release dates of code-owned model templates: OpenRouter's `created` date of the
-// same model, checked 2026-10-15 (https://openrouter.ai/api/v1/models). They only
+// same model (https://openrouter.ai/api/v1/models), checked 2026-10-15 and for Gemini 4
+// Carbon, Hydrogen and Nano Banana 2.1 on 2026-11-13. They only
 // order the administrator's model list; nothing else reads them. Templates without
 // a published date (embeddings, rerankers, Jev, image-only OpenAI models, fake)
 // stay absent and sort by when the row was added.
@@ -23,12 +24,15 @@ const anthropic: Record<string, string> = {
   "claude-opus-4-8": "2026-05-27"
 };
 const gemini: Record<string, string> = {
+  "gemini-4-hydrogen": "2026-11-12",
+  "gemini-4-carbon": "2026-11-10",
   "gemini-4-argon": "2026-10-13",
   "gemini-3.8-flash": "2026-09-02",
   "gemini-3.6-flash": "2026-07-21",
   "gemini-3.5-flash-lite": "2026-07-21",
   "gemini-3.5-flash": "2026-05-19",
   "gemini-3.1-pro-preview": "2026-02-19",
+  "gemini-nano-banana-2.1": "2026-10-06",
   "gemini-3.1-flash-image": "2026-06-18",
   "gemini-3.1-flash-lite-image": "2026-06-30",
   "gemini-3-pro-image": "2026-06-18",
@@ -42,6 +46,8 @@ const deepseek: Record<string, string> = {
   "deepseek-v4-flash-vision-exp": "2026-08-21"
 };
 const openrouter: Record<string, string> = {
+  "google/gemini-4-hydrogen": "2026-11-12",
+  "google/gemini-4-carbon": "2026-11-10",
   "google/gemini-4-argon": "2026-10-13",
   "anthropic/claude-haiku-5.5": "2026-10-07",
   "openai/gpt-6.1-sol": "2026-09-29",
@@ -63,6 +69,7 @@ const openrouter: Record<string, string> = {
   "deepseek/deepseek-v4.1-flash": "2026-09-10",
   "deepseek/deepseek-v4-pro-0813": "2026-08-12",
   "perplexity/sonar-pro-search": "2025-10-30",
+  "google/gemini-nano-banana-2.1": "2026-10-06",
   "google/gemini-3.1-flash-image": "2026-06-18",
   "google/gemini-3.1-flash-lite-image": "2026-06-30",
   "google/gemini-3-pro-image": "2026-06-18",
