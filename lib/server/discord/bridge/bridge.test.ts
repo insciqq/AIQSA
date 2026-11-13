@@ -8,6 +8,7 @@ import { DISCORD_BRIDGE_COPY, DISCORD_COPY } from "../copy";
 import { createDiscordHandlerRegistry, createDiscordIntake, createDiscordLanes, type DiscordIntake, type DiscordLanes } from "../intake";
 import { createDiscordRest } from "../rest";
 import type { DiscordConversationStore } from "../store/conversations";
+import type { DiscordMcpTotals } from "../store/replies";
 import {
   createFakeDiscordRunGateway, createMemoryDiscordConversationStore, createMemoryDiscordLimitStore, createMemoryDiscordReplyStore,
   createMemoryDiscordRunFacts, type FakeRunFinish
@@ -586,7 +587,7 @@ describe("Discord bridge: answers", () => {
       entry.event === "discord_run_summary" && entry.fields.message_id === messageId && !("mcp_server" in entry.fields))?.fields;
     const h = harness({ finish: null });
     const alice = h.user("alice");
-    const cases = [
+    const cases: Array<{ mcpByServer: DiscordMcpTotals; notFound: boolean }> = [
       { mcpByServer: { mcp_tracker: { calls: 2, errors: 1 } }, notFound: false },
       { mcpByServer: { mcp_tracker: { calls: 1, errors: 1 } }, notFound: true },
       { mcpByServer: {}, notFound: true }
