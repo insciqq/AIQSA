@@ -51,6 +51,9 @@ RUN AIQSA_APP_BASE_URL="$AIQSA_BUILD_APP_BASE_URL" \
 # packages. SheetJS is published only as a tarball, so the isolated parser keeps
 # its exact package.json spec. Keep security overrides when pruning so npm
 # cannot downgrade the retained worker dependencies below their reviewed versions.
+# The health report (`scripts/health-report.ts`) reads Discord's attention rule
+# through the Discord module, whose transport needs undici and whose answer
+# renderer needs markdown-it; without them that rule failed in every report.
 FROM runtime-deps AS tools-deps
 
 RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').version")" \
@@ -78,6 +81,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
   && PG_VERSION="$(node -p "require('./node_modules/pg/package.json').version")" \
   && YAML_VERSION="$(node -p "require('./node_modules/yaml/package.json').version")" \
   && TLDTS_VERSION="$(node -p "require('./node_modules/tldts/package.json').version")" \
+  && UNDICI_VERSION="$(node -p "require('./node_modules/undici/package.json').version")" \
+  && MARKDOWN_IT_VERSION="$(node -p "require('./node_modules/markdown-it/package.json').version")" \
   && XLSX_SPEC="$(node -p "require('./package.json').dependencies.xlsx")" \
   && npm pkg delete dependencies devDependencies \
   && npm pkg set \
@@ -102,6 +107,8 @@ RUN PRISMA_VERSION="$(node -p "require('./node_modules/prisma/package.json').ver
     "dependencies.pg=$PG_VERSION" \
     "dependencies.yaml=$YAML_VERSION" \
     "dependencies.tldts=$TLDTS_VERSION" \
+    "dependencies.undici=$UNDICI_VERSION" \
+    "dependencies.markdown-it=$MARKDOWN_IT_VERSION" \
     "dependencies.prisma=$PRISMA_VERSION" \
     "dependencies.tsx=$TSX_VERSION" \
     "dependencies.sharp=$SHARP_VERSION" \
