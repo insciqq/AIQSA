@@ -16,11 +16,6 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 
 </div>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme-screenshot-dark.png">
-  <img src=".github/assets/readme-screenshot-light.png" alt="An AIQSA chat: the agent sent one sub-agent per database to its GitHub repository, then built an interactive dashboard that opens beside the chat">
-</picture>
-
 ## Why AIQSA
 
 - **Every model in one place.** Connect OpenAI, Anthropic, Google Gemini, DeepSeek, OpenRouter, or any OpenAI-compatible server, including models running on your own network. Choose the model for each message; the whole team works in the same workspace.
