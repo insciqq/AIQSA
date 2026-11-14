@@ -16,9 +16,10 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 
 </div>
 
-
-https://github.com/user-attachments/assets/04f00676-97c8-4fa9-8911-de94bdd4a7bb
-
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/readme-screenshot-dark.png">
+  <img src=".github/assets/readme-screenshot-light.png" alt="An AIQSA chat: the agent sent one sub-agent per database to its GitHub repository, then built an interactive dashboard that opens beside the chat">
+</picture>
 
 ## Why AIQSA
 
