@@ -34,18 +34,19 @@ function shellProps(): PowerAppShellV2Props {
 }
 
 describe("account Settings", () => {
-  it("opens the account's Settings from the account menu and from the rail", () => {
+  it("opens the account's Settings from the chat list footer's gear, not from the account menu", () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ announcements: [] })));
     const props = shellProps();
     render(<PowerAppShellV2View {...props} />);
-    const rail = screen.getByRole("navigation", { name: "Workspace" });
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    const footer = screen.getByTestId("navigation-footer");
 
-    expect(within(rail).queryByRole("button", { name: "Projects" })).toBeNull();
-    fireEvent.click(within(rail).getByRole("button", { name: "Account menu" }));
-    fireEvent.click(within(screen.getByRole("menu", { name: "Account" })).getByRole("menuitem", { name: "Settings" }));
+    expect(within(footer).queryByRole("button", { name: "Projects" })).toBeNull();
+    fireEvent.click(within(footer).getByRole("button", { name: "Account menu" }));
+    expect(within(screen.getByRole("menu", { name: "Account" })).queryByRole("menuitem", { name: "Settings" })).toBeNull();
+    fireEvent.click(within(footer).getByRole("button", { name: "Account menu" }));
+
+    fireEvent.click(within(footer).getByRole("button", { name: "Settings" }));
     expect(props.settings.open).toHaveBeenCalledOnce();
-
-    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
-    expect(props.settings.open).toHaveBeenCalledTimes(2);
   });
 });

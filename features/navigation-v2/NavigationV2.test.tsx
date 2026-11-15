@@ -115,7 +115,7 @@ describe("Navigation v2", () => {
     expect(trigger.className).not.toContain("before:bg-critical");
   });
 
-  it.each(["Chats", "New chat", "shortcut", "chat"])("defers the entire %s exit until Studio releases it", (destination) => {
+  it.each(["shortcut", "chat"])("defers the entire %s exit until the library section releases it", (destination) => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
     useWorkspaceStore.getState().applyNavigationPage({ chats, folders: [], nextCursor: null }, false);
     let pending: (() => void) | undefined;
@@ -128,32 +128,98 @@ describe("Navigation v2", () => {
       <main>Draft</main>
     </ReadingRoomShellV2>);
     if (destination === "shortcut") fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
-    else if (destination === "chat") fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
-    else fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole(destination === "New chat" ? "link" : "button", { name: destination }));
+    else fireEvent.click(screen.getByRole("treeitem", { name: "Selected brief" }));
     expect(guard).toHaveBeenCalledOnce();
     for (const callback of [onNewChat, onSelectChat, onChats]) expect(callback).not.toHaveBeenCalled();
     act(() => pending?.());
     if (destination === "chat") expect(onSelectChat).toHaveBeenCalledWith(chats[1]);
-    else if (destination === "New chat" || destination === "shortcut") expect(onNewChat).toHaveBeenCalledWith("NORMAL");
-    else expect(onChats).toHaveBeenCalledOnce();
+    else {
+      expect(onChats).toHaveBeenCalledOnce();
+      expect(onNewChat).toHaveBeenCalledWith("NORMAL");
+    }
   });
 
-  it("disables pending exits without invoking a discard guard, while Settings remains an overlay", () => {
+  it("ignores a new-chat shortcut while the library section is busy, without invoking its guard", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
     const guard = vi.fn();
-    const onSettings = vi.fn();
-    render(<ReadingRoomShellV2 section="library" navigationBusy onRequestNavigation={guard} onNewChat={vi.fn()}
-      onSelectChat={vi.fn()} onLibrary={vi.fn()} onSettings={onSettings}><main>Saving</main></ReadingRoomShellV2>);
-    const rail = screen.getByRole("navigation", { name: "Workspace" });
-    for (const name of ["Chats", "Studio"]) expect(within(rail).getByRole("button", { name })).toBeDisabled();
-    const newChat = within(rail).getByRole("link", { name: "New chat" });
-    expect(newChat).toHaveAttribute("aria-disabled", "true");
-    expect(fireEvent.click(newChat)).toBe(false);
+    const onNewChat = vi.fn();
+    render(<ReadingRoomShellV2 section="library" navigationBusy onRequestNavigation={guard} onNewChat={onNewChat}
+      onSelectChat={vi.fn()}><main>Saving</main></ReadingRoomShellV2>);
     fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
     expect(guard).not.toHaveBeenCalled();
-    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
-    expect(onSettings).toHaveBeenCalledOnce();
+    expect(onNewChat).not.toHaveBeenCalled();
+  });
+
+  it.each([390, 900, 1440])("hides the floating controls and leaves the list shortcuts inert in the library section at width %s", (width) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
+    const guard = vi.fn();
+    render(<ReadingRoomShellV2 section="library" onRequestNavigation={guard} onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+      <main>Settings</main>
+    </ReadingRoomShellV2>);
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell")!;
+    expect(shell.querySelector(".v2-sidebar-floats")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open sidebar" })).toBeNull();
+    const before = {
+      collapsed: shell.getAttribute("data-sidebar-collapsed"),
+      compact: shell.getAttribute("data-sidebar-compact-expanded"),
+      mobile: shell.getAttribute("data-mobile-sidebar")
+    };
+
+    const toggle = fireEvent.keyDown(window, { ctrlKey: true, key: "S", shiftKey: true });
+    const filter = fireEvent.keyDown(window, { ctrlKey: true, key: "k" });
+    act(() => vi.advanceTimersByTime(100));
+    // Nothing handled them: the browser keeps its own meaning for the keys.
+    expect(toggle).toBe(true);
+    expect(filter).toBe(true);
+    expect(screen.getByRole("searchbox", { name: "Filter chats" })).not.toHaveFocus();
+    expect({
+      collapsed: shell.getAttribute("data-sidebar-collapsed"),
+      compact: shell.getAttribute("data-sidebar-compact-expanded"),
+      mobile: shell.getAttribute("data-mobile-sidebar")
+    }).toEqual(before);
+    expect(guard).not.toHaveBeenCalled();
+  });
+
+  it("closes an open drawer when the library section opens", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
+    const shellFor = (section: "chats" | "library") => (
+      <ReadingRoomShellV2 section={section} onNewChat={vi.fn()} onSelectChat={vi.fn()}>
+        <main>Content</main>
+      </ReadingRoomShellV2>
+    );
+    const view = render(shellFor("chats"));
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    expect(shell).toHaveAttribute("data-mobile-sidebar", "true");
+    view.rerender(shellFor("library"));
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+    expect(screen.getByRole("main").closest(".v2-workspace-content")).not.toHaveAttribute("inert");
+    view.rerender(shellFor("chats"));
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
+  });
+
+  it("marks the show-list control with unread announcements whenever the list is hidden at desktop width", async () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+    const count = vi.spyOn(announcementsApi, "getAnnouncementUnreadCount").mockResolvedValue(2);
+    try {
+      render(<AnnouncementsProvider accountId="navigation-reader"><ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}
+        sidebar={close => <NavigationSidebar {...sidebarProps({ onClose: close })} />}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2></AnnouncementsProvider>);
+      // The list is shown: its footer bell carries the count, not the opener.
+      expect(await screen.findByRole("button", { name: "Announcements, 2 unread" })).toBeInTheDocument();
+      const trigger = screen.getByRole("button", { name: "Open sidebar" });
+      expect(trigger).not.toHaveAttribute("data-announcements-unread");
+      expect(trigger).not.toHaveAttribute("aria-describedby");
+
+      fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+      expect(trigger).toHaveAttribute("data-announcements-unread", "true");
+      expect(trigger).toHaveAccessibleDescription("Unread announcements");
+
+      fireEvent.click(trigger);
+      expect(trigger).not.toHaveAttribute("data-announcements-unread");
+    } finally { count.mockRestore(); }
   });
 
   it("shares the announcement count between the closed mobile trigger and drawer bell", async () => {
@@ -161,7 +227,7 @@ describe("Navigation v2", () => {
     const count = vi.spyOn(announcementsApi, "getAnnouncementUnreadCount").mockResolvedValue(3);
     try {
       render(<AnnouncementsProvider accountId="navigation-reader"><ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()}
-        sidebar={close => <NavigationSidebar {...sidebarProps({ drawerDestinations: true, onClose: close })} />}>
+        sidebar={close => <NavigationSidebar {...sidebarProps({ onClose: close })} />}>
         <main>Conversation</main>
       </ReadingRoomShellV2></AnnouncementsProvider>);
       const trigger = screen.getByRole("button", { name: "Open sidebar" });
@@ -403,11 +469,39 @@ describe("Navigation v2", () => {
     expect(screen.getByText("Nothing found")).toBeVisible();
   });
 
-  it("lists AIQSA Connect among the drawer destinations only while it is on", () => {
-    const { view } = sidebar({ drawerDestinations: true, onSettings: vi.fn() });
-    expect(screen.queryByRole("link", { name: "AIQSA Connect" })).toBeNull();
-    view.rerender(<NavigationSidebar {...sidebarProps({ connectEntryVisible: true, drawerDestinations: true, onSettings: vi.fn() })} />);
-    expect(screen.getByRole("link", { name: "AIQSA Connect" })).toHaveAttribute("href", "/connect");
+  it("ends the list with one footer row: the account entry, Announcements and the Settings gear", async () => {
+    const count = vi.spyOn(announcementsApi, "getAnnouncementUnreadCount").mockResolvedValue(0);
+    const onSettings = vi.fn();
+    try {
+      render(<AnnouncementsProvider accountId="navigation-reader">
+        <NavigationSidebar {...sidebarProps({ accountLabel: "operator@example.test", adminEntryVisible: true, onSettings })} />
+      </AnnouncementsProvider>);
+      const footer = screen.getByTestId("navigation-footer");
+      const row = footer.querySelector(".v2-navigation-footer-bar")!;
+      const bell = await within(footer).findByRole("button", { name: "Announcements" });
+      const gear = within(footer).getByRole("button", { name: "Settings" });
+      const account = within(footer).getByRole("button", { name: "Account menu" });
+      expect([...row.children].map((child) => child.querySelector("button") ?? child))
+        .toEqual([account, bell, gear]);
+      expect(gear).toHaveAttribute("data-tooltip", "Settings");
+      expect(within(footer).getByText("operator@example.test")).toBeInTheDocument();
+
+      fireEvent.click(gear);
+      expect(onSettings).toHaveBeenCalledOnce();
+
+      // The gear sits beside the entry, so its menu does not repeat Settings.
+      fireEvent.click(account);
+      const menu = screen.getByRole("menu", { name: "Account" });
+      expect(within(menu).getByTestId("account-menu-identity")).toHaveTextContent("operator@example.test");
+      expect(within(menu).getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin");
+      expect(within(menu).getByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
+      expect(within(menu).queryByRole("menuitem", { name: "Settings" })).toBeNull();
+
+      for (const name of ["Studio", "AIQSA Connect", "Control Center"]) {
+        expect(within(footer).queryByRole("button", { name })).toBeNull();
+      }
+      expect(screen.queryByRole("link", { name: "AIQSA Connect" })).toBeNull();
+    } finally { count.mockRestore(); }
   });
 
   it("opens a normal chat from one New chat button with no mode menu", () => {
@@ -427,9 +521,9 @@ describe("Navigation v2", () => {
     const onNewChat = vi.fn();
     render(<ReadingRoomShellV2 onNewChat={onNewChat} onSelectChat={vi.fn()}><main>Conversation</main></ReadingRoomShellV2>);
 
-    // The sidebar button, the rail mark and the floating plus.
+    // The sidebar button and the floating plus.
     const links = screen.getAllByRole("link", { name: "New chat" });
-    expect(links).toHaveLength(3);
+    expect(links).toHaveLength(2);
     for (const link of links) {
       expect(link).toHaveAttribute("href", "/");
       for (const init of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
@@ -912,44 +1006,59 @@ describe("Navigation v2", () => {
     expect(useWorkspaceStore.getState().navigationSearchQuery).toBe("");
   });
 
-  it("keeps the rail with its destinations beside the list and hides it on mobile", () => {
-    const onLibrary = vi.fn();
+  it.each([390, 900, 1440])("renders no rail and keeps the wordmark header and footer at width %s", (width) => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
     const onSettings = vi.fn();
-    const { rerender } = render(
+    render(
       <ReadingRoomShellV2
         accountLabel="operator@aiqsa.local"
         adminEntryVisible
-        onLibrary={onLibrary}
         onNewChat={vi.fn()}
         onSelectChat={vi.fn()}
         onSettings={onSettings}
+      >
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByTestId("workspace-rail")).toBeNull();
+    expect(document.querySelector(".v2-rail")).toBeNull();
+    for (const name of ["Chats", "Studio", "AIQSA Connect", "Control Center"]) {
+      expect(screen.queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByRole("link", { name: "AIQSA Connect" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Control Center" })).toBeNull();
+
+    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
+    // The header is the wordmark and the hide-list control; no "Chats" title.
+    expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
+    expect(within(navigation).queryByText("Chats")).toBeNull();
+    expect(within(navigation).getByRole("button", { name: "Close sidebar" })).toBeInTheDocument();
+    const footer = within(navigation).getByTestId("navigation-footer");
+    expect(within(footer).getByRole("button", { name: "Account menu" })).toBeInTheDocument();
+    fireEvent.click(within(footer).getByRole("button", { name: "Settings" }));
+    expect(onSettings).toHaveBeenCalledOnce();
+  });
+
+  it("collapses the desktop list to the floating controls and keeps the library section's list hidden", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 1440));
+    const { rerender } = render(
+      <ReadingRoomShellV2
+        onNewChat={vi.fn()}
+        onSelectChat={vi.fn()}
         sidebar={(close) => <NavigationSidebar {...sidebarProps({ onClose: close })} />}
       >
         <main>Conversation</main>
       </ReadingRoomShellV2>
     );
 
-    const rail = screen.getByRole("navigation", { name: "Workspace" });
-    expect(within(rail).getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
-    fireEvent.click(within(rail).getByRole("button", { name: "Studio" }));
-    fireEvent.click(within(rail).getByRole("button", { name: "Settings" }));
-    expect(onLibrary).toHaveBeenCalledOnce();
-    expect(onSettings).toHaveBeenCalledOnce();
-    expect(within(rail).queryByRole("button", { name: "Archived chats" })).toBeNull();
-    expect(within(rail).getByRole("link", { name: "Control Center" })).toHaveAttribute("href", "/admin");
-    fireEvent.click(within(rail).getByRole("button", { name: "Account menu" }));
-    expect(screen.getByRole("menu", { name: "Account" })).toHaveTextContent("Sign out");
-    // The sidebar itself no longer carries the footer destinations on desktop.
-    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
-    expect(within(navigation).queryByRole("button", { name: "Studio" })).toBeNull();
-    expect(within(navigation).getByText("Chats")).toBeVisible();
-
-    // Collapsing hides only the list: the rail and the reopen control stay.
     fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
-    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell")!;
     expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
-    expect(screen.getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+    const floats = shell.querySelector<HTMLElement>(".v2-sidebar-floats")!;
+    expect(within(floats).getByRole("button", { name: "Open sidebar" })).toHaveFocus();
+    expect(within(floats).getByRole("link", { name: "New chat" })).toHaveAttribute("href", "/");
 
     rerender(
       <ReadingRoomShellV2
@@ -961,13 +1070,11 @@ describe("Navigation v2", () => {
         <main>Library</main>
       </ReadingRoomShellV2>
     );
-    expect(screen.getByRole("main").closest(".v2-workspace-shell"))
-      .toHaveAttribute("data-shell-section", "library");
-    expect(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole("button", { name: "Chats" })).not.toHaveAttribute("aria-current");
+    expect(shell).toHaveAttribute("data-shell-section", "library");
+    expect(shell.querySelector(".v2-sidebar-floats")).toBeNull();
   });
 
-  it.each([1440, 390])("opens Settings from the account menu and the Settings destination at width %s", (width) => {
+  it.each([1440, 390])("opens Settings from the footer gear at width %s, with no Settings item in the account menu", (width) => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
     const onSettings = vi.fn();
     render(
@@ -981,49 +1088,21 @@ describe("Navigation v2", () => {
       </ReadingRoomShellV2>
     );
 
-    const owner = () => width > 390
-      ? screen.getByRole("navigation", { name: "Workspace" })
-      : screen.getByRole("complementary", { name: "Chat navigation" });
+    const shell = screen.getByRole("main").closest(".v2-workspace-shell");
+    const navigation = () => screen.getByRole("complementary", { name: "Chat navigation" });
     if (width <= 390) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
-    fireEvent.click(within(owner()).getByRole("button", { name: "Account menu" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
+    fireEvent.click(within(navigation()).getByRole("button", { name: "Account menu" }));
+    expect(within(navigation()).getByTestId("account-menu-identity")).toHaveTextContent("operator@aiqsa.local");
+    expect(screen.queryByRole("menuitem", { name: "Settings" })).toBeNull();
+    fireEvent.click(within(navigation()).getByRole("button", { name: "Account menu" }));
+
+    fireEvent.click(within(navigation()).getByRole("button", { name: "Settings" }));
     expect(onSettings).toHaveBeenCalledOnce();
-
-    if (width <= 390) fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
-    fireEvent.click(within(owner()).getByRole("button", { name: "Settings" }));
-    expect(onSettings).toHaveBeenCalledTimes(2);
+    // The gear closes a phone drawer before Settings opens.
+    expect(shell).not.toHaveAttribute("data-mobile-sidebar");
   });
 
-  it("moves the rail destinations into the drawer footer on mobile", () => {
-    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 390));
-    render(
-      <ReadingRoomShellV2
-        accountLabel="operator@aiqsa.local"
-        onLibrary={vi.fn()}
-        onNewChat={vi.fn()}
-        onSelectChat={vi.fn()}
-        onSettings={vi.fn()}
-      >
-        <main>Conversation</main>
-      </ReadingRoomShellV2>
-    );
-
-    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
-    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
-    // Settings is a footer destination too (one tap, UX audit 2026-09-02 B8);
-    // Control Center stays in the account menu, as on the rail.
-    for (const name of ["Studio", "Settings", "Account menu"]) {
-      expect(within(navigation).getByRole("button", { name })).toBeInTheDocument();
-    }
-    expect(within(navigation).queryByRole("button", { name: "Archived chats" })).toBeNull();
-    fireEvent.click(within(navigation).getByRole("button", { name: "Account menu" }));
-    expect(within(navigation).getByRole("menuitem", { name: "Settings" })).toBeInTheDocument();
-    expect(within(navigation).getByTestId("account-menu-identity")).toHaveTextContent("operator@aiqsa.local");
-    expect(within(navigation).getByText("AIQSA")).toBeInTheDocument();
-  });
-
-  it.each([900, 1440])("starts a personal chat from the Library or chats rail at width %s", (width) => {
+  it.each([900, 1440])("starts a personal chat from the library section's shortcut and the floating control at width %s", (width) => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => width));
     useWorkspaceStore.getState().applyNavigationPage({ chats: [], folders: [], nextCursor: null }, false);
     const onChats = vi.fn();
@@ -1039,15 +1118,14 @@ describe("Navigation v2", () => {
       </ReadingRoomShellV2>
     );
     const view = render(shell("library"));
-    const activateBrand = () => fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole("link", { name: "New chat" }));
 
-    activateBrand();
+    fireEvent.keyDown(window, { ctrlKey: true, shiftKey: true, key: "O" });
     expect(onChats).toHaveBeenCalledOnce();
     expect(onNewChat).toHaveBeenCalledExactlyOnceWith("NORMAL");
 
     view.rerender(shell("chats"));
-    activateBrand();
+    const floats = document.querySelector<HTMLElement>(".v2-sidebar-floats")!;
+    fireEvent.click(within(floats).getByRole("link", { name: "New chat" }));
     expect(onNewChat).toHaveBeenCalledTimes(2);
     expect(onNewChat).toHaveBeenLastCalledWith("NORMAL");
     expect(onChats).toHaveBeenCalledOnce();
@@ -1095,7 +1173,7 @@ describe("Navigation v2", () => {
     } as MediaQueryList)));
     render(
       <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} sidebar={(close) => (
-        <NavigationSidebar {...sidebarProps({ drawerDestinations: true, onClose: close })} />
+        <NavigationSidebar {...sidebarProps({ onClose: close })} />
       )}>
         <main>Conversation</main>
       </ReadingRoomShellV2>
@@ -1253,11 +1331,9 @@ describe("Navigation v2", () => {
 
   it("settles compact drawers after a destination or scrim is selected", () => {
     vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 820));
-    const onLibrary = vi.fn();
     const onSettings = vi.fn();
     render(
       <ReadingRoomShellV2
-        onLibrary={onLibrary}
         onNewChat={vi.fn()}
         onSelectChat={vi.fn()}
         onSettings={onSettings}
@@ -1287,17 +1363,32 @@ describe("Navigation v2", () => {
     expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
     expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus();
 
+    // The drawer is the whole navigation at this width: no rail beside it,
+    // and its own footer gear closes it before Settings opens.
     openDrawer();
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
-      .getByRole("button", { name: "Studio" }));
-    expect(onLibrary).toHaveBeenCalledOnce();
-    expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
-
-    openDrawer();
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Workspace" }))
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    fireEvent.click(within(screen.getByRole("complementary", { name: "Chat navigation" }))
       .getByRole("button", { name: "Settings" }));
     expect(onSettings).toHaveBeenCalledOnce();
     expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded");
+  });
+
+  it("keeps the compact drawer's Tab cycle inside the list itself", () => {
+    vi.stubGlobal("matchMedia", responsiveMatchMedia(() => 820));
+    render(
+      <ReadingRoomShellV2 onNewChat={vi.fn()} onSelectChat={vi.fn()} onSettings={vi.fn()}>
+        <main>Conversation</main>
+      </ReadingRoomShellV2>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open sidebar" }));
+    const navigation = screen.getByRole("complementary", { name: "Chat navigation" });
+    const skip = within(navigation).getByRole("button", { name: "Skip to message composer" });
+    const gear = within(navigation).getByRole("button", { name: "Settings" });
+    gear.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(skip).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(gear).toHaveFocus();
   });
 
   it("keeps column-control tooltips on their inward side", () => {

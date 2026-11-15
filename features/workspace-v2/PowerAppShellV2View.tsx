@@ -544,7 +544,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const blankGreeting = useBlankGreetingV2(session.accountDisplayName, session.greetingPeriod ?? null);
   const refreshThreadLayout = thread.refreshLayout;
-  const [libraryInitialTab, setLibraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
+  const [libraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
     if (typeof window === "undefined") return undefined;
     const target = new URL(window.location.href).searchParams.get("library");
     return libraryTabGroups.flatMap(group => group.tabs).find(id => id === target);
@@ -1589,7 +1589,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           accountId={session.accountId}
           accountLabel={session.accountDisplayName.trim() || session.accountEmail}
           adminEntryVisible={session.adminEntryVisible}
-          connectEntryVisible={session.connectEntryVisible}
           chatActive={Boolean(session.activeChatId)}
           section={libraryOpen ? "library" : "chats"}
           navigationBusy={settings.studio?.busy}
@@ -1641,10 +1640,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           onFavorite={(chat) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.toggleChatFavorite(full);
-          }}
-          onLibrary={() => {
-            if (settings.studio) settings.studio.open();
-            else { setLibraryInitialTab(undefined); settings.openLibrary(); }
           }}
           onMemoryMode={setNavigationMemoryMode}
           onMove={(chat, folderId) => {
