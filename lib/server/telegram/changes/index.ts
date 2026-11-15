@@ -39,7 +39,12 @@ import {
  * Studio route as that user (`./gateway.ts`), guarded by the version the card
  * names. The pressed message shows what happened, or why nothing did; a
  * failure offers the buttons again. While the press's link no longer reaches
- * its chat with Telegram access allowed, nothing is done or shown.
+ * its chat with Telegram access allowed, nothing is done; when it stops
+ * reaching it only after the request returned, the change stands unannounced.
+ * A button counts as used when pressed, before its request goes out, so a
+ * restart between the two leaves the decision to the web card (accepted:
+ * nothing is ever done twice). Change messages follow even an answer that
+ * failed to reach Telegram: the change happened, and its Undo is the user's.
  */
 
 export const TELEGRAM_CHANGE_CALLBACK_KINDS = ["change_undo", "change_confirm", "change_cancel"] as const satisfies readonly TelegramCallbackKind[];
