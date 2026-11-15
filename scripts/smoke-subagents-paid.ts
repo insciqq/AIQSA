@@ -2773,13 +2773,17 @@ async function main() {
       }
       if (blind?.model.capabilities.imageInput) fail("text_model_has_image_input");
     }
-    // Q, R and V search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
+    // Q, R and V search for real: the DeepSeek client route when its key is given, and the codex-lb hosted route with
+    // AIQSA_SUBAGENTS_HOSTED_SEARCH=1 (alone when there is no DeepSeek key; `subagentHarnessOptions` refuses neither).
     const search: SearchRoute[] = [];
     if (researchOptions?.search) {
       search.push(await productionSearch(api, route, secret, researchOptions.search, model));
     } else if (scenarios.some((id) => SUBAGENT_SCENARIO_NEEDS[id].search)) {
-      const client = await ensureSearchSource(api, { kind: "deepseek_search_api", provider: "deepseek", secret: process.env.DEEPSEEK_API_KEY ?? fail("deepseek_key_required") });
-      search.push({ mode: "all_selected", model, name: "client", sources: [{ label: "deepseek", optionId: client }] });
+      const deepseekKey = process.env.DEEPSEEK_API_KEY?.trim();
+      if (deepseekKey) {
+        const client = await ensureSearchSource(api, { kind: "deepseek_search_api", provider: "deepseek", secret: deepseekKey });
+        search.push({ mode: "all_selected", model, name: "client", sources: [{ label: "deepseek", optionId: client }] });
+      } else if (process.env.AIQSA_SUBAGENTS_HOSTED_SEARCH !== "1") fail("deepseek_key_required");
       if (process.env.AIQSA_SUBAGENTS_HOSTED_SEARCH === "1") {
         const hostedModel = await ensureModel(api, { apiRoot: route.apiRoot, model: route.model }, secret, "Sub-agents hosted search model", { nativeSearch: true });
         const hosted = await ensureSearchSource(api, { connectionId: hostedModel.connectionId, kind: "web_search" });

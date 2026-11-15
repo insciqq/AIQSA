@@ -220,6 +220,8 @@ describe("a sub-agent's children (O)", () => {
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("V");
     expect(selectedSubagentScenarios("v")).toEqual(["V"]);
     expect(() => subagentHarnessOptions({}, ["V"], "m")).toThrow("browser_scenarios_deepseek_key_required");
+    // codex-lb's hosted Search alone stands in for the DeepSeek route.
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_HOSTED_SEARCH: "1" }, ["V"], "m")).not.toThrow();
     const prompt = SUBAGENT_PROMPTS.V();
     expect(prompt).toContain(SUBAGENT_NAMES.handOver.lead);
     expect(prompt).toContain(SUBAGENT_NAMES.handOver.helper);
