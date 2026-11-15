@@ -4,6 +4,9 @@ import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
+// The first viewport may compile the sign-in and chat pages under `next dev`, which outlasted 30 s in a combined run.
+test.describe.configure({ timeout: 60_000 });
+
 const chatId = "search-counts-chat";
 const runId = "search-counts-run";
 const answerId = "search-counts-answer";
