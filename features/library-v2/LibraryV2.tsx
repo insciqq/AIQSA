@@ -68,6 +68,18 @@ export const libraryTabGroups: readonly Readonly<{ label: string | null; tabs: r
 ];
 
 /**
+ * Focus on a control that is still there for the user. A control that left
+ * the document, or that the page hid or made inert (the chat list's gear
+ * while Settings is open), no longer holds it.
+ */
+function focusHeldElsewhere(): boolean {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body || !active.isConnected) return false;
+  if (active.closest("[inert], [hidden], [aria-hidden='true']")) return false;
+  return window.getComputedStyle(active).visibility !== "hidden";
+}
+
+/**
  * The sections Settings offers this account, in order: Computers only with
  * AIQSA Connect content to show, Telegram only when the installation offers it.
  */
@@ -168,15 +180,15 @@ export function LibraryV2({
     if (subviewKey && !sectionShown) setSectionShown(true);
   }, [sectionShown, setSectionShown, subviewKey]);
 
-  // Settings usually replaces what had focus (the gear, a card in the chat).
-  // On opening, keyboard users land inside it instead of on the document
-  // body: on the section's Back control where a section shows alone, else on
-  // the section's row, else on the section itself.
+  // Settings usually replaces or hides what had focus (a card in the chat,
+  // the gear in the chat list the shell hides). On opening, keyboard users
+  // land inside it instead of on the document body: on the section's Back
+  // control where a section shows alone, else on the section's row, else on
+  // the section itself.
   useLayoutEffect(() => {
     if (focusPlaced.current) return;
     focusPlaced.current = true;
-    const active = document.activeElement;
-    if (active && active !== document.body) return;
+    if (focusHeldElsewhere()) return;
     const row = selectedId ? tabRefs.current[selectedId] : null;
     for (const candidate of sectionShown ? [listBackRef.current, row, panelRef.current] : [row, panelRef.current]) {
       if (!candidate) continue;

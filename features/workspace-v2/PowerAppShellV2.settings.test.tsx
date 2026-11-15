@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { initialSettingsDestinationSnapshot, useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
@@ -118,5 +118,59 @@ describe("opening Settings from the shell", () => {
     await screen.findByTestId("library-v2");
     expect(screen.queryByRole("tab", { name: "Computers" })).toBeNull();
     expect(screen.queryByTestId("settings-computers-panel")).toBeNull();
+  });
+});
+
+function stubComposition(mobile: boolean) {
+  vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+    addEventListener: vi.fn(),
+    addListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+    matches: mobile && query.includes("max-width: 767px"),
+    media: query,
+    onchange: null,
+    removeEventListener: vi.fn(),
+    removeListener: vi.fn()
+  })));
+}
+
+/** Opens Settings with the gear in the chat list footer, as a keyboard user does. */
+async function openSettingsWithTheGear(): Promise<HTMLElement> {
+  const gear = within(await screen.findByTestId("navigation-footer")).getByRole("button", { name: "Settings" });
+  gear.focus();
+  fireEvent.click(gear);
+  await screen.findByTestId("library-v2");
+  return gear;
+}
+
+describe("keyboard focus around Settings", () => {
+  it("enters Settings from the gear, which the shell only hides, and returns to it on Back to chat", async () => {
+    render(shell());
+    const gear = await openSettingsWithTheGear();
+    expect(gear).toBeInTheDocument();
+    expect(screen.getByTestId("library-v2")).toContainElement(document.activeElement as HTMLElement);
+    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+    await waitFor(() => expect(gear).toHaveFocus());
+  });
+
+  it("returns to Open sidebar when the chat list is hidden", async () => {
+    stubComposition(true);
+    render(shell());
+    await openSettingsWithTheGear();
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open sidebar" })).toHaveFocus());
+  });
+
+  it("leaves a new chat started from Settings with Ctrl+Shift+O in the composer", async () => {
+    render(shell());
+    await waitFor(() => expect(document.querySelector('[data-testid="composer-v2"] textarea')).not.toBeNull());
+    await openSettingsWithTheGear();
+    fireEvent.keyDown(document.body, { ctrlKey: true, key: "O", shiftKey: true });
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-testid="composer-v2"] textarea')));
   });
 });
