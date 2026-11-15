@@ -81,7 +81,8 @@ describe("a successor behind the previous answer's Workspace hand-off", () => {
     expect(memory.engine.approvedCall).toHaveBeenCalledWith(expect.objectContaining({ approvalId: "approval-1" }));
     const tools = (requests[0]?.tools ?? []).map((tool) => tool.name);
     expect(tools).toContain("read_secret");
-    expect(tools).not.toContain("manage_secret");
+    // A Telegram turn takes the self-service tools as a web turn does (operator decision 2026-11-16).
+    expect(tools).toContain("manage_secret");
     expect(order.slice(0, 2)).toEqual(["activated", "dispatched"]);
   });
 
