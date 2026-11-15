@@ -1,5 +1,6 @@
 "use client";
 
+import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 import { UiV2Toast } from "@/components/ui-v2";
 import type { AssistantIdentity } from "@/lib/contracts/assistants";
 import type { ChatNavigationSummaryWire } from "@/lib/contracts/chats";
@@ -113,7 +114,7 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
     />
   );
 
-  return (
+  const gallery = (
     <div data-testid="ui-v2-navigation-gallery">
       <ReadingRoomShellV2
         onNewChat={setMode}
@@ -150,4 +151,9 @@ export function NavigationV2Gallery({ state = "default" }: { state?: NavigationG
       ) : null}
     </div>
   );
+  // The full footer row (account entry, Announcements, Settings): the bell
+  // and the unread hint read the account's count, which a spec can route.
+  return state === "destinations"
+    ? <AnnouncementsProvider accountId="navigation-fixture">{gallery}</AnnouncementsProvider>
+    : gallery;
 }

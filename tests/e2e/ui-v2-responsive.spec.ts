@@ -64,16 +64,27 @@ for (const theme of ["dark", "light"] as const) {
       );
       const navigation = page.getByRole("complementary", { name: "Chat navigation" });
       const opener = page.getByRole("button", { name: "Open sidebar" });
-      const rail = page.getByTestId("workspace-rail");
-      if (viewport.width < 768) await expect(rail).toHaveCount(0);
-      else await expect(rail).toBeVisible();
+      // No icon rail at any width: the shell is `chat list | content`.
+      await expect(page.locator("[data-testid='workspace-rail'], .v2-rail")).toHaveCount(0);
+      const content = page.locator(".v2-workspace-shell > .v2-workspace-content");
       if (viewport.width < 1024) {
         await expect(navigation).toBeHidden();
         await expect(opener).toBeVisible();
+        // Below 1024px the list is a closed drawer: the content takes the whole width.
+        const contentBox = (await content.boundingBox())!;
+        expect(Math.abs(contentBox.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(contentBox.width - viewport.width)).toBeLessThanOrEqual(1);
       } else {
         await expect(navigation).toBeVisible();
         await expect(page.locator(".v2-sidebar-floats")).toHaveCSS("opacity", "0");
         await expect(page.locator(".v2-sidebar-floats")).toHaveCSS("pointer-events", "none");
+        // The 16.25rem list starts at the left edge and the content follows it.
+        const listBox = (await navigation.boundingBox())!;
+        const contentBox = (await content.boundingBox())!;
+        expect(Math.abs(listBox.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(listBox.width - 260)).toBeLessThanOrEqual(1);
+        expect(Math.abs(contentBox.x - 260)).toBeLessThanOrEqual(1);
+        expect(Math.abs(contentBox.width - (viewport.width - 260))).toBeLessThanOrEqual(1);
       }
 
       const modelLayer = page.getByRole("dialog", { name: "Choose model" });
@@ -241,20 +252,34 @@ test.describe("v2 mobile row-action menu", () => {
 
 test("v2 compact drawer isolates content, contains focus, and closes on Escape", async ({ page }) => {
   await page.setViewportSize({ height: 390, width: 844 });
-  await page.goto("/ui-v2-fixture?fixture=navigation");
+  // The full footer row (account entry, Announcements, Settings) ends the drawer.
+  await page.goto("/ui-v2-fixture?fixture=navigation&state=destinations");
   const opener = page.getByRole("button", { name: "Open sidebar" });
   await opener.click();
   const shell = page.locator(".v2-workspace-shell");
   await expect(shell).toHaveAttribute("data-sidebar-compact-expanded", "true");
   await expect(page.locator(".v2-workspace-content")).toHaveAttribute("inert", "");
-  await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeFocused();
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  await expect(navigation).toBeFocused();
 
-  const firstRailDestination = page.getByRole("navigation", { name: "Workspace" })
-    .getByRole("link", { name: "New chat", exact: true });
-  await firstRailDestination.focus();
+  // 768–1023px: the same overlay drawer as on a phone, from the left edge and
+  // 17.5rem wide, over a content column that keeps the whole width.
+  const drawerBox = (await navigation.boundingBox())!;
+  expect(Math.abs(drawerBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(drawerBox.width - 280)).toBeLessThanOrEqual(1);
+  const contentBox = (await page.locator(".v2-workspace-content").boundingBox())!;
+  expect(Math.abs(contentBox.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(contentBox.width - 844)).toBeLessThanOrEqual(1);
+  await expect(page.locator(".v2-navigation-scrim")).toHaveCSS("display", "block");
+
+  // Shift+Tab from the drawer's first control wraps to its last, the footer's
+  // gear, instead of leaving the drawer.
+  const first = navigation.getByRole("button", { name: "Skip to message composer" });
+  await first.focus();
   await page.keyboard.press("Shift+Tab");
-  expect(await page.evaluate(() => Boolean(document.activeElement?.closest(".v2-navigation"))))
-    .toBe(true);
+  await expect(navigation.getByTestId("navigation-footer").getByRole("button", { name: "Settings", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(first).toBeFocused();
 
   await page.keyboard.press("Escape");
   await expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded", "true");
@@ -267,28 +292,77 @@ test("v2 compact drawer isolates content, contains focus, and closes on Escape",
   await page.keyboard.press("Escape");
   await expect(opener).toBeFocused();
 
+  // The scrim closes the drawer and stops covering the content.
   await opener.click();
-  await page.getByRole("navigation", { name: "Workspace" })
-    .getByRole("button", { name: "Studio" }).click();
+  await page.locator(".v2-navigation-scrim").click({ position: { x: 600, y: 200 } });
   await expect(shell).not.toHaveAttribute("data-sidebar-compact-expanded", "true");
   await expect(page.locator(".v2-navigation-scrim")).toHaveCSS("display", "none");
+  await expect(opener).toBeFocused();
 });
 
-test("v2 mobile drawer fits all three destinations on one row", async ({ page }) => {
-  for (const width of [320, 360, 390]) {
+test("v2 drawer footer fits the account entry, Announcements and Settings on one row", async ({ page }) => {
+  await page.route("**/api/announcements/unread-count", (route) => route.fulfill({ json: { unreadCount: 2 } }));
+  for (const width of [320, 360, 390, 768]) {
     await page.setViewportSize({ height: 844, width });
     await page.goto("/ui-v2-fixture?fixture=navigation&state=destinations");
-    await page.getByRole("button", { name: "Open sidebar" }).click();
-    const destinations = page.locator(".v2-navigation-destinations > .v2-navigation-destination");
-    await expect(destinations).toHaveCount(3);
-    await expect(destinations).toHaveText(["Studio", "AIQSA Connect", "Settings"]);
-    const boxes = await destinations.evaluateAll((items) => items.map((item) => {
-      const box = item.getBoundingClientRect();
-      return { left: box.left, right: box.right, top: box.top };
-    }));
-    expect(new Set(boxes.map(({ top }) => Math.round(top))).size).toBe(1);
-    expect(boxes.every(({ left, right }) => left >= 0 && right <= width)).toBe(true);
+    // The bell hides with the drawer, so its unread hint sits on "Open sidebar".
+    const opener = page.getByRole("button", { name: "Open sidebar" });
+    await expect(opener).toHaveAttribute("data-announcements-unread", "true");
+    await opener.click();
+    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+    await expect(navigation).toBeVisible();
+    const footer = navigation.getByTestId("navigation-footer");
+    const controls = [
+      footer.getByRole("button", { name: "Account menu", exact: true }),
+      footer.getByRole("button", { name: "Announcements, 2 unread", exact: true }),
+      footer.getByRole("button", { name: "Settings", exact: true })
+    ];
+    const boxes: { height: number; width: number; x: number; y: number }[] = [];
+    for (const control of controls) {
+      await expect(control).toBeVisible();
+      boxes.push((await control.boundingBox())!);
+    }
+    const drawer = (await navigation.boundingBox())!;
+    expect(Math.abs(drawer.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(drawer.width - Math.min(280, width - 48))).toBeLessThanOrEqual(1);
+    const middle = (box: { height: number; y: number }) => box.y + box.height / 2;
+    for (const box of boxes) {
+      expect(box.x).toBeGreaterThanOrEqual(drawer.x - 0.5);
+      expect(box.x + box.width).toBeLessThanOrEqual(drawer.x + drawer.width + 0.5);
+      expect(Math.abs(middle(box) - middle(boxes[0]!))).toBeLessThanOrEqual(1);
+    }
+    expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.x + boxes[0]!.width - 0.5);
+    expect(boxes[2]!.x).toBeGreaterThanOrEqual(boxes[1]!.x + boxes[1]!.width - 0.5);
+    // The account label truncates rather than pushing the icons out.
+    expect(await footer.locator(".v2-navigation-footer-bar").evaluate((row) => row.scrollWidth <= row.clientWidth)).toBe(true);
+    await expectNoPageOverflow(page);
   }
+});
+
+test("v2 desktop collapsed list keeps the unread hint on Open sidebar", async ({ page }) => {
+  await page.route("**/api/announcements/unread-count", (route) => route.fulfill({ json: { unreadCount: 1 } }));
+  await page.setViewportSize({ height: 800, width: 1280 });
+  await page.goto("/ui-v2-fixture?fixture=navigation&state=destinations");
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  await expect(navigation.getByRole("button", { name: "Announcements, 1 unread", exact: true })).toBeVisible();
+  const opener = page.getByRole("button", { name: "Open sidebar" });
+  // The list shows the bell, so the hidden opener carries no hint.
+  await expect(opener).not.toHaveAttribute("data-announcements-unread");
+  await navigation.getByRole("button", { name: "Close sidebar" }).click();
+  await expect(navigation).toBeHidden();
+  await expect(opener).toBeVisible();
+  await expect(opener).toHaveAttribute("data-announcements-unread", "true");
+  await expect(opener).toHaveAccessibleDescription("Unread announcements");
+  const dot = await opener.evaluate((button) => {
+    const style = getComputedStyle(button, "::before");
+    return { height: parseFloat(style.height), opacity: style.opacity, width: parseFloat(style.width) };
+  });
+  expect(dot.opacity).toBe("1");
+  expect(dot.width).toBeGreaterThan(0);
+  expect(dot.width).toBe(dot.height);
+  await opener.click();
+  await expect(navigation).toBeVisible();
+  await expect(opener).not.toHaveAttribute("data-announcements-unread");
 });
 
 for (const state of ["error", "unavailable"] as const) {
@@ -430,9 +504,11 @@ test.describe("v2 coarse-pointer controls", () => {
       expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(40);
     }
 
-    await page.goto("/ui-v2-fixture?fixture=navigation");
+    // The footer's Announcements and Settings are part of the list's controls.
+    await page.goto("/ui-v2-fixture?fixture=navigation&state=destinations");
     await page.getByRole("button", { name: "Open sidebar" }).tap();
     const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+    await expect(navigation.getByRole("button", { name: "Settings", exact: true })).toBeVisible();
     for (const button of await navigation.getByRole("button").all()) {
       if (!await button.isVisible()) continue;
       expect((await button.boundingBox())?.height).toBeGreaterThanOrEqual(40);

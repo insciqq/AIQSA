@@ -22,10 +22,14 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
   await expect(page.getByTestId("composer-v2")).toBeVisible();
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(navigation.getByRole("link", { exact: true, name: "New chat" })).toBeVisible();
-  // Permanent destinations live on the rail beside the list.
-  const rail = page.getByRole("navigation", { name: "Workspace" });
-  await expect(rail.getByRole("button", { name: "Studio" })).toBeVisible();
-  await expect(rail.getByRole("button", { exact: true, name: "Chats" })).toHaveAttribute("aria-current", "page");
+  // No rail: the list's footer holds the account entry, Announcements and Settings.
+  await expect(page.locator("[data-testid='workspace-rail'], .v2-rail")).toHaveCount(0);
+  const footer = navigation.getByTestId("navigation-footer");
+  const accountMenu = footer.getByRole("button", { name: "Account menu" });
+  const gear = footer.getByRole("button", { exact: true, name: "Settings" });
+  await expect(accountMenu).toBeVisible();
+  await expect(footer.getByRole("button", { name: /^Announcements/u })).toBeVisible();
+  await expect(gear).toBeVisible();
 
   const actionTrigger = navigation.getByRole("button", { name: /^Actions:/u }).first();
   if (await actionTrigger.count()) {
@@ -64,18 +68,25 @@ test("uses the current workspace as the authenticated renderer", async ({ page }
     await expect(page.getByText("Answer evidence", { exact: true })).toHaveCount(0);
   }
 
-  await rail.getByRole("button", { name: "Studio" }).click();
+  // The gear opens Settings in place of the chat list.
+  await gear.click();
   await expect(page.getByTestId("library-v2")).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Studio" })).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("tab", { name: "Assistants" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Memory" })).toBeVisible();
+  await expect(navigation).toBeHidden();
+  await expect(page).toHaveTitle("Settings · AIQSA");
+  for (const name of ["General", "Account", "Data", "Assistants", "Memory", "MCP servers", "Claude Code & Codex"]) {
+    await expect(page.getByRole("tab", { exact: true, name })).toBeVisible();
+  }
   await page.getByRole("button", { name: "Back to chat" }).click();
   await expect(page.getByTestId("library-v2")).toHaveCount(0);
+  await expect(navigation).toBeVisible();
 
-  await rail.getByRole("button", { name: "Account menu" }).click();
-  await page.getByRole("menuitem", { name: "Settings" }).click();
-  await expect(page.getByTestId("settings-v2")).toBeVisible();
-  await page.getByRole("button", { name: "Close settings" }).click();
+  // The account menu keeps who is signed in and Sign out; Settings is the gear beside it.
+  await accountMenu.click();
+  const menu = page.getByRole("menu", { name: "Account" });
+  await expect(menu.getByRole("menuitem", { name: "Sign out" })).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: "Settings" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
 });
 
 test("keeps the production workspace usable at the mobile breakpoint", async ({ page }) => {
@@ -88,5 +99,15 @@ test("keeps the production workspace usable at the mobile breakpoint", async ({ 
   await expect(navigation).toBeVisible();
   await expect(navigation.getByRole("link", { exact: true, name: "New chat" })).toBeVisible();
   await page.getByRole("button", { name: "Close sidebar" }).click();
+  await expect(page.getByTestId("composer-v2")).toBeVisible();
+
+  // The drawer's gear shows the list of Settings sections; Back to chat returns.
+  await page.getByRole("button", { name: "Open sidebar" }).click();
+  await navigation.getByTestId("navigation-footer").getByRole("button", { exact: true, name: "Settings" }).click();
+  const settings = page.getByTestId("library-v2");
+  await expect(settings).toHaveAttribute("data-view", "list");
+  await expect(page.getByRole("button", { name: "Open sidebar" })).toHaveCount(0);
+  await settings.getByRole("button", { exact: true, name: "Back to chat" }).click();
+  await expect(settings).toHaveCount(0);
   await expect(page.getByTestId("composer-v2")).toBeVisible();
 });

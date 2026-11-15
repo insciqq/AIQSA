@@ -2,6 +2,7 @@ import { expect, test, type Route } from "@playwright/test";
 import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memoryClient";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { leaveSettings, runAccountMenuAction } from "./shell/page";
 import { signInWithLocalToken } from "./support/localAuth";
 
 const timestamp = "2026-08-10T10:00:00.000Z";
@@ -324,16 +325,18 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
     .getByRole("menuitem", { name: "Archive" }).click();
   await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toHaveCount(0);
 
-  await page.getByTestId("workspace-rail").getByRole("button", { name: "Settings" }).click();
-  const settingsDialog = page.getByRole("dialog", { name: "Settings" });
-  await settingsDialog.getByRole("button", { name: "Data" }).click();
-  await settingsDialog.getByRole("button", { name: "Manage" }).click();
-  const archivedPanel = settingsDialog.getByTestId("settings-archived-panel");
+  // Settings › Data › Archived chats restores it to the list.
+  await runAccountMenuAction(page, "Data");
+  const settings = page.getByTestId("library-v2");
+  await settings.getByRole("button", { name: "Manage", exact: true }).click();
+  await expect(settings.getByRole("navigation", { name: "Settings location" })).toHaveText("Data / Archived chats");
+  const archivedPanel = settings.getByTestId("settings-archived-panel");
   await archivedPanel.getByRole("button", { name: "Open preview: Retained lifecycle" }).click();
   await expect(archivedPanel.getByRole("heading", { name: "Retained lifecycle" })).toBeVisible();
   await expect(archivedPanel).toContainText("Retained answer");
   await archivedPanel.getByRole("button", { name: "Restore Retained lifecycle" }).click();
-  await settingsDialog.getByRole("button", { name: "Close settings" }).click();
+  await settings.getByRole("button", { name: "Back to Data", exact: true }).click();
+  await leaveSettings(page);
   await expect(workspace.getByRole("treeitem", { exact: true, name: "Retained lifecycle" })).toBeVisible();
 
   // Temporary is the blank chat's header switch; each mode keeps its own draft.

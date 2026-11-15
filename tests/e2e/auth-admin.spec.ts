@@ -774,7 +774,9 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     await expect(sectionIndex.getByRole("link")).toHaveCount(adminSections.length);
     await expect(page.getByRole("button", { name: /Refresh/ })).toHaveCount(0);
     await expect(page.getByTestId("admin-topbar")).not.toContainText("operator@aiqsa.local");
-    await expect(page.getByRole("link", { name: "Chats" }).first()).toHaveAttribute("href", "/");
+    // No rail: the way back to the chats sits at the foot of the section column.
+    await expect(page.getByTestId("admin-rail")).toHaveCount(0);
+    await expect(page.getByTestId("admin-section-footer").getByRole("link", { name: "Chats" })).toHaveAttribute("href", "/");
     const attention = page.getByTestId("admin-section-overview");
     await expect(attention.getByRole("list", { name: "Needs attention" })).toBeVisible();
     await expect(attention.getByTestId("admin-attention-item").filter({ hasText: "Users are waiting for approval" })).toBeVisible();
@@ -1392,6 +1394,9 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
     await page.mouse.wheel(0, 600);
     await expect.poll(() => sectionScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
     await expect(drawer.getByRole("link", { exact: true, name: "Usage" })).toBeInViewport();
+    // The way back to the chats and the account entry stay below the scrolled list.
+    await expect(drawer.getByTestId("admin-section-footer").getByRole("link", { name: "Chats" })).toBeInViewport();
+    await expect(drawer.getByTestId("admin-section-footer").getByRole("button", { name: "Account menu" })).toBeInViewport();
     await drawer.getByRole("link", { exact: true, name: "Usage" }).focus();
     await expect.poll(() => drawer.evaluate((element) => element.contains(document.activeElement))).toBe(true);
 
@@ -1437,7 +1442,9 @@ test("Control Center uses the compact section-index task model at tablet width",
   try {
     await bootstrapAdmin(page);
     await expect(page.getByTestId("admin-section-column")).toBeHidden();
-    await expect(page.getByTestId("admin-rail")).toBeVisible();
+    // No rail beside the content: the topbar starts at the left edge.
+    await expect(page.getByTestId("admin-rail")).toHaveCount(0);
+    expect(Math.abs((await page.getByTestId("admin-topbar").boundingBox())!.x)).toBeLessThanOrEqual(1);
     await expect(page.getByRole("button", { name: "Sections" })).toBeVisible();
 
     await page.getByRole("button", { name: "Sections" }).click();
@@ -1446,6 +1453,13 @@ test("Control Center uses the compact section-index task model at tablet width",
     await expect(page.getByRole("link", { exact: true, name: "Usage" })).toBeVisible();
 
     const drawer = page.getByRole("dialog", { name: "Control Center sections" });
+    // The drawer holds the way back to the chats and the account entry, as the column does from 1024px.
+    const drawerBox = (await drawer.boundingBox())!;
+    expect(Math.abs(drawerBox.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(drawerBox.width - 280)).toBeLessThanOrEqual(1);
+    const drawerFooter = drawer.getByTestId("admin-section-footer");
+    await expect(drawerFooter.getByRole("link", { name: "Chats" })).toBeVisible();
+    await expect(drawerFooter.getByRole("button", { name: "Account menu" })).toBeVisible();
     for (let index = 0; index < 15; index += 1) {
       await page.keyboard.press("Tab");
       await expect.poll(() => drawer.evaluate((element) => element.contains(document.activeElement))).toBe(true);

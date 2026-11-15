@@ -6,10 +6,11 @@ import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { authenticateWithLocalToken } from "./support/localAuth";
 
 // Short screens and narrow tablets (task 20260928115822568): on a phone held
-// sideways every row menu is a sheet that scrolls to its last item; from 768
-// to 1023px and on short touch screens Studio stacks its section tabs above
-// the content instead of a 260px column; and a short screen shows the first
-// gallery row under a compact heading. Everything a test creates is removed.
+// sideways every row menu is a sheet that scrolls to its last item; below
+// 1024px and on short touch screens Settings shows its list of sections and a
+// section in turns, each across the whole width, instead of a 260px column
+// beside the section; and a short screen shows the first gallery row under a
+// compact heading. Everything a test creates is removed.
 
 test.use({ locale: "en-US", contextOptions: { reducedMotion: "reduce" } });
 
@@ -136,83 +137,115 @@ async function expectSheetReachesLastItem(
   await expect(sheet).toHaveCount(0);
 }
 
-async function openStudioSection(page: Page, name: "Assistants" | "Instructions"): Promise<Locator> {
+async function openSettingsSection(page: Page, name: "Assistants" | "Instructions"): Promise<Locator> {
   await runAccountMenuAction(page, name);
   return page.getByTestId("library-v2");
 }
 
-/** The first row menu of a Studio section, if the seeded operator has one there. */
+/** The first row menu of a Settings section, if the seeded operator has one there. */
 async function firstRowMenuTrigger(scope: Locator): Promise<Locator | null> {
   const triggers = scope.getByRole("button", { name: /^More actions for / });
   return (await triggers.count()) > 0 ? triggers.first() : null;
 }
 
-/**
- * Studio gives its content the width the phone layout gives it: the panel
- * spans the Library beside the rail, the section tabs are a strip above it,
- * and the last section tab scrolls into view and opens.
- */
-async function expectStackedStudio(page: Page, size: Size): Promise<void> {
-  const library = page.getByTestId("library-v2");
-  const rail = await boxOf(page.getByTestId("workspace-rail"), "rail");
-  const libraryBox = await boxOf(library, "Studio");
-  const tablist = library.getByRole("tablist", { name: "Studio sections" });
-  const panel = library.getByRole("tabpanel");
-  const tablistBox = await boxOf(tablist, "Studio section tabs");
-  const panelBox = await boxOf(panel, "Studio panel");
+/** The list of sections, also while it is hidden (role queries skip hidden nodes). */
+function sectionList(library: Locator): Locator {
+  return library.locator('[role="tablist"][aria-label="Settings sections"]');
+}
 
-  expect(Math.abs(libraryBox.x - (rail.x + rail.width)), "Studio starts at the rail").toBeLessThanOrEqual(1);
-  expect(Math.abs(libraryBox.x + libraryBox.width - size.width), "Studio reaches the right edge").toBeLessThanOrEqual(1);
-  expect(Math.abs(panelBox.x - libraryBox.x), "no section column before the panel").toBeLessThanOrEqual(1);
-  expect(Math.abs(panelBox.width - libraryBox.width), "the panel takes the whole Studio width").toBeLessThanOrEqual(1);
-  expect(tablistBox.y + tablistBox.height, "the section tabs sit above the panel").toBeLessThanOrEqual(panelBox.y + 1);
-  expect(tablistBox.height, "the section tabs are one strip").toBeLessThanOrEqual(64);
-
-  const tabs = tablist.getByRole("tab");
-  const first = tabs.first();
-  const last = tabs.last();
-  const lastName = (await last.textContent())?.trim() ?? "last section";
-  await last.scrollIntoViewIfNeeded();
-  const lastBox = await boxOf(last, `${lastName} tab`);
-  expectInside(lastBox, viewportBox(size), `${lastName} tab on screen`);
-  expect(lastBox.x + lastBox.width, `${lastName} tab inside the strip`).toBeLessThanOrEqual(tablistBox.x + tablistBox.width + 0.5);
-  await last.tap();
-  await expect(last).toHaveAttribute("aria-selected", "true");
-  await first.scrollIntoViewIfNeeded();
-  await first.tap();
-  await expect(first).toHaveAttribute("aria-selected", "true");
+/** Keyboard focus sits on a visible control inside Settings, not on the document body. */
+async function expectFocusInsideSettings(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLElement) || active === document.body) return false;
+    if (!active.closest('[data-testid="library-v2"]')) return false;
+    const box = active.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  }), "focus stays on a visible control inside Settings").toBe(true);
 }
 
 /**
- * On a short touch screen an open sub-view (the Assistant editor) hides the
- * section strip and keeps "Back to Assistants" in the crumb row; Back shows
- * the strip again and focuses the selected section tab.
+ * Settings takes the whole width and shows the list of sections and a section
+ * in turns: the open section spans the page with no list beside it, Back to
+ * Settings shows the list under its title, the last section scrolls into view
+ * and opens, and the list leads back to `section`.
  */
-async function expectEditorYieldsSectionStrip(page: Page, size: Size): Promise<void> {
+async function expectListThenSection(page: Page, size: Size, section: "Assistants"): Promise<void> {
+  const library = page.getByTestId("library-v2");
+  await expect(library).toHaveAttribute("data-view", "section");
+  const libraryBox = await boxOf(library, "Settings");
+  expect(Math.abs(libraryBox.x), "Settings starts at the left edge").toBeLessThanOrEqual(1);
+  expect(Math.abs(libraryBox.x + libraryBox.width - size.width), "Settings reaches the right edge").toBeLessThanOrEqual(1);
+  const panelBox = await boxOf(library.getByRole("tabpanel"), "Settings section");
+  expect(Math.abs(panelBox.x - libraryBox.x), "no section column before the section").toBeLessThanOrEqual(1);
+  expect(Math.abs(panelBox.width - libraryBox.width), "the section takes the whole width").toBeLessThanOrEqual(1);
+  await expect(sectionList(library), "the list yields to the section").toBeHidden();
+
+  await library.getByRole("button", { exact: true, name: "Back to Settings" }).tap();
+  await expect(library).toHaveAttribute("data-view", "list");
+  await expect(library.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
+  await expect(library.locator('[role="tabpanel"]'), "the section yields to the list").toBeHidden();
+  const list = library.getByRole("tablist", { name: "Settings sections" });
+  const listBox = await boxOf(list, "Settings sections");
+  const rowBox = await boxOf(library.locator(".v2-library-heading-row"), "Settings header row");
+  expect(listBox.y, "the list starts under the header row").toBeGreaterThanOrEqual(rowBox.y + rowBox.height - 0.5);
+
+  const last = list.getByRole("tab").last();
+  const lastName = (await last.textContent())?.trim() ?? "last section";
+  await last.scrollIntoViewIfNeeded();
+  const lastBox = await boxOf(last, `${lastName} row`);
+  expectInside(lastBox, viewportBox(size), `${lastName} row on screen`);
+  expectInside(lastBox, listBox, `${lastName} row inside the list`);
+  await last.tap();
+  await expect(library).toHaveAttribute("data-view", "section");
+  await expect(library.locator('[role="tab"][aria-selected="true"]')).toHaveText(lastName);
+
+  await library.getByRole("button", { exact: true, name: "Back to Settings" }).tap();
+  await expect(library).toHaveAttribute("data-view", "list");
+  const row = list.getByRole("tab", { exact: true, name: section });
+  await row.scrollIntoViewIfNeeded();
+  await row.tap();
+  await expect(library).toHaveAttribute("data-view", "section");
+  await expect(library.locator('[role="tab"][aria-selected="true"]')).toHaveText(section);
+}
+
+/**
+ * On a short touch screen an open sub-view (the Assistant editor) replaces
+ * the section's Back to Settings with "Back to Assistants" in the crumb row;
+ * Back returns to the section with focus still inside Settings, and Back to
+ * Settings then shows the list with the section's row focused.
+ */
+async function expectEditorKeepsItsOwnBack(page: Page, size: Size): Promise<void> {
   const assistant = await createOwnedAssistant(page.request);
   try {
     await openShell(page, "/");
-    const library = await openStudioSection(page, "Assistants");
+    const library = await openSettingsSection(page, "Assistants");
     const card = library.getByTestId(`assistant-card-${assistant.id}`);
     await expect(card).toBeVisible({ timeout: 30_000 });
-    // The role query skips hidden nodes; the attribute query keeps the strip in reach once hidden.
-    const strip = library.locator('[role="tablist"][aria-label="Studio sections"]');
-    await expect(strip).toHaveCount(1);
-    await expect(strip).toBeVisible();
+    await expect(sectionList(library)).toHaveCount(1);
+    await expect(sectionList(library), "the list yields to the section").toBeHidden();
+    const backToSettings = library.getByRole("button", { exact: true, name: "Back to Settings" });
+    await expect(backToSettings).toBeVisible();
 
     await card.getByRole("button", { exact: true, name: `More actions for ${assistant.name}` }).tap();
     await page.getByRole("menuitem", { exact: true, name: "Edit" }).tap();
     const editor = library.getByTestId("assistant-editor");
     await expect(editor.getByLabel("Name Required", { exact: true })).toHaveValue(assistant.name, { timeout: 30_000 });
-    await expect(strip, "the section strip yields to the editor").toBeHidden();
+    await expect(backToSettings, "the editor's own Back replaces Back to Settings").toHaveCount(0);
     const back = library.getByRole("button", { exact: true, name: "Back to Assistants" });
     const backBox = await boxOf(back, "Back to Assistants");
-    expectInside(backBox, await boxOf(library.locator(".v2-library-heading-row"), "Studio crumb row"), "Back to Assistants in the crumb row");
+    expectInside(backBox, await boxOf(library.locator(".v2-library-heading-row"), "Settings crumb row"), "Back to Assistants in the crumb row");
     expectInside(backBox, viewportBox(size), "Back to Assistants on screen");
 
     await back.tap();
     await expect(editor).toHaveCount(0);
-    await expect(strip).toBeVisible();
+    await expect(card).toBeVisible();
+    await expect(backToSettings).toBeVisible();
+    await expect(library).toHaveAttribute("data-view", "section");
+    await expectFocusInsideSettings(page);
+
+    await backToSettings.tap();
+    await expect(library).toHaveAttribute("data-view", "list");
     await expect(library.getByRole("tab", { exact: true, name: "Assistants" })).toBeFocused();
   } finally {
     await deleteOwnedAssistant(page.request, assistant.id);
@@ -246,8 +279,8 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
         size
       );
 
-      // Studio › Assistants: the card "⋯" of an owned Assistant (six actions).
-      let library = await openStudioSection(page, "Assistants");
+      // Settings › Assistants: the card "⋯" of an owned Assistant (six actions).
+      let library = await openSettingsSection(page, "Assistants");
       const card = library.getByTestId(`assistant-card-${assistant.id}`);
       await expectSheetReachesLastItem(
         page,
@@ -257,8 +290,8 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
         "Delete"
       );
 
-      // Studio › Instructions: the first row menu the operator has.
-      library = await openStudioSection(page, "Instructions");
+      // Settings › Instructions: the first row menu the operator has.
+      library = await openSettingsSection(page, "Instructions");
       await expect(library.getByRole("button", { name: "New preset" })).toBeEnabled({ timeout: 30_000 });
       const preset = await firstRowMenuTrigger(library.getByTestId("settings-instructions"));
       if (preset) {
@@ -273,21 +306,20 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
     }
   });
 
-  test("Studio stacks its sections and shows the first gallery row under a compact heading · phone landscape 844×390", async ({ page }) => {
+  test("Settings shows its sections and a section in turns and the first gallery row under a compact heading · phone landscape 844×390", async ({ page }) => {
     test.setTimeout(120_000);
     await authenticateWithLocalToken(page.request);
     const assistant = await createOwnedAssistant(page.request);
     try {
       await openShell(page, "/");
-      const library = await openStudioSection(page, "Assistants");
+      const library = await openSettingsSection(page, "Assistants");
       const gallery = library.getByTestId("assistant-gallery");
       await expect(gallery.getByTestId(`assistant-card-${assistant.id}`)).toBeVisible({ timeout: 30_000 });
-      await expectStackedStudio(page, size);
-      await expect(library.getByRole("tab", { exact: true, name: "Assistants" })).toHaveAttribute("aria-selected", "true");
+      await expectListThenSection(page, size, "Assistants");
       await expect(gallery.getByTestId(`assistant-card-${assistant.id}`)).toBeVisible({ timeout: 30_000 });
 
       // Compact heading: the title and New assistant stay, the description goes.
-      const panel = await boxOf(library.getByRole("tabpanel"), "Studio panel");
+      const panel = await boxOf(library.getByRole("tabpanel"), "Settings section");
       await expect(gallery.getByRole("heading", { level: 2, name: "Assistants" })).toBeVisible();
       await expect(gallery.locator(".v2-resource-heading > div > p")).toBeHidden();
       const newAssistant = await boxOf(gallery.getByRole("button", { exact: true, name: "New assistant" }), "New assistant");
@@ -312,10 +344,10 @@ test.describe("short screens · phone landscape 844×390 touch", () => {
     }
   });
 
-  test("the Assistant editor hides the section strip and Back restores it · phone landscape 844×390", async ({ page }) => {
+  test("the Assistant editor keeps its own Back and returns to the section · phone landscape 844×390", async ({ page }) => {
     test.setTimeout(120_000);
     await authenticateWithLocalToken(page.request);
-    await expectEditorYieldsSectionStrip(page, size);
+    await expectEditorKeepsItsOwnBack(page, size);
   });
 });
 
@@ -323,10 +355,10 @@ test.describe("short screens · small phone landscape 667×375 touch", () => {
   const size = { height: 375, width: 667 } as const;
   test.use({ hasTouch: true, isMobile: true, viewport: size });
 
-  test("the Assistant editor hides the section strip and Back restores it · phone landscape 667×375", async ({ page }) => {
+  test("the Assistant editor keeps its own Back and returns to the section · phone landscape 667×375", async ({ page }) => {
     test.setTimeout(120_000);
     await authenticateWithLocalToken(page.request);
-    await expectEditorYieldsSectionStrip(page, size);
+    await expectEditorKeepsItsOwnBack(page, size);
   });
 });
 
@@ -334,27 +366,44 @@ test.describe("narrow tablet · portrait 768×1024 touch", () => {
   const size = { height: 1024, width: 768 } as const;
   test.use({ hasTouch: true, isMobile: false, viewport: size });
 
-  test("Studio stacks its sections above the full-width content · tablet portrait 768×1024", async ({ page }) => {
+  test("Settings shows its sections and a section in turns across the whole width · tablet portrait 768×1024", async ({ page }) => {
     test.setTimeout(90_000);
     await authenticateWithLocalToken(page.request);
     await openShell(page, "/");
-    const library = await openStudioSection(page, "Assistants");
+    const library = await openSettingsSection(page, "Assistants");
     await expect(library.getByTestId("assistant-gallery")).toBeVisible();
-    await expectStackedStudio(page, size);
+    await expectListThenSection(page, size, "Assistants");
   });
 });
 
-test("desktop keeps the Studio section column · desktop 1440×900", async ({ page }) => {
+test("desktop keeps the Settings section column and Back to chat · desktop 1440×900", async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   await authenticateWithLocalToken(page.request);
   await openShell(page, "/");
   expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(false);
-  const library = await openStudioSection(page, "Assistants");
-  const libraryBox = await boxOf(library, "Studio");
-  const tablist = await boxOf(library.getByRole("tablist", { name: "Studio sections" }), "Studio section column");
-  const panel = await boxOf(library.getByRole("tabpanel"), "Studio panel");
-  expect(Math.abs(tablist.x - libraryBox.x), "the column starts the Studio").toBeLessThanOrEqual(1);
+  const library = await openSettingsSection(page, "Assistants");
+  // No rail and no chat list: Settings spans the window.
+  const libraryBox = await boxOf(library, "Settings");
+  expect(Math.abs(libraryBox.x), "Settings starts at the left edge").toBeLessThanOrEqual(1);
+  expect(Math.abs(libraryBox.width - 1440), "Settings spans the window").toBeLessThanOrEqual(1);
+  await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
+  await expect(page.locator(".v2-sidebar-floats")).toHaveCount(0);
+  // The section column is the chat list's width (16.25rem), the section follows it.
+  const tablist = await boxOf(library.getByRole("tablist", { name: "Settings sections" }), "Settings section column");
+  const panel = await boxOf(library.getByRole("tabpanel"), "Settings section");
+  expect(Math.abs(tablist.x - libraryBox.x), "the column starts Settings").toBeLessThanOrEqual(1);
   expect(Math.abs(tablist.width - 260), "the column is 260px wide").toBeLessThanOrEqual(1);
-  expect(Math.abs(panel.x - (tablist.x + tablist.width)), "the panel follows the column").toBeLessThanOrEqual(1);
+  expect(Math.abs(panel.x - (tablist.x + tablist.width)), "the section follows the column").toBeLessThanOrEqual(1);
+  expect(Math.abs(panel.x + panel.width - 1440), "the section reaches the right edge").toBeLessThanOrEqual(1);
+  // The header row over the section holds the crumb and the one Back to chat.
+  const row = await boxOf(library.locator(".v2-library-heading-row"), "Settings header row");
+  expect(Math.abs(row.x - panel.x), "the header row sits over the section").toBeLessThanOrEqual(1);
+  const exit = library.getByRole("button", { exact: true, name: "Back to chat" });
+  await expect(exit).toHaveCount(1);
+  expectInside(await boxOf(exit, "Back to chat"), row, "Back to chat in the header row");
+  await expect(library.getByRole("navigation", { name: "Settings location" })).toHaveText("Assistants");
+  await exit.click();
+  await expect(library).toBeHidden();
+  await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeVisible();
 });
