@@ -6,9 +6,10 @@ import { authenticateWithLocalToken } from "./support/localAuth";
 import { runAccountMenuAction } from "./shell/page";
 
 // Shell touch targets (task 20260928115816727): on touch every shell control
-// is a 44px target, the collapsed-list floats never cover the header model
-// button or title, and the phone islands keep one 8px rhythm. The fine
-// pointer layout keeps its 40px rail and 32–34px header controls.
+// is a 44px target, the chat list's footer (account, Announcements, Settings)
+// included, the collapsed-list floats never cover the header model button or
+// title, and the phone islands keep one 8px rhythm. The fine pointer layout
+// keeps its 32px footer icons and 32–34px header controls.
 
 type Box = Readonly<{ height: number; width: number; x: number; y: number }>;
 
@@ -79,17 +80,39 @@ function sidebarFloats(page: Page) {
   };
 }
 
-async function expectRailTargets(page: Page, viewportHeight: number): Promise<void> {
-  const targets = page.getByTestId("workspace-rail").locator(".v2-rail-button, .v2-navigation-account-trigger");
-  const count = await targets.count();
-  expect(count, "rail controls").toBeGreaterThanOrEqual(5);
-  for (let index = 0; index < count; index += 1) {
-    const target = targets.nth(index);
-    const name = `rail ${(await target.getAttribute("aria-label")) ?? index}`;
-    const box = await expectTarget(target, name);
-    expect(box.y, `${name} top`).toBeGreaterThanOrEqual(-0.5);
-    expect(box.y + box.height, `${name} stays on screen`).toBeLessThanOrEqual(viewportHeight + 0.5);
+/**
+ * The chat list's footer on touch: the account entry, Announcements and the
+ * Settings gear are 44px targets on one row, inside the drawer and on screen,
+ * and the row does not overflow at the drawer's width.
+ */
+async function expectFooterTargets(page: Page, viewport: Readonly<{ height: number; width: number }>): Promise<void> {
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  await sidebarFloats(page).showList.click();
+  await expect(navigation).toBeVisible();
+  // Below 1024px the list is an overlay drawer from the left edge, as wide as
+  // on a phone (17.5rem, or the viewport less 3rem).
+  const drawer = await boxOf(navigation, "chat list drawer");
+  expect(Math.abs(drawer.x), "drawer starts at the left edge").toBeLessThanOrEqual(0.5);
+  expect(Math.abs(drawer.width - Math.min(280, viewport.width - 48)), `drawer width ${drawer.width}`).toBeLessThanOrEqual(0.5);
+
+  const footer = page.getByTestId("navigation-footer");
+  const row = footer.locator(".v2-navigation-footer-bar");
+  const bar = await boxOf(row, "footer row");
+  const account = await expectTarget(footer.getByRole("button", { exact: true, name: "Account menu" }), "Account menu");
+  const bell = await expectTarget(footer.getByRole("button", { name: /^Announcements/ }), "Announcements");
+  const gear = await expectTarget(footer.getByRole("button", { exact: true, name: "Settings" }), "Settings");
+  for (const [name, box] of [["Account menu", account], ["Announcements", bell], ["Settings", gear]] as const) {
+    expectInside(box, bar, `${name} inside the footer row`);
+    expectInside(box, drawer, `${name} inside the drawer`);
+    expect(box.y + box.height, `${name} stays on screen`).toBeLessThanOrEqual(viewport.height + 0.5);
   }
+  expect(bell.x, "Announcements after the account entry").toBeGreaterThanOrEqual(account.x + account.width - 0.5);
+  expect(gear.x, "Settings after Announcements").toBeGreaterThanOrEqual(bell.x + bell.width - 0.5);
+  expect(Math.abs(bell.y - gear.y), "one footer row").toBeLessThanOrEqual(1);
+  expect(await row.evaluate((element) => element.scrollWidth <= element.clientWidth), "the footer row does not overflow").toBe(true);
+
+  await navigation.getByRole("button", { exact: true, name: "Close sidebar" }).click();
+  await expect(navigation).toBeHidden();
 }
 
 /** 768–1023px touch: 44px header controls, floats clear of the model and title. */
@@ -179,40 +202,41 @@ async function expectPhoneIslandSegments(page: Page): Promise<void> {
 }
 
 /**
- * Settings on touch: the header row is 56px, so the 44px Close and Back
- * controls keep room above and below inside it, and the content starts
- * under the header.
+ * Settings on touch, where the list and a section take turns: the header row
+ * is 56px, so the 44px Back controls keep room above and below inside it, and
+ * the section starts under the header. Leaves Settings for the chat.
  */
 async function expectSettingsHeaderRoom(page: Page): Promise<void> {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { exact: true, name: "Settings" });
-  await expect(settings).toBeVisible();
-  const header = settings.locator(".v2-settings-header");
-  const close = settings.getByRole("button", { exact: true, name: "Close settings" });
+  await runAccountMenuAction(page, "Data");
+  const settings = page.getByTestId("library-v2");
+  await expect(settings).toHaveAttribute("data-view", "section");
+  const header = settings.locator(".v2-library-heading-row");
+  const backToSettings = settings.getByRole("button", { exact: true, name: "Back to Settings" });
+  const backToChat = settings.getByRole("button", { exact: true, name: "Back to chat" });
   const expectRoom = async (control: Locator, name: string) => {
     const headerBox = await boxOf(header, "Settings header");
     expect(headerBox.height, "Settings header height").toBeGreaterThanOrEqual(55.99);
     const box = await expectTarget(control, name);
     expect(box.y - headerBox.y, `${name} room above`).toBeGreaterThanOrEqual(5.49);
     expect(headerBox.y + headerBox.height - (box.y + box.height), `${name} room below`).toBeGreaterThanOrEqual(5.49);
-    const scroll = await boxOf(settings.locator(".v2-settings-scroll"), "Settings content");
-    expect(scroll.y, "Settings content starts under the header").toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 0.5);
+    const panel = await boxOf(settings.locator(".v2-library-panel"), "Settings section");
+    expect(panel.y, "the section starts under the header").toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 0.5);
   };
-  await expectRoom(close, "Close settings");
+  await expectRoom(backToSettings, "Back to Settings");
+  await expectRoom(backToChat, "Back to chat");
 
-  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { exact: true, name: "Data" }).click();
   await settings.getByRole("button", { exact: true, name: "Manage" }).click();
   const back = settings.getByRole("button", { exact: true, name: "Back to Data" });
   await expect(back).toBeFocused();
   await expectRoom(back, "Back to Data");
-  await expectRoom(close, "Close settings");
   await back.click();
-  await close.click();
-  await expect(settings).toHaveCount(0);
+  await expect(settings.getByRole("button", { exact: true, name: "Manage" })).toBeVisible();
+  await backToChat.click();
+  await expect(settings).toBeHidden();
 }
 
-/** Studio: the Back controls and the instruction variables are 44px targets. */
-async function expectStudioTargets(page: Page, crumbRowRoom: boolean): Promise<void> {
+/** Settings › Instructions: the Back controls and the instruction variables are 44px targets. */
+async function expectInstructionsTargets(page: Page): Promise<void> {
   await runAccountMenuAction(page, "Instructions");
   const library = page.getByTestId("library-v2");
   const newPreset = page.getByRole("button", { name: "New preset" });
@@ -220,11 +244,12 @@ async function expectStudioTargets(page: Page, crumbRowRoom: boolean): Promise<v
   const row = library.locator(".v2-library-heading-row");
   const expectBack = async (name: string) => {
     const box = await expectTarget(library.getByRole("button", { exact: true, name }), name);
-    if (!crumbRowRoom) return;
-    const rowBox = await boxOf(row, "Studio crumb row");
+    // The touch header row is 56px around 44px controls at every width.
+    const rowBox = await boxOf(row, "Settings header row");
     expect(box.y - rowBox.y, `${name} room above`).toBeGreaterThanOrEqual(4);
     expect(rowBox.y + rowBox.height - (box.y + box.height), `${name} room below`).toBeGreaterThanOrEqual(4);
   };
+  await expectBack("Back to Settings");
   await expectBack("Back to chat");
 
   // Opening an empty editor saves nothing.
@@ -235,22 +260,22 @@ async function expectStudioTargets(page: Page, crumbRowRoom: boolean): Promise<v
   await expectTarget(editor.getByRole("button", { name: "Insert time" }), "Insert time");
 }
 
-/** Composer menu links (component fixtures): the MCP layer's Connections and settings links. */
+/** Composer menu links (component fixtures): the MCP layer's MCP servers and settings links. */
 async function expectComposerLinkTargets(page: Page): Promise<void> {
   await page.goto("/ui-v2-fixture?fixture=composer&state=mcp-personal");
   const picker = page.getByRole("menu", { name: "MCP tools" });
   await expect(picker).toBeVisible();
-  const connections = picker.getByRole("menuitem", { name: "Open Connections in Settings for Notion" });
+  const connections = picker.getByRole("menuitem", { name: "Open MCP servers in Settings for Notion" });
   await connections.scrollIntoViewIfNeeded();
-  await expectTarget(connections, "Connections");
+  await expectTarget(connections, "MCP servers");
   const manage = picker.getByRole("menuitem", { name: "Manage enabled MCP servers" });
   await manage.scrollIntoViewIfNeeded();
   await expectTarget(manage, "Manage enabled MCP servers");
 }
 
 const compactTouchProfiles = [
-  { height: 1024, isMobile: false, label: "tablet portrait 768×1024", settings: true, width: 768 },
-  { height: 390, isMobile: true, label: "phone landscape 844×390", settings: false, width: 844 }
+  { height: 1024, isMobile: false, label: "tablet portrait 768×1024", width: 768 },
+  { height: 390, isMobile: true, label: "phone landscape 844×390", width: 844 }
 ] as const;
 
 for (const profile of compactTouchProfiles) {
@@ -261,16 +286,16 @@ for (const profile of compactTouchProfiles) {
       viewport: { height: profile.height, width: profile.width }
     });
 
-    test(`rail, header, floats, Studio and composer links are 44px touch targets · ${profile.label}`, async ({ page }) => {
+    test(`list footer, header, floats, Settings and composer links are 44px touch targets · ${profile.label}`, async ({ page }) => {
       test.setTimeout(120_000);
       const { chatId, title } = await createOwnedChat(page);
       try {
         const model = await openChat(page, `/c/${chatId}`);
         expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
-        await expectRailTargets(page, profile.height);
+        await expectFooterTargets(page, profile);
         await expectCompactTouchHeader(page, model, title);
-        if (profile.settings) await expectSettingsHeaderRoom(page);
-        await expectStudioTargets(page, true);
+        await expectSettingsHeaderRoom(page);
+        await expectInstructionsTargets(page);
         await expectComposerLinkTargets(page);
       } finally {
         await deleteOwnedChatPermanently(page.request, chatId);
@@ -282,13 +307,14 @@ for (const profile of compactTouchProfiles) {
 test.describe("shell touch targets · phone portrait 390×844", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { height: 844, width: 390 } });
 
-  test("phone islands keep equal gaps and Studio and composer links are 44px touch targets · phone portrait 390×844", async ({ page }) => {
+  test("phone islands keep equal gaps and the list footer, Settings and composer links are 44px touch targets · phone portrait 390×844", async ({ page }) => {
     test.setTimeout(150_000);
     const { chatId } = await createOwnedChat(page);
     try {
       await openChat(page, "/");
       expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(true);
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-sidebar-composition", "mobile");
+      await expectFooterTargets(page, { height: 844, width: 390 });
       await expectPhoneBlankChatIslands(page);
       await expectPhoneIslandSegments(page);
 
@@ -296,11 +322,11 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
       await expect(page.locator(".v2-workspace-shell")).toHaveAttribute("data-chat-active", "true");
       await expectPhoneIslandGaps(page);
       await expectPhoneIslandSegments(page);
-      // Account Settings from a personal chat.
+      // Settings from a personal chat.
       await expectSettingsHeaderRoom(page);
 
       await openChat(page, `/c/${chatId}`);
-      await expectStudioTargets(page, false);
+      await expectInstructionsTargets(page);
       await expectComposerLinkTargets(page);
     } finally {
       await deleteOwnedChatPermanently(page.request, chatId);
@@ -308,7 +334,7 @@ test.describe("shell touch targets · phone portrait 390×844", () => {
   });
 });
 
-test("fine pointer keeps the 40px rail, compact header controls and 48px Studio crumb row · desktop 1440×900", async ({ page }) => {
+test("fine pointer keeps the 32px footer icons, compact header controls and 48px Settings crumb row · desktop 1440×900", async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   const { chatId, title } = await createOwnedChat(page);
@@ -317,12 +343,11 @@ test("fine pointer keeps the 40px rail, compact header controls and 48px Studio 
     expect(await page.evaluate((rule) => matchMedia(rule).matches, touchRule)).toBe(false);
     await expect(page.getByTestId("header-title")).toContainText(title);
 
-    const railTargets = page.getByTestId("workspace-rail").locator(".v2-rail-button, .v2-navigation-account-trigger");
-    const count = await railTargets.count();
-    expect(count).toBeGreaterThanOrEqual(5);
-    for (let index = 0; index < count; index += 1) {
-      await expectSize(railTargets.nth(index), `rail control ${index}`, { height: 40, width: 40 });
-    }
+    // The list footer: a 44px account row beside the 32px bell and gear.
+    const footer = page.getByTestId("navigation-footer");
+    await expectSize(footer.getByRole("button", { exact: true, name: "Account menu" }), "Account menu", { height: 44 });
+    await expectSize(footer.getByRole("button", { name: /^Announcements/ }), "Announcements", { height: 32, width: 32 });
+    await expectSize(footer.getByRole("button", { exact: true, name: "Settings" }), "Settings", { height: 32, width: 32 });
     await expectSize(model, "header model button", { height: 34 });
     await expectSize(page.getByTestId("header-title"), "chat title button", { height: 34 });
     await expectSize(page.locator(".v2-live-header").getByRole("button", { exact: true, name: "Share" }), "Share", { height: 32 });
@@ -339,8 +364,8 @@ test("fine pointer keeps the 40px rail, compact header controls and 48px Studio 
     await floats.showList.click();
     await expect(page.locator(".v2-workspace-shell")).not.toHaveAttribute("data-sidebar-collapsed", "true");
 
-    await page.getByTestId("workspace-rail").getByRole("button", { name: "Studio" }).click();
-    await expectSize(page.getByTestId("library-v2").locator(".v2-library-heading-row"), "Studio crumb row", { height: 48 });
+    await runAccountMenuAction(page, "Settings");
+    await expectSize(page.getByTestId("library-v2").locator(".v2-library-heading-row"), "Settings crumb row", { height: 48 });
 
     // A desktop collapse that survives a resize to phone width leaves the
     // phone header its own left padding, as on a fresh phone load.

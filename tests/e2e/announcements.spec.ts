@@ -30,13 +30,59 @@ async function account(role: "admin" | "user") {
   return { id, email, password };
 }
 
-async function openInbox(page: Page) {
-  const rail = page.getByRole("navigation", { name: "Workspace" });
-  if (!(await rail.isVisible())) {
-    const drawer = page.getByRole("complementary", { name: "Chat navigation" });
-    if (!(await drawer.isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
+/**
+ * The bell sits in the chat list's footer, between the account entry and the
+ * Settings gear: one row that fits inside the list without overflowing, down
+ * to the narrowest phone.
+ */
+async function expectFooterRowFits(page: Page) {
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  const footer = navigation.getByTestId("navigation-footer");
+  const row = footer.locator(".v2-navigation-footer-bar");
+  const boxes: { height: number; width: number; x: number; y: number }[] = [];
+  for (const control of [
+    footer.getByRole("button", { name: "Account menu", exact: true }),
+    footer.getByRole("button", { name: /^Announcements(?:, \d+ unread)?$/u }),
+    footer.getByRole("button", { name: "Settings", exact: true })
+  ]) {
+    await expect(control).toBeVisible();
+    boxes.push((await control.boundingBox())!);
   }
-  const bell = page.getByRole("button", { name: /^Announcements(?:, \d+ unread)?$/u });
+  const list = (await navigation.boundingBox())!;
+  for (const box of boxes) {
+    expect(box.x).toBeGreaterThanOrEqual(list.x - 0.5);
+    expect(box.x + box.width).toBeLessThanOrEqual(list.x + list.width + 0.5);
+    expect(Math.abs(box.y + box.height / 2 - (boxes[0]!.y + boxes[0]!.height / 2))).toBeLessThanOrEqual(1);
+  }
+  expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.x + boxes[0]!.width - 0.5);
+  expect(boxes[2]!.x).toBeGreaterThanOrEqual(boxes[1]!.x + boxes[1]!.width - 0.5);
+  expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+}
+
+/** The unread hint on "Open sidebar" while the list (and its bell) is hidden. */
+async function expectUnreadHint(page: Page) {
+  const trigger = page.getByRole("button", { name: "Open sidebar" });
+  await expect(trigger).toHaveAttribute("data-announcements-unread", "true");
+  await expect(trigger).toHaveAccessibleDescription("Unread announcements");
+  const dot = await trigger.evaluate(button => {
+    const style = getComputedStyle(button, "::before");
+    return { display: style.display, visibility: style.visibility, opacity: style.opacity,
+      width: parseFloat(style.width), height: parseFloat(style.height) };
+  });
+  expect(dot.display).not.toBe("none");
+  expect(dot.visibility).toBe("visible");
+  expect(dot.opacity).toBe("1");
+  expect(dot.width).toBeGreaterThan(0);
+  expect(dot.width).toBe(dot.height);
+}
+
+async function openInbox(page: Page) {
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  // Below 1024px the list is a closed drawer; on desktop it may be collapsed.
+  if (!(await navigation.isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
+  await expect(navigation).toBeVisible();
+  await expectFooterRowFits(page);
+  const bell = navigation.getByRole("button", { name: /^Announcements(?:, \d+ unread)?$/u });
   await bell.focus(); await bell.press("Enter");
   const inbox = page.getByRole("dialog", { name: "Announcements", exact: true });
   await expect(inbox).toBeVisible();
@@ -79,7 +125,8 @@ for (const viewport of viewports) {
       await readerPage.keyboard.press("Escape");
       await expect(opened.inbox).toHaveCount(0);
       await expect(opened.bell).toBeFocused();
-      if (viewport.width < 768) await readerPage.keyboard.press("Escape");
+      // Below 1024px the list is a drawer: Escape closes it too.
+      if (viewport.width < 1024) await readerPage.keyboard.press("Escape");
 
       await adminPage.goto(`/login?next=${encodeURIComponent("/admin?section=announcements")}`);
       await adminPage.getByLabel("Email").fill(admin.email);
@@ -122,22 +169,17 @@ for (const viewport of viewports) {
       await expect(readerPage.getByRole("dialog", { name: "Announcements", exact: true })).toHaveCount(0);
       await expect(readerPage).toHaveTitle(originalTitle);
       expect(await readerPage.locator('link[rel="icon"]').first().getAttribute("href")).toBe(originalIcon);
-      if (viewport.width < 768) {
-        const trigger = readerPage.getByRole("button", { name: "Open sidebar" });
-        await expect(trigger).toHaveAttribute("data-announcements-unread", "true");
-        await expect(trigger).toHaveAccessibleDescription("Unread announcements");
-        const dot = await trigger.evaluate(button => {
-          const style = getComputedStyle(button, "::before");
-          return { display: style.display, visibility: style.visibility, opacity: style.opacity,
-            width: parseFloat(style.width), height: parseFloat(style.height) };
-        });
-        expect(dot.display).not.toBe("none");
-        expect(dot.visibility).toBe("visible");
-        expect(dot.opacity).toBe("1");
-        expect(dot.width).toBeGreaterThan(0);
-        expect(dot.width).toBe(dot.height);
-        await readerPage.screenshot({ path: testInfo.outputPath(`${viewport.name}-unread-trigger.png`) });
+      // The bell hides with the list, so the unread hint moves to "Open sidebar"
+      // at every width: a closed drawer below 1024px, a collapsed list above.
+      const listShown = readerPage.getByRole("complementary", { name: "Chat navigation" });
+      if (viewport.width >= 1024) {
+        await expect(listShown).toBeVisible();
+        await expect(readerPage.getByRole("button", { name: "Open sidebar" })).not.toHaveAttribute("data-announcements-unread");
+        await listShown.getByRole("button", { name: "Close sidebar" }).click();
+        await expect(listShown).toBeHidden();
       }
+      await expectUnreadHint(readerPage);
+      await readerPage.screenshot({ path: testInfo.outputPath(`${viewport.name}-unread-trigger.png`) });
       opened = await openInbox(readerPage);
       await expect(opened.inbox.getByText("1 unread", { exact: true })).toBeVisible();
       const row = opened.inbox.getByRole("button", { name: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")) });
@@ -163,12 +205,17 @@ for (const viewport of viewports) {
       await expect(opened.inbox).toHaveCount(0);
       await expect(opened.bell).toBeFocused();
       await expect(opened.bell).toHaveAccessibleName("Announcements");
-      if (viewport.width < 768) {
-        await expect(readerPage.getByRole("complementary", { name: "Chat navigation" })).toBeVisible();
+      await expect(listShown).toBeVisible();
+      if (viewport.width < 1024) {
         await readerPage.keyboard.press("Escape");
         await expect(readerPage.getByRole("button", { name: "Open sidebar" })).toBeFocused();
-        await expect(readerPage.getByRole("button", { name: "Open sidebar" })).not.toHaveAttribute("data-announcements-unread");
+      } else {
+        await listShown.getByRole("button", { name: "Close sidebar" }).click();
+        await expect(listShown).toBeHidden();
       }
+      // Read: no hint on "Open sidebar" with the list hidden.
+      await expect(readerPage.getByRole("button", { name: "Open sidebar" })).not.toHaveAttribute("data-announcements-unread");
+      if (viewport.width >= 1024) await readerPage.getByRole("button", { name: "Open sidebar" }).click();
 
       await editor.getByRole("textbox", { name: "Message", exact: true }).fill(`${body}\n\nUpdated for clarity.`);
       await editor.getByRole("button", { name: "Save changes" }).click();

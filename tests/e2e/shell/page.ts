@@ -32,6 +32,21 @@ export async function runAccountMenuAction(page: Page, name: "Settings" | Settin
   return gear;
 }
 
+/**
+ * Leaves the open Settings page for the chat with its one visible "Back to
+ * chat" control (the header row's button from 1024px, the list's and the
+ * section's close control where they take turns). A sub-view has no such
+ * control: leave it with its own Back first.
+ */
+export async function leaveSettings(page: Page): Promise<void> {
+  const settings = page.getByTestId("library-v2");
+  await expect(settings).toBeVisible();
+  const exit = settings.getByRole("button", { exact: true, name: "Back to chat" });
+  await expect(exit).toHaveCount(1);
+  await exit.click();
+  await expect(settings).toBeHidden();
+}
+
 /** Shows a section of the open Settings page at any width. */
 export async function showSettingsSection(page: Page, name: SettingsSectionName): Promise<Locator> {
   const settings = page.getByTestId("library-v2");

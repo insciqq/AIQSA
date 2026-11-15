@@ -1,4 +1,4 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
@@ -41,7 +41,7 @@ async function openDraft(page: Page, resource: Resource) {
     await expect(sheet).toHaveCount(0);
     const input = library.getByLabel("Name Required", { exact: true });
     await expect(input).toBeFocused();
-    await input.fill("Unsaved Studio assistant");
+    await input.fill("Unsaved Settings assistant");
     return input;
   }
   await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
@@ -50,50 +50,78 @@ async function openDraft(page: Page, resource: Resource) {
   return input;
 }
 
+/** The selected section, also while the list of sections is hidden. */
+function selectedSection(library: Locator): Locator {
+  return library.locator('[role="tab"][aria-selected="true"]');
+}
+
+/**
+ * While Settings is open the chat list and the floating controls are absent
+ * at every width, and the list shortcuts (Ctrl+K, Ctrl+Shift+S) do nothing.
+ */
+async function expectSettingsOwnsTheShell(page: Page, draft: Locator) {
+  const value = await draft.inputValue();
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  await expect(navigation).toBeHidden();
+  await expect(page.getByRole("button", { name: "Open sidebar" })).toHaveCount(0);
+  await expect(page.locator(".v2-sidebar-floats")).toHaveCount(0);
+  await page.keyboard.press("Control+k");
+  await page.keyboard.press("Control+Shift+S");
+  await expect(navigation).toBeHidden();
+  await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
+  await expect(page.getByTestId("library-v2")).toBeVisible();
+  await expect(draft).toHaveValue(value);
+}
+
 async function screenshot(page: Page, info: TestInfo, name: string) {
   await page.screenshot({ path: info.outputPath(`${name}.png`), fullPage: true });
 }
 
 for (const width of [1440, 390]) {
-  test(`Studio protects every existing draft across shell exits at ${width}px`, async ({ page }, info) => {
+  test(`Settings protects every existing draft across its exits at ${width}px`, async ({ page }, info) => {
     test.setTimeout(180_000);
     page.setDefaultTimeout(15_000);
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
     await prepare(page);
     const library = page.getByTestId("library-v2");
     const confirmation = page.getByTestId("discard-changes-confirmation");
-    const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    const drawer = page.getByRole("complementary", { name: "Chat navigation" });
-    const openDrawer = async () => {
-      if (!await drawer.isVisible()) await page.getByRole("button", { name: "Open sidebar" }).click();
-    };
+    const backToSettings = library.getByRole("button", { name: "Back to Settings", exact: true });
+    let shellChecked = false;
     for (const resource of resources) {
-      for (const destination of ["tab", "back", "new", "shortcut", ...(width === 1440 ? ["chats"] : ["chat"])]) {
+      // The narrow Assistant editor is a sub-view: its own Back is the way
+      // to another section there, so only the wide layout switches directly.
+      const destinations = width === 390 && resource === "Assistants"
+        ? ["back", "shortcut"]
+        : ["tab", "back", "shortcut"];
+      for (const destination of destinations) {
         const input = await openDraft(page, resource);
         const draft = await input.inputValue();
-        if (destination === "tab") {
-          const panel = library.getByRole("tabpanel");
+        if (!shellChecked) {
+          await expectSettingsOwnsTheShell(page, input);
+          shellChecked = true;
+        }
+        if (destination === "tab" && width === 390) {
+          // The list keeps the section mounted underneath: going to the list
+          // and back keeps the draft and the scroll position, with no guard.
+          const panel = library.locator('[role="tabpanel"]');
           await panel.evaluate(node => { node.scrollTop = 90; });
           const scroll = await panel.evaluate(node => node.scrollTop);
-          await runAccountMenuAction(page, "Settings");
-          await expect(page.getByTestId("settings-v2")).toBeVisible();
-          await screenshot(page, info, `${resource}-settings-${width}`);
-          await page.getByRole("button", { name: "Close settings" }).click();
+          await backToSettings.click();
+          await expect(library).toHaveAttribute("data-view", "list");
+          await expect(confirmation).toHaveCount(0);
+          await screenshot(page, info, `${resource}-list-${width}`);
+          await library.getByRole("tab", { name: resource, exact: true }).click();
+          await expect(library).toHaveAttribute("data-view", "section");
           await expect(input).toHaveValue(draft);
           expect(await panel.evaluate(node => node.scrollTop)).toBe(scroll);
         }
         const navigate = async () => {
-          if (destination === "tab") await library.getByRole("tab", { name: "Files", exact: true }).click();
-          else if (destination === "back") await library.getByRole("button", { name: resource === "Assistants" ? "Back to Assistants" : "Back to chat", exact: true }).click();
-          else if (destination === "shortcut") await page.keyboard.press("Control+Shift+O");
-          else if (destination === "chat") {
-            await openDrawer();
-            await drawer.getByRole("treeitem", { name: "Navigation destination", exact: true }).click();
-          } else {
-            if (width === 390) await openDrawer();
-            const owner = width === 390 ? drawer : rail;
-            await owner.getByRole(destination === "new" ? "link" : "button", { name: destination === "new" ? "New chat" : "Chats", exact: true }).click();
-          }
+          if (destination === "tab") {
+            if (await backToSettings.isVisible()) await backToSettings.click();
+            await library.getByRole("tab", { name: "Files", exact: true }).click();
+          } else if (destination === "back") {
+            await library.getByRole("button", { name: resource === "Assistants" ? "Back to Assistants" : "Back to chat", exact: true }).click();
+          } else await page.keyboard.press("Control+Shift+O");
         };
         await navigate();
         await expect(confirmation).toBeVisible();
@@ -101,11 +129,11 @@ for (const width of [1440, 390]) {
         await screenshot(page, info, `${resource}-${destination}-${width}`);
         await confirmation.getByRole("button", { name: "Keep editing", exact: true }).click();
         await expect(input).toHaveValue(draft);
-        await expect(library.getByRole("tab", { name: resource, exact: true })).toHaveAttribute("aria-selected", "true");
+        await expect(selectedSection(library)).toHaveText(resource);
         await navigate();
         await confirmation.getByRole("button", { name: /Confirm discard/ }).click();
         await expect(input).toHaveCount(0);
-        if (destination === "tab") await expect(library.getByRole("tab", { name: "Files", exact: true })).toHaveAttribute("aria-selected", "true");
+        if (destination === "tab") await expect(selectedSection(library)).toHaveText("Files");
         else if (destination !== "back" || resource === "Memory") await expect(library).toHaveCount(0);
         await expectNoHorizontalOverflow(page);
       }
@@ -113,7 +141,7 @@ for (const width of [1440, 390]) {
   });
 }
 
-test("pending resource mutations block all Studio exits without offering Discard", async ({ page }, info) => {
+test("pending resource mutations block all Settings exits without offering Discard", async ({ page }, info) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(15_000);
   await page.setViewportSize(sizes[0]);
@@ -137,17 +165,18 @@ test("pending resource mutations block all Studio exits without offering Discard
     } else await library.getByRole("button", { name: "Save memory", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
-    const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    for (const [role, name] of [["button", "Chats"], ["link", "New chat"], ["button", "Studio"]] as const) {
-      await expect(rail.getByRole(role, { name, exact: true })).toBeDisabled();
-    }
+    // Settings' Back is its one exit: the Assistant editor's own Back, or Back to chat.
+    const exit = library.getByRole("button", { name: resource === "Assistants" ? "Back to Assistants" : "Back to chat", exact: true });
+    await expect(exit).toBeDisabled();
+    await expect(page.locator(".v2-sidebar-floats")).toHaveCount(0);
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
     await screenshot(page, info, `${resource}-busy`);
     release?.();
     await expect(library.getByRole("tab", { name: "Files", exact: true })).toBeEnabled();
     await expect(input).not.toHaveValue("");
-    await rail.getByRole("button", { name: "Chats", exact: true }).click();
+    await expect(exit).toBeEnabled();
+    await page.keyboard.press("Control+Shift+O");
     await page.getByTestId("discard-changes-confirmation").getByRole("button", { name: /Confirm discard/ }).click();
     await expect(library).toHaveCount(0);
   }
@@ -155,37 +184,43 @@ test("pending resource mutations block all Studio exits without offering Discard
 
 test("remembers confirmed sections while explicit links and invalid storage remain predictable", async ({ page }) => {
   await prepare(page);
-  const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-  await rail.getByRole("button", { name: "Studio", exact: true }).click();
-  await page.getByRole("tab", { name: "Files", exact: true }).click();
+  await runAccountMenuAction(page, "Files");
   await page.getByRole("button", { name: "Back to chat", exact: true }).click();
   await page.reload();
-  await rail.getByRole("button", { name: "Studio", exact: true }).click();
+  await runAccountMenuAction(page, "Settings");
   await expect(page.getByRole("tab", { name: "Files", exact: true })).toHaveAttribute("aria-selected", "true");
   await page.goto("/?library=memory&keep=yes#studio");
   await expect(page.getByRole("tab", { name: "Memory", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page).toHaveURL(/\?keep=yes#studio$/);
-  await expect(page).toHaveTitle("Studio · AIQSA");
+  await expect(page).toHaveTitle("Settings · AIQSA");
   await page.evaluate(() => localStorage.setItem("aiqsa.studio.section", "unavailable"));
   await page.goto("/?library=invalid&keep=yes");
   await expect(page).toHaveURL(/\?keep=yes$/);
-  await rail.getByRole("button", { name: "Studio", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "Assistants", exact: true })).toHaveAttribute("aria-selected", "true");
+  await runAccountMenuAction(page, "Settings");
+  // Nothing usable is remembered: the gear opens General.
+  await expect(page.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("aria-selected", "true");
 });
 
 for (const theme of ["dark", "light"] as const) {
   test(`nine-section composition retains order, keyboard access and geometry · ${theme}`, async ({ page }, info) => {
     await page.context().addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
     await page.goto("/ui-v2-fixture?fixture=library&state=all-sections");
-    const names = ["Assistants", "Instructions", "Skills", "Memory", "Files", "Artifacts", "MCP servers", "Secrets", "Chat defaults"];
-    await expect(page.getByRole("tab")).toHaveText(names);
+    const names = ["Assistants", "Instructions", "Skills", "Chat defaults", "Memory", "Files", "Artifacts", "MCP servers", "Secrets"];
+    const list = page.getByRole("tablist", { name: "Settings sections" });
+    await expect(list.getByRole("tab")).toHaveText(names);
     for (const size of sizes) {
       await page.setViewportSize(size);
-      await page.getByRole("tab", { name: "Assistants", exact: true }).click();
-      await page.getByRole("tab", { name: "Assistants", exact: true }).press("End");
-      await expect(page.getByRole("tab", { name: "Chat defaults", exact: true })).toBeFocused();
-      await expect(page.getByRole("tab", { name: "Chat defaults", exact: true })).toBeInViewport();
-      await page.getByRole("tab", { name: "Files", exact: true }).click();
+      // Where the list and a section take turns, the list is reached with Back to Settings.
+      if (!(await list.isVisible())) await page.getByRole("button", { name: "Back to Settings", exact: true }).click();
+      const assistants = list.getByRole("tab", { name: "Assistants", exact: true });
+      await assistants.focus();
+      await assistants.press("End");
+      await expect(list.getByRole("tab", { name: "Secrets", exact: true })).toBeFocused();
+      await expect(list.getByRole("tab", { name: "Secrets", exact: true })).toHaveAttribute("aria-selected", "true");
+      await expect(list.getByRole("tab", { name: "Secrets", exact: true })).toBeInViewport();
+      await list.getByRole("tab", { name: "Files", exact: true }).click();
+      await expect(page.getByTestId("library-v2")).toHaveAttribute("data-view", "section");
+      await expect(page.getByRole("tabpanel", { name: "Files" })).toBeVisible();
       await expectNoHorizontalOverflow(page);
       await screenshot(page, info, `composition-${theme}-${size.width}x${size.height}`);
       await info.attach(`geometry-${size.width}`, { body: JSON.stringify(await page.getByRole("heading", { name: "Files", exact: true }).boundingBox()), contentType: "application/json" });
