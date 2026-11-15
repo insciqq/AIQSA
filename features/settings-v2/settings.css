@@ -913,7 +913,6 @@
   }
 
   .v2-theme-previews {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.5rem;
   }
 }

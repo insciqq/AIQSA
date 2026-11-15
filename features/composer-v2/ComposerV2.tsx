@@ -1158,7 +1158,7 @@ export function ComposerV2({
     return (server.enabled || server.attention) && (kind === "attention" || kind === "failed");
   });
   const mcpServersNeedingAttention = mcpAttentionServers.length;
-  // Settings configures both; a personal connection's problem links to its row there.
+  // Settings › MCP servers holds both kinds; only an installation server's problem turns Manage into Configure.
   const mcpInstallationAttention = mcpAttentionServers.some((server) => server.source !== "personal");
   const mcpAttentionLabel = mcpServersNeedingAttention
     ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
