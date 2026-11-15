@@ -14,6 +14,10 @@ import type { ScheduledTaskSettledState } from "../scheduledTasks/runnerPolicy";
 import { scheduledCopyText } from "../scheduledTasks/runnerStore";
 import { unavailableSourcesWire } from "../scheduledTasks/sourceHealth";
 import { createS3StorageAdapter, type StorageAdapter } from "../uploads/storage";
+import {
+  defaultTelegramAppBaseUrl, sendTelegramArtifact, telegramAnswerArtifacts, telegramArtifactUrl, type TelegramAnswerArtifact,
+  type TelegramAppBaseUrl
+} from "./artifacts";
 import type { TelegramInputRichBlock, TelegramInputRichMessage } from "./botApi";
 import { telegramFailureCode } from "./codes";
 import type { TelegramAccessRefusal, TelegramAccessResolver } from "./control/access";
@@ -37,7 +41,8 @@ import type { TelegramFailure } from "./transport";
  * this sender delivers it outside the runner's tick: the task title, the
  * outcome and its reason, the result text rendered as explicit blocks (D-10)
  * and the run's files (D-16), every message referenced to the run's chat
- * (D-11) so a reply continues it. Before every attempt it rechecks Telegram
+ * (D-11) so a reply continues it, then one message per artifact the result
+ * shows with its Open link (`artifacts.ts`). Before every attempt it rechecks Telegram
  * access (D-04), the task's switch, the chat and the occurrence; the attempt
  * is bound to the user's exact link (link, chat and bot), and every part, a
  * file again after its bytes were read, first checks that this link still
@@ -112,6 +117,8 @@ export type TelegramScheduledDeliveryContext = Readonly<{
     markdown: string;
     citations: readonly ThreadCitation[];
     files: readonly TelegramScheduledFile[];
+    /** The artifacts the result shows, sent after its files as links to the web app. */
+    artifacts?: readonly TelegramAnswerArtifact[];
     /** The run's Workspace files are still being exported, or their export failed. */
     outputs?: "pending" | "failed";
   }> | null;
@@ -144,7 +151,8 @@ export type TelegramScheduledDeliveryStore = Readonly<{
 export type TelegramScheduledPart =
   | Readonly<{ kind: "content"; message: TelegramInputRichMessage; plainFallback: readonly string[] }>
   | Readonly<{ kind: "text"; text: string }>
-  | Readonly<{ kind: "file"; item: TelegramPlannedFile }>;
+  | Readonly<{ kind: "file"; item: TelegramPlannedFile }>
+  | Readonly<{ kind: "artifact"; artifact: TelegramAnswerArtifact }>;
 type Part = TelegramScheduledPart;
 
 type Plan = Readonly<{
@@ -200,7 +208,8 @@ function headline(context: TelegramScheduledDeliveryContext, filesLeft: number):
  * result (split into messages within Telegram's limits; the heading goes
  * alone when the first message has no room for it), then the files as every
  * answer sends them (`files.ts`: at most ten, photos and documents within
- * Telegram's bounds; the heading names the rest).
+ * Telegram's bounds; the heading names the rest), then one message per
+ * artifact the result shows (`artifacts.ts`).
  */
 export function telegramScheduledParts(context: TelegramScheduledDeliveryContext): readonly Part[] {
   const result = context.occurrence.state === "COMPLETED" ? context.result : null;
@@ -218,12 +227,15 @@ export function telegramScheduledParts(context: TelegramScheduledDeliveryContext
   const messages = joined.length === 1 ? [joined[0]!, ...rest] : [{ blocks: [heading], skip_entity_detection: true }, ...answer.messages];
   return [
     ...messages.map((message): Part => ({ kind: "content", message, plainFallback: plainTelegramMessage(message) })),
-    ...fileParts
+    ...fileParts,
+    ...(result.artifacts ?? []).map((artifact): Part => ({ artifact, kind: "artifact" }))
   ];
 }
 
 export type TelegramScheduledDeliverySenderDeps = Readonly<{
   access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
+  /** The installation's web address artifact links start from; `AIQSA_APP_BASE_URL` by default. */
+  appBaseUrl?: TelegramAppBaseUrl;
   /** Detaches work from its caller; defaults to a plain promise. */
   background?: (work: () => Promise<void>) => Promise<void>;
   /** Rows delivered at once. */
@@ -241,6 +253,7 @@ function unrefTimer(ms: number, wake: () => void): void {
 
 export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDeliverySenderDeps) {
   const clock = deps.now ?? (() => new Date());
+  const appBaseUrl = deps.appBaseUrl ?? defaultTelegramAppBaseUrl;
   const background = deps.background ?? ((work) => work());
   const setTimer = deps.setTimer ?? unrefTimer;
   const concurrency = Math.max(1, deps.concurrency ?? DEFAULT_CONCURRENCY);
@@ -358,6 +371,17 @@ export function createTelegramScheduledDeliverySender(deps: TelegramScheduledDel
     if (part.kind === "content") {
       if (!owner) return sent(await outbound.sendText({ authorize: recheck.authorize, chatId, text: part.plainFallback.join("\n\n") }));
       return sent(await outbound.sendContent({ authorize: recheck.authorize, chatId, messages: [part.message], owner }));
+    }
+    if (part.kind === "artifact") {
+      // Only a result, always in a usable chat, has artifacts.
+      if (!owner) return { fallback: false, messageIds: [], ok: true };
+      const url = telegramArtifactUrl(appBaseUrl(), part.artifact);
+      if (!url) {
+        // The installation's address is not a usable web origin: the artifact stays in AIQSA.
+        log({ code: "telegram_artifact_link_invalid", outcome: "degraded", stage: "dispatch" });
+        return { fallback: false, messageIds: [], ok: true };
+      }
+      return sent(await sendTelegramArtifact({ artifact: part.artifact, authorize: recheck.authorize, chatId, outbound, owner, url }));
     }
     // Only a result in a usable chat has files; they stay in AIQSA otherwise.
     if (!owner) return "skipped";
@@ -613,13 +637,14 @@ export function createPrismaTelegramScheduledDeliveryStore(deps: Readonly<{
       const markdown = scheduledCopyText(message.content);
       const summary = summarizeMessageRunArtifacts(run);
       const files = telegramAnswerFiles(summary);
+      const artifacts = telegramAnswerArtifacts(summary);
       const exported = telegramRunExport(run.workspaceRunBinding?.exportState);
       const outputs = exported === "pending" || exported === "failed" ? exported : undefined;
       return {
         ...base,
         chat: { id: message.chat.id, usable: message.chat.permanentDeletionAt === null },
-        result: markdown || files.length > 0 || outputs ? {
-          citations: summary?.citations ?? [], files, markdown, messageId: message.id,
+        result: markdown || files.length > 0 || artifacts.length > 0 || outputs ? {
+          artifacts, citations: summary?.citations ?? [], files, markdown, messageId: message.id,
           ...(outputs ? { outputs } : {})
         } : null
       };

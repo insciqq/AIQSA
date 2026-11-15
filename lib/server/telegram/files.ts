@@ -4,6 +4,7 @@ import { logEvent, runInBackground } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { createPrismaAttachmentDownloadRepository } from "../uploads/downloadRepository";
 import type { StorageAdapter } from "../uploads/storage";
+import { createTelegramRunArtifacts, telegramAnswerArtifacts, type TelegramAnswerArtifact, type TelegramRunArtifacts } from "./artifacts";
 import { onTelegramRunEvent, type TelegramRunEventContext, type TelegramRunListener } from "./bridge/events";
 import { telegramFailureCode } from "./codes";
 import type { TelegramAccessResolver } from "./control/access";
@@ -307,12 +308,14 @@ function defaultSleep(ms: number): Promise<void> {
  * reached Telegram (live or after a restart), while the run's link still
  * reaches its chat with access allowed: checked before the files and again
  * after every file's read. Files a Workspace run still exports are waited for
- * (bounded) and read anew.
+ * (bounded) and read anew. With `artifacts`, the answer's artifacts follow its
+ * files (`./artifacts.ts`), each as one message with its Open link.
  */
 export function createTelegramRunFiles(deps: Readonly<{
   access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
   read: TelegramFileReader;
   outputs?: TelegramRunOutputs;
+  artifacts?: TelegramRunArtifacts;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }>): TelegramRunFiles {
@@ -342,9 +345,11 @@ export function createTelegramRunFiles(deps: Readonly<{
     return { files, ...(state === "pending" || state === "failed" ? { outputs: state } : {}) };
   }
 
-  async function send(summaryFiles: readonly TelegramAnswerFile[], context: TelegramRunEventContext): Promise<void> {
+  async function send(summaryFiles: readonly TelegramAnswerFile[], artifacts: readonly TelegramAnswerArtifact[],
+    context: TelegramRunEventContext): Promise<void> {
     const settled = await settledFiles(summaryFiles, { runId: context.runId, userId: context.userId });
-    if (settled.files.length === 0 && !settled.outputs) return;
+    const hasFiles = settled.files.length > 0 || Boolean(settled.outputs);
+    if (!hasFiles && artifacts.length === 0) return;
     // The run's link still reaches its chat (the same link, bot and chat) with Telegram access allowed.
     const reaches = async (): Promise<boolean> => {
       const access = await deps.access.resolveTelegramAccess(context.userId);
@@ -352,21 +357,31 @@ export function createTelegramRunFiles(deps: Readonly<{
         access.link.telegramChatId === context.telegramChatId;
     };
     if (!(await reaches())) return;
-    await deliverTelegramFiles({
-      // Asked again after every file's read and before its upload, and before the files line.
-      authorize: reaches,
-      chatId: context.telegramChatId, files: settled.files, outbound: context.bot.outbound,
-      owner: { chatId: context.chatId, linkId: context.linkId, userId: context.userId }, read: deps.read, userId: context.userId,
-      ...(settled.outputs ? { outputs: settled.outputs } : {})
-    });
+    const owner = { chatId: context.chatId, linkId: context.linkId, userId: context.userId };
+    if (hasFiles) {
+      await deliverTelegramFiles({
+        // Asked again after every file's read and before its upload, and before the files line.
+        authorize: reaches,
+        chatId: context.telegramChatId, files: settled.files, outbound: context.bot.outbound,
+        owner, read: deps.read, userId: context.userId,
+        ...(settled.outputs ? { outputs: settled.outputs } : {})
+      });
+    }
+    if (deps.artifacts && artifacts.length > 0) {
+      // After the files, asked again right before every message leaves.
+      await deps.artifacts.send({
+        artifacts, authorize: reaches, chatId: context.telegramChatId, outbound: context.bot.outbound, owner, runId: context.runId
+      });
+    }
   }
 
   const listener: TelegramRunListener = (event, context) => {
     if (event.type !== "delivered" || !event.sent) return;
     const files = telegramAnswerFiles(event.artifactSummary);
-    // A Workspace run's files may still be exported: only a run without that wait and without files ends here.
-    if (files.length === 0 && !deps.outputs) return;
-    const work = runInBackground(() => send(files, context)).catch((error: unknown) => {
+    const artifacts = deps.artifacts ? telegramAnswerArtifacts(event.artifactSummary) : [];
+    // A Workspace run's files may still be exported: only a run without that wait, files or artifacts ends here.
+    if (files.length === 0 && artifacts.length === 0 && !deps.outputs) return;
+    const work = runInBackground(() => send(files, artifacts, context)).catch((error: unknown) => {
       log({ code: "telegram_file_failed", error, outcome: "failed", stage: "dispatch" });
     });
     pending.add(work);
@@ -382,13 +397,15 @@ export function createTelegramRunFiles(deps: Readonly<{
 }
 
 /**
- * Sends the files of every Telegram run of this process; returns the
- * unsubscribe function. With `answer` (the bridge's read of a run's answer),
- * files a Workspace run still exports are waited for.
+ * Sends the files of every Telegram run of this process, then the links to
+ * its artifacts; returns the unsubscribe function. With `answer` (the
+ * bridge's read of a run's answer), files a Workspace run still exports are
+ * waited for.
  */
 export function registerTelegramRunFiles(deps: Readonly<{
   access: Pick<TelegramAccessResolver, "resolveTelegramAccess">;
   answer?: (input: Readonly<{ runId: string; userId: string }>) => Promise<Readonly<{ artifactSummary: ThreadArtifactSummary | null }> | null>;
+  artifacts?: TelegramRunArtifacts;
   exportState?: TelegramRunExportReader;
   read?: TelegramFileReader;
 }>): () => void {
@@ -401,6 +418,7 @@ export function registerTelegramRunFiles(deps: Readonly<{
     }
   } : undefined;
   return onTelegramRunEvent(createTelegramRunFiles({
-    access: deps.access, read: deps.read ?? defaultTelegramFileReader(), ...(outputs ? { outputs } : {})
+    access: deps.access, artifacts: deps.artifacts ?? createTelegramRunArtifacts(), read: deps.read ?? defaultTelegramFileReader(),
+    ...(outputs ? { outputs } : {})
   }).listener);
 }
