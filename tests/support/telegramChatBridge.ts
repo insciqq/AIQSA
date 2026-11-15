@@ -186,9 +186,12 @@ export function createFakeGateway(options: Readonly<{
   autoAnswer?: ((body: Record<string, unknown>) => string | null) | null;
   /** The zone the user's browser last reported; none by default. */
   timeZone?: string | null;
+  /** Whether the installation offers the Workspace; it does by default. */
+  workspaceOffered?: boolean;
 }> = {}) {
   let catalog = options.catalog ?? fakeCatalog();
   let timeZone = options.timeZone ?? null;
+  let workspaceOffered = options.workspaceOffered ?? true;
   const sent: FakeSend[] = [];
   const runs: FakeRun[] = [];
   const chats = new Map<string, FakeChat>();
@@ -326,7 +329,8 @@ export function createFakeGateway(options: Readonly<{
     recentChats: async (userId) => [...chats.values()].filter((chat) => chat.userId === userId && !chat.archived).reverse().slice(0, 10)
       .map((chat) => ({ id: chat.id, title: chat.title })),
     assistants: async () => options.assistants ?? [],
-    timeZone: async () => timeZone
+    timeZone: async () => timeZone,
+    workspaceOffered: async () => workspaceOffered
   };
 
   return {
@@ -338,6 +342,7 @@ export function createFakeGateway(options: Readonly<{
     setAutoAnswer(next: ((body: Record<string, unknown>) => string | null) | null) { autoAnswer = next; },
     setCatalog(next: TelegramRunCatalog) { catalog = next; },
     setTimeZone(next: string | null) { timeZone = next; },
+    setWorkspaceOffered(next: boolean) { workspaceOffered = next; },
     setFollowupResponse(next: typeof followupResponse) { followupResponse = next; },
     /** The next send answers with this response instead of admitting a run. */
     respondNext(response: (input: FakeSend) => Response) { queued.push(response); },
@@ -450,7 +455,7 @@ export function createBridgeHarness(options: Readonly<{
       botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${userId}`,
       lastSeenAt: new Date(TEST_NOW), linkedAt: new Date(TEST_NOW), pendingAssistantId: null, searchEnabled: true, selectedModelId: null,
       selectedProvider: null, telegramChatId: telegramUser.id, telegramUserId: telegramUser.id, telegramUsername: telegramUser.username ?? null,
-      userId, workspaceEnabled: false, ...overrides
+      userId, ...overrides
     };
     links.records.set(userId, record);
     return record;

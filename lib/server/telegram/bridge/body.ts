@@ -1,5 +1,6 @@
 import type { ChatDefaultMcpMode, ChatDefaultSkillsMode } from "../../../contracts/chatDefaults";
 import type { CatalogWireModel, CatalogWireSearchStrategy } from "../../../contracts/catalog";
+import type { WorkspaceNotRequestedReason } from "../../../contracts/workspace";
 import { reconcileModelSearchPlan } from "../../../domain/catalogMatrix";
 import type { ContentBlock } from "../../../domain/content";
 import type { SearchPlan } from "../../../domain/search";
@@ -12,8 +13,8 @@ import {
  * current catalog: the server applies no saved defaults of its own (only the
  * browser does), so every value the composer would send is named here —
  * model, Search plan reconciled with the model, MCP and Skills modes, the
- * saved controls as params, Workspace from the link — plus the
- * expected leaf and, for a first message, the personal draft. In an
+ * saved controls as params, the Workspace as the composer asks for it — plus
+ * the expected leaf and, for a first message, the personal draft. In an
  * Assistant chat the Assistant governs those rows, so none of them is sent.
  * Both kinds carry the zone the user's browser last reported, as a browser
  * send carries its own; without one the run keeps the recorded UTC fallback.
@@ -122,7 +123,7 @@ export type TelegramSendTarget =
   | Readonly<{ kind: "existing"; activeLeafMessageId: string | null; assistantBound: boolean }>
   | Readonly<{ kind: "new"; assistantId: string | null }>;
 
-export type TelegramSendSettings = Readonly<{ searchEnabled: boolean; workspaceEnabled: boolean }>;
+export type TelegramSendSettings = Readonly<{ searchEnabled: boolean }>;
 
 export type TelegramSystemTurn = Readonly<{ approvalId: string; kind: "mcp_approval_continuation" }>;
 
@@ -137,6 +138,8 @@ export function buildTelegramSendBody(input: Readonly<{
   target: TelegramSendTarget;
   /** The IANA zone the user's browser last reported; null or absent omits it. */
   timeZone?: string | null;
+  /** Whether the installation offers the Workspace now (`TelegramRunGateway.workspaceOffered`). */
+  workspaceOffered: boolean;
 }>): Record<string, unknown> {
   const { settings, target } = input;
   const common: Record<string, unknown> = {
@@ -149,11 +152,12 @@ export function buildTelegramSendBody(input: Readonly<{
   };
   const assistantChat = target.kind === "existing" ? target.assistantBound : target.assistantId !== null;
   if (assistantChat || !input.model) {
-    // The Assistant's rows govern; only the Workspace switch, its binding and the time zone travel.
+    // The Assistant's rows govern; only the Workspace, its binding and the time zone travel. The
+    // Assistant's model is the server's to resolve, and one without tool calling is refused there anyway.
     return {
       ...common,
       ...(target.kind === "new" && target.assistantId ? { assistantId: target.assistantId } : {}),
-      workspace: { enabled: settings.workspaceEnabled }
+      workspace: telegramWorkspaceRequest(input.workspaceOffered, true)
     };
   }
   const model = input.model;
@@ -169,6 +173,20 @@ export function buildTelegramSendBody(input: Readonly<{
     ...(controls ? { controlDefaults: controls.controlDefaults, params: controls.params } : {}),
     // Like the composer, a model without tool calling asks for no tools and has no Workspace.
     ...(toolCalling ? {} : { tools: "none" }),
-    workspace: { enabled: settings.workspaceEnabled && toolCalling }
+    workspace: telegramWorkspaceRequest(input.workspaceOffered, toolCalling)
   };
+}
+
+/**
+ * The Workspace intent a Telegram turn sends: always, as the web composer asks
+ * for it (operator decisions 2026-10-20 and 2026-11-16), except on an
+ * installation that does not offer it now or with a model that calls no tools,
+ * which name why for the content-free `run_accepted` record.
+ */
+export function telegramWorkspaceRequest(
+  offered: boolean, toolCalling: boolean
+): Readonly<{ enabled: true }> | Readonly<{ enabled: false; reason: WorkspaceNotRequestedReason }> {
+  if (!offered) return { enabled: false, reason: "installation_disabled" };
+  if (!toolCalling) return { enabled: false, reason: "model_no_tools" };
+  return { enabled: true };
 }

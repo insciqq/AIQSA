@@ -20,7 +20,7 @@ function link(overrides: Partial<TelegramLinkRecord> = {}): TelegramLinkRecord {
   return {
     botId: BOT, currentChatId: null, displayName: "Alex Example", id: "link-1", lastSeenAt: LINKED_AT, linkedAt: LINKED_AT,
     pendingAssistantId: null, searchEnabled: true, selectedModelId: null, selectedProvider: null, telegramChatId: 200000001,
-    telegramUserId: 200000001, telegramUsername: "alex_example", userId: USER, workspaceEnabled: false, ...overrides
+    telegramUserId: 200000001, telegramUsername: "alex_example", userId: USER, ...overrides
   };
 }
 

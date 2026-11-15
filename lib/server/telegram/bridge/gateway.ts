@@ -41,6 +41,11 @@ export type TelegramRunGateway = ConnectorRunOperations & Readonly<{
   assistants(userId: string): Promise<readonly TelegramAssistantChoice[]>;
   /** The IANA zone the user's browser last reported on a run; null when none is known. */
   timeZone(userId: string): Promise<string | null>;
+  /**
+   * Whether the installation offers the Workspace now (switched on and its runner ready), the
+   * reading behind the web composer's ambient Workspace; admission still decides.
+   */
+  workspaceOffered(): Promise<boolean>;
 }>;
 
 /** A gateway whose implementation loads on first use, so the bot starts without the run stack. */
@@ -52,7 +57,8 @@ export function lazyTelegramRunGateway(load: () => Promise<TelegramRunGateway>):
     findChat: async (userId, chatId) => (await gateway()).findChat(userId, chatId),
     loadCatalog: async (userId) => (await gateway()).loadCatalog(userId),
     recentChats: async (userId) => (await gateway()).recentChats(userId),
-    timeZone: async (userId) => (await gateway()).timeZone(userId)
+    timeZone: async (userId) => (await gateway()).timeZone(userId),
+    workspaceOffered: async () => (await gateway()).workspaceOffered()
   };
   return Object.freeze(lazy);
 }

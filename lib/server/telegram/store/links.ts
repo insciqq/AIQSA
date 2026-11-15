@@ -1,4 +1,4 @@
-import type { PrismaClient, TelegramLink } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 
 /**
@@ -20,7 +20,6 @@ export type TelegramLinkRecord = Readonly<{
   selectedModelId: string | null;
   selectedProvider: string | null;
   searchEnabled: boolean;
-  workspaceEnabled: boolean;
   linkedAt: Date;
   lastSeenAt: Date;
 }>;
@@ -31,7 +30,6 @@ export type TelegramLinkPreferences = Partial<Readonly<{
   pendingAssistantId: string | null;
   selectedModel: Readonly<{ modelId: string; provider: string }> | null;
   searchEnabled: boolean;
-  workspaceEnabled: boolean;
 }>>;
 
 export type TelegramLinkStore = Readonly<{
@@ -46,7 +44,20 @@ export type TelegramLinkStore = Readonly<{
 
 const TOUCH_INTERVAL_MS = 60_000;
 
-export function telegramLinkRecord(row: TelegramLink): TelegramLinkRecord {
+/**
+ * The columns a link record reads, named so no query returns the retired
+ * columns and a later release can drop them while this one still runs
+ * during the Compose upgrade (`agent_docs/PERSISTENCE.md`).
+ */
+export const TELEGRAM_LINK_RECORD_SELECT = {
+  botId: true, currentChatId: true, displayName: true, id: true, lastSeenAt: true, linkedAt: true, pendingAssistantId: true,
+  searchEnabled: true, selectedModelId: true, selectedProvider: true, telegramChatId: true, telegramUserId: true,
+  telegramUsername: true, userId: true
+} as const satisfies Prisma.TelegramLinkSelect;
+
+type TelegramLinkRow = Prisma.TelegramLinkGetPayload<{ select: typeof TELEGRAM_LINK_RECORD_SELECT }>;
+
+export function telegramLinkRecord(row: TelegramLinkRow): TelegramLinkRecord {
   return {
     botId: Number(row.botId),
     currentChatId: row.currentChatId,
@@ -61,8 +72,7 @@ export function telegramLinkRecord(row: TelegramLink): TelegramLinkRecord {
     telegramChatId: Number(row.telegramChatId),
     telegramUserId: Number(row.telegramUserId),
     telegramUsername: row.telegramUsername,
-    userId: row.userId,
-    workspaceEnabled: row.workspaceEnabled
+    userId: row.userId
   };
 }
 
@@ -71,21 +81,25 @@ function safeId(value: number): bigint | null {
 }
 
 export function createPrismaTelegramLinkStore(prisma: Pick<PrismaClient, "telegramLink">): TelegramLinkStore {
-  async function first(where: Parameters<typeof prisma.telegramLink.findFirst>[0]): Promise<TelegramLinkRecord | null> {
-    const row = await prisma.telegramLink.findFirst(where).catch(retainDatabaseFailure);
+  async function first(query: Readonly<{
+    orderBy: Prisma.TelegramLinkOrderByWithRelationInput; where: Prisma.TelegramLinkWhereInput;
+  }>): Promise<TelegramLinkRecord | null> {
+    const row = await prisma.telegramLink.findFirst({ ...query, select: TELEGRAM_LINK_RECORD_SELECT }).catch(retainDatabaseFailure);
     return row ? telegramLinkRecord(row) : null;
   }
   return Object.freeze({
     async findByUserId(userId: string) {
-      const row = await prisma.telegramLink.findUnique({ where: { userId } }).catch(retainDatabaseFailure);
+      const row = await prisma.telegramLink.findUnique({ select: TELEGRAM_LINK_RECORD_SELECT, where: { userId } })
+        .catch(retainDatabaseFailure);
       return row ? telegramLinkRecord(row) : null;
     },
     async findByTelegramUser(botId: number, telegramUserId: number) {
       const bot = safeId(botId);
       const user = safeId(telegramUserId);
       if (bot === null || user === null) return null;
-      const row = await prisma.telegramLink.findUnique({ where: { botId_telegramUserId: { botId: bot, telegramUserId: user } } })
-        .catch(retainDatabaseFailure);
+      const row = await prisma.telegramLink.findUnique({
+        select: TELEGRAM_LINK_RECORD_SELECT, where: { botId_telegramUserId: { botId: bot, telegramUserId: user } }
+      }).catch(retainDatabaseFailure);
       return row ? telegramLinkRecord(row) : null;
     },
     async findByChat(botId: number, telegramChatId: number) {

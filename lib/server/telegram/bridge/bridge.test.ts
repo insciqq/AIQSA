@@ -73,7 +73,8 @@ describe("Telegram chat bridge: a message becomes an ordinary chat", () => {
       provider: "connection-fake",
       searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] },
       skills: { mode: "auto" },
-      workspace: { enabled: false }
+      // The Workspace is ambient as in the web chat: no switch, asked for whenever the installation offers it.
+      workspace: { enabled: true }
     });
     const chatId = send!.chatId;
     expect(h.links.records.get("user-1")!.currentChatId).toBe(chatId);
@@ -542,7 +543,7 @@ describe("Telegram chat bridge: commands", () => {
     expect(h.aiqsa.sent.at(-1)!.body).toMatchObject({ modelId: "model-10", provider: "connection-fake" });
   });
 
-  it("toggles Search and Workspace in one settings menu that edits itself", async () => {
+  it("toggles Search in one settings menu that edits itself, with no Workspace switch", async () => {
     const gateway = createFakeGateway({ catalog: fakeCatalog({ models: [fakeCatalogModel()] }) });
     const h = harness({ gateway });
     await h.deliver(h.fake.inject.command(h.user, "settings"));
@@ -551,26 +552,46 @@ describe("Telegram chat bridge: commands", () => {
     const labels = () => (current().reply_markup as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard.flat()
       .map((button) => button.text);
     expect(menu.text).toBe(TELEGRAM_BRIDGE_COPY.settingsTitle);
-    expect(labels()).toEqual(["Search: on", "Workspace: off", "Model: Fake QSA"]);
+    expect(labels()).toEqual(["Search: on", "Model: Fake QSA"]);
 
     await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Search: on")));
-    expect(labels()).toEqual(["Search: off", "Workspace: off", "Model: Fake QSA"]);
+    expect(labels()).toEqual(["Search: off", "Model: Fake QSA"]);
     expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
     await say(h, h.fake.inject.text(h.user, "no search please"));
     await h.settle();
     expect(gateway.sent.at(-1)!.body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
-
-    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Workspace: off")));
-    expect(labels()).toEqual(["Search: off", "Workspace: on", "Model: Fake QSA"]);
-    await say(h, h.fake.inject.text(h.user, "fix the build"));
-    await h.settle();
     expect(gateway.sent.at(-1)!.body).toMatchObject({ workspace: { enabled: true } });
     expect(gateway.sent.at(-1)!.body).not.toHaveProperty("agentEnabled");
-    await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Workspace: on")));
-    expect(labels()).toEqual(["Search: off", "Workspace: off", "Model: Fake QSA"]);
     // The Model button opens the model list in the same message.
     await h.deliver(h.fake.inject.callback(h.user, menu.message_id, buttonData(current(), "Model: Fake QSA")));
     expect(current().text).toBe(TELEGRAM_BRIDGE_COPY.modelsTitle);
+  });
+
+  it("answers a Workspace button of an old settings menu as expired and changes nothing", async () => {
+    const h = harness();
+    // A settings menu sent before the switch was removed: its stored button row still names the retired kind.
+    await h.session.outbound.sendText({
+      chatId: h.user.id, keyboard: [[{ callback: { kind: "toggle_workspace" }, text: "Workspace: off" }]], linkId: h.linkRecord.id,
+      text: TELEGRAM_BRIDGE_COPY.settingsTitle
+    });
+    const old = h.fake.botMessages(h.user.id).at(-1)!;
+    const press = h.fake.inject.callback(h.user, old.message_id, buttonData(old, "Workspace: off"));
+    await h.deliver(press);
+    expect(h.fake.callbackAnswer((press.callback_query as { id: string }).id)).toMatchObject({ text: TELEGRAM_COPY.buttonExpired });
+    expect(h.links.records.get("user-1")).toEqual(h.linkRecord);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
+  });
+
+  it("asks for no Workspace where the installation does not offer it, naming why", async () => {
+    const gateway = createFakeGateway({ workspaceOffered: false });
+    const h = harness({ gateway });
+    await say(h, h.fake.inject.text(h.user, "hello"));
+    await h.settle();
+    expect(gateway.sent.at(-1)!.body).toMatchObject({ workspace: { enabled: false, reason: "installation_disabled" } });
+    gateway.setWorkspaceOffered(true);
+    await say(h, h.fake.inject.text(h.user, "and again"));
+    await h.settle();
+    expect(gateway.sent.at(-1)!.body).toMatchObject({ workspace: { enabled: true } });
   });
 
   it("answers an unknown command and lists nothing it has no data for", async () => {

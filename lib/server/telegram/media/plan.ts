@@ -29,7 +29,7 @@ export type TelegramMediaRefusal =
   | Readonly<{ reason: "voice_too_long" }>
   | Readonly<{ reason: "voice_too_large" }>
   | Readonly<{ reason: "file_too_large" }>
-  | Readonly<{ reason: "unsupported_file"; workspaceHint: boolean }>;
+  | Readonly<{ reason: "unsupported_file" }>;
 
 export type TelegramMediaPlan =
   | Readonly<{ kind: "audio"; fileId: string; mimeType: DictationAudioMimeType; caption: string | null }>
@@ -40,8 +40,11 @@ export type TelegramMediaPlan =
   | Readonly<{ kind: "refused"; refusal: TelegramMediaRefusal }>;
 
 export type TelegramMediaPlanOptions = Readonly<{
-  /** The link's Workspace switch: uploads then take every file Workspace takes, as in the browser. */
-  workspaceEnabled: boolean;
+  /**
+   * Whether the installation offers the Workspace: every Telegram turn then asks for it, so uploads
+   * take every file Workspace takes, as in the browser.
+   */
+  workspaceOffered: boolean;
   /** The installation's upload cap (`AIQSA_UPLOAD_MAX_BYTES`). */
   uploadMaxBytes: number;
 }>;
@@ -126,10 +129,10 @@ function attachmentPlan(
 ): TelegramMediaPlan {
   const maxBytes = Math.min(TELEGRAM_FILE_MAX_BYTES, options.uploadMaxBytes);
   if (overLimit(input.fileSize, maxBytes)) return { kind: "refused", refusal: { reason: "file_too_large" } };
-  const scope = options.workspaceEnabled ? "workspace" : "attachment";
+  const scope = options.workspaceOffered ? "workspace" : "attachment";
   const format = uploadFormatForExtension(input.fileName, scope);
   // Without Workspace only attachment types are taken; with it, the upload decides as the browser's does.
-  if (!format && scope === "attachment") return { kind: "refused", refusal: { reason: "unsupported_file", workspaceHint: true } };
+  if (!format && scope === "attachment") return { kind: "refused", refusal: { reason: "unsupported_file" } };
   const declared = input.mimeType ? normalizedUploadMimeType(input.mimeType) : undefined;
   // Telegram's type is its guess from the name: a type the format does not list is left to the content check.
   const mimeType = format ? format.canonicalMimeType : declared ?? "application/octet-stream";

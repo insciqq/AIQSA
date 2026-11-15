@@ -62,7 +62,7 @@ async function setup() {
   const link: TelegramLinkRecord = {
     botId: fake.bot.id, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(START),
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
-    telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1", workspaceEnabled: false
+    telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1"
   };
   let decision: TelegramAccessDecision = { allowed: true, control: {} as never, link };
   const access = { resolveTelegramAccess: vi.fn(async () => decision) };
@@ -270,7 +270,7 @@ describe("Telegram Agent and Workspace status in the chat bridge", () => {
       access: h.access, messageRefs: h.messageRefs.store, runLinks: h.runLinks.store, sessions: h.sessions
     });
     const user = h.fake.inject.addUser({ firstName: "Alex" });
-    h.link(user, "user-1", { workspaceEnabled: true });
+    h.link(user, "user-1");
     await h.deliver(h.fake.inject.text(user, "[AIQSA_WORKSPACE_E2E:long_command]"));
     h.bridge.conversation.flush();
     await vi.waitFor(() => expect(gateway.runs).toHaveLength(1));
