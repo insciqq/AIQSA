@@ -81,10 +81,18 @@ for (const theme of ["light", "dark"] as const) {
     const sheet = page.getByRole("dialog", { name: "Calendar with a deliberately long integration name", exact: true });
     for (const size of sizes) {
       await page.setViewportSize(size);
-      // The selected tab is revealed on the ResizeObserver's next animation frame.
-      await expect(async () => {
-        await expectWithinViewport(page, library.getByRole("tab", { name: "MCP servers", exact: true }));
-      }).toPass({ timeout: 5_000 });
+      if (size.width >= 1024 && size.height > 480) {
+        // Side by side: the selected tab is revealed on the ResizeObserver's next animation frame.
+        await expect(async () => {
+          await expectWithinViewport(page, library.getByRole("tab", { name: "MCP servers", exact: true }));
+        }).toPass({ timeout: 5_000 });
+      } else {
+        // Narrow or short: the section shows alone, named in its header, with the way back to the list.
+        await expect(library).toHaveAttribute("data-view", "section");
+        await expect(library.getByRole("tablist", { name: "Settings sections" })).toBeHidden();
+        await expect(library.getByRole("navigation", { name: "Settings location" })).toHaveText("MCP servers");
+        await expectWithinViewport(page, library.getByRole("button", { name: "Back to Settings", exact: true }));
+      }
       await expect(library.getByRole("article")).toHaveCount(8);
       if (size.width === 1440) {
         const rows = await library.getByRole("article").evaluateAll(nodes => nodes.map(node => {
@@ -131,7 +139,7 @@ for (const theme of ["light", "dark"] as const) {
     expect(observed.requests).toEqual(Array(observed.initialReads).fill("GET /api/me/mcp"));
     expect(observed.hubReads()).toBe(0);
     await library.getByRole("button", { name: "Connect Claude Code or Codex", exact: true }).click();
-    await expect(page.getByTestId("settings-v2").getByLabel("Agent instructions")).toHaveValue("https://example.test/AGENTS.md");
+    await expect(library.getByLabel("Agent instructions")).toHaveValue("https://example.test/AGENTS.md");
     // Mounting Settings may repeat an aborted read under development Strict Mode.
     expect(observed.hubReads()).toBeGreaterThanOrEqual(1);
   });

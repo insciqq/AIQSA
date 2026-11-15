@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { UserMcpServer } from "../../lib/contracts/mcp";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { engageComposer } from "./shell/composer";
+import { showSettingsSection } from "./shell/page";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken as signIn } from "./support/localAuth";
 
@@ -39,9 +40,12 @@ for (const profile of [
     await signIn(page);
     await page.goto("/?library=mcp");
     const library = page.getByTestId("library-v2");
+    // The MCP servers footnote opens Settings › Claude Code & Codex in the same surface.
     await library.getByRole("button", { name: "Connect Claude Code or Codex" }).click();
-    const settings = page.getByTestId("settings-v2");
+    const settings = library;
     await expect(settings.getByRole("heading", { name: "Claude Code & Codex", exact: true })).toBeVisible();
+    await expect(settings).toHaveAttribute("data-view", "section");
+    await expect(settings.getByRole("navigation", { name: "Settings location" })).toHaveText("Claude Code & Codex");
     const guide = settings.getByLabel("Agent instructions");
     await expect(guide).toHaveValue(`${canonical}/AGENTS.md`);
     await expectWithinViewport(page, guide);
@@ -74,9 +78,11 @@ for (const profile of [
     await expect(settings.getByRole("heading", { name: "Skill writer" })).toBeFocused();
     await expectNoHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath(`agents-revoked-${profile.name}.png`) });
-    await page.keyboard.press("Escape");
-    await expect(settings).toBeHidden();
-    await expect(library.getByRole("button", { name: "Connect Claude Code or Codex" })).toBeFocused();
+    // MCP servers is one section away, with the way to the agent guide still on it.
+    await showSettingsSection(page, "MCP servers");
+    await expect(library.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
+    await expect(library.getByRole("button", { name: "Connect Claude Code or Codex" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
   });
 }
 
@@ -155,7 +161,7 @@ for (const [kind, notice] of [
   ["cancelled", "Authorization was cancelled."],
   ["failed", "Authorization or automatic MCP enablement failed. Try connecting again."]
 ] as const) {
-  test(`preserves the ${kind} MCP return notice after opening Studio`, async ({ page }, testInfo) => {
+  test(`preserves the ${kind} MCP return notice after opening Settings`, async ({ page }, testInfo) => {
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
     await signIn(page);
     await page.setViewportSize({ width: 390, height: 844 });

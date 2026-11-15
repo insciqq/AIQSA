@@ -134,9 +134,8 @@ test("temporary input leaves no draft, accounts stay isolated, and sign-out clea
   await expect(composer(page)).toHaveValue("");
   await composer(page).fill("Second account's draft");
   await expect.poll(() => storedText(page)).toContain("Second account's draft");
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await settings.getByRole("button", { name: "Account", exact: true }).click();
+  await runAccountMenuAction(page, "Account");
+  const settings = page.getByTestId("library-v2");
   await expect(settings).toContainText("Ends this browser session and removes unsent drafts from this device.");
   for (const [name, width, height] of [["desktop", 1440, 900], ["tablet-portrait", 768, 1024],
     ["tablet-landscape", 1024, 768], ["phone-portrait", 390, 844], ["phone-landscape", 844, 390]] as const) {
@@ -190,9 +189,8 @@ test("sign-out in another tab revokes a login tab's expired-session draft and co
     await second.goto(`/c/${chatId}`);
     await expect(composer(second)).toBeVisible({ timeout: 30_000 });
     expect(await second.evaluate(key => JSON.parse(localStorage.getItem(key)!).epoch, epochKey)).toBe(handoff!.epoch);
-    await runAccountMenuAction(second, "Settings");
-    const settings = second.getByRole("dialog", { name: "Settings" });
-    await settings.getByRole("button", { name: "Account", exact: true }).click();
+    await runAccountMenuAction(second, "Account");
+    const settings = second.getByTestId("library-v2");
     await settings.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(second).toHaveURL(/\/login$/u);
     await expect(page).toHaveURL(/\/login\?next=.*&reason=session_expired$/u);
@@ -228,9 +226,8 @@ test("a tab signed out from another tab stores nothing until the account signs i
   try {
     await second.goto("/");
     await expect(composer(second)).toHaveValue("Typed before sign-out", { timeout: 30_000 });
-    await runAccountMenuAction(second, "Settings");
-    const settings = second.getByRole("dialog", { name: "Settings" });
-    await settings.getByRole("button", { name: "Account", exact: true }).click();
+    await runAccountMenuAction(second, "Account");
+    const settings = second.getByTestId("library-v2");
     await settings.getByRole("button", { name: "Sign out", exact: true }).click();
     await expect(second).toHaveURL(/\/login$/u);
 

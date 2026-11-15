@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page as PlaywrightPage, type TestInfo 
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 
 /**
- * Settings → Connections on the fixture page. The `connections-*` states
+ * Settings › MCP servers, under "Personal connections", on the fixture page. The `connections-*` states
  * answer from the in-browser fixture API (`personalMcpFixtureApi.ts`), whose
  * URL hosts select the error scenarios; screenshots are for visual review.
  */
@@ -174,9 +174,9 @@ for (const viewport of viewports) {
       await page.setViewportSize({ height: viewport.height, width: viewport.width });
     });
 
-    test("lists personal connections and links one needing attention to Connections", async ({ page }, testInfo) => {
+    test("lists personal connections and links one needing attention to MCP servers", async ({ page }, testInfo) => {
       await page.goto("/ui-v2-fixture?fixture=composer&state=mcp-personal");
-      const link = page.getByRole("menuitem", { name: "Open Connections in Settings for Notion" });
+      const link = page.getByRole("menuitem", { name: "Open MCP servers in Settings for Notion" });
       await expect(link).toBeVisible();
       await expect(page.getByTestId("composer-v2-mcp-servers")).toContainText("Docs search");
       await expect(page.getByRole("menuitem", { name: "Manage enabled MCP servers" })).toHaveText(/Manage/);
@@ -186,7 +186,7 @@ for (const viewport of viewports) {
     test("keeps the draft and explains a Load all refusal over the tool limit", async ({ page }, testInfo) => {
       await page.goto("/ui-v2-fixture?fixture=composer&state=load-all-refused");
       const refusal = page.getByRole("alert").filter({ hasText: "Load all can offer at most" });
-      await expect(refusal).toContainText("Use Auto, or switch tools off in Settings → Connections.");
+      await expect(refusal).toContainText("Use Auto, or switch tools off in Settings › MCP servers.");
       await expect(page.getByRole("textbox", { name: "Message" })).not.toHaveValue("");
       await capture(page, testInfo, "composer-load-all-refused", viewport.name, refusal);
     });

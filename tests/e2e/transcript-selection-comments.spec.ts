@@ -254,9 +254,8 @@ test("chat navigation isolates comments and explicit sign-out removes them", asy
   await expect(page.getByRole("button", { name: "1 comment", exact: true })).toHaveCount(0);
   await page.goto(`/c/${chatId}`);
   await expect(page.getByRole("button", { name: "1 comment", exact: true })).toBeVisible();
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await settings.getByRole("button", { name: "Account", exact: true }).click();
+  await runAccountMenuAction(page, "Account");
+  const settings = page.getByTestId("library-v2");
   await settings.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/u);
   await signInWithLocalToken(page, `/c/${chatId}`);

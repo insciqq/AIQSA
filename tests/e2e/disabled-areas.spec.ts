@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { chooseSearchStrategy } from "./shell/composer";
+import { runAccountMenuAction } from "./shell/page";
 import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
@@ -27,21 +28,18 @@ async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void>
   });
 }
 
-/** Neither the rail nor the drawer offers Projects; Studio stays as the positive control. */
+/** The chat list offers no Projects; its Settings gear stays as the positive control. */
 async function expectNoProjectsDestination(page: Page): Promise<void> {
-  const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-  if (await rail.isVisible()) {
-    await expect(rail.getByRole("button", { name: "Studio", exact: true })).toBeVisible();
-    await expect(rail.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
-  } else {
-    const drawer = page.getByRole("complementary", { name: "Chat navigation" });
-    if (!(await drawer.isVisible())) await page.getByRole("button", { name: "Open sidebar" }).click();
-    await expect(drawer).toBeVisible();
-    await expect(drawer.getByRole("button", { name: "Studio", exact: true })).toBeVisible();
-    await expect(drawer.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
+  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+  const opened = !(await navigation.isVisible());
+  if (opened) await page.getByRole("button", { name: "Open sidebar" }).click();
+  await expect(navigation).toBeVisible();
+  await expect(navigation.getByTestId("navigation-footer").getByRole("button", { name: "Settings", exact: true })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
+  if (opened) {
     await expect(async () => {
-      if (await drawer.isVisible()) await page.keyboard.press("Escape");
-      await expect(drawer).toBeHidden({ timeout: 1_000 });
+      if (await navigation.isVisible()) await page.keyboard.press("Escape");
+      await expect(navigation).toBeHidden({ timeout: 1_000 });
     }).toPass({ timeout: 10_000 });
   }
   await expect(page.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
@@ -117,14 +115,11 @@ test.describe("desktop", () => {
     }
   });
 
-  test("Studio has no Knowledge section and Chat defaults has no Knowledge row", async ({ page }, testInfo) => {
+  test("Settings has no Knowledge section and Chat defaults has no Knowledge row", async ({ page }, testInfo) => {
     await signInWithLocalToken(page);
-    const studio = page.getByRole("navigation", { name: "Workspace", exact: true })
-      .getByRole("button", { name: "Studio", exact: true });
-    await studio.click();
+    await runAccountMenuAction(page, "Settings");
     const library = page.getByTestId("library-v2");
-    await expect(library).toBeVisible();
-    const sections = library.getByRole("tablist", { name: "Studio sections" });
+    const sections = library.getByRole("tablist", { name: "Settings sections" });
     await expect(sections.getByRole("tab", { name: "Memory", exact: true })).toBeVisible();
     await expect(sections.getByRole("tab", { name: /Knowledge/u })).toHaveCount(0);
 
@@ -136,7 +131,7 @@ test.describe("desktop", () => {
     await expect(page.getByTestId("settings-default-knowledge")).toHaveCount(0);
     await expect(panel).not.toContainText(/Knowledge|Project/u);
     await expectNoHorizontalOverflow(page);
-    await shot(page, testInfo, "studio-chat-defaults-desktop");
+    await shot(page, testInfo, "settings-chat-defaults-desktop");
   });
 
   test("Control Center offers the native Anthropic tile and names its retrieval page Memory", async ({ page }, testInfo) => {

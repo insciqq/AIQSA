@@ -140,9 +140,8 @@ async function cleanupImportChats(page: Page) {
 }
 
 async function openDataSettings(page: Page): Promise<Locator> {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { exact: true, name: "Data" }).click();
+  await runAccountMenuAction(page, "Data");
+  const settings = page.getByTestId("library-v2");
   await expect(settings.getByTestId("settings-import-chats")).toBeVisible();
   return settings;
 }
@@ -157,7 +156,8 @@ async function importFiles(page: Page, files: Parameters<Locator["setInputFiles"
 }
 
 async function closeSettings(page: Page) {
-  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByTestId("library-v2").getByRole("button", { name: "Back to chat", exact: true }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 }
 
 test.beforeEach(async ({ page }) => {

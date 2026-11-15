@@ -103,9 +103,8 @@ async function cleanup(page: Page) {
 
 /** Picks the files in Settings → Data and returns the settled report. */
 async function importFiles(page: Page, files: Parameters<Locator["setInputFiles"]>[0]): Promise<Locator> {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { exact: true, name: "Data" }).click();
+  await runAccountMenuAction(page, "Data");
+  const settings = page.getByTestId("library-v2");
   await settings.getByTestId("settings-import-input").setInputFiles(files);
   const report = settings.getByTestId("chat-import-report");
   await expect(report).toBeVisible({ timeout: 60_000 });
@@ -113,7 +112,8 @@ async function importFiles(page: Page, files: Parameters<Locator["setInputFiles"
 }
 
 async function closeSettings(page: Page) {
-  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByTestId("library-v2").getByRole("button", { name: "Back to chat", exact: true }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 }
 
 test.beforeEach(async ({ page }) => {

@@ -3,7 +3,7 @@ import type { UserMcpServer } from "../../lib/contracts/mcp";
 import { memoryConsumerItemFixture, memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
-import { runAccountMenuAction } from "./shell/page";
+import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 
 const sizes = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
@@ -63,46 +63,35 @@ async function openDraft(page: Page, resource: Resource) {
 }
 
 for (const width of [1440, 390]) {
-  test(`migrated forms retain drafts across every Studio exit at ${width}px`, async ({ page }, info) => {
+  test(`migrated forms retain drafts across every Settings exit at ${width}px`, async ({ page }, info) => {
     test.setTimeout(180_000);
     page.setDefaultTimeout(15_000);
     await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
     await prepare(page);
     const library = page.getByTestId("library-v2");
     const confirm = page.getByTestId("discard-changes-confirmation");
-    const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    const drawer = page.getByRole("complementary", { name: "Chat navigation" });
     for (const resource of resources) {
-      for (const destination of ["tab", "back", "new", "shortcut", width === 1440 ? "chats" : "chat"]) {
+      // While Settings is open the chat list and its floating controls are gone at every width,
+      // so its exits are another section (from the side-by-side list), its own Back and the shortcut.
+      for (const destination of [...(width === 1440 ? ["tab"] : []), "back", "shortcut"]) {
         const input = await openDraft(page, resource);
         const draft = await input.inputValue();
-        if (destination === "tab") {
-          const panel = library.getByRole("tabpanel");
-          await panel.evaluate(node => { node.scrollTop = 90; });
-          const scroll = await panel.evaluate(node => node.scrollTop);
-          await runAccountMenuAction(page, "Settings");
-          await page.getByRole("button", { name: "Close settings" }).click();
-          await expect(input).toHaveValue(draft);
-          expect(await panel.evaluate(node => node.scrollTop)).toBe(scroll);
-        }
+        await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
+        await expect(page.getByRole("button", { name: "Open sidebar" })).toHaveCount(0);
+        await expect(page.getByRole("link", { name: "New chat", exact: true })).toHaveCount(0);
         const navigate = async () => {
           if (destination === "tab") await library.getByRole("tab", { name: "Files", exact: true }).click();
           else if (destination === "back") await library.getByRole("button", { name: /Back to (?:chat|Instructions)/ }).click();
-          else if (destination === "shortcut") await page.keyboard.press("Control+Shift+O");
-          else {
-            if (width === 390 && !await drawer.isVisible()) await page.getByRole("button", { name: "Open sidebar" }).click();
-            if (destination === "chat") await drawer.getByRole("treeitem", { name: "Migration destination", exact: true }).click();
-            else await (width === 390 ? drawer : rail).getByRole(destination === "new" ? "link" : "button", {
-              name: destination === "new" ? "New chat" : "Chats", exact: true
-            }).click();
-          }
+          else await page.keyboard.press("Control+Shift+O");
         };
         await navigate();
         await expect(confirm.getByRole("button", { name: "Keep editing", exact: true })).toBeFocused();
         if (destination === "back") await page.screenshot({ path: info.outputPath(`${resource}-${width}-discard.png`) });
         await confirm.getByRole("button", { name: "Keep editing", exact: true }).click();
         await expect(input).toHaveValue(draft);
-        await expect(library.getByRole("tab", { name: resource, exact: true })).toHaveAttribute("aria-selected", "true");
+        // Where a section shows alone its row is hidden but stays the selected one.
+        await expect(library.getByRole("tab", { name: resource, exact: true, includeHidden: true }))
+          .toHaveAttribute("aria-selected", "true");
         await navigate();
         await confirm.getByRole("button", { name: /Confirm discard/ }).click();
         await expect(input).toHaveCount(0);
@@ -137,10 +126,9 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     await library.getByRole("button", { name: resource === "Instructions" ? "Save" : "Save personal values", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
-    const rail = page.getByRole("navigation", { name: "Workspace", exact: true });
-    for (const [role, name] of [["button", "Chats"], ["link", "New chat"], ["button", "Studio"]] as const) {
-      await expect(rail.getByRole(role, { name, exact: true })).toBeDisabled();
-    }
+    // Settings' own Back is its one exit; the chat list stays hidden behind it.
+    await expect(library.getByRole("button", { name: /Back to (?:chat|Instructions)/ })).toBeDisabled();
+    await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
     await page.screenshot({ path: info.outputPath(`${resource}-busy.png`) });
@@ -153,12 +141,14 @@ test("pending migrated mutations block exits, then preserve the draft on failure
 });
 
 for (const theme of ["dark", "light"] as const) {
-  test(`Memory, Chat defaults and reduced Settings fit every device · ${theme}`, async ({ page }, info) => {
+  test(`Memory, Chat defaults and the list of Settings sections fit every device · ${theme}`, async ({ page }, info) => {
     test.setTimeout(180_000);
     await page.context().addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
     await prepare(page);
     for (const size of sizes) {
       await page.setViewportSize(size);
+      // No touch here: the list and a section take turns exactly below 1024px.
+      const narrow = size.width < 1024;
       await runAccountMenuAction(page, "Chat defaults");
       const library = page.getByTestId("library-v2");
       await expect(library.getByRole("button", { name: "Default model", exact: true })).toBeEnabled();
@@ -168,8 +158,10 @@ for (const theme of ["dark", "light"] as const) {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`defaults-${theme}-${size.width}x${size.height}.png`) });
       await library.getByRole("tabpanel").getByRole("button", { name: "MCP servers", exact: true }).click();
-      await expect(library.getByRole("tab", { name: "MCP servers", exact: true })).toHaveAttribute("aria-selected", "true");
-      await library.getByRole("tab", { name: "Memory", exact: true }).click();
+      await expect(library.getByRole("tab", { name: "MCP servers", exact: true, includeHidden: true }))
+        .toHaveAttribute("aria-selected", "true");
+      await expect(library).toHaveAttribute("data-view", "section");
+      await showSettingsSection(page, "Memory");
       const card = page.getByRole("complementary", { name: "How Memory works" });
       const disclosure = card.getByRole("button", { name: /^How Memory works/ });
       if (size.width === 1440) {
@@ -187,21 +179,34 @@ for (const theme of ["dark", "light"] as const) {
       await expect(library.getByText(/Temporary chats never read or write Memory/)).toHaveCount(1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`memory-${theme}-${size.width}x${size.height}.png`) });
-      await runAccountMenuAction(page, "Settings");
-      const settings = page.getByTestId("settings-v2");
-      await expect(settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button")).toHaveText([
-        "General", "Account", "Connections", "Claude Code & Codex", "Data"
-      ]);
-      if (size.width === 1440) {
-        await expect.poll(async () => {
-          const box = await settings.boundingBox();
-          return { width: Math.round(box?.width ?? 0), height: Math.round(box?.height ?? 0) };
-        }).toEqual({ width: 864, height: 609 });
+      // The list of sections: beside the section from 1024px, in its place below (Back to Settings).
+      const sectionList = library.getByRole("tablist", { name: "Settings sections" });
+      if (narrow) {
+        await expect(sectionList).toBeHidden();
+        await library.getByRole("button", { name: "Back to Settings", exact: true }).click();
+        await expect(library).toHaveAttribute("data-view", "list");
+        await expect(library.getByRole("tabpanel")).toBeHidden();
+        await expect(library.getByRole("tab", { name: "Memory", exact: true })).toBeFocused();
       }
-      await expectWithinViewport(page, settings);
+      await expect(sectionList).toBeVisible();
+      // Computers and Telegram depend on the installation; every other section is always offered, in this order.
+      const names = (await sectionList.getByRole("tab").allTextContents()).map(name => name.trim())
+        .filter(name => name !== "Computers" && name !== "Telegram");
+      expect(names).toEqual(["General", "Account", "Data", "Assistants", "Instructions", "Skills", "Sub-agents",
+        "Automations", "Chat defaults", "Memory", "Files", "Artifacts", "MCP servers", "Secrets", "Proxies",
+        "Claude Code & Codex"]);
+      await expect(library.getByRole("button", { name: "Back to chat", exact: true })).toHaveCount(1);
+      await expectWithinViewport(page, library.getByRole("button", { name: "Back to chat", exact: true }));
+      await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`settings-${theme}-${size.width}x${size.height}.png`) });
-      await settings.getByRole("button", { name: "Close settings" }).click();
-      await library.getByRole("button", { name: "Back to chat" }).click();
+      if (narrow) {
+        // A section from the list shows it alone again.
+        await library.getByRole("tab", { name: "Memory", exact: true }).click();
+        await expect(library).toHaveAttribute("data-view", "section");
+        await expect(card).toBeVisible();
+      }
+      await library.getByRole("button", { name: "Back to chat", exact: true }).click();
+      await expect(library).toHaveCount(0);
     }
   });
 }
@@ -328,7 +333,7 @@ test("an unconfirmed Memory reset reloads the actual list and unlocks its contro
   await expect(library.getByText("Before reset", { exact: true })).toHaveCount(0);
 });
 
-test("Account guards reverted and unsaved fields and blocks close during a save", async ({ page }, info) => {
+test("Account guards reverted and unsaved fields and blocks leaving Settings during a save", async ({ page }, info) => {
   await prepare(page);
   const user = { displayName: "Synthetic owner", email: "account@example.test", role: "user", hasPassword: true };
   let release!: () => void;
@@ -341,40 +346,45 @@ test("Account guards reverted and unsaved fields and blocks close during a save"
       await route.fulfill({ status: 503, json: { error: "temporarily_unavailable" } });
     } else await route.fulfill({ json: { user } });
   });
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "Account", exact: true }).click();
+  await runAccountMenuAction(page, "Account");
+  const settings = page.getByTestId("library-v2");
+  const leave = settings.getByRole("button", { name: "Back to chat", exact: true });
   const name = settings.getByRole("textbox", { name: "Display name" });
   await expect(name).toHaveValue(user.displayName);
   await name.fill("Unsaved name");
-  await settings.getByRole("button", { name: "General", exact: true }).click();
-  const confirm = page.getByRole("alertdialog", { name: "Unsaved account changes" });
+  await settings.getByRole("tab", { name: "General", exact: true }).click();
+  const confirm = page.getByRole("dialog", { name: "Unsaved account changes" });
   const keep = confirm.getByRole("button", { name: "Keep editing", exact: true });
   await expect(keep).toBeFocused();
   await keep.press("Shift+Tab");
-  await expect(confirm.getByRole("button", { name: "Discard changes" })).toBeFocused();
+  await expect(confirm.getByRole("button", { name: "Confirm discard changes" })).toBeFocused();
   await confirm.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(settings.getByRole("tab", { name: "Account", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(name).toHaveValue("Unsaved name");
   await name.fill(user.displayName);
   await settings.getByRole("button", { name: "Change…", exact: true }).click();
   await settings.getByLabel("Current password", { exact: true }).fill("synthetic-unsaved");
-  await settings.getByRole("button", { name: "Close settings" }).click();
+  await leave.click();
   await expect(confirm).toBeVisible();
   await page.screenshot({ path: info.outputPath("account-password-discard.png") });
   await keep.click();
+  await expect(settings).toBeVisible();
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
   await name.fill("Pending name");
   await settings.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => saving).toBe(true);
-  await expect(settings.getByRole("button", { name: "Close settings" })).toBeDisabled();
+  // A save in flight holds Settings: no way out, and Escape changes nothing.
+  await expect(leave).toBeDisabled();
+  for (const tab of await settings.getByRole("tab").all()) await expect(tab).toBeDisabled();
   await settings.press("Escape");
   await expect(settings).toBeVisible();
   await expect(confirm).toHaveCount(0);
   release();
-  await expect(settings.getByRole("button", { name: "Close settings" })).toBeEnabled();
+  await expect(leave).toBeEnabled();
   await expect(name).toHaveValue("Pending name");
-  await settings.getByRole("button", { name: "Close settings" }).click();
-  await confirm.getByRole("button", { name: "Discard changes" }).click();
+  await leave.click();
+  await confirm.getByRole("button", { name: "Confirm discard changes" }).click();
   await expect(settings).toHaveCount(0);
 });
 
@@ -390,7 +400,7 @@ test.describe("touch controls", () => {
       await expectTouchSafe(library.getByRole("button", { name: "Default model", exact: true }));
       for (const radio of await library.getByRole("radio").all()) await expectTouchSafe(radio);
       await page.screenshot({ path: info.outputPath(`defaults-touch-${size.width}x${size.height}.png`) });
-      await library.getByRole("tab", { name: "Memory", exact: true }).click();
+      await showSettingsSection(page, "Memory");
       const card = page.getByRole("complementary", { name: "How Memory works" });
       await expectTouchSafe(card.getByRole("button", { name: /^How Memory works/ }));
       await card.getByRole("button", { name: /^How Memory works/ }).click();
