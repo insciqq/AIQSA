@@ -569,11 +569,12 @@ export const SUBAGENT_PROMPTS = Object.freeze({
   // Nothing in it names files or the Workspace: what the lead's brief asks of its helper is the model's own, under the product's prompt.
   // Search calls are counted: paid search prompts name exactly how many, because models fan out otherwise.
   V: () => [
-    `Поручи небольшой поиск в интернете ровно одному суб-агенту ${SUBAGENT_NAMES.handOver.lead} и дождись его отчёта (не в фоне). Сам не ищи.`,
+    `Поручи небольшой поиск в интернете ровно одному суб-агенту с именем ${SUBAGENT_NAMES.handOver.lead} (это его имя, name; type не указывай) ` +
+      "и дождись его отчёта (не в фоне). Сам не ищи.",
     "Вопрос из двух частей про встраиваемую базу данных SQLite: 1) под какой лицензией распространяется исходный код SQLite; " +
       "2) в каком году вышла первая версия SQLite.",
     `Скажи ${SUBAGENT_NAMES.handOver.lead}, чтобы первую часть он нашёл сам, а вторую поручил одному своему помощнику ` +
-      `${SUBAGENT_NAMES.handOver.helper} (не в фоне), дождался его ответа и собрал обе части вместе. Каждому из них хватит ровно одного ` +
+      `с именем ${SUBAGENT_NAMES.handOver.helper} (не в фоне), дождался его ответа и собрал обе части вместе. Каждому из них хватит ровно одного ` +
       "веб-поиска: не больше одного поиска на агента, страницы не открывать, ответ взять из результатов поиска.",
     "Когда получишь его отчёт, ответь мне двумя короткими строками: лицензия и год."
   ].join("\n\n"),
