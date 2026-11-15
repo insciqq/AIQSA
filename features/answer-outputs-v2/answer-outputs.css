@@ -371,6 +371,12 @@ button.v2-generated-file-download {
   background: var(--v2-color-surface);
   font: inherit;
   font-size: 0.875rem;
+  appearance: none;
+}
+
+/* As in the other filters: the browser's own clear button is a coloured control. */
+.v2-answer-sources-filter::-webkit-search-cancel-button {
+  display: none;
 }
 
 .v2-answer-sources-filter::placeholder {
