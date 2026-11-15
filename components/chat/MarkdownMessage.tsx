@@ -128,7 +128,7 @@ function renderLink(node: Extract<MarkdownInline, { type: "link" }>, key: string
       </a>
     );
   }
-  // A Studio section the agent points to opens in this tab, like the app's own links.
+  // A Settings section the agent points to opens in this tab, like the app's own links.
   const studio = studioHref(node.url);
   if (studio) {
     return <a className={LINK_CLASS} href={studio} key={key}>{label}</a>;

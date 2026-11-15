@@ -189,7 +189,7 @@ export async function refreshMcpSettings(
 /**
  * Consumes an OAuth callback outcome from the address. A personal
  * connection's outcome (`settings=connections`) belongs to the personal
- * store; Studio's installation store never receives it.
+ * store; the installation store never receives it.
  */
 export function consumeMcpOAuthReturn(url: URL): McpOAuthOutcome | null {
   const personal = url.searchParams.get("settings") === "connections";

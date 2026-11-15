@@ -2,9 +2,9 @@ import { PROXY_ROUTES, type ProxyDeleteInput } from "@/lib/contracts/proxies";
 import { decodeWorkspaceSecretList, type WorkspaceSecretMutation } from "@/lib/contracts/workspaceSecrets";
 
 /**
- * The calls a resource change card makes, all through the Studio routes the
+ * The calls a resource change card makes, all through the Settings routes the
  * user's own session authorizes. Assistants use `components/assistants/assistantsApi.ts`
- * and Skill deletion the library store, so their Studio views stay current.
+ * and Skill deletion the library store, so their Settings views stay current.
  */
 
 /** A failed card request: the server's stable code when it sent one. */

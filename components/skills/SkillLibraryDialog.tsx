@@ -74,7 +74,7 @@ type SkillLibraryContentProps = Readonly<{
   includedSkills?: readonly SelectedSkillName[];
   selectedSkills?: readonly SelectedSkillName[];
   onSelectionChange(skillIds: readonly string[]): void;
-  /** Section mode reports an unsaved editor to the enclosing Studio navigation guard. */
+  /** Section mode reports an unsaved editor to the enclosing Settings navigation guard. */
   onDirtyChange?(dirty: boolean): void;
   /** Dialog mode routes its close requests through the editor's discard confirmation. */
   exitGuardRef?: { current: SkillExitGuard | null };

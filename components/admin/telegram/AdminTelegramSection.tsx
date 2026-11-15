@@ -342,7 +342,7 @@ export function AdminTelegramSection({ feedback, groups }: AdminTelegramSectionP
   return (
     <div className="flex max-w-[1120px] min-w-0 flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8" data-testid="admin-telegram-section">
       <p className="max-w-2xl text-sm leading-6 text-ink-secondary">
-        Let people chat with AIQSA from Telegram through one bot. Each person connects their own account in Settings → Connections.
+        Let people chat with AIQSA from Telegram through one bot. Each person connects their own account in Settings › Telegram.
       </p>
       {error ? <p className="text-xs leading-5 text-critical" role="alert">{error}</p> : null}
       <BotState controller={controller} telegram={telegram} />

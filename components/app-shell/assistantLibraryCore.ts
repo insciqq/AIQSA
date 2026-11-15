@@ -86,7 +86,7 @@ export function sharingDirty(snapshot: Pick<AssistantLibrarySnapshot, "sharing">
   return sharing !== null && sharing.state === "ready" && draftBaseline(sharing.draft) !== sharing.baseline;
 }
 
-/** Everything a Studio exit closes along with the Assistants surface. */
+/** Everything a Settings exit closes along with the Assistants surface. */
 export const closedAssistantSurfaces: Partial<AssistantLibrarySnapshot> = {
   deletion: null,
   detail: null,
@@ -225,8 +225,8 @@ export function createAssistantLibraryCore(input: AssistantLibraryControllerInpu
   /**
    * Chooses the currently authorized definition for the open composer: a
    * composer choice until a new chat's first message, a chat update in an
-   * existing chat. It never creates a chat; from Studio it also navigates to
-   * the blank workspace first. Unsaved Studio drafts refuse it.
+   * existing chat. It never creates a chat; from Settings it also navigates to
+   * the blank workspace first. Unsaved Settings drafts refuse it.
    */
   async function useAssistant(assistantId: string, options: { navigate: boolean; temporary?: boolean }) {
     const snapshot = store();

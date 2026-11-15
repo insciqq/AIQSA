@@ -119,7 +119,7 @@ function ClampedText({ clamped, text }: Readonly<{ clamped: string | null; text:
  * there is no kicker, publication scope, accent colour or framed block. The
  * name and description are clamped (see workspace.css) so the composer below
  * stays in view on short screens, cut at a word with every line centred;
- * the description's title and Studio show it whole.
+ * the description's title and Settings show it whole.
  */
 export function AssistantIntroV2({
   avatar,

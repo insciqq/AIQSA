@@ -385,9 +385,9 @@ export type ComposerV2Props = Readonly<{
   /** Observes which layer is open (the header selector mirrors it as aria-expanded). */
   onLayerChange?(layer: ComposerV2Layer): void;
   onMakeModelDefault?(model: CatalogModel): void;
-  /** Studio's MCP servers ("Manage"/"Configure"). */
+  /** Settings › MCP servers ("Manage"/"Configure"). */
   onOpenMcpSettings?(): void;
-  /** Settings → Connections, for a personal connection that needs attention. */
+  /** Settings › MCP servers, for a personal connection that needs attention. */
   onOpenPersonalMcpSettings?(): void;
   onOpenSkillLibrary?(): void;
   /** The header Assistant selector's choices for the `/` palette; absent lists no Assistants. */
@@ -1158,7 +1158,7 @@ export function ComposerV2({
     return (server.enabled || server.attention) && (kind === "attention" || kind === "failed");
   });
   const mcpServersNeedingAttention = mcpAttentionServers.length;
-  // Studio configures installation servers; personal ones link to Connections.
+  // Settings configures both; a personal connection's problem links to its row there.
   const mcpInstallationAttention = mcpAttentionServers.some((server) => server.source !== "personal");
   const mcpAttentionLabel = mcpServersNeedingAttention
     ? `${mcpServersNeedingAttention} MCP ${mcpServersNeedingAttention === 1 ? "server needs" : "servers need"} attention. Open MCP settings.`
@@ -1749,7 +1749,7 @@ export function ComposerV2({
                     disabled={searchFixed || activeRun || !onSelectSearchOptionIds}
                     allowEmpty={Boolean(boundAssistant)}
                     combineMode={boundAssistant ? searchPlanMode : "all_selected"}
-                    lastSourceNote="To turn search off, use Chat defaults in Studio."
+                    lastSourceNote="To turn search off, use Chat defaults in Settings."
                     onChange={optionIds => onSelectSearchOptionIds?.(optionIds)}
                   />
                   {resetToAssistantRow(searchProvenance, "button")}
@@ -1885,13 +1885,13 @@ export function ComposerV2({
                                 data-v2-composer-option="true"
                                 type="button"
                                 role="menuitem"
-                                aria-label={`Open Connections in Settings for ${server.name}`}
+                                aria-label={`Open MCP servers in Settings for ${server.name}`}
                                 onClick={() => {
                                   onOpenPersonalMcpSettings();
                                   closeLayer();
                                 }}
                               >
-                                Connections
+                                <span>MCP servers</span>
                                 <UiV2Icon name="chevron-right" />
                               </button>
                             ) : null}

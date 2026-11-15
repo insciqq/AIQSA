@@ -89,7 +89,7 @@ export function useScheduledTaskUpdates({
 }: Readonly<{
   accountId: string | null;
   activeChatId: string | null;
-  /** The conversation (not Studio or Settings) is what the user sees. */
+  /** The conversation (not Settings) is what the user sees. */
   chatVisible: boolean;
   enabled?: boolean;
   onNewResult(task: ScheduledTask): void;

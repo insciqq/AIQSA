@@ -29,7 +29,7 @@ import {
 } from "./subagentsApi";
 
 /**
- * Studio > Sub-agents: the user's custom sub-agents (operator decision
+ * Settings › Sub-agents: the user's custom sub-agents (operator decision
  * 2026-10-29, like Claude Code's custom agents). Optional: without one, a
  * sub-agent runs on the chat's model with the chat's tools. Each save is a
  * new version, so the last save offers Undo; deleting asks first and names

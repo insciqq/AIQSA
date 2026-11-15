@@ -93,7 +93,7 @@ describe("shell error formatting", () => {
         Response.json({ error: "mcp_plan_too_large", message: serverMessage }, { status: 409 }), fallback);
       expect(details).toEqual({ code: "mcp_plan_too_large", message: MCP_LOAD_ALL_TOOL_LIMIT_MESSAGE, preserveForComposer: true });
       expect(details.message).toMatch(/at most 128 MCP tools/);
-      expect(details.message).toMatch(/Use Auto, or switch tools off in Settings → Connections/);
+      expect(details.message).toMatch(/Use Auto, or switch tools off in Settings › MCP servers/);
       expect(details.message).not.toMatch(/use Load all/i);
     }
     expect((await responseErrorMessageDetails(Response.json({ error: "mcp_plan_too_large", limit: "maxTools" }, { status: 409 }), "send_failed_409")).message)

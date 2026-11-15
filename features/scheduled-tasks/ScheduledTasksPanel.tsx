@@ -143,7 +143,7 @@ function webhookTurnedOn(saved: ScheduledTask, original: ScheduledTask | null): 
   return saved.webhookEnabled && saved.webhook !== null && !(original?.webhookEnabled && original.webhook);
 }
 
-/** Studio › Scheduled: the account's tasks, their next runs and the editor sheet. */
+/** Settings › Automations: the account's tasks, their next runs and the editor sheet. */
 export function ScheduledTasksPanel({
   accountId,
   catalog,
@@ -267,7 +267,7 @@ export function ScheduledTasksPanel({
     void openTaskChat(task, chatId);
   }
 
-  // "Edit task" in a task's chat opens Studio › Scheduled with that task's editor.
+  // "Edit task" in a task's chat opens Settings › Automations with that task's editor.
   const editRequest = useScheduledTasksStore((state) => state.editRequest);
   const takeEditRequest = useEventCallback(() => {
     const taskId = takeScheduledTaskEditRequest();
@@ -383,7 +383,7 @@ export function ScheduledTasksPanel({
   });
   /**
    * Opens a task's chat the way a chat row does: the shell opens it and leaves
-   * Studio. Unlike a mutation it never reports the panel busy, because Studio
+   * Settings. Unlike a mutation it never reports the panel busy, because Settings
    * refuses to close while it is; a chat that is gone reports on the row.
    */
   async function openTaskChat(task: ScheduledTask, chatId: string) {

@@ -1,5 +1,5 @@
 /*
- * Studio › Assistants gallery, detail sheet and delete dialog (PRD 10.1,
+ * Settings › Assistants gallery, detail sheet and delete dialog (PRD 10.1,
  * 10.2, 11). The gallery is its own container: three columns from 900 px of
  * content width, two from 600 px, one below. Phones (below 640 px wide or
  * 32rem high) drop the card's capability line; the sheet shows it as rows.

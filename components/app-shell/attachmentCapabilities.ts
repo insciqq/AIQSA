@@ -267,7 +267,7 @@ export function imageRouteUnavailableMessage(
   const steps = [
     "choose a model that supports images",
     ...(imageModelChoice && model?.capabilities.imageRoutes
-      ? ["pick an image model that can edit in Studio → Chat defaults → Image model"] : []),
+      ? ["pick an image model that can edit in Settings › Chat defaults › Image model"] : []),
     ...(workspaceAvailable ? ["turn on Workspace"] : []),
     ...(tools ? ["ask an administrator to assign the Vision Model"] : [])
   ];
