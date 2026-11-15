@@ -352,6 +352,18 @@ describe("Settings list and section where they take turns", () => {
     expect(leave).toHaveBeenCalledOnce();
   });
 
+  it("keeps focus inside Settings when it replaces the focused control, and leaves focus held elsewhere", () => {
+    const { unmount } = render(<NarrowSettings initialShown={false} />);
+    expect(screen.getByRole("tab", { name: "General" })).toHaveFocus();
+    unmount();
+
+    const { rerender } = render(<><input aria-label="Elsewhere" />{null}</>);
+    const elsewhere = screen.getByRole("textbox", { name: "Elsewhere" });
+    elsewhere.focus();
+    rerender(<><input aria-label="Elsewhere" /><NarrowSettings initialShown /></>);
+    expect(elsewhere).toHaveFocus();
+  });
+
   it("shows a section whose sub-view opened while the list was the shown part", () => {
     render(<NarrowSettings initialShown={false} subview={{ backLabel: "Back to General", key: "detail", label: "Detail", onBack: vi.fn() }} />);
     expect(view()).toBe("section");

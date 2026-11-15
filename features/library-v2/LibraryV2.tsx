@@ -128,6 +128,8 @@ export function LibraryV2({
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
   const backRef = useRef<HTMLButtonElement>(null);
   const listBackRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const focusPlaced = useRef(false);
   const previousSubview = useRef<{ key: string; resourceFocus: boolean } | null>(null);
   const previousSectionShown = useRef(sectionShown);
   const groups = libraryTabGroups.map(group => ({ ...group, tabs: group.tabs.flatMap(id => {
@@ -165,6 +167,23 @@ export function LibraryV2({
   useEffect(() => {
     if (subviewKey && !sectionShown) setSectionShown(true);
   }, [sectionShown, setSectionShown, subviewKey]);
+
+  // Settings usually replaces what had focus (the gear, a card in the chat).
+  // On opening, keyboard users land inside it instead of on the document
+  // body: on the section's Back control where a section shows alone, else on
+  // the section's row, else on the section itself.
+  useLayoutEffect(() => {
+    if (focusPlaced.current) return;
+    focusPlaced.current = true;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const row = selectedId ? tabRefs.current[selectedId] : null;
+    for (const candidate of sectionShown ? [listBackRef.current, row, panelRef.current] : [row, panelRef.current]) {
+      if (!candidate) continue;
+      candidate.focus({ preventScroll: true });
+      if (document.activeElement === candidate) return;
+    }
+  }, [sectionShown, selectedId]);
 
   // Narrow screens: showing a section moves focus to its Back control, and
   // returning to the list moves it to the section's row. Wide layouts hide
@@ -346,6 +365,7 @@ export function LibraryV2({
       </header>
       {notice ? <div className="v2-library-notice">{notice}</div> : null}
       <section
+        ref={panelRef}
         aria-labelledby={`v2-library-tab-${selected.id}`}
         className="v2-library-panel"
         data-artifact-viewer={selected.id === "artifacts" && Boolean(subview) || undefined}

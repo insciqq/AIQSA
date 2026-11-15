@@ -131,6 +131,8 @@ describe("the Settings surface", () => {
     fireEvent.click(screen.getByRole("button", { name: "Gear" }));
     expect(tab("General")).toHaveAttribute("aria-selected", "true");
     expect(view()).toBe("list");
+    // The gear left with the chat; focus lands on the open section's row, not the page.
+    expect(tab("General")).toHaveFocus();
     expect(screen.getByRole("radiogroup", { name: "Theme" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("The setting could not be saved.");
 
@@ -170,6 +172,7 @@ describe("the Settings surface", () => {
     render(<Shell />);
     fireEvent.click(screen.getByRole("button", { name: "Open Data" }));
     expect(view()).toBe("section");
+    expect(screen.getByRole("button", { name: "Back to Settings" })).toHaveFocus();
     fireEvent.click(screen.getByRole("button", { name: "Manage" }));
     expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("Data / Archived chats");
     const back = screen.getByRole("button", { name: "Back to Data" });
