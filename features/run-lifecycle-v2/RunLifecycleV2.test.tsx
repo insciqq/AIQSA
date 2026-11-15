@@ -269,7 +269,7 @@ describe("Run lifecycle v2", () => {
     expect(onRegenerate).toHaveBeenCalledOnce();
   });
 
-  it("offers Continue first on an interrupted answer, with Regenerate beside it and no model change", async () => {
+  it("offers Continue first on an interrupted answer, with Regenerate and a model change beside it", async () => {
     let finish: () => void = () => undefined;
     const onContinue = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
     const onRegenerate = vi.fn();
@@ -278,7 +278,8 @@ describe("Run lifecycle v2", () => {
       onSelectModel={vi.fn()} presentation={interrupted} />);
     expect(screen.getByRole("heading", { name: "Answer interrupted" })).toBeVisible();
     expect(screen.getByText(RUN_INTERRUPTED_FAILURE.message)).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Choose model…" })).toBeNull();
+    // Continue sends its turn with the chat's current model, so another model can pick the work up.
+    expect(screen.getByRole("button", { name: "Choose model…" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(onContinue).toHaveBeenCalledOnce();
@@ -1126,5 +1127,40 @@ describe("a Deep research answer (operator decision 2026-11-06)", () => {
     rerender(<RunAnswerV2 {...actions} content="Work so far" presentation={answer(false, "cancelled")} />);
     fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
     expect(actions.onRegenerate).toHaveBeenCalledOnce();
+  });
+});
+
+describe("an ordinary answer that failed after finishing work (operator decision 2026-11-15)", () => {
+  const PROVIDER_FAILURE = { code: "provider_response_failed", message: "GPT via Gateway kept failing before the response was complete." };
+  const failed = (keptWork: boolean, content = "") => presentRunLifecycleV2({ content,
+    events: [{ type: "error", data: { ...PROVIDER_FAILURE, recovery: "retry" } }], ...keptWork ? { keptWork: true as const } : {},
+    runId: "run-kept", status: "error" });
+
+  it("offers Continue first, with Regenerate and a model change beside it, partial answer or not", () => {
+    for (const content of ["", "Partial answer"]) {
+      const onContinue = vi.fn();
+      const onRegenerate = vi.fn();
+      const onSelectModel = vi.fn();
+      const { unmount } = render(<RunAnswerV2 content={content} onContinue={onContinue} onRegenerate={onRegenerate} onRetry={vi.fn()}
+        onSelectModel={onSelectModel} presentation={failed(true, content)} />);
+      const card = screen.getByRole("region", { name: "Answer interrupted" });
+      expect(card).toHaveTextContent(PROVIDER_FAILURE.message);
+      expect(card).toHaveTextContent(`Code ${PROVIDER_FAILURE.code}`);
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+      fireEvent.click(screen.getByRole("button", { name: "Choose model…" }));
+      fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+      expect(onContinue).toHaveBeenCalledOnce();
+      expect(onSelectModel).toHaveBeenCalledOnce();
+      expect(onRegenerate).toHaveBeenCalledOnce();
+      unmount();
+    }
+  });
+
+  it("keeps the failure as it was when no work was kept", () => {
+    render(<RunAnswerV2 content="" onContinue={vi.fn()} onRegenerate={vi.fn()} onSelectModel={vi.fn()} presentation={failed(false)} />);
+    expect(screen.getByRole("region", { name: "Run failed" })).toHaveTextContent(PROVIDER_FAILURE.message);
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Regenerate" })).toBeVisible();
   });
 });

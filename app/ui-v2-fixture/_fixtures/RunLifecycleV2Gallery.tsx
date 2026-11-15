@@ -269,6 +269,28 @@ export function RunLifecycleV2Gallery() {
                 />
               </StateSpec>
 
+              <StateSpec label="Failed after finished work · Continue">
+                <RunAnswerV2
+                  content=""
+                  onContinue={() => undefined}
+                  onRegenerate={() => undefined}
+                  onSelectModel={() => undefined}
+                  presentation={presentRunLifecycleV2(runState({
+                    events: [{ data: {
+                      code: "provider_response_failed",
+                      message: "GPT-6.1 Sol via OpenAI (CodexLB) kept failing before the response was complete. This is a problem on the provider's side, not in AIQSA. Try again in a few minutes, or choose another model. The answer so far is kept."
+                    }, type: "error" }],
+                    keptWork: true,
+                    status: "error"
+                  }))}
+                  toolActivity={{ calls: [
+                    { durationMs: 20_600, origin: "web_search", round: 1, status: "complete", toolName: "search_selected_engines" },
+                    { durationMs: 2_900, origin: "web_fetch", round: 2, status: "complete", toolName: "fetch_url" }
+                  ] }}
+                  workDurationMs={853_000}
+                />
+              </StateSpec>
+
               <StateSpec label="Complete · terminal server transition">
                 <RunAnswerV2
                   content="Готовый ответ остаётся спокойным документом с прямыми действиями и результатами."

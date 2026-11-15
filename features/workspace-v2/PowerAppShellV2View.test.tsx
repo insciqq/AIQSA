@@ -483,6 +483,20 @@ describe("Run announcer wiring v2", () => {
     expect(presentAnswerV2(failed, thread()).presentation.failure?.recovery).not.toBe("continue");
     expect(presentAnswerV2({ ...failed, researchAnswer: true, status: "complete" }, thread()).presentation).toEqual({ kind: "complete", research: true, runId: "run-research" });
   });
+
+  it("offers Continue on a saved failure whose run finished work the next turn reads (operator decision 2026-11-15)", () => {
+    const failed = answer({ content: "", errorMessage: "GPT via Gateway kept failing before the response was complete.", id: "message-kept",
+      runId: "run-kept", status: "error" });
+    const step = (fields: Partial<NonNullable<ThreadMessage["toolActivity"]>["calls"][number]>) =>
+      ({ origin: "web_search" as const, round: 1, status: "complete" as const, toolName: "search_selected_engines", ...fields });
+    expect(presentAnswerV2({ ...failed, toolActivity: { calls: [step({})] } }, thread()).presentation)
+      .toMatchObject({ failure: { recovery: "continue" }, kind: "terminal_error" });
+    // A Memory search alone is no work the next turn reads, and a finished answer is no failure.
+    expect(presentAnswerV2({ ...failed, toolActivity: { calls: [step({ origin: "memory", serverName: "Memory", toolName: "memory_search" })] } },
+      thread()).presentation.failure?.recovery).toBe("change_parameters");
+    expect(presentAnswerV2({ ...failed, content: "Done", status: "complete", toolActivity: { calls: [step({})] } }, thread()).presentation)
+      .toEqual({ kind: "complete", runId: "run-kept" });
+  });
 });
 
 describe("Temporary chat indicator v2", () => {

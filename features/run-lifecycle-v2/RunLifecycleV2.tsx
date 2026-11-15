@@ -245,7 +245,8 @@ function RunErrorV2({
             Regenerate
           </UiV2Button>
         ) : null}
-        {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !continuable && !recoverable && onSelectModel ? (
+        {/* Continue sends its turn with the chat's current model, so another model can pick the work up. */}
+        {!pdfFailed && !autoDiscoveryUnavailable && !synthesisFailed && !recoverable && onSelectModel ? (
           <UiV2Button onClick={onSelectModel}>Choose model…</UiV2Button>
         ) : null}
         {presentation.failure.code || presentation.runId ? (
