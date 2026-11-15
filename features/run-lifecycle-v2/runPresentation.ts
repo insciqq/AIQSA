@@ -4,6 +4,7 @@ import { isRunProviderWait, type RunProviderWait } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT, isChatPdfReaderOutputLimitFailure, type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import {
   continuableRunFailure,
+  isMcpAutoDiscoveryFailureCode,
   isToolSynthesisFailure,
   TOOL_SYNTHESIS_FAILURE,
   type ModelRunStatus,
@@ -45,6 +46,8 @@ export type RunLifecycleStateV2 = Readonly<{
   content: string;
   events: readonly RunEventView[];
   failure?: RunFailureV2 | null;
+  /** The answer's run finished work the branch's next turn reads (`answerKeptWorkV2`): its failure offers Continue. */
+  keptWork?: true;
   /**
    * The display name of the answer's model from the user's own catalog, when it lists it: a provider's wait names it.
    * Absent, the wait names the model provider alone.
@@ -636,6 +639,18 @@ export function describeToolCallV2(
   }
   if (human) return `${running ? "Running" : "Ran"} ${human}`;
   return running ? "Running tools" : "Used tools";
+}
+
+/**
+ * Whether an answer's run finished a step whose result the branch's next turn reads: a call of the answer's own agent
+ * that was sent and completed. A failed answer's steps stay on the branch (`nativeRunsBeforeTurns` in
+ * `lib/server/engine/transcriptRepository.ts`), so Continue goes on from them instead of running them all again
+ * (operator decision 2026-11-15). A Memory search stays within its run, the plan is no work, and a sub-agent's own
+ * calls reach the next turn only through the step that started it.
+ */
+export function answerKeptWorkV2(activity: ThreadToolActivity | null | undefined): boolean {
+  return activity?.calls.some((call) => call.status === "complete" && call.approvalRequired !== true &&
+    call.subagentThreadId === undefined && toolActivityOriginV2(call) !== "memory" && !planCallHiddenV2(call)) ?? false;
 }
 
 /** A failed Memory search is dropped from the process steps entirely. */
@@ -1333,8 +1348,13 @@ export function presentRunLifecycleV2(
         ? "This PDF could not be read. Try a different file." : "Document preparation could not finish.",
       recovery: state.pdfPreparation!.some((item) => item.retryable) ? "retry" as const : "change_parameters" as const
     } : failureFromState(state, eventFailure);
-    // A research answer keeps its own failure text and picks the research up from what it recorded.
-    const failure = state.research ? { ...failed, recovery: "continue" as const } : failed;
+    // A research answer keeps its own failure text and picks the research up from what it recorded. Any other answer that
+    // failed after finishing work goes on from that work too, whatever failed it (operator decision 2026-11-15: a provider
+    // that failed the last request of a 14-minute search left only Regenerate, which runs it all again). Document
+    // preparation, tool discovery and a synthesis failure keep their own recovery.
+    const keptWork = state.keptWork === true && !pdfFailed && failed.recovery !== "regenerate" &&
+      !isMcpAutoDiscoveryFailureCode(failed.code);
+    const failure = state.research || keptWork ? { ...failed, recovery: "continue" as const } : failed;
     const recoverable = (pdfFailed || state.content.trim().length > 0) && failure.recovery === "retry";
     return present({
       failure,

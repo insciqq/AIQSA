@@ -349,6 +349,36 @@ for (const viewport of [
   });
 }
 
+// Operator decision 2026-11-15: a failed answer whose run finished work goes on from it with Continue, on any model.
+for (const theme of ["dark", "light"] as const) {
+  for (const viewport of [
+    { height: 900, name: "desktop", width: 1280 },
+    { height: 1180, name: "tablet-portrait", width: 820 },
+    { height: 820, name: "tablet-landscape", width: 1180 },
+    { height: 844, name: "phone-portrait", width: 390 },
+    { height: 390, name: "phone-landscape", width: 844 }
+  ] as const) {
+    test(`v2 failed answer with finished work offers Continue · ${viewport.name} · ${theme}`, async ({ context, page }, testInfo) => {
+      await context.addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
+      await page.setViewportSize({ height: viewport.height, width: viewport.width });
+      await page.goto("/ui-v2-fixture?fixture=run-lifecycle");
+      const card = page.getByRole("region", { exact: true, name: "Failed after finished work · Continue" })
+        .getByRole("region", { name: "Answer interrupted" });
+      await card.scrollIntoViewIfNeeded();
+      await expect(card).toContainText("kept failing before the response was complete");
+      const buttons = card.getByRole("button");
+      await expect(buttons.first()).toHaveText("Continue");
+      for (const name of ["Continue", "Regenerate", "Choose model…"]) await expectWithinViewport(page, card.getByRole("button", { name }));
+      await expectNoHorizontalOverflow(page);
+      const box = await card.boundingBox();
+      expect(box).toBeTruthy();
+      const top = Math.max(0, box!.y - 160);
+      await page.screenshot({ clip: { height: Math.min(viewport.height - top, box!.y + box!.height + 24 - top), width: viewport.width, x: 0, y: top },
+        path: testInfo.outputPath(`continue-after-failure-${viewport.name}-${theme}.png`) });
+    });
+  }
+}
+
 test("v2 branch drawer switches only the future leaf and restores trigger focus", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1280 });
   await page.goto("/ui-v2-fixture?fixture=branches&state=default");

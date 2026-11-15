@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { FETCH_URL_PROXY_FAILURE_CODES } from "@/lib/contracts/fetchUrlActivity";
 import type { RunEventView } from "@/lib/contracts/runs";
-import { RUN_INTERRUPTED_FAILURE, RUN_PREPARATION_FAILURE_MESSAGE, RUN_TIME_LIMIT_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
+import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, RUN_INTERRUPTED_FAILURE, RUN_PREPARATION_FAILURE_MESSAGE, RUN_TIME_LIMIT_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "@/lib/contracts/chatPdfPreparation";
 import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
+  answerKeptWorkV2,
   answerProcessLabelV2,
   contextCompactionCopyV2,
   describeToolCallV2,
@@ -477,6 +478,49 @@ describe("run lifecycle v2 presentation", () => {
     // Any other failure keeps its own recovery.
     expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "error", content: "",
       failure: { message: "The answer could not be completed." }, status: "error" })).failure?.recovery).toBe("change_parameters");
+  });
+
+  it("offers Continue on any failure of an answer that finished work, live and after a reload (operator decision 2026-11-15)", () => {
+    const providerFailure = { code: "provider_response_failed", message: "GPT via Gateway kept failing before the response was complete." };
+    // Live: the error frame names its code, and a partial answer with a retryable failure would otherwise offer Retry.
+    expect(presentRunLifecycleV2(state({ content: "Partial", keptWork: true, events: [
+      { type: "error", data: { ...providerFailure, retryable: true } }
+    ] }))).toMatchObject({ failure: { ...providerFailure, recovery: "continue" }, kind: "terminal_error" });
+    // After a reload only the saved text is known.
+    expect(presentRunLifecycleV2(state({ authoritativeMessageStatus: "error", content: "", keptWork: true,
+      failure: { message: providerFailure.message }, status: "error" })))
+      .toMatchObject({ failure: { code: null, message: providerFailure.message, recovery: "continue" }, kind: "terminal_error" });
+    // Without finished work nothing changes.
+    expect(presentRunLifecycleV2(state({ content: "Partial", events: [{ type: "error", data: { ...providerFailure, retryable: true } }] })))
+      .toMatchObject({ failure: { recovery: "retry" }, kind: "recoverable_error" });
+    // A synthesis failure, a tool discovery failure and document preparation keep their own recovery.
+    expect(presentRunLifecycleV2(state({ content: "Partial", keptWork: true, events: [
+      { type: "error", data: { code: TOOL_SYNTHESIS_FAILURE.code, message: TOOL_SYNTHESIS_FAILURE.message } }
+    ] })).failure?.recovery).toBe("regenerate");
+    expect(presentRunLifecycleV2(state({ content: "", keptWork: true, events: [
+      { type: "error", data: { code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: "Automatic tool discovery is unavailable.", retryable: true } }
+    ] })).failure?.recovery).toBe("retry");
+    expect(presentRunLifecycleV2(state({ content: "", keptWork: true, events: [{ type: "error", data: providerFailure }],
+      pdfPreparation: [{ completedPages: 0, pageCount: 3, phase: "failed", retryable: true, route: "local_text",
+        limitedReadingQuality: false, longDocument: false }] })).failure?.recovery).toBe("retry");
+  });
+
+  it("counts as kept work only a finished step of the answer's own agent that the next turn reads", () => {
+    const call = (fields: Partial<ThreadToolActivity["calls"][number]>): ThreadToolActivity["calls"][number] =>
+      ({ round: 1, status: "complete", toolName: "search_selected_engines", origin: "web_search", ...fields });
+    const kept = (...calls: ThreadToolActivity["calls"]) => answerKeptWorkV2({ calls });
+    expect(kept(call({}))).toBe(true);
+    expect(kept(call({ origin: "workspace", toolName: "workspace_exec" }))).toBe(true);
+    expect(kept(call({ toolName: "call_subagent", origin: "tool" }))).toBe(true);
+    expect(answerKeptWorkV2(null)).toBe(false);
+    expect(kept()).toBe(false);
+    expect(kept(call({ status: "error" }), call({ status: "running" }), call({ status: "cancelled" }))).toBe(false);
+    // Memory searches stay within their run; the plan is no work.
+    expect(kept(call({ origin: "memory", serverName: "Memory", toolName: "memory_search" }))).toBe(false);
+    expect(kept(call({ origin: "session", toolName: "update_plan" }))).toBe(false);
+    // A sub-agent's own calls reach the next turn only through its step, and a call held for approval was never sent.
+    expect(kept(call({ subagentThreadId: "thread-1", subagentTurnId: "turn-1" }))).toBe(false);
+    expect(kept(call({ approvalRequired: true, origin: "mcp", serverName: "Tracker", toolName: "create_issue" }))).toBe(false);
   });
 
   it("stays silent without explicit lifecycle state", () => {

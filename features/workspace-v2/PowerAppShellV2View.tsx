@@ -162,6 +162,7 @@ import {
 import { RunAnswerV2, RunLifecycleAnnouncerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AnswerProblemReportDialogV2 } from "@/features/answer-problem-report-v2/AnswerProblemReportDialogV2";
 import {
+  answerKeptWorkV2,
   presentRunLifecycleV2,
   presentToolActivityV2,
   settledRunPresentationV2,
@@ -401,6 +402,10 @@ export function presentAnswerV2(source: ThreadMessage, thread: AnswerPresentatio
     ...(modelName ? { modelName } : {}),
     // The server's mark (`ChatMessageWire.researchAnswer`): such an answer offers Continue, never Regenerate.
     ...(source.researchAnswer ? { research: true as const } : {}),
+    // A failed answer's finished steps are its next turn's context, so its failure offers Continue. Live, the error frame
+    // may settle the answer before its status does; only a failure reads this.
+    ...(source.status !== "complete" && answerKeptWorkV2(presentToolActivityV2(live.events, source.toolActivity ?? null, true))
+      ? { keptWork: true as const } : {}),
     runId: source.runId ?? null
   });
   return { ...live, presentation, transportLost };
