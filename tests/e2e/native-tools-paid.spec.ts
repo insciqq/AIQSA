@@ -504,7 +504,8 @@ test.describe("native engine self-service and harness tools on Codex LB", () => 
       expect(planCalls.every((entry) => entry === "update_plan:complete")).toBe(true);
       expect(livePlan, "the plan's count showed while the answer ran").toBe(true);
       expect(states, "the answer shows the three steps").toHaveLength(3);
-      expect(label).toMatch(/Plan · \d of 3 complete/u);
+      // An ended answer counts a plan only when the agent finished it; otherwise it names its size.
+      expect(label).toMatch(/Plan · (?:3 of 3 complete|3 steps)/u);
       expect(label, "a plan is not Workspace work").not.toContain("Workspace");
       await expect(activity.getByTestId("answer-plan")).toBeVisible();
       await page.reload();
