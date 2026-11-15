@@ -81,18 +81,37 @@ function Shell({ connect = false, notice = null, telegramAvailable = false }: Re
       <>
         <button type="button" onClick={() => studio.open()}>Gear</button>
         <button type="button" onClick={() => studio.open("data")}>Open Data</button>
+        <button type="button" onClick={() => studio.open("mcp")}>Open MCP servers</button>
       </>
     );
 }
 
-function stubFetch() {
+/** Answers by path; `routes` adds or replaces answers for one test. */
+function stubFetch(routes: Readonly<Record<string, () => Promise<Response>>> = {}) {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-    const path = String(input instanceof Request ? input.url : input).split("?")[0];
+    const path = String(input instanceof Request ? input.url : input).split("?")[0]!;
+    if (routes[path]) return routes[path]();
     if (path === "/api/me/mcp") return Response.json({ servers: [] });
     if (path === "/api/me/telegram") return Response.json({ available: true, state: "not_linked" });
     return Response.json({ error: "not_found" }, { status: 404 });
   }));
 }
+
+/** True when a guard asks the browser to confirm leaving the page. */
+function leavingAsksFirst(): boolean {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
+const neverAnswers = () => new Promise<Response>(() => undefined);
+
+const notionConnection = {
+  accountLabel: null, authHeaderName: null, authMode: "oauth", availableTools: [], description: "", enabled: false,
+  endpoint: "https://mcp.example.test/mcp", fields: [], id: "notion", knownToolCount: 1, name: "Notion", oauthAvailable: true,
+  oauthState: "disconnected", readiness: "needs_authorization", runtimeErrorCode: null, sourceType: "personal", tools: [],
+  userDisabledToolNames: []
+};
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 const view = () => screen.getByTestId("library-v2").getAttribute("data-view");
@@ -172,6 +191,44 @@ describe("the Settings surface", () => {
     const leaving = await screen.findByRole("dialog", { name: "Unsaved account changes" });
     fireEvent.click(within(leaving).getByRole("button", { name: /discard changes/iu }));
     await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+  });
+
+  it("asks to leave the page with unsaved account changes, never for its own sign-out", async () => {
+    stubFetch({ "/api/auth/logout": neverAnswers });
+    render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Gear" }));
+    fireEvent.click(tab("Account"));
+    const name = await screen.findByRole("textbox", { name: "Display name" });
+    await waitFor(() => expect(name).toHaveValue("Ada"));
+    expect(leavingAsksFirst()).toBe(false);
+    fireEvent.change(name, { target: { value: "Ada Lovelace" } });
+    expect(leavingAsksFirst()).toBe(true);
+    fireEvent.change(name, { target: { value: "Ada" } });
+    expect(leavingAsksFirst()).toBe(false);
+
+    // Signing out ends in the page's own navigation to sign-in: Settings
+    // stays locked meanwhile, and leaving asks nothing.
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled());
+    expect(leavingAsksFirst()).toBe(false);
+  });
+
+  it("never asks to leave while a personal MCP sign-in is starting, and frees Settings when the page comes back", async () => {
+    stubFetch({
+      "/api/me/mcp-connections": async () => Response.json({ servers: [notionConnection] }),
+      "/api/me/mcp-connections/notion/oauth/connect": neverAnswers
+    });
+    render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Open MCP servers" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Notion" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled());
+    expect(leavingAsksFirst()).toBe(false);
+
+    // Back from the sign-in site restores the page from the back/forward cache.
+    const restored = new Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    act(() => { window.dispatchEvent(restored); });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toBeEnabled());
   });
 
   it("opens archived chats as Data's sub-view and returns to Data", async () => {
