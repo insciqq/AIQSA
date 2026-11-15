@@ -45,7 +45,7 @@ async function setup(answer: TelegramRunAnswer, afterRich: (h: Readonly<{ revoke
   const link: TelegramLinkRecord = {
     botId: fake.bot.id, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(START),
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
-    telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1", workspaceEnabled: false
+    telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1"
   };
   let decision: TelegramAccessDecision = { allowed: true, control: {} as never, link };
   const runLinks = memoryRunLinkStore();

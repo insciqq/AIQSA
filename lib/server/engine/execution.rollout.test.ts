@@ -579,16 +579,21 @@ describe("the tools a native run is offered by kind", () => {
     return { request: requests[0]!, tools: toolNames(requests[0]) };
   }
 
-  it("gives a web personal chat the self-service tools, an Assistant chat its Skill saves, and a scheduled run or a Telegram turn none", async () => {
+  it("gives a personal chat the self-service tools on the web and in Telegram, an Assistant chat its Skill saves, and a scheduled run or a Discord turn none", async () => {
     expect((await offered({})).tools).toEqual(expect.arrayContaining(["read_secret", "manage_secret", "manage_skill", "manage_assistant"]));
+    // Telegram takes what the web takes (operator decision 2026-11-16): the bot shows each change with Undo or Confirm.
+    expect((await offered({}, {}, { connectorTurn: "telegram" })).tools)
+      .toEqual(expect.arrayContaining(["read_secret", "manage_secret", "manage_skill", "manage_assistant", "manage_proxy"]));
+    const assistantTelegram = await offered({ assistant: {} as never }, {}, { connectorTurn: "telegram" });
+    expect(assistantTelegram.tools).toEqual(expect.arrayContaining(["read_aiqsa_guide", "manage_skill"]));
+    expect(assistantTelegram.tools).not.toContain("manage_secret");
     // An Assistant's instructions are its author's: only the guide and Skill saves, which have Undo (operator decision 2026-10-29).
     for (const run of [await offered({ assistant: {} as never }), await offered({ chatAssistant: {} as never })]) {
       expect(run.tools).toEqual(expect.arrayContaining(["read_secret", "read_aiqsa_guide", "manage_skill"]));
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");
     }
-    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { connectorTurn: "telegram" }),
-      await offered({}, {}, { connectorTurn: "discord" })]) {
+    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { connectorTurn: "discord" })]) {
       expect(run.tools).toContain("read_secret");
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");

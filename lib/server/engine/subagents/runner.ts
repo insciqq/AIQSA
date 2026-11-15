@@ -63,13 +63,10 @@ import { createHostedSearchEvidence, type HostedSearchEvidenceRow } from "./host
 import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
 import { callModel, type ModelCallRetryPolicy } from "../modelCall";
 import {
-  SUBAGENT_CHILD_ROLE_SECTION,
-  SUBAGENT_ROLE_SECTION,
-  SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION,
-  SUBAGENT_STARTER_ROLE_SECTION,
   subagentAgentMessageText,
   subagentChildQuestionText,
   subagentFollowupText,
+  subagentRoleSection,
   subagentTurnText
 } from "../prompts";
 import { createRunContext, type RunContext } from "../runContext";
@@ -802,8 +799,10 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
       }
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
-      const roleSection = input.parentAgent ? SUBAGENT_CHILD_ROLE_SECTION
-        : starts ? starts.backgroundAllowed ? SUBAGENT_STARTER_ROLE_SECTION : SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION : SUBAGENT_ROLE_SECTION;
+      // The Workspace lines follow what this turn's request has, as its "# Workspace" section does: a chat without one, or a
+      // turn it refused, never tells the agent to hand work over through its files.
+      const roleSection = subagentRoleSection(input.parentAgent ? "child" : starts ? starts.backgroundAllowed ? "starter" : "starter_foreground" : "plain",
+        request.workspace?.enabled === true);
       const role = input.type?.instructions.trim() ? `${roleSection}\n\n# Your instructions\n${input.type.instructions.trim()}` : roleSection;
       const native = await withNativeSystemPrompt({ now: new Date(host.now()), request, scope: { runId: input.hostRunId, userId: host.userId },
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });

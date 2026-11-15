@@ -4,6 +4,9 @@ import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
 
+// The first viewport may compile the sign-in and chat pages under `next dev`, which outlasted 30 s in a combined run.
+test.describe.configure({ timeout: 60_000 });
+
 const chatId = "search-counts-chat";
 const runId = "search-counts-run";
 const answerId = "search-counts-answer";
@@ -51,26 +54,35 @@ for (const viewport of [
     await stream.emit(page, "artifact", { artifactType: "tool_call", payload: {
       name: "search", origin: "web_search", serverName: "Web search", round: 1, status: "requested"
     } });
+    // The live line names the real work; counts never ride on it (FRONTEND.md, operator decisions 2026-10-20, 2026-10-30).
+    await expect(page.getByTestId("run-status-line")).toHaveText("Searching the web…");
     const emitCounts = (engines: typeof first) => stream.emit(page, "artifact", { artifactType: "search_activity", payload: { engines } });
     await emitCounts(first);
     const disclosure = page.getByTestId("tool-activity-disclosure");
     const summary = disclosure.locator(":scope > summary");
-    await expect(summary).toContainText("Perplexity 1 in progress");
-    await expect(summary).toContainText("OpenAI (CodexLB) 1 in progress");
+    const engineRow = disclosure.getByTestId("answer-search-engines");
+    await expect(summary).toHaveText("Searching the web…");
     await summary.focus();
     await page.keyboard.press("Enter");
     await expect(disclosure).toHaveAttribute("open");
-    await expect(disclosure).toContainText("round 1");
+    // The fold holds the per-engine counts while the run works.
+    await expect(engineRow).toContainText("Perplexity 1 in progress · OpenAI (CodexLB) 1 in progress");
+    await expect(disclosure).not.toContainText(/round \d/u);
     await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
     await page.screenshot({ path: testInfo.outputPath("search-counts-running.png") });
     await emitCounts(finished);
+    // Settled counts change only the fold; the line keeps naming the work.
+    await expect(summary).toHaveText("Searching the web…");
+    await expect(engineRow).toContainText("Perplexity ×2 · 1 unsuccessful · OpenAI (CodexLB) ×1 · 1 skipped");
+    // Replayed and out-of-order snapshots never move the counts back.
     await emitCounts(finished);
     await emitCounts(first);
     await stream.emit(page, "token", { delta: "The references support this answer." });
-    await expect(summary).toContainText("Perplexity ×2 · 1 unsuccessful");
-    await expect(summary).toContainText("OpenAI (CodexLB) ×1 · 1 skipped");
-    await expect(summary).not.toContainText("in progress");
-    await expect(disclosure).toContainText("×N counts successful calls");
+    await expect(summary).not.toContainText("Searching the web");
+    await expect(summary).not.toContainText("Perplexity");
+    await expect(engineRow).toContainText("Perplexity ×2 · 1 unsuccessful · OpenAI (CodexLB) ×1 · 1 skipped");
+    await expect(engineRow).not.toContainText("in progress");
+    await expect(disclosure).not.toContainText("counts successful calls");
     await expect(disclosure).not.toContainText("search_selected_engines");
     await expectNoHorizontalOverflow(page);
 
@@ -79,7 +91,7 @@ for (const viewport of [
         id: answerId, role: "assistant", status: "complete", parentMessageId: null,
         createdAt: timestamp, content: "The references support this answer.", errorMessage: null,
         citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
-        toolActivity: { calls: [{ origin: "web_search", serverName: "Web search", toolName: "search", round: 1, status: "complete" }], searchEngines: finished },
+        toolActivity: { calls: [{ durationMs: 12_000, origin: "web_search", serverName: "Web search", toolName: "search", round: 1, status: "complete" }], searchEngines: finished },
         artifactSummary: { citations: [], sources: [{ title: "Reference", url: "https://example.com/reference", rank: 1 }], reasoningText: [] }
       }]
     }] });
@@ -87,12 +99,17 @@ for (const viewport of [
     await stream.close(page);
     await page.reload();
     await expect(disclosure).toHaveAttribute("open");
-    await expect(summary).toContainText("Perplexity ×2 · 1 unsuccessful");
-    await expect(summary).toContainText("OpenAI (CodexLB) ×1 · 1 skipped");
-    await expect(summary).not.toContainText("in progress");
+    // The settled line says how long the work took; the counts stay in the fold.
+    await expect(summary).toHaveText(/^Worked for [^·]+$/u);
+    await expect(engineRow).toContainText("Perplexity ×2 · 1 unsuccessful · OpenAI (CodexLB) ×1 · 1 skipped");
+    await expect(engineRow).not.toContainText("in progress");
     await page.getByTestId("answer-sources-toggle").click();
+    // Nothing is cited, so the sheet opens on the searched sites.
+    await page.getByRole("dialog", { name: "Sources" }).getByRole("button", { name: "example.com · 1" }).click();
     await expect(page.getByRole("link", { name: /Reference/ })).toHaveAttribute("href", "https://example.com/reference");
     await expectNoHorizontalOverflow(page);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Sources" })).toHaveCount(0);
     await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
     await page.screenshot({ path: testInfo.outputPath("search-counts-reloaded.png") });
     await summary.click();

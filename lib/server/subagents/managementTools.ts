@@ -61,10 +61,10 @@ import {
  * the earlier default back too. The running answer keeps the default admission
  * froze (`typeCatalog.ts`); the result tells the model so.
  *
- * Who is offered them: the main agent of an interactive web chat, like the
- * other self-service tools (`subagentManagementToolNames`). Never a
- * sub-agent (`SUBAGENT_EXCLUDED_TOOL_NAMES`), an Assistant chat, a Telegram
- * turn, a scheduled occurrence or a monitoring check
+ * Who is offered them: the main agent of an interactive chat, on the web or
+ * in Telegram, like the other self-service tools (`subagentManagementToolNames`,
+ * `selfServiceToolsFor`). Never a sub-agent (`SUBAGENT_EXCLUDED_TOOL_NAMES`),
+ * an Assistant chat, a Discord turn, a scheduled occurrence or a monitoring check
  * (`agent_docs/RUN_CONTRACTS.md`, "Agent-initiated changes").
  *
  * Registration (the integration task's, `lib/server/engine/toolRegistry.ts`):
@@ -80,13 +80,14 @@ export const SUBAGENT_MANAGEMENT_TOOL_NAMES: readonly string[] = Object.freeze(S
 
 /**
  * The management tools a main-agent run is offered: only in an interactive
- * web chat without an Assistant (operator decision 2026-10-29: Assistant
- * chats take only the guide and Skill saves; connector turns (Telegram,
- * Discord) and scheduled runs take no self-service tools).
+ * chat without an Assistant, on the web or in Telegram (operator decisions
+ * 2026-10-29: Assistant chats take only the guide and Skill saves; 2026-11-16:
+ * Telegram turns take what the web takes; Discord turns and scheduled runs
+ * take no self-service tools).
  */
 export function subagentManagementToolNames(input: Readonly<{
   assistant: boolean;
-  /** A connector's turn. */
+  /** A connector's turn that shows no changes (Discord). */
   connector?: boolean;
   monitoring?: boolean;
   scheduled?: boolean;

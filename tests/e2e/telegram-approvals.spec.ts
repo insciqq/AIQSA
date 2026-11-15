@@ -425,7 +425,6 @@ test("a button pressed after the approval window says the approval expired and d
 
 test("a Workspace run keeps one status message with Stop, ends it as finished and sends its file as a document", async () => {
   test.setTimeout(300_000);
-  await prisma.telegramLink.update({ data: { workspaceEnabled: true }, where: { userId: aliceSession.user.id } });
   await newChat();
   const before = await latestRun().then((run) => run.id, () => "");
   const since = bot.calls().length;
@@ -457,7 +456,6 @@ test("Stop on the status message stops the Workspace run and the status says Sto
   expect(botMessage(status.message_id)?.reply_markup).toBeUndefined();
   await expect.poll(async () => (await latestRun()).status, { timeout: REPLY_TIMEOUT_MS }).toBe("cancelled");
   await expect.poll(() => textsSince(since), { timeout: REPLY_TIMEOUT_MS }).toContain(TELEGRAM_COPY.stopped);
-  await prisma.telegramLink.update({ data: { workspaceEnabled: false }, where: { userId: aliceSession.user.id } });
 });
 
 test("a guard refusal retains Telegram's approval buttons and shows the reason", async () => {

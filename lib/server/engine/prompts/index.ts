@@ -26,10 +26,12 @@ export {
   subagentAgentMessageText,
   subagentChildQuestionText,
   subagentFollowupText,
+  subagentRoleSection,
   subagentTurnText,
   subagentsPromptSection,
   type SubagentPromptFacts,
-  type SubagentPromptModel
+  type SubagentPromptModel,
+  type SubagentRole
 } from "./subagents";
 export {
   AIQSA_GUIDE_TOPICS,

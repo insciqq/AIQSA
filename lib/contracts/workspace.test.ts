@@ -16,7 +16,7 @@ import {
 
 describe("workspace browser contracts", () => {
   it("keeps a request's reason for asking no Workspace within the closed set", () => {
-    for (const reason of ["installation_disabled", "model_no_tools", "user_declined", "unknown"]) {
+    for (const reason of ["connector", "installation_disabled", "model_no_tools", "user_declined", "unknown"]) {
       expect(decodeWorkspaceNotRequestedReason(reason)).toBe(reason);
     }
     for (const value of [undefined, null, 7, "runtime_unavailable", "USER_DECLINED", { reason: "user_declined" }]) {

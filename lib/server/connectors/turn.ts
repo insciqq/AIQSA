@@ -5,11 +5,13 @@
  * preparation's `origin`, the engine's `connectorTurn`), and the server
  * decides every rule below from it, whatever the request body says.
  *
- * Every connector turn takes no self-service tools, Skill saves or sub-agent
- * management (the connector shows no change cards or Undo), starts no
- * background sub-agents (it answers and stops those of its branch), and never
- * gets Deep research, the user's computer or the live browser. What differs by
- * connector is in `connectorTurnRules`.
+ * Every connector turn starts no background sub-agents (it answers and stops
+ * those of its branch), and never gets Deep research, the user's computer or
+ * the live browser. A Telegram turn takes the self-service tools, Skill saves
+ * and sub-agent management its chat takes on the web, shown as messages with
+ * Undo, Confirm and Cancel (operator decision 2026-11-16,
+ * `lib/server/telegram/changes/`); a Discord turn takes none
+ * (`selfServiceToolsFor`). What differs by connector is in `connectorTurnRules`.
  */
 
 export type ConnectorTurn = "telegram" | "discord";

@@ -4,6 +4,8 @@ import { transcribeUserAudio } from "../../speechToText/transcribeUserAudio";
 import { defaultUploadHandlerDeps } from "../../uploads/defaultUploadHandlerDeps";
 import { createUploadHandler } from "../../uploads/handlers";
 import { defaultUploadMaxBytes } from "../../uploads/validation";
+import { workspaceInstallationOffered } from "../../workspace/availability";
+import { workspaceAvailabilityService } from "../../workspace/defaultServices";
 import { telegramRequestAuth } from "../bridge/requestAuth";
 import type { TelegramAccessResolver } from "../control/access";
 import type { TelegramMediaServices } from "./index";
@@ -24,6 +26,9 @@ export function createDefaultTelegramMediaServices(deps: Readonly<{
       const attachment = await prisma.attachment.findFirst({ select: { status: true }, where: { id: attachmentId, userId } });
       return attachment?.status ?? null;
     },
-    uploadMaxBytes: () => defaultUploadMaxBytes()
+    uploadMaxBytes: () => defaultUploadMaxBytes(),
+    async workspaceOffered() {
+      return workspaceInstallationOffered(await workspaceAvailabilityService.snapshot());
+    }
   } satisfies TelegramMediaServices);
 }

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_WEBSITE_ACTION_SAFETY } from "@/lib/server/workspace/browserGuidance";
@@ -11,9 +12,11 @@ import {
   subagentAgentMessageText,
   subagentChildQuestionText,
   subagentFollowupText,
+  subagentRoleSection,
   subagentsPromptSection,
   subagentTurnText,
-  systemPromptFor
+  systemPromptFor,
+  type SubagentRole
 } from "./index";
 
 const environment = { now: new Date("2026-10-30T09:00:00Z"), timeZone: "Europe/Madrid" };
@@ -21,7 +24,7 @@ const model = { modelId: "codex-lb:gpt-6-sol", provider: "openai_compatible" };
 
 describe("what a sub-agent's files need to reach the user", () => {
   it("tells the main agent that only it hands files over, and the sub-agent to name its files", () => {
-    expect(subagentsPromptSection(undefined)).toMatch(/Only you give the user files.*`cp`.*this turn's output directory/u);
+    expect(subagentsPromptSection(undefined, true)).toMatch(/Only you give the user files.*`cp`.*this turn's output directory/u);
     expect(SUBAGENT_ROLE_SECTION).toMatch(/Files reach the user only through the main agent/u);
   });
 });
@@ -36,7 +39,7 @@ describe("agents that talk to each other", () => {
   });
 
   it("tell the main agent how a question reaches it and how to answer", () => {
-    const section = subagentsPromptSection(undefined);
+    const section = subagentsPromptSection(undefined, true);
     expect(section).toContain("needs_answer");
     expect(section).toContain("answer with `call_subagent` by its name");
     expect(section).toContain("If only the user can answer, ask the user");
@@ -78,8 +81,8 @@ describe("a sub-agent's children", () => {
   });
 
   it("tell the main agent a sub-agent may have helpers", () => {
-    expect(subagentsPromptSection(undefined)).toContain(`up to ${SUBAGENT_LIMITS.childrenPerSubagent} helpers of its own`);
-    expect(subagentsPromptSection(undefined)).not.toContain("and calling sub-agents");
+    expect(subagentsPromptSection(undefined, true)).toContain(`up to ${SUBAGENT_LIMITS.childrenPerSubagent} helpers of its own`);
+    expect(subagentsPromptSection(undefined, true)).not.toContain("and calling sub-agents");
   });
 
   it("frame a child's brief as its parent's, naming it, and keep the user's message the only authority", () => {
@@ -143,12 +146,12 @@ describe("sub-agent prompts", () => {
   });
 
   it("send the main agent to the user's exact custom sub-agent in fixed words, never toward dropping its name", () => {
-    const section = subagentsPromptSection({ models: [{ connection: "Codex LB", efforts: [], id: "pm-luna", name: "GPT-6 Luna" }], types: [] });
+    const section = subagentsPromptSection({ models: [{ connection: "Codex LB", efforts: [], id: "pm-luna", name: "GPT-6 Luna" }], types: [] }, true);
     expect(section).toContain("When the user asks for a custom one, pass its exact name as `type`; if what they name matches none, say so or ask which one they mean. Never start another sub-agent in its place.");
     expect(section).toContain("otherwise a custom sub-agent runs on its own model and effort when it has them, and any other on yours");
     expect(section).not.toMatch(/omit/iu);
     // Fixed: no fact about the user's custom sub-agents or their default enters the system prompt.
-    expect(subagentsPromptSection(undefined)).toContain("names their default when they set one");
+    expect(subagentsPromptSection(undefined, true)).toContain("names their default when they set one");
   });
 
   it("give a sub-agent its role in place of the AIQSA self-description, stable across turns", () => {
@@ -177,5 +180,60 @@ describe("sub-agent prompts", () => {
       "Follow what concerns your task; leave what is meant for the main agent, such as calling or briefing sub-agents, to it:\n" +
       "<user_message>\nAlso check the second shop.\n</user_message>");
     expect(SUBAGENT_ROLE_SECTION).toContain("allowed only when the user's message below explicitly asks for that action");
+  });
+});
+
+describe("agents of a run without a Workspace", () => {
+  const roles: readonly SubagentRole[] = ["plain", "starter", "starter_foreground", "child"];
+  const facts = { models: [{ connection: "Codex LB", efforts: ["low", "high"], id: "pm-luna", name: "GPT-6 Luna" }],
+    types: [{ description: "Browses shops.", name: "browser" }] };
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  /** Workspace hand-over words: a run without one once briefed a helper to write a report file it had no tool for (2026-11-16). */
+  const FILE_TALK = /\/workspace|Workspace is shared|browser is shared|where to write files|file paths|your files|`cp`|output directory|git worktree/u;
+
+  it("keep every text of a run with a Workspace byte for byte as it was before the switch", () => {
+    // The texts of 2026-11-16, before the switch: a change here is a deliberate rewording, never a side effect.
+    expect(sha(subagentsPromptSection(undefined, true))).toBe("11ce392a29793add1fb304ab104b2a5bd6fc4b6bf81c60663b1333dacde07413");
+    expect(sha(subagentsPromptSection(facts, true))).toBe("379ab0db76bfce31a2cf57a4feb7d0f49e7521899a86670fabd6b4058aa8685f");
+    expect(sha(SUBAGENT_ROLE_SECTION)).toBe("58d97ce20b5445b36e7ed9bf5eebd10dccf03bfcff165e5a3d4bf9eda570685f");
+    expect(sha(SUBAGENT_STARTER_ROLE_SECTION)).toBe("131d0c8bc47cffb8408c2f33de4b1a475d217bf5c5f93139d5ed720c1dd81422");
+    expect(sha(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION)).toBe("1cebed9b6c4c19b83a8505aa78c19d3b22f0a9a9fed942dca52c02a324cbfb01");
+    expect(sha(SUBAGENT_CHILD_ROLE_SECTION)).toBe("f584ce2016c99c50b6276350d361521372ac9119ca4a981385c618d257873c41");
+    expect([subagentRoleSection("plain", true), subagentRoleSection("starter", true), subagentRoleSection("starter_foreground", true),
+      subagentRoleSection("child", true)]).toEqual([SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION,
+      SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION, SUBAGENT_CHILD_ROLE_SECTION]);
+  });
+
+  it("tell the main agent that sub-agents return results in their reports, never through files", () => {
+    const section = subagentsPromptSection(facts, false);
+    expect(section).not.toMatch(FILE_TALK);
+    expect(section).toContain("- This answer has no Workspace, so no agent of it has files to share: sub-agents return their results in " +
+      "their reports, and your briefs ask for that, not for files.");
+    expect(section).toContain("Brief it like a capable colleague: the goal, what you already know, constraints and what to report.");
+    // Everything else stays: the models, the custom sub-agents and the rules on questions and approvals.
+    expect(section).toContain("\"pm-luna\" (GPT-6 Luna · Codex LB; effort: low, high)");
+    expect(section).toContain("needs_answer");
+    // The whole stable prompt of a run without a Workspace speaks of none of its files either.
+    const stable = systemPromptFor(model, { environment, subagents: facts, tools: [CALL_SUBAGENT_TOOL_NAME], workspace: false }).stable;
+    expect(stable).toContain(section);
+    expect(stable).not.toMatch(/\/workspace/u);
+  });
+
+  it("tell every sub-agent role to put its results in its report, and a starter to ask its helpers the same", () => {
+    for (const role of roles) {
+      const text = subagentRoleSection(role, false);
+      expect(text).not.toMatch(FILE_TALK);
+      expect(text).toContain("- This answer has no Workspace, so you have no files to share: put your results in your report itself, " +
+        "whatever the brief says of files");
+      expect(text).toContain("(names, prices, links), what you could not do and why, and any assumption you made. Be complete but brief.");
+      expect(text.includes("ask your helpers for theirs in their reports")).toBe(role === "starter" || role === "starter_foreground");
+      // Only the Workspace lines differ: the role's limits, the agents' rules and the outcome line stay.
+      const withWorkspace = subagentRoleSection(role, true).split("\n");
+      const without = text.split("\n");
+      expect(without.filter((line) => !withWorkspace.includes(line))).toHaveLength(2);
+      expect(withWorkspace.filter((line) => !without.includes(line))).toHaveLength(3);
+    }
+    expect(subagentRoleSection("starter_foreground", false)).toContain("none runs in the background");
+    expect(subagentRoleSection("child", false)).toContain("or start sub-agents of your own");
   });
 });

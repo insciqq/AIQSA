@@ -22,7 +22,7 @@ export const TELEGRAM_BOT_COMMANDS: readonly TelegramBotCommand[] = [
   { command: "chats", description: "Continue one of your recent chats" },
   { command: "assistant", description: "Start a chat with an assistant" },
   { command: "model", description: "Choose the model for your messages" },
-  { command: "settings", description: "Search, Workspace and model" },
+  { command: "settings", description: "Search and model" },
   { command: "stop", description: "Stop the running reply" },
   { command: "help", description: "List the commands" },
   { command: "unlink", description: "Disconnect Telegram from AIQSA" }
@@ -91,9 +91,9 @@ export const TELEGRAM_RUN_REFUSAL_COPY = {
   modelUnavailable: "This model isn't available to you now. Choose another with /model.",
   noModel: "No model is available to you. Ask your AIQSA administrator.",
   searchUnavailable: "Search isn't available for this model now. Turn Search off in /settings or choose another model with /model.",
-  workspaceDisabled: "Workspace is off on this AIQSA. Turn Workspace off in /settings.",
-  workspaceModel: "This model can't use Workspace. Choose another with /model or turn Workspace off in /settings.",
-  workspaceUnavailable: "Workspace can't take this message now. Try again, or turn Workspace off in /settings.",
+  workspaceDisabled: "Workspace just went off on this AIQSA. Send your message again.",
+  workspaceModel: "This model can't use Workspace. Choose another with /model.",
+  workspaceUnavailable: "Workspace can't take this message now. Try again in a moment, or continue in AIQSA.",
   toolsUnavailable: "A connected tool this chat uses isn't ready. Review your connections in AIQSA.",
   skillUnavailable: "A Skill this chat uses isn't available. Review your Skills in AIQSA.",
   assistantUnavailable: "This assistant isn't available now. Start a new chat with /new or choose another with /assistant.",
@@ -151,7 +151,7 @@ export function telegramAssistantSelectedText(assistantName: string): string {
   return `Next message starts a chat with ${bounded(assistantName)}`;
 }
 
-export function telegramToggleLabel(name: "Search" | "Workspace", enabled: boolean): string {
+export function telegramToggleLabel(name: "Search", enabled: boolean): string {
   return `${name}: ${enabled ? "on" : "off"}`;
 }
 
@@ -300,12 +300,11 @@ export function telegramVoiceRateLimitedText(retryAfterSeconds: number | null | 
 }
 
 /**
- * A file whose type AIQSA does not accept, naming the accepted types. Without
- * Workspace only attachment types go; with it on, other files can too.
+ * A file whose type AIQSA does not accept, naming the types every chat takes;
+ * where the installation offers the Workspace, other files go too.
  */
-export function telegramUnsupportedFileText(acceptedTypes: readonly string[], workspaceHint: boolean): string {
-  const accepted = `This file type isn't supported. Send ${acceptedTypes.join(", ")}.`;
-  return workspaceHint ? `${accepted} Other files work with Workspace on: turn it on in /settings.` : accepted;
+export function telegramUnsupportedFileText(acceptedTypes: readonly string[]): string {
+  return `This file type isn't supported. Send ${acceptedTypes.join(", ")}.`;
 }
 
 /**

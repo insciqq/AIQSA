@@ -26,7 +26,7 @@ import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackgro
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
-import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "../prompts";
+import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION, subagentRoleSection } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
 import type { EngineTool, ToolRegistry } from "../toolRegistry";
 import type { TranscriptItem } from "../transcript";
@@ -443,8 +443,8 @@ describe("sub-agent runner", () => {
     expect(result.steps).toEqual([{ outcome: "complete", summary: "[browser #3] click: button \"Add to cart\" @ shop.example",
       tool: "Jira: mcp_jira_get_issue" }]);
     const first = ctx.requests[0]!;
-    // Its own stable prompt, without the parent's answer rules or anything personal to the user's conversation.
-    expect(first.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
+    // Its own stable prompt, without the parent's answer rules or anything personal to the user's conversation; this chat has no Workspace.
+    expect(first.prompt.system).toContain(subagentRoleSection("plain", false));
     expect(first.prompt.system).toContain("Workspace contract.");
     expect(first.prompt.developer).toBeNull();
     expect(first.prompt.personalInstructions).toBeUndefined();
@@ -726,6 +726,9 @@ describe("sub-agent runner", () => {
       const first = ctx.requests[0]!;
       expect(first.workspace).toBeUndefined();
       expect(first.prompt.system).not.toContain("# Workspace");
+      // Nor does its role speak of the Workspace's files: it is the role of a turn without one.
+      expect(first.prompt.system).toContain(subagentRoleSection("plain", false));
+      expect(first.prompt.system).not.toContain("/workspace/project/");
       const texts = userTexts(first);
       expect(texts.join("\n")).not.toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
       expect(texts.at(-1)).toContain("The Workspace is not available to you in this turn (workspace_busy)");
@@ -747,6 +750,7 @@ describe("sub-agent runner", () => {
       expect(registered.workspaceCheckpoints).toBe(true);
       expect(registered.workspaceImageView).toBe(true);
       expect(ctx.requests[0]!.prompt.system).toContain("# Workspace");
+      expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
       const texts = userTexts(ctx.requests[0]!);
       expect(texts.join("\n")).toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
       expect(texts.at(-1)).not.toContain("The Workspace is not available");
@@ -1080,7 +1084,7 @@ describe("a sub-agent's children", () => {
     await ctx.runner.wait(await ctx.runner.start(ctx.input()));
     const first = ctx.requests[0]!;
     expect(offered(first)).toEqual(expect.arrayContaining(["call_subagent", "stop_subagent"]));
-    expect(first.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
+    expect(first.prompt.system).toContain(subagentRoleSection("starter", false));
     expect(first.tools?.find((tool) => tool.name === "call_subagent")?.description).toContain("Starts a helper");
   });
 
@@ -1088,8 +1092,29 @@ describe("a sub-agent's children", () => {
     const ctx = setup([{ text: "Outcome: done\nDone." }], { children: childHost({ backgroundAllowed: false }) });
     await ctx.runner.wait(await ctx.runner.start(ctx.input()));
     const first = ctx.requests[0]!;
-    expect(first.prompt.system).toContain(SUBAGENT_STARTER_FOREGROUND_ROLE_SECTION);
+    expect(first.prompt.system).toContain(subagentRoleSection("starter_foreground", false));
     expect(first.prompt.system).not.toContain("background: true");
+  });
+
+  it("gives each role its Workspace lines only in a chat with a Workspace, and none of them in one without", async () => {
+    const withWorkspace = { ...request, workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
+    type RoleCase = Readonly<{ background?: boolean; child?: true; workspace: boolean }>;
+    const roleOf = async (options: RoleCase) => {
+      const ctx = setup([{ text: "Outcome: done\nDone." }], { children: childHost({ backgroundAllowed: options.background ?? true }),
+        ...(options.workspace ? { request: withWorkspace } : {}) });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input(options.child ? { parentAgent } : {})));
+      return ctx.requests[0]!.prompt.system ?? "";
+    };
+    expect(await roleOf({ workspace: true })).toContain(SUBAGENT_STARTER_ROLE_SECTION);
+    expect(await roleOf({ background: false, workspace: true })).toContain(subagentRoleSection("starter_foreground", true));
+    expect(await roleOf({ child: true, workspace: true })).toContain(SUBAGENT_CHILD_ROLE_SECTION);
+    const withoutWorkspace: readonly RoleCase[] = [{ workspace: false }, { background: false, workspace: false }, { child: true, workspace: false }];
+    for (const options of withoutWorkspace) {
+      const system = await roleOf(options);
+      expect(system).not.toContain("/workspace/project/");
+      expect(system).not.toContain("The browser is shared too");
+      expect(system).toContain("This answer has no Workspace, so you have no files to share: put your results in your report itself");
+    }
   });
 
   it("offers them to no sub-agent narrowed to tool groups: a list keeps narrowing, and a child must not have what its parent was denied", async () => {
@@ -1098,7 +1123,7 @@ describe("a sub-agent's children", () => {
     const ctx = setup([{ calls: [callChild("helper", "c1")] }, { text: "Outcome: done\nDone." }], { children: childHost() });
     const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ type })));
     expect(offered(ctx.requests[0]!)).not.toContain("call_subagent");
-    expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
+    expect(ctx.requests[0]!.prompt.system).toContain(subagentRoleSection("plain", false));
     expect(result.steps[0]).toMatchObject({ outcome: "error" });
   });
 
@@ -1107,7 +1132,7 @@ describe("a sub-agent's children", () => {
     const result = await ctx.runner.wait(await ctx.runner.start(ctx.input({ parentAgent })));
     expect(offered(ctx.requests[0]!)).not.toContain("call_subagent");
     expect(offered(ctx.requests[0]!)).not.toContain("stop_subagent");
-    expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_CHILD_ROLE_SECTION);
+    expect(ctx.requests[0]!.prompt.system).toContain(subagentRoleSection("child", false));
     const texts = userTexts(ctx.requests[0]!);
     expect(texts.at(-1)).toContain("You are the helper `shop`, started by the sub-agent `research`.");
     expect(texts.at(-1)).toContain("<parent_agent_brief>\nCompare laptops on shop.example.\n</parent_agent_brief>");

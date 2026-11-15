@@ -9,7 +9,7 @@ import { telegramFailureCode } from "./codes";
 import type { TelegramAccessResolver, TelegramAccessRefusal } from "./control/access";
 import { TELEGRAM_COPY, telegramReasonText } from "./copy";
 import type { TelegramOutbound } from "./outbound";
-import type { TelegramCallbackRecord, TelegramCallbackStore } from "./store/callbacks";
+import { telegramCallbackGroup, type TelegramCallbackRecord, type TelegramCallbackStore } from "./store/callbacks";
 import type { TelegramLinkRecord, TelegramLinkStore } from "./store/links";
 import type { TelegramReceiptStore } from "./store/receipts";
 
@@ -409,7 +409,8 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
           return;
         }
       }
-      if (registration.singleUse && !(await deps.callbacks.consume({ id: callback.id, now: new Date(now()) }))) return;
+      const group = telegramCallbackGroup(callback);
+      if (registration.singleUse && !(await deps.callbacks.consume({ id: callback.id, now: new Date(now()), ...(group ? { group } : {}) }))) return;
       // From here a failure is the handler's own: the press says so instead of claiming the button expired.
       reply = { text: TELEGRAM_COPY.buttonFailed };
       reply = await registration.handler({

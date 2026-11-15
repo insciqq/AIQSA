@@ -4,7 +4,7 @@ import type { TelegramMessage } from "../botApi";
 import { cleanTelegramFileName, largestTelegramPhoto, planTelegramMedia, TELEGRAM_FILE_MAX_BYTES } from "./plan";
 
 const base: TelegramMessage = { chat: { id: 1, type: "private" }, date: 0, has_other_content: false, message_id: 1 };
-const options = { uploadMaxBytes: 25_000_000, workspaceEnabled: false };
+const options = { uploadMaxBytes: 25_000_000, workspaceOffered: false };
 const MiB = 1024 * 1024;
 
 describe("Telegram media plan", () => {
@@ -39,7 +39,7 @@ describe("Telegram media plan", () => {
     const audio = { duration: 30, file_id: "a", file_name: "song.flac", file_unique_id: "ua", mime_type: "audio/flac" };
     // An audio type Speech to text does not take is a file: refused without Workspace, uploaded with it.
     expect(planTelegramMedia({ ...base, audio }, options)).toMatchObject({ kind: "refused", refusal: { reason: "unsupported_file" } });
-    expect(planTelegramMedia({ ...base, audio }, { ...options, workspaceEnabled: true }))
+    expect(planTelegramMedia({ ...base, audio }, { ...options, workspaceOffered: true }))
       .toMatchObject({ fileName: "song.flac", kind: "attachment", scope: "workspace" });
     expect(planTelegramMedia({ ...base, audio: { ...audio, mime_type: "audio/mpeg" } }, options)).toMatchObject({ kind: "audio", mimeType: "audio/mpeg" });
     const document = { file_id: "d", file_name: "rec.m4a", file_unique_id: "ud", mime_type: "audio/mp4" };

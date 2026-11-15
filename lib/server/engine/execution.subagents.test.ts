@@ -15,7 +15,7 @@ import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
 import { interruptNativeRun } from "./runInterruption";
 import { backgroundSubagentRunner, hasSubagentBackgroundHost } from "./subagents/backgroundRunner";
-import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION } from "./prompts";
+import { subagentRoleSection } from "./prompts";
 import type { NativeRunStore } from "./runStore";
 import type { SubagentThreadStore } from "./subagents/threadStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
@@ -178,11 +178,15 @@ describe("native run with sub-agents", () => {
     const [main, sub, after] = requests;
     expect(main!.tools?.map((tool) => tool.name)).toContain(CALL_SUBAGENT_TOOL_NAME);
     expect(main!.prompt.system).toContain("# Sub-agents");
+    // This run has no Workspace: neither agent is told to hand work over through its files.
+    expect(main!.prompt.system).toContain("This answer has no Workspace, so no agent of it has files to share");
+    expect(main!.prompt.system).not.toContain("/workspace/project/");
     // The default sub-agent: the parent's exact model and params, its own role, which may start children.
     expect(sub!.modelId).toBe("fake-qsa");
     expect(sub!.params).toEqual(main!.params);
     expect(sub!.tools?.map((tool) => tool.name)).toContain(CALL_SUBAGENT_TOOL_NAME);
-    expect(sub!.prompt.system).toContain(SUBAGENT_STARTER_ROLE_SECTION);
+    expect(sub!.prompt.system).toContain(subagentRoleSection("starter", false));
+    expect(sub!.prompt.system).not.toContain("/workspace/project/");
     expect(JSON.stringify(sub!.history)).toContain("<user_message>\\nFind the cheapest laptop.\\n</user_message>");
     expect(memory.threads.admitForeground).toHaveBeenCalledWith(expect.objectContaining({ binding: { effortSource: "parent",
       modelId: "fake-qsa", modelSource: "parent", provider: "connection-1", providerModelId: "model-1", reasoningEffort: null },
@@ -224,7 +228,7 @@ describe("native run with sub-agents", () => {
       runId: "run-1", threadId: "thread-research", turnId: "turn-research" }), parentRunId: "run-1" }));
     const child = requests[2]!;
     expect(child.tools?.map((tool) => tool.name)).not.toContain(CALL_SUBAGENT_TOOL_NAME);
-    expect(child.prompt.system).toContain(SUBAGENT_CHILD_ROLE_SECTION);
+    expect(child.prompt.system).toContain(subagentRoleSection("child", false));
     expect(JSON.stringify(child.history)).toContain("parent_agent_brief");
     // A grandchild is refused with its code, and the child goes on.
     expect(JSON.stringify(requests[3]!.history)).toContain("subagent_depth_limit_reached");

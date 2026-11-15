@@ -110,7 +110,7 @@ function setup(options: Readonly<{
       botId: fake.bot.id, currentChatId: null, displayName: telegramUser.first_name, id: `link-${telegramUser.id}`,
       lastSeenAt: new Date(clock), linkedAt: new Date(clock), pendingAssistantId: null, searchEnabled: true, selectedModelId: null,
       selectedProvider: null, telegramChatId: telegramUser.id, telegramUserId: telegramUser.id, telegramUsername: telegramUser.username ?? null,
-      userId, workspaceEnabled: false
+      userId
     };
     links.set(userId, record);
     return record;

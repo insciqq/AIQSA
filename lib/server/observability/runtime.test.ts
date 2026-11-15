@@ -344,6 +344,8 @@ describe("bounded observability runtime", () => {
     expect(record("run_accepted", { ...accepted, workspace_requested: true })).toMatchObject({ workspace_requested: true });
     expect(record("run_accepted", { ...accepted, workspace_requested: false, workspace_reason: "user_declined" }))
       .toMatchObject({ workspace_requested: false, workspace_reason: "user_declined" });
+    expect(record("run_accepted", { ...accepted, workspace_requested: false, workspace_reason: "connector" }))
+      .toMatchObject({ workspace_requested: false, workspace_reason: "connector" });
     const forged = record("run_accepted", { ...accepted, workspace_requested: "yes", workspace_reason: "PRIVATE_TEXT" } as never);
     expect(forged).not.toHaveProperty("workspace_requested");
     expect(forged).not.toHaveProperty("workspace_reason");

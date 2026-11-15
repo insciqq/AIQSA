@@ -7,6 +7,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { PDFDocument } from "pdf-lib";
 import { decodeChatDetailResponse, type ChatMessageWire } from "../../lib/contracts/chats";
 import type { TelegramAdminCommand, TelegramAdminState, TelegramLinkCodeResponse } from "../../lib/contracts/telegram";
+import { decodeWorkspacePolicyResponse, type WorkspacePolicyWire } from "../../lib/contracts/workspace";
 import type { ContentBlock } from "../../lib/domain/content";
 import { encryptProviderCredentialSecret } from "../../lib/server/providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../../lib/server/secrets/envelope";
@@ -40,6 +41,8 @@ const TELEGRAM_ID_BASE = 960_000_000_000 + (Date.now() % 10_000_000_000) * 10;
 const STT_MODEL = "telegram-e2e-whisper-1";
 const STT_KEY = "telegram-e2e-stt-key";
 const TRANSCRIPT = "spoken words from telegram";
+/** Beyond the 2 s availability cache in `lib/server/workspace/availability.ts`. */
+const WORKSPACE_AVAILABILITY_SETTLE_MS = 3_000;
 
 const prisma = new PrismaClient();
 const people = createPeopleFixture(prisma);
@@ -115,6 +118,35 @@ async function lastQuestion(): Promise<ContentBlock[]> {
 
 async function runCount(): Promise<number> {
   return prisma.modelRun.count({ where: { userId: aliceSession.user.id } });
+}
+
+/** Waits until none of Alice's runs is still open, so the next message never joins one as a follow-up. */
+async function runsSettled(): Promise<void> {
+  await expect.poll(() => prisma.modelRun.count({
+    where: { status: { in: ["preparing", "queued", "streaming", "in_progress"] }, userId: aliceSession.user.id }
+  }), { timeout: REPLY_TIMEOUT_MS }).toBe(0);
+}
+
+async function workspacePolicy(request: APIRequestContext): Promise<WorkspacePolicyWire> {
+  const response = await request.get("/api/admin/workspace");
+  expect(response.ok(), await response.text()).toBe(true);
+  const policy = decodeWorkspacePolicyResponse(await response.json());
+  expect(policy, "Workspace policy response").not.toBeNull();
+  return policy!;
+}
+
+/**
+ * Switches the installation's Workspace and returns the switch it had. The bot reads whether the
+ * installation offers the Workspace through a short cache in its own server bundle, which the
+ * route's invalidation may not reach, so a change waits that cache out.
+ */
+async function switchWorkspace(request: APIRequestContext, enabled: boolean): Promise<boolean> {
+  const policy = await workspacePolicy(request);
+  if (policy.enabled === enabled) return enabled;
+  const response = await request.patch("/api/admin/workspace", { data: { enabled, expectedVersion: policy.version } });
+  expect(response.ok(), await response.text()).toBe(true);
+  await new Promise((resolve) => setTimeout(resolve, WORKSPACE_AVAILABILITY_SETTLE_MS));
+  return policy.enabled;
 }
 
 async function admin(request: APIRequestContext, command: TelegramAdminCommand): Promise<TelegramAdminState> {
@@ -343,12 +375,61 @@ test("a PDF document becomes a file attachment under its own name", async () => 
   ]);
 });
 
-test("a forbidden type and a 25 MB file are refused before download, a renamed binary by the upload's own checks", async () => {
+test("with the Workspace offered, a file of any type is downloaded and taken as the web composer takes it", async () => {
+  // The turn asks for the Workspace, whose inbox stages the file on the stand's runner.
+  test.setTimeout(180_000);
+  const request = adminSession.page.request;
+  const wasEnabled = await switchWorkspace(request, true);
+  try {
+    expect((await workspacePolicy(request)).runtime.state, "the stand's Workspace runner must be ready").toBe("ready");
+    await startNewChat();
+    const runs = await runCount();
+    const since = bot.calls().length;
+    bot.inject.document(tgAlice, {
+      bytes: Buffer.from("MZ synthetic"), caption: "What is this installer?", fileName: "setup.exe", mimeType: "application/x-msdownload"
+    });
+    await nextAnswer(since, 90_000);
+    expect(textsSince(since)).not.toContain(telegramUnsupportedFileText(telegramAttachmentTypeNames()));
+    expect(bot.calls().slice(since).filter((call) => call.method === "getFile")).toHaveLength(1);
+    const attachment = await prisma.attachment.findFirstOrThrow({
+      orderBy: { createdAt: "desc" }, select: { id: true, kind: true, status: true },
+      where: { fileName: "setup.exe", userId: aliceSession.user.id }
+    });
+    expect(attachment).toMatchObject({ kind: "file", status: "ready" });
+    expect(await lastQuestion()).toEqual([
+      { text: "What is this installer?", type: "text" },
+      { attachmentId: attachment.id, fileName: "setup.exe", type: "file" }
+    ]);
+    expect(await runCount()).toBe(runs + 1);
+    await runsSettled();
+  } finally {
+    await switchWorkspace(request, wasEnabled);
+  }
+});
+
+test("without the Workspace a forbidden type is refused before download", async () => {
+  const request = adminSession.page.request;
+  const wasEnabled = await switchWorkspace(request, false);
+  try {
+    const runs = await runCount();
+    const uploads = await prisma.attachment.count({ where: { fileName: "setup.exe", userId: aliceSession.user.id } });
+    const since = bot.calls().length;
+    bot.inject.document(tgAlice, { bytes: Buffer.from("MZ synthetic"), fileName: "setup.exe", mimeType: "application/x-msdownload" });
+    await expectText(since, telegramUnsupportedFileText(telegramAttachmentTypeNames()));
+    expect(bot.calls().slice(since).filter((call) => call.method === "getFile")).toHaveLength(0);
+    expect(await prisma.attachment.count({ where: { fileName: "setup.exe", userId: aliceSession.user.id } })).toBe(uploads);
+    expect(await runCount()).toBe(runs);
+  } finally {
+    await switchWorkspace(request, wasEnabled);
+  }
+});
+
+test("a 25 MB file is refused before download, a renamed binary by the upload's own checks", async () => {
+  // Both hold in either upload scope: the size is refused before any download, and `.pdf` is a known
+  // format whose content the upload checks.
   const runs = await runCount();
-  const unsupported = telegramUnsupportedFileText(telegramAttachmentTypeNames(), true);
+  const unsupported = telegramUnsupportedFileText(telegramAttachmentTypeNames());
   let since = bot.calls().length;
-  bot.inject.document(tgAlice, { bytes: Buffer.from("MZ synthetic"), fileName: "setup.exe", mimeType: "application/x-msdownload" });
-  await expectText(since, unsupported);
   bot.inject.document(tgAlice, { bytes: Buffer.alloc(25_000_000), fileName: "big.pdf", mimeType: "application/pdf" });
   await expectText(since, telegramReasonText("telegram_file_too_large")!);
   expect(bot.calls().slice(since).filter((call) => call.method === "getFile")).toHaveLength(0);

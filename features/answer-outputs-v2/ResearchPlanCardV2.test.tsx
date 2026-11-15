@@ -126,7 +126,8 @@ describe("while a plan is being made", () => {
     planRoute();
     render(<AnswerProcessV2 workspaceActivity={activity(row("scoping", ["Making a plan before research starts"]))} />);
     expect(screen.queryByTestId("research-plan-card")).toBeNull();
-    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).toHaveTextContent("Plan · 0 of 1 complete");
+    // An ended answer's plan is no longer progress: its size, not "0 of 1 complete".
+    expect(screen.getByTestId("tool-activity-disclosure").querySelector("summary")).toHaveTextContent(/Plan · 1 step$/u);
   });
 });
 

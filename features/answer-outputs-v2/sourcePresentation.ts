@@ -101,3 +101,111 @@ export function presentSearchSourcesV2(
 
   return { mergedDuplicateCount, sources: presented };
 }
+
+/*
+ * A link in the answer text: Markdown targets and bare URLs alike, since the
+ * pattern stops at whitespace, brackets and quotes. One level of balanced
+ * parentheses stays inside ("/wiki/Foo_(bar)"); sentence punctuation and
+ * Markdown emphasis right after a URL do not belong to it.
+ */
+const ANSWER_TEXT_URL_PATTERN = /https?:\/\/(?:[^\s<>()[\]{}"'`|]|\([^\s<>()[\]{}"'`|]*\))+/giu;
+const URL_TRAILING_PUNCTUATION = /[.,;:!?*_~]+$/u;
+
+/** The http(s) links of an answer's text, in order of appearance. */
+export function answerTextUrlsV2(text: string): string[] {
+  const urls: string[] = [];
+  for (const match of text.matchAll(ANSWER_TEXT_URL_PATTERN)) {
+    const url = match[0].replace(URL_TRAILING_PUNCTUATION, "");
+    if (url.length > "https://".length) urls.push(url);
+  }
+  return urls;
+}
+
+/**
+ * What the answer cites, in order: the provider's citations by their index
+ * (they carry no position in the text), then the links of the text in the
+ * order they appear.
+ */
+export function answerCitedUrlsV2(
+  citations: readonly Readonly<{ index: number; url: string }>[],
+  text: string
+): string[] {
+  return [
+    ...[...citations].sort((left, right) => left.index - right.index).map((citation) => citation.url),
+    ...answerTextUrlsV2(text)
+  ];
+}
+
+export type AnswerSourceSplitV2 = Readonly<{
+  /** Listed sources the answer cites, in order of first mention. */
+  cited: PresentedSearchSourceV2[];
+  /** Every other listed source, in list order. */
+  uncited: PresentedSearchSourceV2[];
+}>;
+
+/**
+ * Splits the listed sources into the ones the answer cites and the rest. A
+ * cited URL counts only when it matches a listed source by
+ * `normalizedSourceUrlKeyV2`, so a link the run never searched adds nothing.
+ */
+export function splitCitedSourcesV2(
+  sources: readonly PresentedSearchSourceV2[],
+  citedUrls: readonly string[]
+): AnswerSourceSplitV2 {
+  const indexByKey = new Map<string, number>();
+  sources.forEach((source, index) => {
+    const key = normalizedSourceUrlKeyV2(source.url);
+    if (!indexByKey.has(key)) indexByKey.set(key, index);
+  });
+  const citedIndexes: number[] = [];
+  const taken = new Set<number>();
+  for (const url of citedUrls) {
+    const index = indexByKey.get(normalizedSourceUrlKeyV2(url));
+    if (index === undefined || taken.has(index)) continue;
+    taken.add(index);
+    citedIndexes.push(index);
+  }
+  return {
+    cited: citedIndexes.map((index) => sources[index]!),
+    uncited: taken.size === 0 ? [...sources] : sources.filter((_, index) => !taken.has(index))
+  };
+}
+
+export type SourceSiteGroupV2 = Readonly<{
+  /** Host without `www.`; empty for sources without a readable site. */
+  site: string;
+  sources: PresentedSearchSourceV2[];
+}>;
+
+/**
+ * Sources grouped by site, the largest group first and ties by name; the
+ * group of sources without a site goes last. Each group keeps list order.
+ */
+export function groupSourcesBySiteV2(sources: readonly PresentedSearchSourceV2[]): SourceSiteGroupV2[] {
+  const groups = new Map<string, PresentedSearchSourceV2[]>();
+  for (const source of sources) {
+    const site = source.domain ?? "";
+    const group = groups.get(site);
+    if (group) group.push(source);
+    else groups.set(site, [source]);
+  }
+  return [...groups].map(([site, members]) => ({ site, sources: members })).sort((left, right) =>
+    Number(left.site === "") - Number(right.site === "") ||
+    right.sources.length - left.sources.length ||
+    left.site.localeCompare(right.site)
+  );
+}
+
+/** Sources whose title, site or URL contains the query, ignoring case; all of them for a blank query. */
+export function filterSourcesV2(
+  sources: readonly PresentedSearchSourceV2[],
+  query: string
+): PresentedSearchSourceV2[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [...sources];
+  return sources.filter((source) =>
+    source.title.toLowerCase().includes(needle) ||
+    (source.domain?.includes(needle) ?? false) ||
+    source.url.toLowerCase().includes(needle)
+  );
+}

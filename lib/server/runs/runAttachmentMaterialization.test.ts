@@ -550,7 +550,9 @@ describe("run attachment materialization", () => {
       expect(sent!.imageNote).not.toContain("Workspace");
     });
 
-    it("sends a large one within the provider patch limit", async () => {
+    // A 6500×4900 three-frame GIF takes about 4.6 s to build and scale on the dev server, next to the default 5 s: it timed
+    // out twice while other checks loaded the host (2026-11-16).
+    it("sends a large one within the provider patch limit", { timeout: 30_000 }, async () => {
       const bytes = await animated(6500, 4900);
       const [sent] = await load({ ...gifRecord("poster", bytes, true), byteSize: bytes.length }, bytes, false);
       const copy = await sharp(sentBytes(sent!.dataUrl)).metadata();

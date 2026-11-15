@@ -32,7 +32,12 @@ export const telegramReasonCodeSchema = z.enum(TELEGRAM_REASON_CODES);
 export const TELEGRAM_HEALTH_CODES = ["telegram_poll_conflict", "telegram_token_rejected", "telegram_unreachable"] as const;
 export type TelegramHealthCode = (typeof TELEGRAM_HEALTH_CODES)[number];
 
-/** Server-owned kinds of the rows an inline button's callback data names. */
+/**
+ * Server-owned kinds of the rows an inline button's callback data names.
+ * `toggle_workspace` and `toggle_agent` are retired settings: stored rows and
+ * old messages still name them, no handler answers them, and a press answers
+ * like any expired button.
+ */
 export const TELEGRAM_CALLBACK_KINDS = [
   "approval_allow_once",
   "approval_allow_server",
@@ -46,7 +51,10 @@ export const TELEGRAM_CALLBACK_KINDS = [
   "toggle_agent",
   "stop_run",
   "unlink_confirm",
-  "open_settings"
+  "open_settings",
+  "change_undo",
+  "change_confirm",
+  "change_cancel"
 ] as const;
 export type TelegramCallbackKind = (typeof TELEGRAM_CALLBACK_KINDS)[number];
 export const telegramCallbackKindSchema = z.enum(TELEGRAM_CALLBACK_KINDS);

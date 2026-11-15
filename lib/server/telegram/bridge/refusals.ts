@@ -53,9 +53,11 @@ export function telegramRefusalReply(refusal: TelegramSendRefusal): TelegramRefu
   if (MODEL_CODES.has(code) || code.startsWith("credential_")) return reply(COPY.modelUnavailable, "model");
   if (code.startsWith("search_") || code === "unsupported_search_strategy") return reply(COPY.searchUnavailable, "settings");
   if (CONTEXT_CODES.has(code)) return reply(COPY.contextTooLarge, "none");
-  if (code === "workspace_disabled") return reply(COPY.workspaceDisabled, "settings");
+  // No Workspace switch remains (operator decision 2026-11-16): a turn asks for it only while the installation offers it,
+  // so a refusal names a retry, another model or the web chat, never the bot settings.
+  if (code === "workspace_disabled") return reply(COPY.workspaceDisabled, "none");
   if (code === "workspace_model_tools_required") return reply(COPY.workspaceModel, "model");
-  if (code.startsWith("workspace_")) return reply(COPY.workspaceUnavailable, "settings");
+  if (code.startsWith("workspace_")) return reply(COPY.workspaceUnavailable, "open");
   // An approval's continuation after its window or its use: only a new request asks again.
   if (code === MCP_APPROVAL_CONTINUATION_UNAVAILABLE) return reply(TELEGRAM_COPY.approvalExpired, "none");
   if (code.startsWith("mcp_")) return reply(COPY.toolsUnavailable, "open");

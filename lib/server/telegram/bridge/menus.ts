@@ -63,7 +63,6 @@ export function telegramModelKeyboard(catalog: TelegramRunCatalog, page: number,
 export function telegramSettingsKeyboard(link: TelegramLinkRecord, model: TelegramCatalogModel | null): TelegramKeyboard {
   return [
     [{ callback: { kind: "toggle_search" }, text: telegramToggleLabel("Search", link.searchEnabled) }],
-    [{ callback: { kind: "toggle_workspace" }, text: telegramToggleLabel("Workspace", link.workspaceEnabled) }],
     [{
       callback: { kind: "model_page", payload: { page: 0 } },
       text: model ? telegramModelLabel(model.displayName) : TELEGRAM_BRIDGE_COPY.chooseModel
@@ -200,7 +199,6 @@ export function createTelegramBridgeMenus(deps: TelegramChatReachDeps & Readonly
     },
 
     toggle_search: toggle((link) => ({ searchEnabled: !link.searchEnabled })),
-    toggle_workspace: toggle((link) => ({ workspaceEnabled: !link.workspaceEnabled })),
 
     open_settings: async (context) => {
       await send(context, await settingsMenu(context.link));

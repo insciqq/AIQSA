@@ -263,8 +263,8 @@ export type ToolRegistryServices = Readonly<{
   /** The saved secrets `read_secret` reads (`createRunSecretSource`), with or without a Workspace. */
   secrets?: RunSecretSource;
   /**
-   * The owners behind the self-service tools, given only for interactive web
-   * chats (`nativeRunResponse`), with the tools the chat takes when not all
+   * The owners behind the self-service tools, given only for interactive
+   * chats, on the web or in Telegram (`nativeRunResponse`), with the tools the chat takes when not all
    * of them (`selfServiceToolsFor`); the registry adds the run's own facts.
    * They need `secrets` too, for the Skill save guard.
    */
@@ -324,7 +324,10 @@ export type ToolRegistryInput = Readonly<{
   /** A scheduled task's occurrence (a schedule, a webhook or a monitoring check): it never works on the user's computer. */
   scheduled?: true;
   services: ToolRegistryServices;
-  /** A connector's turn: its bridge shows no change cards, so no tool saves the user's Skills there (`agent_docs/RUN_CONTRACTS.md`). */
+  /**
+   * A connector's turn. A Discord turn saves no Skills: its runs belong to a service account with no one to show a
+   * change to. Telegram shows changes as messages with Undo, like the web (`agent_docs/RUN_CONTRACTS.md`).
+   */
   connectorTurn?: ConnectorTurn;
   /** How long this agent's tool time still lasts; a call on the user's computer never waits past it. Absent: its own bound. */
   toolTimeLeftMs?(): number;
@@ -596,9 +599,9 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       execute: (execution) => executeManageScheduledTask(execution.call, context(execution), manage) });
   }
   for (const definition of skillSaveToolsForRequest(request)) {
-    // `manage_skill` saves Skills in any web chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`);
-    // a connector turn saves none.
-    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered || input.connectorTurn) continue;
+    // `manage_skill` saves Skills in any interactive chat and supersedes the Workspace folder save (`SUPERSEDED_TOOLS`);
+    // a connector turn other than Telegram saves none.
+    if (!isSkillSaveCall(request, definition.name) || selfServiceOffered || (input.connectorTurn && input.connectorTurn !== "telegram")) continue;
     add({ activity: named(definition, "Skills"), definition, effects: "local", observationSource: "workspace",
       execute: (execution) => executeSaveSkill(execution.call, context(execution), {
         commit: runSkillSaveCommitter(input.services.repository, { callId: execution.persistedToolCallId, ...owner }),

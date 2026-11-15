@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { ThreadSearchSource } from "@/lib/contracts/chats";
 import {
+  answerCitedUrlsV2,
+  answerTextUrlsV2,
+  filterSourcesV2,
+  groupSourcesBySiteV2,
   normalizedSourceUrlKeyV2,
   presentSearchSourcesV2,
-  sourceDomainV2
+  sourceDomainV2,
+  splitCitedSourcesV2
 } from "./sourcePresentation";
 
 describe("answer source presentation", () => {
@@ -92,5 +98,136 @@ describe("presentSearchSourcesV2", () => {
     expect(presented.sources[0]).toMatchObject({ domain: "bbc.com", title: "bbc.com" });
     expect(presented.sources[1]).toMatchObject({ domain: "bbc.com", title: "bbc.com" });
     expect(presented.sources[2]).toMatchObject({ domain: "bbc.com", title: "other.example" });
+  });
+});
+
+/** 1600 search results over 40 sites: ten sites of 80, ten of 40, twenty of 20. */
+function largeRun(): ThreadSearchSource[] {
+  const sizes = Array.from({ length: 40 }, (_, site) => site < 10 ? 80 : site < 20 ? 40 : 20);
+  return sizes.flatMap((size, site) => Array.from({ length: size }, (_, page) => ({
+    rank: page + 1,
+    title: `Result ${page} on site ${site}`,
+    url: `https://www.site-${String(site).padStart(2, "0")}.example/page-${page}`
+  })));
+}
+
+describe("answerTextUrlsV2", () => {
+  it("reads Markdown targets and bare links in order, without trailing punctuation", () => {
+    const text = [
+      "See [the guide](https://example.com/guide \"Guide\") and https://example.org/a.",
+      "Also <https://example.net/b>, **https://example.com/bold**, and",
+      "[Foo](https://en.wikipedia.org/wiki/Foo_(bar)) (https://example.com/in-parens).",
+      "Not links: ftp://example.com/x, javascript:alert(1), https://"
+    ].join("\n");
+    expect(answerTextUrlsV2(text)).toEqual([
+      "https://example.com/guide",
+      "https://example.org/a",
+      "https://example.net/b",
+      "https://example.com/bold",
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+      "https://example.com/in-parens"
+    ]);
+  });
+
+  it("returns nothing for text without links", () => {
+    expect(answerTextUrlsV2("No links here, only example.com as a word.")).toEqual([]);
+  });
+});
+
+describe("answerCitedUrlsV2", () => {
+  it("puts the provider's citations first by index, then the text's links", () => {
+    expect(answerCitedUrlsV2([
+      { index: 2, url: "https://example.com/second" },
+      { index: 1, url: "https://example.com/first" }
+    ], "Read https://example.com/text.")).toEqual([
+      "https://example.com/first",
+      "https://example.com/second",
+      "https://example.com/text"
+    ]);
+  });
+});
+
+describe("splitCitedSourcesV2", () => {
+  const { sources } = presentSearchSourcesV2([
+    { rank: 1, title: "Alpha", url: "https://alpha.example/a" },
+    { rank: 2, title: "Beta", url: "https://www.beta.example/b/" },
+    { rank: 3, title: "Gamma", url: "https://gamma.example/c?page=1" }
+  ]);
+
+  it("matches cited links by the normalized key, once each, in order of first mention", () => {
+    const split = splitCitedSourcesV2(sources, [
+      "http://beta.example/b#top",
+      "https://unlisted.example/x",
+      "https://alpha.example/a/",
+      "https://www.beta.example/b"
+    ]);
+    expect(split.cited.map((source) => source.title)).toEqual(["Beta", "Alpha"]);
+    expect(split.uncited.map((source) => source.title)).toEqual(["Gamma"]);
+  });
+
+  it("keeps a query string significant and leaves everything uncited when nothing matches", () => {
+    const split = splitCitedSourcesV2(sources, ["https://gamma.example/c?page=2", "https://unlisted.example"]);
+    expect(split.cited).toEqual([]);
+    expect(split.uncited).toEqual(sources);
+  });
+});
+
+describe("groupSourcesBySiteV2", () => {
+  it("groups by site, largest first, ties by name, sources without a site last", () => {
+    const { sources } = presentSearchSourcesV2([
+      { rank: 1, title: "B one", url: "https://b.example/1" },
+      { rank: 2, title: "No site", url: "https://vertexaisearch.cloud.google.com/grounding-api-redirect/Q" },
+      { rank: 3, title: "A one", url: "https://www.a.example/1" },
+      { rank: 4, title: "C one", url: "https://c.example/1" },
+      { rank: 5, title: "C two", url: "https://c.example/2" },
+      { rank: 6, title: "B two", url: "https://b.example/2" },
+      { rank: 7, title: "A two", url: "https://a.example/2" }
+    ]);
+    expect(groupSourcesBySiteV2(sources).map((group) => [group.site, group.sources.map((source) => source.title)]))
+      .toEqual([
+        ["a.example", ["A one", "A two"]],
+        ["b.example", ["B one", "B two"]],
+        ["c.example", ["C one", "C two"]],
+        ["", ["No site"]]
+      ]);
+  });
+});
+
+describe("filterSourcesV2", () => {
+  const { sources } = presentSearchSourcesV2([
+    { rank: 1, title: "Release notes", url: "https://nodejs.org/en/blog/release" },
+    { rank: 2, title: "Download", url: "https://www.python.org/downloads/" },
+    { rank: 3, title: "Changelog", url: "https://example.com/Path/CHANGES" }
+  ]);
+
+  it("matches title, site or address ignoring case, and keeps everything for a blank query", () => {
+    expect(filterSourcesV2(sources, "RELEASE").map((source) => source.title)).toEqual(["Release notes"]);
+    expect(filterSourcesV2(sources, "python.org").map((source) => source.title)).toEqual(["Download"]);
+    expect(filterSourcesV2(sources, "path/changes").map((source) => source.title)).toEqual(["Changelog"]);
+    expect(filterSourcesV2(sources, "  ")).toHaveLength(3);
+    expect(filterSourcesV2(sources, "nothing-like-this")).toEqual([]);
+  });
+});
+
+describe("a run with 1600 sources", () => {
+  it("cites 14 through Markdown links and groups the other 1586 into 40 sites", () => {
+    const { sources } = presentSearchSourcesV2(largeRun());
+    expect(sources).toHaveLength(1600);
+    const citedUrls = Array.from({ length: 14 }, (_, index) => `https://site-${String(index * 2).padStart(2, "0")}.example/page-${index}/`);
+    const text = citedUrls.map((url, index) => `Point ${index} [source](${url}).`).join("\n");
+    const split = splitCitedSourcesV2(sources, answerCitedUrlsV2([], text));
+    expect(split.cited.map((source) => source.title)).toEqual(
+      Array.from({ length: 14 }, (_, index) => `Result ${index} on site ${index * 2}`)
+    );
+    expect(split.uncited).toHaveLength(1586);
+    const groups = groupSourcesBySiteV2(split.uncited);
+    expect(groups).toHaveLength(40);
+    expect(groups.reduce((sum, group) => sum + group.sources.length, 0)).toBe(1586);
+    expect(groups[0]).toMatchObject({ site: "site-01.example" });
+    expect(groups[0]!.sources).toHaveLength(80);
+    // Sites that lost a cited page sort after the full ones of their size.
+    expect(groups.at(-1)).toMatchObject({ site: "site-26.example" });
+    expect(groups.at(-1)!.sources).toHaveLength(19);
+    expect(filterSourcesV2(split.uncited, "site 7")).toHaveLength(80);
   });
 });
