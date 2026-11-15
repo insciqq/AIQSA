@@ -142,7 +142,7 @@ describe("Telegram artifacts: after a run's answer and files", () => {
     return {
       botId, currentChatId: "chat-1", displayName: null, id: "link-1", lastSeenAt: new Date(0), linkedAt: new Date(0),
       pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null, telegramChatId, telegramUserId: telegramChatId,
-      telegramUsername: null, userId: "user-1", workspaceEnabled: true
+      telegramUsername: null, userId: "user-1"
     };
   }
 
