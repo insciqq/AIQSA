@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { WorkspaceSecretSummary } from "../../lib/contracts/workspaceSecrets";
 import { authenticateWithLocalToken } from "./support/localAuth";
-import { runAccountMenuAction } from "./shell/page";
+import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 
 const sizes = [{ width: 1440, height: 900 }, { width: 768, height: 1024 }, { width: 1024, height: 768 },
@@ -250,7 +250,8 @@ test.describe("touch controls", () => {
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`instructions-touch-${size.width}x${size.height}.png`) });
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
-      await page.getByRole("tab", { name: "Secrets", exact: true }).click();
+      // A phone shows one section at a time: the next one starts from the list of sections.
+      await showSettingsSection(page, "Secrets");
       await page.getByRole("button", { name: "Add secret", exact: true }).click();
       const sheet = page.getByTestId("workspace-secret-sheet");
       await sheet.getByRole("radio", { name: "Environment", exact: true }).check();

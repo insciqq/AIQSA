@@ -1,7 +1,7 @@
 import { expect, test, type Locator } from "@playwright/test";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
-import { runAccountMenuAction } from "./shell/page";
+import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 
@@ -49,9 +49,8 @@ for (const theme of ["dark", "light"] as const) {
 
     for (const size of sizes) {
       await page.setViewportSize(size);
-      await runAccountMenuAction(page, "Assistants");
+      await runAccountMenuAction(page, "Files");
       const library = page.getByTestId("library-v2");
-      await library.getByRole("tab", { name: "Files", exact: true }).click();
       const files = page.getByTestId("library-files-panel");
       await expect(files.getByRole("button", { name: "All 7", exact: true })).toBeVisible();
       await expect(files.getByText(/Files are private and visible only to you\./)).toHaveCount(1);
@@ -67,7 +66,8 @@ for (const theme of ["dark", "light"] as const) {
         await expectTouchSafe(files.getByRole("link", { name: "Download prompt_template.md" }));
       }
       await page.screenshot({ path: testInfo.outputPath(`files-${size.width}x${size.height}-${theme}.png`) });
-      await library.getByRole("tab", { name: "Skills", exact: true }).click();
+      // Below 1024px the next section starts from the list of sections.
+      await showSettingsSection(page, "Skills");
       const skills = page.getByTestId("skill-library-section");
       await expect(skills.getByRole("button", { name: "Open Careful editor 1", exact: true })).toBeVisible();
       if (size.height > 600) {

@@ -281,7 +281,7 @@ test("a Memory admission refusal on send shows neutral copy without a raw code",
   await expect(composer).toHaveValue("Plan my week.");
 });
 
-test("Studio Memory keeps last known data and usable controls after failed reads and writes", async ({ page }) => {
+test("Settings › Memory keeps last known data and usable controls after failed reads and writes", async ({ page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ height: 900, width: 1440 });
   const item = memoryConsumerItemFixture({ memoryRef: "opaque-studio-ref", statement: "I prefer tea." });

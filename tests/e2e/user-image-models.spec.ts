@@ -285,7 +285,7 @@ test("an administrator publishes a second image model; chats use the user's choi
     // The default is never offered for withdrawal.
     await expect(role.getByRole("button", { name: `Withdraw ${names.imageA}` })).toHaveCount(0);
 
-    // A new choice starts from the organization default; the user picks B in Studio.
+    // A new choice starts from the organization default; the user picks B in Settings.
     await page.goto("/");
     await expect(page.getByTestId("app-shell")).toBeVisible();
     const imageRow = await openImageModelRow(page);
@@ -390,7 +390,7 @@ test("a generation-only or broken choice is never substituted; withdrawal return
     expect(state.imageCalls).toHaveLength(1);
     expect(await admittedImageModel(chatId)).toBeNull();
     expect(await imageChoice()).toBe(ids.imageB);
-    // Studio names the reason and offers the organization default instead of replacing the choice.
+    // Settings names the reason and offers the organization default instead of replacing the choice.
     const imageRow = await openImageModelRow(page);
     await expect(imageRow.getByRole("button", { name: "Image model", exact: true })).toContainText(names.imageB);
     await expect(imageRow.getByRole("status")).toHaveText(
@@ -416,7 +416,7 @@ test("a generation-only or broken choice is never substituted; withdrawal return
     await expect.poll(async () => prisma.publishedImageModel.count({ where: { providerModelId: ids.imageB } })).toBe(0);
     expect(await imageChoice()).toBeNull();
 
-    // Studio shows the organization default; the history keeps its outcomes through a reload.
+    // Settings shows the organization default; the history keeps its outcomes through a reload.
     await page.goto(`/c/${chatId}`);
     await expect((await openImageModelRow(page)).getByRole("button", { name: "Image model", exact: true }))
       .toContainText(`Organization default · ${names.imageA}`);
@@ -438,7 +438,7 @@ for (const viewport of [
   { width: 390, height: 844, theme: "dark" },
   { width: 844, height: 390, theme: "light" }
 ] as const) {
-  test(`the Image generation role and the Studio image model row fit at ${viewport.width}x${viewport.height} (${viewport.theme})`, async ({ page, context, baseURL }, testInfo) => {
+  test(`the Image generation role and the Settings image model row fit at ${viewport.width}x${viewport.height} (${viewport.theme})`, async ({ page, context, baseURL }, testInfo) => {
     test.setTimeout(120_000);
     page.setDefaultTimeout(15_000);
     const fixture = await installImageChoiceFixture(randomUUID().slice(0, 8));
@@ -448,7 +448,7 @@ for (const viewport of [
       await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: baseURL! }]);
       await page.route("**/api/workspace", (route) => route.fulfill({ json: unavailableWorkspace }));
       await signInWithLocalToken(page);
-      // A broken choice shows its reason and recovery in Studio.
+      // A broken choice shows its reason and recovery in Settings.
       expect((await page.request.patch("/api/me/image-models", { data: { providerModelId: fixture.ids.imageB } })).status()).toBe(200);
       await prisma.providerModel.update({ where: { id: fixture.ids.imageB }, data: { enabled: false } });
       const imageRow = await openImageModelRow(page);
@@ -457,7 +457,7 @@ for (const viewport of [
       await useDefault.scrollIntoViewIfNeeded();
       await expectWithinViewport(page, useDefault);
       await expectNoHorizontalOverflow(page);
-      await page.screenshot({ path: testInfo.outputPath(`studio-image-model-${viewport.width}x${viewport.height}-${viewport.theme}.png`) });
+      await page.screenshot({ path: testInfo.outputPath(`settings-image-model-${viewport.width}x${viewport.height}-${viewport.theme}.png`) });
       const role = await openImageRole(page);
       await expect(role.getByTestId("admin-image-published-model").filter({ hasText: fixture.names.imageB }))
         .toContainText("Unavailable · the model or its provider is turned off");

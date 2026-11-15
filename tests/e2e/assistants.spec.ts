@@ -196,7 +196,7 @@ test.afterEach(async ({ page }) => {
   await archiveE2eAssistants(page);
 });
 
-test("creates an assistant through the Library editor", async ({ page }) => {
+test("creates an assistant through the Settings editor", async ({ page }) => {
   const name = `${assistantNamePrefix} ${Date.now()}`;
   const modelId = await fakeProviderModelId(page);
 
@@ -238,7 +238,7 @@ test("creates an assistant through the Library editor", async ({ page }) => {
   await expect(library).toHaveCount(0);
 });
 
-test("uses an assistant from the Library and completes an identified run", async ({ page }) => {
+test("uses an assistant from Settings and completes an identified run", async ({ page }) => {
   const name = `${assistantNamePrefix} Run ${Date.now()}`;
   const modelId = await fakeProviderModelId(page);
   const assistant = await createAssistantViaApi(page, {
@@ -402,7 +402,7 @@ test("keeps accepted answers on their historical identity after an edit", async 
   }
 });
 
-test("pins an assistant from the Library card and groups it in the quick picker", async ({ page }) => {
+test("pins an assistant from its Settings card and groups it in the quick picker", async ({ page }) => {
   const name = `${assistantNamePrefix} Pin ${Date.now()}`;
   const modelId = await fakeProviderModelId(page);
   const assistant = await createAssistantViaApi(page, { name, providerModelId: modelId });
@@ -472,7 +472,7 @@ test("archives, restores and deletes an assistant from the gallery", async ({ pa
   }
 });
 
-test("keeps the Library one-task and reachable at 390x844", async ({ page }) => {
+test("keeps Settings › Assistants one-task and reachable at 390x844", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
 
   await runAccountMenuAction(page, "Assistants");

@@ -63,9 +63,9 @@ function isPhone(size: CaptureSize): boolean {
   return size.width < 640 || size.height < 512;
 }
 
-// Studio › Assistants
+// Settings › Assistants
 
-/** Opens Studio › Assistants from a fresh new chat and waits until the list has loaded. */
+/** Opens Settings › Assistants from a fresh new chat and waits until the list has loaded. */
 async function openGallery(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByRole("textbox", { exact: true, name: "Message" })).toBeVisible({ timeout: 30_000 });
@@ -382,7 +382,7 @@ test("a listing request goes Pending, Withdrawn, Outdated after an edit, is appr
     await expect(featured.getByRole("radio", { exact: true, name: "On" })).toHaveAttribute("aria-checked", "true");
     await expect(listedRow.getByTestId("admin-assistant-featured-position")).toBeVisible();
     await expect.poll(() => publications(assistant.id)).toEqual([{ featured: true, groupId: null, scope: "installation" }]);
-    // Open takes the administrator, by keyboard, to the Assistant's detail sheet in Studio.
+    // Open takes the administrator, by keyboard, to the Assistant's detail sheet in Settings.
     const open = listedRow.getByRole("link", { exact: true, name: `Open ${assistant.name}` });
     await expect(open).toHaveAttribute("data-testid", "admin-assistant-open");
     await expect(open).toHaveAttribute("href", `/?library=assistants&assistant=${assistant.id}`);

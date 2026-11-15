@@ -528,7 +528,7 @@ test("confirms reset through the safe consumer action without technical IDs", as
   await signInWithLocalToken(page, "/c/chat-memory-reset");
 
   await runAccountMenuAction(page, "Memory");
-  // Memory settings live beside the list in the Library panel; a narrow panel
+  // Memory settings live beside the list in Settings › Memory; a narrow panel
   // collapses them behind their disclosure.
   const memory = page.getByTestId("library-memory-panel")
     .getByRole("complementary", { name: "How Memory works" });

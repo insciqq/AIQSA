@@ -72,8 +72,7 @@ async function capture(page: Page, anchor: Locator, testInfo: TestInfo, surface:
 async function openLibrary(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
-  await runAccountMenuAction(page, "Assistants");
-  await page.getByTestId("library-v2").getByRole("tab", { name: "Skills", exact: true }).click();
+  await runAccountMenuAction(page, "Skills");
   const library = page.getByTestId("skill-library-section");
   await library.getByRole("searchbox", { name: "Search Skills" }).fill(KEY);
   return library;

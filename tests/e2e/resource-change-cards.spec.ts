@@ -121,7 +121,7 @@ test("resource change cards stay compact and every verb stays reachable at every
   await expect(assistant).toContainText("Assistant updated");
   const skillSave = page.getByText(skillSaved.name, { exact: true }).first();
   await captureState(page, info, "assistant-updated-skill-saved", { anchor: skillSave, sizes, atEachSize: async () => {
-    await expectWithinViewport(page, assistant.getByRole("link", { name: "Open in Studio" }));
+    await expectWithinViewport(page, assistant.getByRole("link", { name: "Open in Settings" }));
     await expectNoHorizontalOverflow(page);
   } });
 

@@ -16,9 +16,9 @@ test.beforeEach(() => execFileSync(process.execPath, ["--import", "tsx", "script
 
 async function createOwner(page: Page) {
   const id = randomUUID();
-  const email = `studio-real-${id}@example.test`;
+  const email = `settings-real-${id}@example.test`;
   const password = `Synthetic-${randomUUID()}`;
-  await prisma.user.create({ data: { id, email, displayName: "Synthetic Studio owner", role: "admin", status: "active",
+  await prisma.user.create({ data: { id, email, displayName: "Synthetic Settings owner", role: "admin", status: "active",
     authIdentities: { create: { normalizedEmail: email, provider: "password", providerAccountId: email,
       passwordHash: await hashPassword(password), emailVerifiedAt: new Date() } } } });
   try {
@@ -94,7 +94,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
   let serverId: string | undefined;
   try {
     const created = await page.request.post("/api/admin/mcp", { data: {
-      name: "Synthetic Studio tools", description: "Local OAuth integration for Studio verification", activate: false,
+      name: "Synthetic Settings tools", description: "Local OAuth integration for Settings verification", activate: false,
       sharedValues: { fixture_key: "synthetic-shared-value" }, draft: {
         auth: { mode: "oauth", scopes: ["mcp.read"], allowedAuthorizationServerOrigins: [endpoint.origin] },
         source: { kind: "remote", url: `${endpoint.origin}/mcp`, allowPrivateNetwork: true }, transport: "streamable_http",
@@ -118,12 +118,12 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     const initializations = endpoint.counts.initialize;
     await runAccountMenuAction(page, "MCP servers");
     const library = page.getByTestId("library-v2");
-    await library.getByRole("searchbox").fill("Synthetic Studio");
-    const row = library.getByRole("article", { name: "Synthetic Studio tools", exact: true });
+    await library.getByRole("searchbox", { name: "Search MCP servers" }).fill("Synthetic Settings");
+    const row = library.getByRole("article", { name: "Synthetic Settings tools", exact: true });
     await expect(row).toBeVisible();
     expect(endpoint.counts.initialize).toBe(initializations);
-    await row.getByRole("button", { name: "Open Synthetic Studio tools" }).click();
-    const sheet = page.getByRole("dialog", { name: "Synthetic Studio tools", exact: true });
+    await row.getByRole("button", { name: "Open Synthetic Settings tools" }).click();
+    const sheet = page.getByRole("dialog", { name: "Synthetic Settings tools", exact: true });
     await sheet.getByLabel("Personal fixture key", { exact: true }).fill("synthetic-personal-value");
     const savedValues = page.waitForResponse(response => response.url().endsWith(`/api/me/mcp/${serverId}`) && response.request().method() === "PATCH");
     await sheet.getByRole("button", { name: "Save personal values" }).click();
@@ -135,7 +135,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     await expect(library.getByRole("heading", { name: "MCP servers", exact: true })).toBeVisible();
     await expect(row.getByRole("switch")).toBeChecked();
     expect(endpoint.counts.exchange).toBe(2);
-    await row.getByRole("button", { name: "Open Synthetic Studio tools" }).click();
+    await row.getByRole("button", { name: "Open Synthetic Settings tools" }).click();
     await expect(sheet.getByRole("heading", { name: "Tools · 1", exact: true })).toBeVisible();
     // Enabling and observing a remote server does not initialize its runtime.
     // Names appear after a run obtains fresh protocol evidence; the saved count is available now.
@@ -156,7 +156,7 @@ test("MCP personal values and OAuth persist through real redirects without wakin
     await expect(row.getByRole("switch")).not.toBeChecked();
     await row.getByRole("switch").click();
     await expect(row.getByRole("switch")).toBeChecked();
-    await row.getByRole("button", { name: "Open Synthetic Studio tools" }).click();
+    await row.getByRole("button", { name: "Open Synthetic Settings tools" }).click();
     const disconnected = page.waitForResponse(response => response.url().includes(`/api/me/mcp/${serverId}/oauth/`) && response.request().method() === "POST");
     await sheet.getByRole("button", { name: "Disconnect", exact: true }).click();
     expect((await disconnected).ok()).toBe(true);
