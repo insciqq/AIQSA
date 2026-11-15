@@ -9,10 +9,12 @@ import type { LibraryTabIdV2, StudioNavigationV2 } from "./contracts";
  * The one owner of which Settings section is open. Resource owners register
  * their current draft/mutation guard while Settings is mounted.
  */
-export function useStudioNavigation({ available, onSelect, onExit }: Readonly<{
+export function useStudioNavigation({ available, onSelect, onExit, onUnavailable }: Readonly<{
   available: readonly LibraryTabIdV2[];
   onSelect(tab: LibraryTabIdV2): void;
   onExit(): void;
+  /** A link named a section this installation does not offer: Settings opened as the gear does. */
+  onUnavailable?(tab: LibraryTabIdV2): void;
 }>): StudioNavigationV2 {
   const [tab, setTab] = useState<LibraryTabIdV2>("general");
   const [sectionShown, setSectionShown] = useState(false);
@@ -37,9 +39,10 @@ export function useStudioNavigation({ available, onSelect, onExit }: Readonly<{
       onSelect(next);
       setTab(next);
       rememberStudioSection(next);
-      // A named section that is not offered opens the list instead.
+      // A named section that is not offered opens the list instead, and says why.
       if (shown !== null) setSectionShown(shown && next === target);
       afterSelect?.();
+      if (target && next !== target) onUnavailable?.(target);
     };
     if (resource.current.guard) resource.current.guard(proceed);
     else proceed();

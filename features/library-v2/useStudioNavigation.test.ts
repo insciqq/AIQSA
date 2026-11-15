@@ -52,6 +52,17 @@ describe("Settings navigation", () => {
     expect(result.current).toMatchObject({ sectionShown: false, tab: "assistants" });
   });
 
+  it("says when a link named a section this installation does not offer", () => {
+    const onUnavailable = vi.fn();
+    const { result } = renderHook(() => useStudioNavigation({ available, onExit: vi.fn(), onSelect: vi.fn(), onUnavailable }));
+    act(() => result.current.open("memory"));
+    act(() => result.current.open());
+    expect(onUnavailable).not.toHaveBeenCalled();
+    act(() => result.current.open("computers"));
+    expect(onUnavailable).toHaveBeenCalledExactlyOnceWith("computers");
+    expect(result.current).toMatchObject({ sectionShown: false, tab: "memory" });
+  });
+
   it("shows the open section for a link to it while Settings holds a guard", () => {
     const guard = vi.fn((proceed: () => void) => proceed());
     const { result } = renderHook(() => useStudioNavigation({ available, onSelect: vi.fn(), onExit: vi.fn() }));

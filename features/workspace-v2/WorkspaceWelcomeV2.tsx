@@ -179,10 +179,15 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
   const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
   // The open section's form (only one section is mounted at a time) reports
-  // unsaved and saving states here; MCP servers' personal connections report
-  // their own, since they share a section with the installation servers.
+  // unsaved and saving states here. Unsaved changes and the saves of the
+  // forms Settings always had also guard leaving the page.
   const [formDirty, setFormDirty] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
+  // Busy states of Account, Proxies, Claude Code & Codex and the personal MCP
+  // connections only lock navigation inside Settings: signing out and
+  // starting an MCP sign-in end in the page's own navigation, which must not
+  // ask to leave. Those forms guard their unsaved data themselves.
+  const [sectionBusy, setSectionBusy] = useState(false);
   const [personalMcpBusy, setPersonalMcpBusy] = useState<string | null>(null);
   const [formKey, setFormKey] = useState(0);
   const [formExit, setFormExit] = useState<{ proceed(): void; remount: boolean } | null>(null);
@@ -192,7 +197,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   // An administrator turned AIQSA Connect off while Computers was open: the
   // section leaves to General and is no longer listed until the next load.
   const [computersOff, setComputersOff] = useState(false);
-  useBeforeUnloadGuard(formDirty || formBusy || personalMcpBusy !== null);
+  useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(assistantView?.dirty);
   useBeforeUnloadGuard(assistantDirty);
@@ -211,7 +216,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
 
   const navigationBusy = Boolean(
-    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy || personalMcpBusy
+    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy || sectionBusy || personalMcpBusy
   );
   const requestNavigation = useEventCallback((proceed: () => void, remountForm: boolean = true) => {
     if (navigationBusy) return;
@@ -277,7 +282,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       label: "Account",
       content: (
         <AccountSettingsSectionV2 key={`${session.accountId}:${formKey}`} accountEmail={session.accountEmail}
-          accountId={session.accountId} adminEntryVisible={session.adminEntryVisible} onBusyChange={setFormBusy}
+          accountId={session.accountId} adminEntryVisible={session.adminEntryVisible} onBusyChange={setSectionBusy}
           onDirtyChange={setFormDirty} onDisplayNameChange={session.updateAccountDisplayName} />
       )
     },
@@ -289,7 +294,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           onChatsChanged={refreshChats} onOpenArchived={() => setDataArchived(true)} onRestored={props.workspace.archived.onRestored} />
       )
     },
-    { id: "proxies", label: "Proxies", content: <ProxiesSettingsSectionV2 key={`${session.accountId}:${formKey}`} onBusyChange={setFormBusy} onDirtyChange={setFormDirty} /> },
+    { id: "proxies", label: "Proxies", content: <ProxiesSettingsSectionV2 key={`${session.accountId}:${formKey}`} onBusyChange={setSectionBusy} onDirtyChange={setFormDirty} /> },
     ...(session.connectEntryVisible && !computersOff ? [{
       id: "computers" as const,
       label: "Computers",
@@ -299,7 +304,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       )
     }] : []),
     ...(session.telegramAvailable ? [{ id: "telegram" as const, label: "Telegram", content: <TelegramConnectionSection /> }] : []),
-    { id: "apps", label: "Claude Code & Codex", content: <ConnectedAppsSettingsSectionV2 accountId={session.accountId} onBusyChange={setFormBusy} /> },
+    { id: "apps", label: "Claude Code & Codex", content: <ConnectedAppsSettingsSectionV2 accountId={session.accountId} onBusyChange={setSectionBusy} /> },
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },

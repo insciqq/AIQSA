@@ -173,6 +173,17 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
     pendingRef.current.delete(key);
     if (mountedRef.current) setPending(new Set(pendingRef.current));
   }, []);
+  // Back from the sign-in site can restore this document from the
+  // back/forward cache with its authorization still starting, as the
+  // installation servers' rows know too: the start is over, so release it.
+  useEffect(() => {
+    const release = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      for (const key of [...pendingRef.current]) if (key.endsWith(":oauth")) end(key);
+    };
+    window.addEventListener("pageshow", release);
+    return () => window.removeEventListener("pageshow", release);
+  }, [end]);
   const setRowNotice = (id: string, notice: RowNotice | null) => {
     setRowNotices((current) => {
       const next = { ...current };

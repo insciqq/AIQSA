@@ -170,6 +170,11 @@ export type NavigationSidebarProps = Readonly<{
   onShare?(chat: ChatNavigationSummaryWire): void;
   /** The footer's gear: opens Settings. */
   onSettings?(): void;
+  /**
+   * The shell hides the list (Settings is open): it leaves the tab order and
+   * the accessibility tree, and focus on it no longer counts as held.
+   */
+  inert?: boolean;
   onSearch(value: string): void;
   ready: boolean;
   searchError: string | null;
@@ -909,6 +914,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     <aside
       className="v2-navigation"
       aria-label="Chat navigation"
+      inert={props.inert || undefined}
       tabIndex={-1}
     >
       <button
@@ -1225,6 +1231,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
           <AnnouncementsBell />
           {props.onSettings ? (
             <UiV2IconButton
+              data-navigation-settings=""
               icon="settings"
               label="Settings"
               tooltip="Settings"
@@ -1581,6 +1588,29 @@ export function ReadingRoomShellV2({
     }
   }, [collapsed, composition, drawerOpen, focusRequest, mobileOpen, section]);
 
+  // Leaving Settings removes the control that had focus (Back to chat). Focus
+  // returns where Settings is opened from: the gear while the list shows,
+  // else the control that shows it. A way out that asked for focus itself (a
+  // new chat asks for the composer), or focus something holds, is left alone.
+  const previousSectionRef = useRef(section);
+  const focusRequestAtSectionRef = useRef(0);
+  useLayoutEffect(() => {
+    const previous = previousSectionRef.current;
+    previousSectionRef.current = section;
+    if (previous === section) return;
+    const requested = focusRequest?.id ?? 0;
+    if (section !== "chats") {
+      focusRequestAtSectionRef.current = requested;
+      return;
+    }
+    if (requested !== focusRequestAtSectionRef.current) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const listShown = composition === "mobile" ? mobileOpen : !collapsed;
+    const gear = listShown ? document.querySelector<HTMLElement>(".v2-navigation [data-navigation-settings]") : null;
+    (gear ?? openButtonRef.current)?.focus({ preventScroll: true });
+  }, [collapsed, composition, focusRequest, mobileOpen, section]);
+
   useEffect(() => {
     if (!searchQuery) return;
     const controller = new AbortController();
@@ -1754,6 +1784,7 @@ export function ReadingRoomShellV2({
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
+      inert={!listSection}
       onClose={closeSidebar}
       onNewChat={(mode) => {
         createPersonalChat(mode);
