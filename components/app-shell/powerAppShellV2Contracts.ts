@@ -22,7 +22,6 @@ import type {
 } from "@/lib/contracts/chats";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import type { McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
-import type { SettingsSection } from "@/components/app-shell/settingsDestinationStore";
 import type { ThemeId } from "@/components/app-shell/theme";
 import type {
   Catalog,
@@ -60,7 +59,7 @@ export type ShellSessionView = {
   adminEntryVisible: boolean;
   /** AIQSA Connect is on for this installation. */
   connectEntryVisible?: boolean;
-  /** Settings → Connections shows the Telegram block. */
+  /** Settings lists Telegram. */
   telegramAvailable?: boolean;
   dismissNotice(): void;
   notice: Notice | null;
@@ -346,7 +345,7 @@ export type ShellComposerView = {
     setRow<Key extends AssistantRowKey>(row: Key, value: ChatAssistantOverrideValues[Key]): boolean;
     startFromCurrentSetup(): void;
   };
-  /** Personal Chat defaults in Studio. */
+  /** Personal Chat defaults in Settings. */
   chatDefaults?: {
     /** The Assistant every new personal chat starts with. */
     assistant?: {
@@ -465,25 +464,24 @@ export type ShellBranchesView = {
   show(): void;
 };
 
+/** The Settings surface: which section is open, and what its sections need from the shell. */
 export type ShellSettingsView = {
   studio?: import("@/features/library-v2/contracts").StudioNavigationV2;
   closeMemory(): void;
-  closeSettings(): void;
   dismissNotice(): void;
   library: AssistantLibraryView | null;
   memory: {
     open: boolean;
   };
+  /** A notice about Settings (a setting that could not be saved), shown above the open section. */
   notice: Notice | null;
+  /** The gear: Settings on the last visited section, else General. */
   open(): void;
   openLibrary(): void;
   openMemory(): void;
   openMcp(): void;
-  settings: {
-    open: boolean;
-    section: SettingsSection;
-    themeId: ThemeId;
-  };
+  /** Settings › General's theme. */
+  themeId: ThemeId;
   updateTheme(themeId: ThemeId): void;
 };
 

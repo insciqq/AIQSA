@@ -1364,10 +1364,6 @@
   border-top: 1px solid var(--v2-color-border);
 }
 
-.v2-settings-notice {
-  padding: 0 1rem 0.75rem;
-}
-
 @media (min-width: 1024px) {
   .v2-live-header {
     padding-left: max(1rem, env(safe-area-inset-left));

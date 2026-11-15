@@ -1,14 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { memoryConsumerItemFixture } from "@/tests/support/memoryFixtures";
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import {
   FilesPanelV2,
   LibraryV2,
   libraryTabGroups,
-  MemoryPanelV2
+  MemoryPanelV2,
+  settingsSectionsV2
 } from "./LibraryV2";
-import type { LibraryNavigationGuardV2, MemoryOverviewV2 } from "./contracts";
+import type { LibraryNavigationGuardV2, LibraryTabV2, MemoryOverviewV2 } from "./contracts";
 
 function memoryOverview(
   overrides: Partial<MemoryOverviewV2> = {}
@@ -64,15 +65,45 @@ function memoryStatusElement(container: HTMLElement): HTMLElement {
 }
 
 describe("LibraryV2", () => {
+  it("orders the sections as preferences, then Agent, Content, Tools and Connections", () => {
+    expect(libraryTabGroups).toEqual([
+      { label: null, tabs: ["general", "account", "data"] },
+      { label: "Agent", tabs: ["assistants", "instructions", "skills", "subagents", "scheduled", "defaults"] },
+      { label: "Content", tabs: ["memory", "files", "artifacts"] },
+      { label: "Tools", tabs: ["mcp", "secrets", "proxies"] },
+      { label: "Connections", tabs: ["computers", "telegram", "apps"] }
+    ]);
+    expect(settingsSectionsV2({})).not.toEqual(expect.arrayContaining(["computers"]));
+    expect(settingsSectionsV2({})).not.toEqual(expect.arrayContaining(["telegram"]));
+    expect(settingsSectionsV2({ telegramAvailable: true }).slice(-2)).toEqual(["telegram", "apps"]);
+    expect(settingsSectionsV2({ computersAvailable: true, telegramAvailable: true }).slice(-3)).toEqual(["computers", "telegram", "apps"]);
+  });
+
   it("renders every section in visual keyboard order even when supplied in reverse", () => {
     const ids = libraryTabGroups.flatMap(group => group.tabs);
     render(<LibraryV2 onBack={vi.fn()} tabs={[...ids].reverse().map(id => ({ id, label: id, content: <p>{id} content</p> }))} />);
     expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(ids);
-    for (const label of ["Behavior", "Content", "Tools"]) expect(screen.getByText(label)).not.toHaveAttribute("tabindex");
-    fireEvent.keyDown(screen.getByRole("tab", { name: "assistants" }), { key: "End" });
-    expect(screen.getByRole("tab", { name: "defaults" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(screen.getByRole("tab", { name: "defaults" }), { key: "ArrowRight" });
-    expect(screen.getByRole("tab", { name: "assistants" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "general" })).toHaveAttribute("aria-selected", "true");
+    for (const label of ["Agent", "Content", "Tools", "Connections"]) expect(screen.getByText(label)).not.toHaveAttribute("tabindex");
+    fireEvent.keyDown(screen.getByRole("tab", { name: "general" }), { key: "End" });
+    expect(screen.getByRole("tab", { name: "apps" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(screen.getByRole("tab", { name: "apps" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "general" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("lists only the sections it has content for and never says Studio", () => {
+    render(<LibraryV2 notice={<p role="status">A setting could not be saved.</p>} onBack={vi.fn()} tabs={[
+      { id: "general", label: "General", content: <p>General content</p> },
+      { id: "apps", label: "Claude Code & Codex", content: <p>Apps content</p> }
+    ]} />);
+    expect(screen.getAllByRole("tab").map(tab => tab.textContent)).toEqual(["General", "Claude Code & Codex"]);
+    expect(screen.getByText("Connections")).toBeInTheDocument();
+    expect(screen.queryByText("Agent")).toBeNull();
+    expect(screen.getByRole("tablist", { name: "Settings sections" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("General");
+    expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("A setting could not be saved.");
+    expect(document.body.textContent).not.toMatch(/Studio/u);
   });
 
   it("guards changed initial targets without remounting a draft and disables busy navigation", () => {
@@ -191,7 +222,7 @@ describe("LibraryV2", () => {
         />
       );
 
-      const tabList = screen.getByRole("tablist", { name: "Studio sections" });
+      const tabList = screen.getByRole("tablist", { name: "Settings sections" });
       Object.defineProperties(tabList, {
         clientWidth: { configurable: true, value: 200 },
         scrollWidth: { configurable: true, value: 500 }
@@ -230,7 +261,7 @@ describe("LibraryV2", () => {
     expect(skills).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("Skill owner")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Skills" })).not.toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent(
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent(
       "Skills"
     );
   });
@@ -266,6 +297,67 @@ describe("LibraryV2", () => {
   });
 });
 
+const narrowTabs: LibraryTabV2[] = [
+  { id: "general", label: "General", content: <p>General content</p> },
+  { id: "account", label: "Account", content: <p>Account content</p> },
+  { id: "skills", label: "Skills", content: <p>Skills content</p> }
+];
+
+/** The shell's one piece of narrow-layout state, as `useStudioNavigation` holds it. */
+function NarrowSettings({ initialShown, onBack = vi.fn(), subview = null }: Readonly<{
+  initialShown: boolean;
+  onBack?(): void;
+  subview?: ComponentProps<typeof LibraryV2>["subview"];
+}>) {
+  const [shown, setShown] = useState(initialShown);
+  return <LibraryV2 onBack={onBack} sectionShown={shown} subview={subview} tabs={narrowTabs} onSectionShownChange={setShown} />;
+}
+
+describe("Settings list and section where they take turns", () => {
+  const view = () => screen.getByTestId("library-v2").getAttribute("data-view");
+
+  it("shows the list, then a chosen section with Back to the list, moving focus both ways", () => {
+    render(<NarrowSettings initialShown={false} />);
+    expect(view()).toBe("list");
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeEnabled();
+
+    // Arrow keys move through the list without leaving it.
+    fireEvent.keyDown(screen.getByRole("tab", { name: "General" }), { key: "ArrowDown" });
+    expect(screen.getByRole("tab", { name: "Account" })).toHaveAttribute("aria-selected", "true");
+    expect(view()).toBe("list");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(view()).toBe("section");
+    expect(screen.getByText("Skills content")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("Skills");
+    const back = screen.getByRole("button", { name: "Back to Settings" });
+    expect(back).toHaveFocus();
+
+    fireEvent.click(back);
+    expect(view()).toBe("list");
+    expect(screen.getByRole("tab", { name: "Skills" })).toHaveFocus();
+    // Returning to the list keeps the section's state; choosing it again shows it.
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    expect(view()).toBe("section");
+    expect(screen.getByRole("button", { name: "Back to Settings" })).toHaveFocus();
+  });
+
+  it("opens a named section directly, and its sub-view keeps its own Back to the section", () => {
+    const leave = vi.fn();
+    const { rerender } = render(<NarrowSettings initialShown />);
+    expect(view()).toBe("section");
+    rerender(<NarrowSettings initialShown subview={{ backLabel: "Back to Skills", key: "skill-1", label: "Checklist", onBack: leave }} />);
+    expect(screen.queryByRole("button", { name: "Back to Settings" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Skills" }));
+    expect(leave).toHaveBeenCalledOnce();
+  });
+
+  it("shows a section whose sub-view opened while the list was the shown part", () => {
+    render(<NarrowSettings initialShown={false} subview={{ backLabel: "Back to General", key: "detail", label: "Detail", onBack: vi.fn() }} />);
+    expect(view()).toBe("section");
+  });
+});
+
 describe("Library sub-views", () => {
   it("leaves resource-owned editor and return focus in place", () => {
     const tabs = [{ content: <input aria-label="Name" />, id: "instructions" as const, label: "Instructions" }];
@@ -295,7 +387,7 @@ describe("Library sub-views", () => {
       />
     );
 
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Skills / Review checklist");
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("Skills / Review checklist");
     const back = screen.getByRole("button", { name: "Back to Skills" });
     expect(back).toHaveFocus();
     expect(screen.queryByRole("button", { name: "Back to chat" })).not.toBeInTheDocument();
@@ -304,7 +396,7 @@ describe("Library sub-views", () => {
     expect(onBack).not.toHaveBeenCalled();
 
     rerender(<LibraryV2 initialTab="skills" onBack={onBack} subview={null} tabs={tabs} />);
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toHaveTextContent("Skills");
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("Skills");
     expect(screen.getByRole("button", { name: "Back to chat" })).toBeVisible();
     expect(screen.getByRole("tab", { name: "Skills" })).toHaveFocus();
   });
@@ -326,7 +418,7 @@ describe("Library sub-views", () => {
     expect(exit).toHaveBeenCalledOnce();
 
     const root = screen.getByRole("button", { name: "Assistants" });
-    expect(screen.getByRole("navigation", { name: "Studio location" })).toContainElement(root);
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toContainElement(root);
     fireEvent.click(root);
     expect(exit).toHaveBeenCalledTimes(2);
     expect(onBack).not.toHaveBeenCalled();

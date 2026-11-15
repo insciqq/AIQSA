@@ -3,10 +3,6 @@ import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deactivateMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
 import { deactivatePersonalMcp, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
-import {
-  initialSettingsDestinationSnapshot,
-  useSettingsDestinationStore
-} from "@/components/app-shell/settingsDestinationStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 
 beforeEach(() => {
@@ -21,28 +17,36 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function useShellReturn(accountId: string, open: () => void) {
+function useShellReturn(accountId: string, open: (section: string) => void) {
   useEffect(() => () => deactivateMcpSettings(), [accountId]);
   useMcpOAuthReturn(accountId, open);
 }
 
-function useConnectionsReturn(accountId: string, open: () => void) {
-  useEffect(() => () => deactivateMcpSettings(), [accountId]);
-  useMcpOAuthReturn(accountId, vi.fn(), open);
-}
-
-describe("MCP OAuth return lifecycle", () => {
-  it("opens Settings on the agent connections from a link outside the chat shell", async () => {
-    window.history.replaceState(null, "", "/?settings=connected_apps&keep=yes");
+describe("former Settings addresses", () => {
+  it.each([
+    ["general", "general"], ["account", "account"], ["data", "data"], ["proxies", "proxies"],
+    ["connected_apps", "apps"]
+  ])("opens ?settings=%s on Settings › %s and consumes only that parameter", async (named, section) => {
+    window.history.replaceState(null, "", `/c/chat-1?settings=${named}&keep=yes#anchor`);
     const open = vi.fn();
     renderHook(() => useShellReturn("account-1", open), { wrapper: StrictMode });
-    await waitFor(() => expect(useSettingsDestinationStore.getState().settingsOpen).toBe(true));
-    expect(useSettingsDestinationStore.getState().settingsSection).toBe("connected_apps");
-    expect(window.location.search).toBe("?keep=yes");
-    expect(open).not.toHaveBeenCalled();
-    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
+    await waitFor(() => expect(open).toHaveBeenCalledOnce());
+    expect(open).toHaveBeenCalledWith(section);
+    expect(`${window.location.pathname}${window.location.search}${window.location.hash}`).toBe("/c/chat-1?keep=yes#anchor");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("opens nothing for an unknown section and leaves the address alone", async () => {
+    window.history.replaceState(null, "", "/?settings=studio&keep=yes");
+    const open = vi.fn();
+    renderHook(() => useShellReturn("account-1", open), { wrapper: StrictMode });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(open).not.toHaveBeenCalled();
+    expect(window.location.search).toBe("?settings=studio&keep=yes");
+  });
+});
+
+describe("MCP OAuth return lifecycle", () => {
   it.each(["settings", "library"].flatMap(destination => ["connected", "cancelled", "failed"].map(kind => ({ destination, kind }))))("preserves $destination $kind through shell effect replay", async ({ destination, kind }) => {
     window.history.replaceState(null, "", `/?${destination}=mcp&oauth=${kind}&server=server-1&keep=yes#anchor`);
     const open = vi.fn();
@@ -50,7 +54,7 @@ describe("MCP OAuth return lifecycle", () => {
       initialProps: { accountId: "account-1" }, wrapper: StrictMode
     });
     await waitFor(() => expect(useMcpSettingsStore.getState().oauthOutcome).toEqual({ kind, serverId: "server-1" }));
-    expect(open).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledExactlyOnceWith("mcp");
     expect(window.location.search).toBe("?keep=yes");
     expect(window.location.hash).toBe("#anchor");
 
@@ -82,11 +86,12 @@ describe("MCP OAuth return lifecycle", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("opens Connections over the origin chat and routes the outcome only to the personal store", async () => {
+  it("opens MCP servers over the origin chat and routes a personal outcome only to the personal store", async () => {
     window.history.replaceState(null, "", "/c/chat-1?settings=connections&oauth=failed&server=personal-1");
     const open = vi.fn();
-    renderHook(() => useConnectionsReturn("account-1", open), { wrapper: StrictMode });
+    renderHook(() => useShellReturn("account-1", open), { wrapper: StrictMode });
     await waitFor(() => expect(open).toHaveBeenCalledOnce());
+    expect(open).toHaveBeenCalledWith("mcp");
     expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1");
     expect(usePersonalMcpStore.getState().oauthOutcome).toEqual({ kind: "failed", serverId: "personal-1" });
     expect(useMcpSettingsStore.getState().oauthOutcome).toBeNull();
