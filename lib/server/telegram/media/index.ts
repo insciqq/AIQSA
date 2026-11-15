@@ -5,11 +5,11 @@ import type { TelegramMessage } from "../botApi";
 import type { TelegramConversation } from "../bridge/conversation";
 import { telegramFailureCode } from "../codes";
 import {
-  TELEGRAM_COPY, TELEGRAM_MEDIA_COPY, TELEGRAM_RUN_REFUSAL_COPY, telegramReasonText, telegramUnsupportedFileText,
+  TELEGRAM_MEDIA_COPY, TELEGRAM_RUN_REFUSAL_COPY, telegramReasonText, telegramUnsupportedFileText,
   telegramUsageLimitText, telegramVoiceRateLimitedText, telegramVoiceTranscriptText
 } from "../copy";
 import type { TelegramMessageContext, TelegramMessageHandler } from "../dispatcher";
-import { splitTelegramText, type TelegramKeyboard } from "../outbound";
+import { splitTelegramText } from "../outbound";
 import { planTelegramMedia, telegramAttachmentTypeNames, TELEGRAM_VOICE_MAX_BYTES, type TelegramMediaPlan, type TelegramMediaRefusal } from "./plan";
 
 /**
@@ -25,8 +25,10 @@ import { planTelegramMedia, telegramAttachmentTypeNames, TELEGRAM_VOICE_MAX_BYTE
  *   linked user through the product's upload handler (its full type, content
  *   and size checks), awaited until processed, then sent as image or file
  *   blocks after the caption.
- * A refused part adds nothing to the request and says why, with the action
- * that helps (`/settings`, or doing it in AIQSA). Content is never logged.
+ * A refused part adds nothing to the request and says why, with what helps.
+ * Files go with the Workspace's upload scope while the installation offers
+ * it, since every Telegram turn then asks for the Workspace as the web
+ * composer does. Content is never logged.
  */
 
 export const TELEGRAM_MEDIA_READY_TIMEOUT_MS = 90_000;
@@ -56,6 +58,8 @@ export type TelegramMediaServices = Readonly<{
   /** The user's own attachment's processing status; null when it is gone. */
   attachmentStatus(input: Readonly<{ userId: string; attachmentId: string }>): Promise<string | null>;
   uploadMaxBytes(): number;
+  /** Whether the installation offers the Workspace now, as the upload route reads it for its Workspace scope. */
+  workspaceOffered(): Promise<boolean>;
 }>;
 
 export type TelegramMediaDeps = Readonly<{
@@ -69,7 +73,7 @@ export type TelegramMediaDeps = Readonly<{
 }>;
 
 type UploadedAttachment = Readonly<{ id: string; kind: string; status: string; fileName: string }>;
-type Refusal = Readonly<{ text: string; keyboard?: "settings" }>;
+type Refusal = Readonly<{ text: string }>;
 
 /** Content-free: stable codes and statuses only. */
 function log(fields: Readonly<{ code: string; error?: unknown; httpStatus?: number; outcome: "failed" | "skipped" }>): void {
@@ -110,10 +114,7 @@ function planRefusal(refusal: TelegramMediaRefusal): Refusal {
     case "voice_too_long": return { text: telegramReasonText("telegram_voice_too_long")! };
     case "voice_too_large": return { text: TELEGRAM_MEDIA_COPY.voiceTooLarge };
     case "file_too_large": return { text: telegramReasonText("telegram_file_too_large")! };
-    case "unsupported_file": return {
-      ...(refusal.workspaceHint ? { keyboard: "settings" as const } : {}),
-      text: telegramUnsupportedFileText(telegramAttachmentTypeNames(), refusal.workspaceHint)
-    };
+    case "unsupported_file": return { text: telegramUnsupportedFileText(telegramAttachmentTypeNames()) };
   }
 }
 
@@ -146,13 +147,13 @@ function voiceRefusal(result: TranscriptionRefusal, downloadFailed: boolean): Re
 }
 
 /** The product upload's refusal codes as the bot says them. */
-function uploadRefusal(code: string, status: number, workspaceEnabled: boolean): Refusal {
+function uploadRefusal(code: string, status: number): Refusal {
   switch (code) {
     case "file_too_large":
     case "image_limit_exceeded": return { text: telegramReasonText("telegram_file_too_large")! };
     case "unsupported_type":
-    case "file_required": return planRefusal({ reason: "unsupported_file", workspaceHint: !workspaceEnabled });
-    case "workspace_runtime_unavailable": return { keyboard: "settings", text: TELEGRAM_RUN_REFUSAL_COPY.workspaceUnavailable };
+    case "file_required": return planRefusal({ reason: "unsupported_file" });
+    case "workspace_runtime_unavailable": return { text: TELEGRAM_RUN_REFUSAL_COPY.workspaceUnavailable };
     case "pdf_invalid": return { text: TELEGRAM_MEDIA_COPY.pdfInvalid };
     case "pdf_page_limit_exceeded": return { text: TELEGRAM_MEDIA_COPY.pdfTooManyPages };
     case "upload_busy": return { text: TELEGRAM_MEDIA_COPY.uploadBusy };
@@ -182,14 +183,8 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
   const transfer = createLimiter(deps.transferConcurrency ?? TELEGRAM_MEDIA_TRANSFER_CONCURRENCY);
 
   async function say(context: TelegramMessageContext, refusal: Refusal): Promise<void> {
-    const keyboard: TelegramKeyboard | undefined = refusal.keyboard === "settings"
-      ? [[{ callback: { kind: "open_settings" }, text: TELEGRAM_COPY.openSettings }]]
-      : undefined;
     try {
-      await context.bot.outbound.sendText({
-        chatId: context.message.chat.id, replyTo: context.message.message_id, text: refusal.text,
-        ...(keyboard ? { keyboard, linkId: context.link.id } : {})
-      });
+      await context.bot.outbound.sendText({ chatId: context.message.chat.id, replyTo: context.message.message_id, text: refusal.text });
     } catch (error) {
       log({ code: "telegram_notice_failed", error, outcome: "failed" });
     }
@@ -291,7 +286,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
         continue;
       }
       log({ code: "telegram_media_upload_refused", httpStatus: response.status, outcome: "skipped" });
-      return uploadRefusal(code, response.status, plan.scope === "workspace");
+      return uploadRefusal(code, response.status);
     }
   }
 
@@ -352,7 +347,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
       await context.bot.outbound.sendText({ chatId: message.chat.id, replyTo: message.message_id, text: TELEGRAM_MEDIA_COPY.fileFailed });
       return true;
     }
-    const plan = planTelegramMedia(message, { uploadMaxBytes: services.uploadMaxBytes(), workspaceEnabled: context.link.workspaceEnabled });
+    const plan = planTelegramMedia(message, { uploadMaxBytes: services.uploadMaxBytes(), workspaceOffered: await services.workspaceOffered() });
     if (!plan) return false;
     if (plan.kind === "refused") {
       log({ code: planRefusalCode(plan.refusal), outcome: "skipped" });

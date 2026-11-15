@@ -345,7 +345,7 @@ test("a PDF document becomes a file attachment under its own name", async () => 
 
 test("a forbidden type and a 25 MB file are refused before download, a renamed binary by the upload's own checks", async () => {
   const runs = await runCount();
-  const unsupported = telegramUnsupportedFileText(telegramAttachmentTypeNames(), true);
+  const unsupported = telegramUnsupportedFileText(telegramAttachmentTypeNames());
   let since = bot.calls().length;
   bot.inject.document(tgAlice, { bytes: Buffer.from("MZ synthetic"), fileName: "setup.exe", mimeType: "application/x-msdownload" });
   await expectText(since, unsupported);

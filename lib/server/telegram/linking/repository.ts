@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@prisma/client";
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 import { eligibleForTelegram } from "../control/access";
 import type { TelegramEffectiveControl } from "../control/state";
-import { telegramLinkRecord, type TelegramLinkRecord } from "../store/links";
+import { TELEGRAM_LINK_RECORD_SELECT, telegramLinkRecord, type TelegramLinkRecord } from "../store/links";
 
 /**
  * Link codes and the links they create. A `/start` locks the code's account,
@@ -147,6 +147,7 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
           if (!user || !eligible) return { code: "telegram_access_off", kind: "refused" };
 
           const holder = await tx.telegramLink.findUnique({
+            select: { id: true, userId: true },
             where: { botId_telegramUserId: { botId: BigInt(target.botId), telegramUserId: BigInt(target.telegramUserId) } }
           }).catch(retainDatabaseFailure);
           if (holder && holder.userId !== code.userId) return { code: "telegram_account_in_use", kind: "refused" };
@@ -159,13 +160,14 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
           };
           if (holder) {
             // The same Telegram account again: the link, its chat and settings stay.
-            const refreshed = await tx.telegramLink.update({ data: identity, where: { id: holder.id } }).catch(retainDatabaseFailure);
+            const refreshed = await tx.telegramLink.update({ data: identity, select: TELEGRAM_LINK_RECORD_SELECT, where: { id: holder.id } })
+              .catch(retainDatabaseFailure);
             return { accountName: user.displayName, kind: "linked", link: telegramLinkRecord(refreshed), replaced: null };
           }
           const previous = await tx.telegramLink.findUnique({
             select: { botId: true, id: true, telegramChatId: true }, where: { userId: code.userId }
           }).catch(retainDatabaseFailure);
-          if (previous) await tx.telegramLink.delete({ where: { id: previous.id } }).catch(retainDatabaseFailure);
+          if (previous) await tx.telegramLink.delete({ select: { id: true }, where: { id: previous.id } }).catch(retainDatabaseFailure);
           const created = await tx.telegramLink.create({
             data: {
               ...identity,
@@ -173,7 +175,8 @@ export function createPrismaTelegramLinkingRepository(prisma: LinkingClient): Te
               linkedAt: input.now,
               telegramUserId: BigInt(target.telegramUserId),
               userId: code.userId
-            }
+            },
+            select: TELEGRAM_LINK_RECORD_SELECT
           }).catch(retainDatabaseFailure);
           return {
             accountName: user.displayName,

@@ -7,6 +7,8 @@ import { createPrismaCatalogDataLoader } from "../../catalog/prismaCatalogData";
 import { connectorInternalRequest, createDefaultConnectorRunGateway } from "../../connectors/defaultRunGateway";
 import { prisma } from "../../prisma";
 import { parameterDialect } from "../../runs/runPreparation";
+import { workspaceInstallationOffered } from "../../workspace/availability";
+import { workspaceAvailabilityService } from "../../workspace/defaultServices";
 import type { TelegramAccessResolver } from "../control/access";
 import { createPrismaTelegramChatListStore } from "../store/chats";
 import { createPrismaTelegramTimeZoneStore } from "../store/timeZone";
@@ -88,6 +90,10 @@ export function createDefaultTelegramRunGateway(deps: Readonly<{ access: Pick<Te
     recentChats: (userId: string) => chats.recentPersonalChats(userId),
 
     timeZone: (userId: string) => timeZones.latestClientTimeZone(userId),
+
+    async workspaceOffered() {
+      return workspaceInstallationOffered(await workspaceAvailabilityService.snapshot());
+    },
 
     async assistants(userId: string) {
       const response = await createListAssistantsHandler({ ...defaultAssistantHandlerDeps, resolveAuth: telegramAuth(userId) })(

@@ -13,7 +13,7 @@ import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { createBridgeHarness, type BridgeHarness } from "@/tests/support/telegramChatBridge";
 import failureCodes from "../../observability/failureCodes.json";
 import {
-  TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, TELEGRAM_MEDIA_COPY, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
+  TELEGRAM_BRIDGE_COPY, TELEGRAM_MEDIA_COPY, telegramReasonText, telegramUnsupportedFileText, telegramVoiceTranscriptText
 } from "../copy";
 import { createTelegramMediaHandler, TELEGRAM_MEDIA_LOG_CODES, type TelegramMediaServices } from "./index";
 import { telegramAttachmentTypeNames } from "./plan";
@@ -43,7 +43,9 @@ const TRANSCRIPT = "What is on the diagram /unlink @someone";
 
 type StoredAttachment = { fileName: string; kind: string; mimeType: string; status: string; userId: string };
 
-function mediaServices(options: Readonly<{ role?: SpeechToTextRoleResolution; transcript?: string; processing?: string[] }> = {}) {
+function mediaServices(options: Readonly<{
+  role?: SpeechToTextRoleResolution; transcript?: string; processing?: string[]; workspaceOffered?: boolean;
+}> = {}) {
   const attachments = new Map<string, StoredAttachment>();
   const uploads: Array<Readonly<{ fileName: string; type: string; scope: string | null }>> = [];
   const transcriptions: Uint8Array[] = [];
@@ -92,7 +94,8 @@ function mediaServices(options: Readonly<{ role?: SpeechToTextRoleResolution; tr
       uploads.push({ fileName: file.name, scope: form.get("scope") as string | null, type: file.type });
       return upload(userId)(request);
     },
-    uploadMaxBytes: () => 25_000_000
+    uploadMaxBytes: () => 25_000_000,
+    workspaceOffered: async () => options.workspaceOffered ?? false
   };
   return {
     attachments, services, transcriptions, uploads,
@@ -106,11 +109,11 @@ afterEach(async () => {
   while (closers.length) await closers.pop()!();
 });
 
-function harness(options: Parameters<typeof mediaServices>[0] & Readonly<{ workspaceEnabled?: boolean; readyTimeoutMs?: number }> = {}) {
+function harness(options: Parameters<typeof mediaServices>[0] & Readonly<{ readyTimeoutMs?: number }> = {}) {
   const h = createBridgeHarness();
   closers.push(h.close);
   const user = h.fake.inject.addUser({ firstName: "Alex" });
-  h.link(user, "user-1", { workspaceEnabled: options.workspaceEnabled ?? false });
+  h.link(user, "user-1");
   const media = mediaServices(options);
   let clock = Date.now();
   h.registry.registerMessage(createTelegramMediaHandler({
@@ -264,16 +267,16 @@ describe("Telegram media: photos, documents and albums", () => {
     ]);
   });
 
-  it("refuses a forbidden type before downloading, naming the accepted types and offering Workspace in /settings", async () => {
+  it("refuses a forbidden type before downloading where the installation offers no Workspace, naming the accepted types", async () => {
     const h = harness();
     await h.deliver(h.fake.inject.document(h.user, { bytes: Buffer.from("MZ binary"), fileName: "setup.exe", mimeType: "application/x-msdownload" }));
     await h.settle();
 
     const [refusal] = h.fake.botMessages(h.user.id);
-    expect(refusal!.text).toBe(telegramUnsupportedFileText(telegramAttachmentTypeNames(), true));
+    expect(refusal!.text).toBe(telegramUnsupportedFileText(telegramAttachmentTypeNames()));
     expect(refusal!.text).toContain("PDF, DOC, DOCX");
-    expect((refusal!.reply_markup as { inline_keyboard: Array<Array<{ text: string }>> }).inline_keyboard[0]![0]!.text)
-      .toBe(TELEGRAM_COPY.openSettings);
+    expect(refusal!.text).not.toContain("/settings");
+    expect(refusal!.reply_markup).toBeUndefined();
     expect(h.fake.calls("getFile")).toHaveLength(0);
     expect(h.aiqsa.sent).toHaveLength(0);
   });
@@ -299,12 +302,12 @@ describe("Telegram media: photos, documents and albums", () => {
 
     expect(h.media.uploads.map((upload) => upload.fileName)).toEqual(["report.pdf", "notes.txt"]);
     expect(h.media.attachments.size).toBe(0);
-    expect(texts(h, h.user)).toEqual(Array.from({ length: 2 }, () => telegramUnsupportedFileText(telegramAttachmentTypeNames(), true)));
+    expect(texts(h, h.user)).toEqual(Array.from({ length: 2 }, () => telegramUnsupportedFileText(telegramAttachmentTypeNames())));
     expect(h.aiqsa.sent).toHaveLength(0);
   });
 
-  it("uploads any file into Workspace when Workspace is on", async () => {
-    const h = harness({ workspaceEnabled: true });
+  it("uploads any file into Workspace where the installation offers it, with no switch", async () => {
+    const h = harness({ workspaceOffered: true });
     await h.deliver(h.fake.inject.document(h.user, { bytes: Buffer.from("PK\u0003\u0004zip"), fileName: "data.zip", mimeType: "application/zip" }));
     await h.settle();
 
