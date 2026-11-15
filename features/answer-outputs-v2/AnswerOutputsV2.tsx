@@ -28,15 +28,13 @@ import {
   UiV2MenuActions,
   UiV2MenuItem,
   UiV2MenuSurface,
-  UiV2Monogram,
   moveMenuFocusV2,
   type UiV2IconName,
   type UiV2MenuAction
 } from "@/components/ui-v2";
 import type {
   ThreadArtifactSummary,
-  ThreadGeneratedArtifact,
-  ThreadSearchSource
+  ThreadGeneratedArtifact
 } from "@/lib/contracts/chats";
 import type { ThreadGeneratedFile, ThreadWorkspaceOutputStatus } from "@/lib/contracts/workspace";
 import { latestGeneratedArtifactsForAnswer } from "@/lib/domain/generatedArtifacts";
@@ -52,8 +50,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type FormEvent,
-  type ReactNode
+  type FormEvent
 } from "react";
 import { GeminiSearchSuggestionsV2 } from "./GeminiSearchSuggestionsV2";
 import type { ResearchReportDownloadV2 } from "./researchAnswerView";
@@ -62,40 +59,9 @@ import { SkillSaveCardsV2 } from "./SkillSaveCardV2";
 import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
 import { McpApprovalCardsV2 } from "./McpApprovalCardV2";
 import type { McpApprovalCard, McpApprovalContinuationOutcome } from "@/lib/contracts/mcpApprovals";
-import { presentSearchSourcesV2 } from "./sourcePresentation";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
-}
-
-function safeAnswerHref(value: unknown): string | null {
-  if (
-    typeof value !== "string" ||
-    value.startsWith("//") ||
-    /[\u0000-\u001F\u007F\s]/u.test(value)
-  ) {
-    return null;
-  }
-  try {
-    const url = new URL(value);
-    return (url.protocol === "https:" || url.protocol === "http:") &&
-      !url.username &&
-      !url.password
-      ? value
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function answerWebSources(artifact: ThreadArtifactSummary): readonly ThreadSearchSource[] {
-  const citationSources = artifact.citations.map((citation) => ({
-    rank: citation.index,
-    ...(citation.snippet ? { snippet: citation.snippet } : {}),
-    title: citation.title,
-    url: citation.url
-  }));
-  return [...artifact.sources, ...citationSources];
 }
 
 function memorySourceTypeLabel(sourceType: MemoryAnswerSource["sourceType"]): string {
@@ -370,89 +336,6 @@ export function MemorySourceRowV2({ source, onSettled }: Readonly<{
       ) : null}
     </article>
   );
-}
-
-export function answerSourceCountV2(artifact: ThreadArtifactSummary | null): number {
-  if (!artifact) return 0;
-  return answerWebSources(artifact).length;
-}
-
-/**
- * Sources live in the actions row: a "Sources · N" chip (a button, so it can
- * sit inside the toolbar) and the list it expands in place directly under the
- * row. Inline [n] marks keep pointing at that list. Both nodes render from
- * one open state, so the caller places them in the toolbar and after it.
- */
-export function useAnswerSourcesV2({ artifact }: Readonly<{
-  artifact: ThreadArtifactSummary | null;
-}>): Readonly<{ chip: ReactNode; list: ReactNode }> {
-  const [open, setOpen] = useState(false);
-  const listId = `answer-sources-${useId()}`;
-  const listRef = useRef<HTMLDivElement>(null);
-  const presented = useMemo(
-    () => artifact ? presentSearchSourcesV2(answerWebSources(artifact)) : null,
-    [artifact]
-  );
-  useEffect(() => {
-    // The list opens under the last answer, right above the composer dock.
-    if (open) listRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [open]);
-  const count = presented?.sources.length ?? 0;
-  if (!artifact || !presented || count === 0) return { chip: null, list: null };
-
-  return {
-    chip: (
-      <button
-        aria-controls={open ? listId : undefined}
-        aria-expanded={open}
-        className="v2-answer-sources-toggle v2-focusable"
-        data-testid="answer-sources-toggle"
-        onClick={() => setOpen((current) => !current)}
-        type="button"
-      >
-        <span>Sources</span>
-        <span className="v2-answer-sources-count" aria-hidden="true">· {count}</span>
-        <span className="v2-sr-only">{`, ${count} item${count === 1 ? "" : "s"}`}</span>
-        <span className="v2-answer-sources-chevron" aria-hidden="true" />
-      </button>
-    ),
-    list: open ? (
-      <div className="v2-answer-sources" data-testid="answer-sources" id={listId} ref={listRef}>
-        {presented.sources.length > 0 ? (
-          <ol className="v2-answer-source-list">
-            {presented.sources.map((source, index) => {
-              const href = safeAnswerHref(source.url);
-              return (
-                <li key={`${source.rank}:${source.url}:${index}`}>
-                  <span className="v2-answer-source-index">{index + 1}</span>
-                  <UiV2Monogram className="v2-answer-source-monogram" label={source.domain ?? source.title} />
-                  <span className="v2-answer-source-main">
-                    {href ? (
-                      <a href={href} rel="noreferrer" target="_blank">{source.title}</a>
-                    ) : (
-                      <span data-testid="unsafe-source-title">{source.title}</span>
-                    )}
-                    {source.snippet ? <small className="v2-answer-source-snippet">{source.snippet}</small> : null}
-                    {source.domain && source.domain !== source.title ? (
-                      <small className="v2-answer-source-domain-stacked">{source.domain}</small>
-                    ) : null}
-                  </span>
-                  {source.domain && source.domain !== source.title ? (
-                    <small className="v2-answer-source-domain">{source.domain}</small>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ol>
-        ) : null}
-        {artifact.citationsTruncated || artifact.sourcesTruncated ? (
-          <p className="v2-answer-sources-note" data-testid="answer-sources-truncated">
-            This answer has more sources than can be listed.
-          </p>
-        ) : null}
-      </div>
-    ) : null
-  };
 }
 
 /**

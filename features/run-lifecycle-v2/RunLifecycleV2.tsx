@@ -11,7 +11,7 @@ import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
 import { workspaceActiveLabelV2, workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { BrowserLivePanelV2 } from "@/features/browser-live/BrowserLivePanelV2";
-import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
+import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerSourcesV2";
 import {
   ConversationTurnV2,
   type ConversationMessageActionsV2
@@ -279,6 +279,8 @@ export type RunAnswerV2Props = Readonly<{
    */
   browserLiveWaitingKey?: string | null;
   content: string;
+  /** The message's whole text when `content` shows only part of it (a research summary); its links mark sources as cited. */
+  answerText?: string;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
   /** The memory-saved notice, rendered under the process line and above the text. */
@@ -322,6 +324,7 @@ function RunAnswerBodyV2({
   browserLiveChatId = null,
   browserLiveWaitingKey = null,
   content,
+  answerText,
   leadingSlot = null,
   noticeSlot = null,
   onPinSkill,
@@ -344,7 +347,7 @@ function RunAnswerBodyV2({
   workspaceActivity = null
 }: RunAnswerV2Props) {
   const settled = settledRunPresentationV2(presentation);
-  const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null });
+  const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null, text: answerText ?? content });
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
@@ -420,7 +423,7 @@ function RunAnswerBodyV2({
   return (
     <ConversationTurnV2
       actions={actions}
-      afterActions={sources.list}
+      afterActions={sources.sheet}
       afterContent={afterContent}
       anchorId={anchorId}
       beforeContent={(
