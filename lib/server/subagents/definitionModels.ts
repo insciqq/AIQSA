@@ -12,7 +12,7 @@ import { currentUserConnectionLabels, resolveCurrentUserCatalogSelection, type C
 /**
  * The models a custom sub-agent may name: the user's current, server-filtered
  * catalog of tool-calling chat models (entitlements applied), with the
- * reasoning efforts each takes. Studio and the agent's tools check a
+ * reasoning efforts each takes. Settings and the agent's tools check a
  * definition against it when it is saved; a turn that uses the type checks
  * the model again against its run's frozen catalog and refuses it visibly
  * when it is gone (`subagent_type_unavailable`), never substituting another.
@@ -41,7 +41,7 @@ export function subagentModelOptions(models: readonly CatalogWireModel[], connec
   });
 }
 
-/** The production source over the catalog loader Studio uses (`createPrismaCatalogDataLoader`). */
+/** The production source over the catalog loader Settings uses (`createPrismaCatalogDataLoader`). */
 export function catalogSubagentModelSource(loadCatalogData: (userId: string) => Promise<CatalogData | null>): SubagentModelSource {
   return async (userId) => {
     const data = await loadCatalogData(userId);

@@ -5030,14 +5030,14 @@ describe("image model admission by chat scope", () => {
     expect(tools(personal)).not.toContain("generate_image");
     const system = personal.normalizedRequest.prompt.system ?? "";
     expect(system).toContain(`${UNAVAILABLE} because the image model's provider key is missing or revoked. No other image model is used instead.`);
-    expect(system).toContain("choose another image model or the organization default in Studio > Chat defaults > Image model");
+    expect(system).toContain("choose another image model or the organization default in Settings > Chat defaults > Image model");
     // The organization default could edit, yet the unusable choice is never replaced by it.
     await expect(prepareRun({ ...h.deps, images }, send({ content: imageContent(image.id) })))
       .resolves.toMatchObject({ ok: false, code: "image_attachment_not_supported" });
     const following = preparedFrom(await prepareRun({ ...h.deps, images: scopedImageModels({ ok: false,
       reason: "verification_required", providerModelId: "image-default", source: "organization" }) }, send()));
     expect(following.normalizedRequest.prompt.system).toContain("the image model needs a new successful check by an administrator");
-    expect(following.normalizedRequest.prompt.system).toContain("choose another image model in Studio > Chat defaults > Image model, or ask an administrator");
+    expect(following.normalizedRequest.prompt.system).toContain("choose another image model in Settings > Chat defaults > Image model, or ask an administrator");
   });
 
   it("stays silent where image generation is not set up and asks nothing with tools off", async () => {

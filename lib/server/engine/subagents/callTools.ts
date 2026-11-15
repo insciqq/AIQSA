@@ -168,7 +168,7 @@ async function resolveNewThreadType(deps: SubagentCallDeps, requested: string | 
     const legacy = await types?.resolve({ name: named, userId: deps.userId });
     return legacy?.kind === "found"
       ? unavailable(`The user has a custom sub-agent named ${JSON.stringify(named)}, so this value is ambiguous and nothing started. ` +
-        "Tell the user; renaming it in Studio > Sub-agents frees the name.")
+        "Tell the user; renaming it in Settings > Sub-agents frees the name.")
       : { ok: true, type: null };
   }
   if (named !== undefined) {
@@ -187,7 +187,7 @@ async function resolveNewThreadType(deps: SubagentCallDeps, requested: string | 
   const found = await types?.resolve({ definitionId: frozen.definitionId, userId: deps.userId });
   return found?.kind === "found" ? { fromDefault: true, ok: true, type: found.type }
     : unavailable(`The user's default sub-agent ${JSON.stringify(frozen.name)} is no longer available, so nothing started. ` +
-      "Tell the user; they can choose another in Studio > Sub-agents. Do not start another sub-agent in its place unless they ask.");
+      "Tell the user; they can choose another in Settings > Sub-agents. Do not start another sub-agent in its place unless they ask.");
 }
 
 async function resolveType(deps: SubagentCallDeps, requested: string | undefined, name: string,
@@ -221,7 +221,7 @@ function typeModelGoneMessage(resolved: Extract<TypeResolution, { ok: true }>, d
   if (deps.catalog === null) return `${typeWho(resolved)} could not start, because this answer could not read the user's models. ` +
     "Tell the user to try again in a new message. Do not start another sub-agent or model in its place unless they ask.";
   return `${typeWho(resolved)} runs on a model that is not available in this chat, so nothing started. ` +
-    "Tell the user; they can choose another model in Studio > Sub-agents. Do not start another sub-agent or model in its place unless they ask.";
+    "Tell the user; they can choose another model in Settings > Sub-agents. Do not start another sub-agent or model in its place unless they ask.";
 }
 
 const SUBAGENT_DEPTH_MESSAGE = "Helpers cannot start sub-agents of their own, so nothing started. Do this part yourself, or say in your report what is left.";

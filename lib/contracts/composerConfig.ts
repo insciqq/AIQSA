@@ -6,8 +6,9 @@ import type { SkillSummary } from "./skills";
 export type ComposerConfigMcpServer = Readonly<{
   runtimeErrorCode?: McpRuntimeErrorCode | null;
   /**
-   * Personal rows are the account's own connections, managed in Settings →
-   * Connections; installation rows (the default) are managed in Studio.
+   * Personal rows are the account's own connections; installation rows (the
+   * default) are the installation's servers. Both are managed in Settings ›
+   * MCP servers.
    */
   source?: "installation" | "personal";
   attention?: "needs_setup" | "needs_authorization" | "reauthorization_required" | "unavailable" | null;

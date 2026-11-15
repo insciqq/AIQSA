@@ -23,11 +23,11 @@ import {
 
 /**
  * The agent's access to its user's own Assistants (`manage_assistant`): the
- * Studio editor's catalog validation and the repository's create and
+ * Settings editor's catalog validation and the repository's create and
  * revise writes, committed with the tool call. Only Assistants the user owns
  * are read or written; any other id reads as missing. Publishing and
  * deleting are never written here: the agent proposes them and the user
- * confirms in the card through the Studio routes.
+ * confirms in the card through the Settings routes.
  */
 
 /** What the user's catalog offers an Assistant: models and MCP servers by name. */
@@ -100,13 +100,13 @@ export function createAgentAssistantService(input: Readonly<{
   db: Pick<PrismaClient, "$transaction" | "skillDefinition">;
   store: SelfServiceCallStore;
   scope: SelfServiceScope;
-  /** The Studio routes' own dependencies (`defaultAssistantHandlerDeps`). */
+  /** The Settings routes' own dependencies (`defaultAssistantHandlerDeps`). */
   handlers: Pick<AssistantHandlerDeps, "loadCatalogData"> & Readonly<{
     repository: Pick<PrismaAssistantRepository, "getDetail" | "listForUser" | "listPublishableGroups" | "loadUserAccessibleMcpServerIds" |
       "loadUserMcpRunPlanView">;
   }>;
   deletion: Readonly<{ loadConsequences(userId: string, assistantId: string): Promise<AssistantDeletionConsequences | null> }>;
-  /** Defaults to the Studio editor's catalog (`loadAssistantCatalogView`). */
+  /** Defaults to the Settings editor's catalog (`loadAssistantCatalogView`). */
   loadCatalogView?: (userId: string) => Promise<AssistantCatalogView | null>;
   create?: typeof createAssistantInTransaction;
   update?: typeof updateAssistantInTransaction;

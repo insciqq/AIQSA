@@ -16,11 +16,11 @@ import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation
 const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_COUNT;
 
 /**
- * The only user path for a website sign-in, named with the Studio labels so a
+ * The only user path for a website sign-in, named with the Settings labels so a
  * model never invents login windows or buttons. Paid on every Workspace run.
  */
 export const WORKSPACE_BROWSER_SESSION_USER_PATH =
-  "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Studio → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
+  "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Settings → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
 /**
  * One proxy of a run on its way to the guest's forwarder (`ops/workspace-guest/python/aiqsa/proxy/`): the frozen plan
  * entry, with the credentials `RunProxies` loaded now. `available: false` is a plan entry that cannot be used now; it
@@ -254,7 +254,7 @@ export function workspaceSecretsGuide(secrets: readonly AcceptedWorkspaceSecret[
         const [kept, reserved] = [secret.value.entries.filter(({ name }) => !isReservedWorkspaceEnvName(name)),
           secret.value.entries.filter(({ name }) => isReservedWorkspaceEnvName(name))];
         if (kept.length) lines.push("Environment variables (values are already in command environments):", ...kept.map(({ name }) => `- \`${name}\``));
-        if (reserved.length) lines.push("Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):",
+        if (reserved.length) lines.push("Not in command environments (names reserved for the Workspace browser; rename them in Settings → Secrets):",
           ...reserved.map(({ name }) => `- \`${name}\``));
         lines.push("");
         break;

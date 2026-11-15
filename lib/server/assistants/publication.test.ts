@@ -38,7 +38,7 @@ describe("Assistant publication guarded by a proposal's version", () => {
     expect(changed.tx.assistantPublication.update).not.toHaveBeenCalled();
   });
 
-  it("publishes the version the proposal named, and Studio's publication of the current definition", async () => {
+  it("publishes the version the proposal named, and Settings' publication of the current definition", async () => {
     const current = publicationFixture(5);
     await expect(current.repository.publish({ ...groupPublication, expectedVersion: 5 })).resolves.toMatchObject({ kind: "ok" });
     expect(current.tx.assistantPublication.create).toHaveBeenCalledOnce();

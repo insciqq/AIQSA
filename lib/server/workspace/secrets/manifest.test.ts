@@ -49,7 +49,7 @@ describe("Workspace variables of saved secrets", () => {
     expect(workspaceSecretVariables(secrets.map(stored))).toEqual([["SHOP_TOKEN"]]);
     const guide = workspaceSecretsGuide(secrets);
     expect(guide).toContain("Environment variables (values are already in command environments):\n- `SHOP_TOKEN`\n" +
-      "Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):\n- `AIQSA_BROWSER_LOCALE`");
+      "Not in command environments (names reserved for the Workspace browser; rename them in Settings → Secrets):\n- `AIQSA_BROWSER_LOCALE`");
   });
 
   it("keeps an env secret's variable over a text secret of that name and leaves two text secrets of one name out", () => {

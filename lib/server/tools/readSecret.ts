@@ -21,7 +21,7 @@ export const READ_SECRET_LIMITS = Object.freeze({
   listedNames: 50
 });
 
-const DESCRIPTION = `Returns the value of one of the user's saved secrets (Studio → Secrets) by name. Works in every chat and does not start the Workspace.
+const DESCRIPTION = `Returns the value of one of the user's saved secrets (Settings → Secrets) by name. Works in every chat and does not start the Workspace.
 name: the secret's name, or the name of an environment variable inside an environment-variable secret. Matching is exact first, then case-insensitive when that is unambiguous.
 Result by kind: env (all variables, or the one variable named), text (the text), ssh_key (private key, passphrase and its Workspace path), file (UTF-8 text, base64 for small binary files, and its Workspace path), browser_session (only its host and Workspace path; the Workspace browser uses it).
 An unknown name is refused with the list of available names. A value you read is stored in this chat's history and sent to the model provider; use it only for the user's task and do not repeat it in your answer unless the user asks. Workspace commands already have an env secret's variables, and a text secret named like a variable (capitals, digits and underscores) under that name, in their environment; SSH keys and files are files there. /workspace/SECRETS.md lists what each secret provides.`;
@@ -124,7 +124,7 @@ export async function executeReadSecret(source: RunSecretSource, call: ModelTool
     signal?.throwIfAborted();
     const entries = await source.list(scope);
     if (!entries.length) {
-      return harnessToolError(call, "read_secret_unknown", "The user has no saved secrets available in this chat. They can add one in Studio → Secrets.", { available: [] });
+      return harnessToolError(call, "read_secret_unknown", "The user has no saved secrets available in this chat. They can add one in Settings → Secrets.", { available: [] });
     }
     let found = matches(entries, name.trim());
     if (!found.length) {

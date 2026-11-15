@@ -7,7 +7,7 @@ import { createSubagentDefinitionService } from "./definitionService";
 import type { SubagentManagementRunDeps } from "./managementTools";
 import { createSubagentTypeResolver } from "./typeResolver";
 
-/** Production wiring of custom sub-agents: Studio's routes, the agent's management tools and the engine's type resolver. */
+/** Production wiring of custom sub-agents: Settings' routes, the agent's management tools and the engine's type resolver. */
 export const defaultSubagentModelSource = catalogSubagentModelSource(createPrismaCatalogDataLoader({ prisma }));
 
 export const defaultSubagentDefinitionService = createSubagentDefinitionService({ db: prisma, models: defaultSubagentModelSource });

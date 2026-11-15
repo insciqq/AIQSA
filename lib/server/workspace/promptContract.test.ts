@@ -95,7 +95,7 @@ describe("Workspace capability contract", () => {
   it("always names the real browser-session path and no invented login buttons", () => {
     const contract = workspacePromptContract(base);
     expect(contract.stable.split(WORKSPACE_BROWSER_SESSION_USER_PATH)).toHaveLength(2);
-    expect(contract.stable).toContain("Studio → Secrets");
+    expect(contract.stable).toContain("Settings → Secrets");
     expect(`${contract.stable}\n${contract.turn}`.replace(WORKSPACE_BROWSER_SESSION_USER_PATH, ""))
       .not.toMatch(/reconnect|reauthori[sz]e|log ?in window/iu);
   });

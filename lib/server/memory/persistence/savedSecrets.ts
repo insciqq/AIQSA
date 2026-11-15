@@ -14,7 +14,7 @@ import {
 export { memoryValueContainsSavedSecret } from "./savedSecretMatching";
 
 /**
- * The values of the owner's saved secrets (Studio > Secrets) never become
+ * The values of the owner's saved secrets (Settings > Secrets) never become
  * Memory text. Safety Lite recognizes only documented credential formats, so a
  * value such as a test token the user saved as a secret would otherwise pass
  * as an ordinary fact, be recalled in other chats and reach providers.

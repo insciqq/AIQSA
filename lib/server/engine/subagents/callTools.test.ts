@@ -272,7 +272,7 @@ describe("call_subagent choosing a sub-agent for a new thread", () => {
     for (const args of [{ type: SUBAGENT_BUILT_IN_TYPE, name: "work" }, { name: SUBAGENT_BUILT_IN_TYPE }]) {
       expect(value(await executeCallSubagent(ctx.deps, execution({ ...args, message: "Go" })))).toEqual({ error: SUBAGENT_ERROR_CODES.typeUnavailable,
         message: "The user has a custom sub-agent named \"built-in\", so this value is ambiguous and nothing started. " +
-          "Tell the user; renaming it in Studio > Sub-agents frees the name." });
+          "Tell the user; renaming it in Settings > Sub-agents frees the name." });
     }
     expect(ctx.store.admitForeground).not.toHaveBeenCalled();
     // As the default it still runs, by its id.
@@ -297,7 +297,7 @@ describe("call_subagent with a default that cannot run", () => {
     const result = await executeCallSubagent(ctx.deps, execution({ message: "Go", name: "work" }));
     expect(value(result)).toEqual({ error: SUBAGENT_ERROR_CODES.typeUnavailable,
       message: "The user's default sub-agent \"gemini-helper\" runs on a model that is not available in this chat, so nothing started. " +
-        "Tell the user; they can choose another model in Studio > Sub-agents. Do not start another sub-agent or model in its place unless they ask." });
+        "Tell the user; they can choose another model in Settings > Sub-agents. Do not start another sub-agent or model in its place unless they ask." });
     expect(ctx.store.admitForeground).not.toHaveBeenCalled();
     // The same for one the call named: it says who it is.
     const named = setup({ types: new FakeSubagentTypeResolver({ user: [gone] }) });
@@ -332,7 +332,7 @@ describe("call_subagent with a default that cannot run", () => {
     const ctx = setup({ defaultType: frozenDefault(GEMINI), types: new FakeSubagentTypeResolver({ user: [BROWSER] }) });
     expect(value(await executeCallSubagent(ctx.deps, execution({ message: "Go", name: "work" })))).toEqual({ error: SUBAGENT_ERROR_CODES.typeUnavailable,
       message: "The user's default sub-agent \"gemini-helper\" is no longer available, so nothing started. " +
-        "Tell the user; they can choose another in Studio > Sub-agents. Do not start another sub-agent in its place unless they ask." });
+        "Tell the user; they can choose another in Settings > Sub-agents. Do not start another sub-agent in its place unless they ask." });
     expect(ctx.store.admitForeground).not.toHaveBeenCalled();
   });
 

@@ -9,7 +9,7 @@ import {
 import { modelWithConnectionLabel } from "./providerConnectionLabels";
 
 /**
- * Client-safe wire shapes of the user's custom sub-agents in Studio
+ * Client-safe wire shapes of the user's custom sub-agents in Settings
  * (`features/library-v2/subagents/`) and the owner-only routes under
  * `/api/me/subagents` (`lib/server/subagents/definitionHandlers.ts`). A
  * definition is personal: only its owner lists, reads or changes it, and a
@@ -126,7 +126,7 @@ export type SubagentDefinitionDeleteRequest = Readonly<{ expectedVersion: number
 export type SubagentDefinitionRestoreRequest = Readonly<{ expectedVersion: number; revisionId: string }>;
 
 export type SubagentDefaultResponse = Readonly<{ defaultDefinitionId: string | null }>;
-/** Studio's switch: moves the default while it is still `expected`; a null `definitionId` is the built-in sub-agent. */
+/** Settings' switch: moves the default while it is still `expected`; a null `definitionId` is the built-in sub-agent. */
 export type SubagentDefaultUpdateRequest = Readonly<{ definitionId: string | null; expected: string | null }>;
 
 /**
@@ -177,7 +177,7 @@ const invalid = (field: SubagentDefinitionField, code: string = SUBAGENT_DEFINIT
   ({ code, field, ok: false });
 
 /**
- * A draft as Studio or the agent sends it: the name normalized (trimmed,
+ * A draft as Settings or the agent sends it: the name normalized (trimmed,
  * lowercased), texts trimmed and bounded, tool groups distinct and known.
  * Whether the model and effort are the user's is the server's check.
  */
@@ -310,7 +310,7 @@ export function decodeSubagentDefinitionResponse(value: unknown): SubagentDefini
   return definition ? { definition } : null;
 }
 
-/** The user's plain-language name of each tool group, for Studio and the change cards. */
+/** The user's plain-language name of each tool group, for Settings and the change cards. */
 export const SUBAGENT_TOOL_GROUP_LABELS: Readonly<Record<SubagentToolGroup, string>> = Object.freeze({
   images: "Image generation",
   mcp: "MCP tools",

@@ -133,7 +133,7 @@ describe("agent Assistant service", () => {
   });
 });
 
-describe("manage_assistant through the Studio service", () => {
+describe("manage_assistant through the Settings service", () => {
   const call = (fields: Record<string, unknown>) => ({ arguments: fields, id: "call_1", name: "manage_assistant" });
   const json = (output: ToolExecutionResult) => (output.content[0] as { value: Record<string, unknown> }).value;
   const context = { skills: undefined };
@@ -171,7 +171,7 @@ describe("manage_assistant through the Studio service", () => {
     [{ maxOutputTokens: 128_001 }, "maxOutputTokens", "maxOutputTokens limit: 128000."],
     [{ backgroundMode: true }, "backgroundMode", "omit the unsupported setting"],
     [{ streamMode: true }, "streamMode", "omit the unsupported setting"]
-  ] as const)("refuses unsupported settings %j with Studio's rule before any transaction", async (controls, field, message) => {
+  ] as const)("refuses unsupported settings %j with Settings' rule before any transaction", async (controls, field, message) => {
     const fixture = setup();
     const output = await executeManageAssistant(fixture.service, call({ action: "update", assistantId: "asst_1", expectedVersion: 3,
       model: "GPT-5.5", controls }), context);
@@ -197,7 +197,7 @@ describe("manage_assistant through the Studio service", () => {
     }) }));
   });
 
-  it("matches Studio's structural-only validation for controls with the chat-default model", async () => {
+  it("matches Settings' structural-only validation for controls with the chat-default model", async () => {
     const fixture = setup();
     const controls: AssistantRunControls = { reasoningEffort: "model-specific-value" };
     const output = await executeManageAssistant(fixture.service, call({ action: "update", assistantId: "asst_1", expectedVersion: 3, controls }), context);

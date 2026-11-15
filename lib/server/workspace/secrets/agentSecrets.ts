@@ -21,7 +21,7 @@ import { parseWorkspaceSecretMutation, WorkspaceSecretError } from "./validation
 
 /**
  * The agent's access to its user's saved secrets (`manage_secret`): the same
- * settings mutation, validation, limits and revision rules as Studio ›
+ * settings mutation, validation, limits and revision rules as Settings ›
  * Secrets (`mutateWorkspaceSecretInTransaction`), committed together with
  * the tool call. Everything is scoped to the run's own user; another user's
  * secret looks exactly like a missing one. Values are never logged or
@@ -98,7 +98,7 @@ export type AgentSecretService = Readonly<{
 
 type SecretReader = Pick<Prisma.TransactionClient, "workspaceSecret">;
 
-/** The user's saved secrets, oldest first, as `listForUser` orders them in Studio. */
+/** The user's saved secrets, oldest first, as `listForUser` orders them in Settings. */
 export async function listAgentSecrets(db: SecretReader, userId: string): Promise<AgentSecretView[]> {
   const rows = await db.workspaceSecret.findMany({
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -131,7 +131,7 @@ export function createAgentSecretService(input: Readonly<{
   const userId = scope.userId;
 
   async function apply(tx: Prisma.TransactionClient, mutation: WorkspaceSecretMutation) {
-    // The settings route's own decoder: names, descriptions and value bounds as Studio checks them.
+    // The settings route's own decoder: names, descriptions and value bounds as Settings checks them.
     const saved = await mutate(tx, userId, parseWorkspaceSecretMutation(mutation), key);
     if (!saved) throw new Error("agent_secret_mutation_result_missing");
     return saved;

@@ -170,7 +170,7 @@ describe("create_scheduled_task tool", () => {
     // An explicit choice needs no lookup of where the run came from.
     expect(origin).not.toHaveBeenCalled();
     expect(result.content[0]).toMatchObject({ value: { telegram: true,
-      telegramNote: expect.stringContaining("Settings > Connections") } });
+      telegramNote: expect.stringContaining("Settings > Telegram") } });
     const declined = creator();
     await executeCreateScheduledTask(call({ ...reminder, telegram: false }), context({ runId: "run-telegram" }), declined, origin);
     expect(declined.mock.calls[0]![0].body).toMatchObject({ telegramNotify: false });

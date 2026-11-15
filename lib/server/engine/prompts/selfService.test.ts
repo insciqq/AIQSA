@@ -26,7 +26,7 @@ describe("self-service prompt section", () => {
     expect(bare).toContain("administrator settings are out of your reach");
     for (const name of allTools) expect(bare).not.toContain(name);
     // Without the tools (a Telegram turn, an automation) the agent names where the change is made.
-    expect(bare).toContain("- Changing the user's Skills, secrets, proxies and Assistants is not available in this conversation; the user can make the change in Studio or Settings.");
+    expect(bare).toContain("- Changing the user's Skills, secrets, proxies and Assistants is not available in this conversation; the user can make the change in Settings.");
     expect(selfServicePromptSection({ tools: allTools })).not.toContain("not available in this conversation");
     // An Assistant chat saves Skills but changes no secrets or Assistants.
     expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.skills] }))
@@ -49,7 +49,7 @@ describe("self-service prompt section", () => {
       expect(line).toContain(phrase);
     }
     expect(aiqsaGuideText("secrets")).toContain("The agent saves a secret the user gives it in a message by itself");
-    // Owners see their own saved values in Studio (operator decision 2026-10-27).
+    // Owners see their own saved values in Settings (operator decision 2026-10-27).
     expect(aiqsaGuideText("secrets")).toContain("the user can show and copy their saved values with Show values, except browser sessions' cookies");
   });
 
@@ -118,10 +118,13 @@ describe("AIQSA guide", () => {
     // A run reads only the links its saved instructions hold (`lib/server/scheduledTasks/promptUrls.ts`).
     expect(aiqsaGuideText("scheduled_tasks")).toContain("When an automation depends on particular sites, write their exact links into the instructions and tell the user which sources it uses.");
     expect(aiqsaGuideText("scheduled_tasks")).toContain("allowed once the user opens the automation and saves its instructions");
-    for (const section of ["assistants", "instructions", "skills", "memory", "files", "artifacts", "scheduled", "mcp", "secrets", "defaults"]) {
+    // One Settings page holds every section, the former dialog's included (operator decision 2026-11-16).
+    for (const section of ["general", "account", "data", "assistants", "instructions", "skills", "subagents", "scheduled", "defaults", "memory", "files",
+      "artifacts", "mcp", "secrets", "proxies", "computers", "telegram", "apps"]) {
       expect(aiqsaGuideText("studio")).toMatch(new RegExp(`\\]\\(/\\?library=${section}[)&]`, "u"));
     }
-    // Every Studio address is a Markdown link, never a bare path the model might put in code.
+    // Every Settings address is a Markdown link, never a bare path the model might put in code.
     expect(guide).not.toMatch(/(?<!\]\()\/\?library=/u);
+    expect(guide).not.toMatch(/Studio|\?settings=|Settings > Connections/u);
   });
 });

@@ -8,7 +8,7 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 /**
  * The administrator's installation-wide switch for shipped Skills (operator
  * decision 2026-11-06). Off archives the definition: it leaves every catalog,
- * Studio list and Assistant for everyone, accepted runs keep their revision,
+ * Settings list and Assistant for everyone, accepted runs keep their revision,
  * and bootstrap never changes it on later upgrades.
  */
 export function createBuiltInSkillAdminService(db: PrismaClient) {

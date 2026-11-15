@@ -325,8 +325,8 @@ export function scheduledTaskModelWebhook(task: Pick<ScheduledTask, "webhook" | 
   return { webhook: { url, tokenIssued, ...(explain ? { note: [
     "Every POST to url runs the automation's prompt with the request body attached as untrusted event data.",
     tokenIssued
-      ? "A token was issued earlier; Rotate token on the card or in Studio > Automations replaces it."
-      : "Its token is ready to issue: the user clicks Get token on the answer's card (or in Studio > Automations) and sees it once.",
+      ? "A token was issued earlier; Rotate token on the card or in Settings > Automations replaces it."
+      : "Its token is ready to issue: the user clicks Get token on the answer's card (or in Settings > Automations) and sees it once.",
     "Senders put it in the Authorization: Bearer header, or X-Gitlab-Token for GitLab. You never see the token: never ask the",
     "user for it or write one."
   ].join(" ") } : {}) } };
@@ -354,10 +354,10 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       memory: task.memoryEnabled,
       // Results also go to the user's Telegram (asked for, or an automation created from a Telegram message).
       telegram: task.telegramNotify,
-      ...(task.telegramNotify ? { telegramNote: "Results reach Telegram once the user has connected it in Settings > Connections." } : {}),
+      ...(task.telegramNotify ? { telegramNote: "Results reach Telegram once the user has connected it in Settings > Telegram." } : {}),
       skills: scheduledTaskModelSkills(task),
       ...scheduledTaskLinksPending(task),
-      note: "The answer shows this automation with Edit and Delete; the user manages automations in Studio > Automations."
+      note: "The answer shows this automation with Edit and Delete; the user manages automations in Settings > Automations."
     } }],
     name: call.name,
     status: "complete"
@@ -370,7 +370,7 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
     case "scheduled_task_answer_limit": return "This answer already created an automation; one answer creates at most one.";
     case "scheduled_task_already_created":
       return "An earlier answer to this message already created this automation and the user still has it in " +
-        "Studio > Automations; refer to it instead of creating another.";
+        "Settings > Automations; refer to it instead of creating another.";
     case "scheduled_task_call_unavailable": return "An automation cannot be created from this answer.";
     case "scheduled_task_invalid":
       return `Check title (1-${SCHEDULED_TASK_TITLE_MAX_LENGTH} characters), prompt (instruction text, at most ` +
@@ -380,7 +380,7 @@ function refusalText(code: ScheduledTaskCallRefusal | "scheduled_task_arguments_
         "month, and that an hourly window ends after it starts.";
     case "scheduled_task_limit":
     case "scheduled_task_hourly_limit":
-      return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Studio > Automations.`;
+      return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Settings > Automations.`;
     case "scheduled_task_skills_need_tools":
       return "This chat has tools off, so its automation cannot pin Skills: create it with skills [] or ask the user to turn tools on.";
     case "scheduled_task_trigger_required":

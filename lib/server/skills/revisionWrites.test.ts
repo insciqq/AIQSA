@@ -181,7 +181,7 @@ describe("Skill deletion guarded by a proposal's version", () => {
     await expect(current.repository.delete("owner", "skill", 5)).resolves.toBe("ok");
     expect(current.tx.skillDefinition.update).toHaveBeenCalledWith({ data: { deletedAt: expect.any(Date), version: { increment: 1 } }, where: { id: "skill" } });
 
-    // Studio's delete names no version.
+    // Settings' delete names no version.
     const studio = deletionFixture(9);
     await expect(studio.repository.delete("owner", "skill")).resolves.toBe("ok");
   });
