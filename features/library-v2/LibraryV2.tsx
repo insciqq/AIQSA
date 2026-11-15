@@ -322,7 +322,14 @@ export function LibraryV2({
               {subview.backLabel}
             </UiV2Button>
           ) : (
-            <UiV2Button className="v2-library-exit" disabled={busy} icon="arrow-left" onClick={requestExit}>Back to chat</UiV2Button>
+            // One exit at every width: the arrow and its words, or a close
+            // control where a section shows alone on a narrow screen (CSS).
+            <button className="v2-button v2-focusable v2-library-exit" data-tone="ghost" data-tooltip="Back to chat"
+              data-tooltip-side="left" disabled={busy} type="button" onClick={requestExit}>
+              <UiV2Icon className="v2-library-exit-arrow" name="arrow-left" />
+              <UiV2Icon className="v2-library-exit-close" name="close" />
+              <span className="v2-library-exit-label">Back to chat</span>
+            </button>
           )}
         </div>
         <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Settings sections">

@@ -304,13 +304,15 @@ const narrowTabs: LibraryTabV2[] = [
 ];
 
 /** The shell's one piece of narrow-layout state, as `useStudioNavigation` holds it. */
-function NarrowSettings({ initialShown, onBack = vi.fn(), subview = null }: Readonly<{
+function NarrowSettings({ initialShown, navigationGuard, onBack = vi.fn(), subview = null }: Readonly<{
   initialShown: boolean;
+  navigationGuard?: LibraryNavigationGuardV2;
   onBack?(): void;
   subview?: ComponentProps<typeof LibraryV2>["subview"];
 }>) {
   const [shown, setShown] = useState(initialShown);
-  return <LibraryV2 onBack={onBack} sectionShown={shown} subview={subview} tabs={narrowTabs} onSectionShownChange={setShown} />;
+  return <LibraryV2 navigationGuard={navigationGuard} onBack={onBack} sectionShown={shown} subview={subview} tabs={narrowTabs}
+    onSectionShownChange={setShown} />;
 }
 
 describe("Settings list and section where they take turns", () => {
@@ -342,12 +344,31 @@ describe("Settings list and section where they take turns", () => {
     expect(screen.getByRole("button", { name: "Back to Settings" })).toHaveFocus();
   });
 
+  it("shows a section with Back to the list and one Back to chat that goes through the leave guard", () => {
+    let release: (() => void) | undefined;
+    const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => { release = proceed; });
+    const onBack = vi.fn();
+    render(<NarrowSettings initialShown navigationGuard={guard} onBack={onBack} />);
+    expect(view()).toBe("section");
+    expect(screen.getByRole("button", { name: "Back to Settings" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Back to chat" })).toHaveLength(1);
+    const exit = screen.getByRole("button", { name: "Back to chat" });
+    expect(exit).toHaveAttribute("data-tooltip", "Back to chat");
+
+    fireEvent.click(exit);
+    expect(guard).toHaveBeenCalledWith({ from: "general", kind: "exit" }, onBack);
+    expect(onBack).not.toHaveBeenCalled();
+    act(() => release?.());
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
   it("opens a named section directly, and its sub-view keeps its own Back to the section", () => {
     const leave = vi.fn();
     const { rerender } = render(<NarrowSettings initialShown />);
     expect(view()).toBe("section");
     rerender(<NarrowSettings initialShown subview={{ backLabel: "Back to Skills", key: "skill-1", label: "Checklist", onBack: leave }} />);
     expect(screen.queryByRole("button", { name: "Back to Settings" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Back to Skills" }));
     expect(leave).toHaveBeenCalledOnce();
   });

@@ -91,6 +91,13 @@
   white-space: nowrap;
 }
 
+/* Back to chat reads as the arrow and its words; its close icon and its
+   tooltip belong to the narrow section view, where the words give way. */
+.v2-library-exit > .v2-library-exit-close,
+.v2-library-heading-row > .v2-library-exit::after {
+  display: none;
+}
+
 .v2-library-crumb strong {
   overflow: hidden;
   color: var(--v2-color-text);
@@ -260,14 +267,41 @@
  * Where the list and a section do not fit side by side (below 1024px, and
  * short touch screens such as a phone held sideways), they take turns. The
  * list keeps a readable 40rem measure under its title; a section has its
- * Back control and name in the crumb row, and leaves the chat to the list.
+ * Back control to the list, its name, and Back to chat as a close control at
+ * the end of the crumb row, so the chat stays one tap away.
  */
 @media (max-width: 1023px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
   .v2-library[data-view="list"] .v2-library-panel,
   .v2-library[data-view="list"] .v2-library-crumb,
   .v2-library[data-view="section"] .v2-library-tabs-scroll,
-  .v2-library[data-view="section"] .v2-library-exit {
+  .v2-library[data-view="section"] .v2-library-exit > .v2-library-exit-arrow {
     display: none;
+  }
+
+  .v2-library[data-view="section"] .v2-library-heading-row > .v2-library-exit {
+    width: 2rem;
+    height: 2rem;
+    min-height: 2rem;
+    padding: 0;
+    border-color: transparent;
+  }
+
+  .v2-library[data-view="section"] .v2-library-exit > .v2-library-exit-close {
+    display: block;
+  }
+
+  /* The words stay the control's name for assistive technology. */
+  .v2-library[data-view="section"] .v2-library-exit > .v2-library-exit-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .v2-library[data-view="section"] .v2-library-heading-row > .v2-library-exit::after {
+    display: block;
   }
 
   .v2-library[data-view="list"] .v2-library-heading-row {
@@ -288,6 +322,7 @@
   }
 
   .v2-library[data-view="section"] .v2-library-heading-row {
+    padding-right: max(0.5rem, env(safe-area-inset-right));
     padding-left: max(0.5rem, env(safe-area-inset-left));
   }
 
@@ -312,6 +347,15 @@
 
   .v2-library-tab[data-selected="true"] > .v2-library-tab-chevron {
     color: var(--v2-color-text2);
+  }
+}
+
+/* The same narrow layouts on touch: the close control keeps a 44px target. */
+@media ((max-width: 1023px) or (max-height: 30rem)) and ((hover: none) or (pointer: coarse)) {
+  .v2-library[data-view="section"] .v2-library-heading-row > .v2-library-exit {
+    width: 2.75rem;
+    height: 2.75rem;
+    min-height: 2.75rem;
   }
 }
 
