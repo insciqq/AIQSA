@@ -97,9 +97,19 @@ describe("opening Settings from the shell", () => {
     render(shell(false));
     const surface = await screen.findByTestId("library-v2");
     expect(screen.queryByRole("tab", { name: "Telegram" })).toBeNull();
-    // An unoffered section opens the list on the default section instead.
+    // An unoffered section opens Settings as the gear does, and says why.
     expect(screen.getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
     expect(surface).toHaveAttribute("data-view", "list");
+    expect(await within(surface).findByRole("alert")).toHaveTextContent("Telegram is not available in this AIQSA.");
+  });
+
+  it("opens an unknown ?library= section as nothing at all", async () => {
+    window.history.replaceState(null, "", "/?library=studio");
+    render(shell());
+    await screen.findByTestId("app-shell");
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.queryByTestId("library-v2")).toBeNull();
+    expect(screen.queryByText(/is not available in this AIQSA/u)).toBeNull();
   });
 
   it("opens Settings › Computers where /connect sends, with the origin the server passed, only while AIQSA Connect is on", async () => {
@@ -115,9 +125,10 @@ describe("opening Settings from the shell", () => {
 
     window.history.replaceState(null, "", "/?library=computers");
     render(shell());
-    await screen.findByTestId("library-v2");
+    const surface = await screen.findByTestId("library-v2");
     expect(screen.queryByRole("tab", { name: "Computers" })).toBeNull();
     expect(screen.queryByTestId("settings-computers-panel")).toBeNull();
+    expect(await within(surface).findByRole("alert")).toHaveTextContent("Computers is not available in this AIQSA.");
   });
 });
 

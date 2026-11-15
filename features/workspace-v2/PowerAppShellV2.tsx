@@ -7,6 +7,7 @@ import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads
 import type { GreetingPeriod } from "@/lib/domain/greeting";
 
 import { settingsSectionsV2 } from "@/features/library-v2/LibraryV2";
+import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { requestScheduledTaskEdit, useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
@@ -226,6 +227,12 @@ export {
 } from "./useWorkspaceBootstrapController";
 
 const NO_SCHEDULED_RUNS: readonly ScheduledTaskRenderedRun[] = [];
+
+/** The Settings sections an installation may not offer, by the name Settings shows. */
+const UNOFFERED_SETTINGS_SECTIONS: Partial<Record<LibraryTabIdV2, string>> = {
+  computers: "Computers",
+  telegram: "Telegram"
+};
 
 /**
  * When the open chat is read again after its sub-agents settled: at once, past the server's callback coalescing
@@ -1109,6 +1116,10 @@ export function PowerAppShellV2({
       } else if (!librarySnapshot.open) {
         assistantLibraryActions.openLibrary();
       }
+    },
+    // A link or bookmark named a section this installation does not offer.
+    onUnavailable(tab) {
+      setSettingsNotice({ kind: "error", text: `${UNOFFERED_SETTINGS_SECTIONS[tab] ?? "This section"} is not available in this AIQSA.` });
     }
   });
   const openStudio = studio.open;
