@@ -46,7 +46,7 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
     }))
   });
   const registry = telegramHandlerRegistry();
-  // Approvals, change messages, the Workspace status and answer files follow the bridge's runs and leave with its handlers.
+  // Approvals, change messages, the Workspace status and answer files, then artifact links, follow the bridge's runs and leave with its handlers.
   const removers = [
     bridge.register(registry),
     registry.registerMessage(media),

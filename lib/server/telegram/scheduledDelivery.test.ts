@@ -27,6 +27,7 @@ afterEach(async () => { while (closers.length) await closers.pop()!(); });
 
 const START = Date.parse("2026-10-19T06:00:00.000Z");
 const SENTINEL = "private-result-sentinel";
+const APP_BASE_URL = "https://aiqsa.example.com";
 
 type StoredRow = {
   id: string; occurrenceId: string; userId: string; attempts: number; nextAttemptAt: Date; lastFailureCode: string | null;
@@ -123,8 +124,8 @@ function setup(options: Readonly<{
       : { allowed: true, control: {} as never, link: link(user.id, fake.bot.id, linkId) })
   };
   const sender = createTelegramScheduledDeliverySender({
-    access, now: () => new Date(now), sessions: { current: async () => bot }, setTimer: (ms, wake) => { timers.push({ ms, wake }); },
-    store: memory.store
+    access, appBaseUrl: () => APP_BASE_URL, now: () => new Date(now), sessions: { current: async () => bot },
+    setTimer: (ms, wake) => { timers.push({ ms, wake }); }, store: memory.store
   });
   return {
     access, fake, hooks, memory, refs, sender, session, timers, user,
@@ -144,7 +145,8 @@ function setup(options: Readonly<{
     /** A second sender over the same outbox: the application after a restart. */
     restarted() {
       return createTelegramScheduledDeliverySender({
-        access, now: () => new Date(now), sessions: { current: async () => bot }, setTimer: () => {}, store: memory.store
+        access, appBaseUrl: () => APP_BASE_URL, now: () => new Date(now), sessions: { current: async () => bot }, setTimer: () => {},
+        store: memory.store
       });
     }
   };
@@ -525,6 +527,45 @@ describe("Telegram scheduled delivery", () => {
     expect(prepared.text).toBe("More files are still being prepared in AIQSA.");
     expect(prepared.reply_markup).toBeUndefined();
     expect(slow.row().state).toBe("sent");
+  });
+
+  it("sends one message per artifact after the files: its title with an Open link to that version, referenced to the chat", async () => {
+    const artifacts = [
+      { artifactId: "page", title: "Research page", versionId: "page-v2" },
+      { artifactId: "chart", title: "Prices", versionId: "chart-v1" }
+    ];
+    const report = { attachmentId: "report-1", byteSize: 18, fileName: "report.pdf", mimeType: "application/pdf" };
+    const h = setup({ context: () => ({ ...completed("Done."), result: { ...result("Done.", [report]), artifacts } }) });
+    h.memory.files.set("report-1", Buffer.from("%PDF-1.7 synthetic"));
+    await h.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.fake.calls().map((call) => call.method)).toEqual(["sendRichMessage", "sendDocument", "sendRichMessage", "sendRichMessage"]);
+    const [, , first, second] = h.fake.botMessages(h.user.id);
+    expect(JSON.stringify(first!.rich_message)).toContain("Research page");
+    expect(first!.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open", url: `${APP_BASE_URL}/artifacts/page/versions/page-v2` }]] });
+    expect(second!.reply_markup).toEqual({ inline_keyboard: [[{ text: "Open", url: `${APP_BASE_URL}/artifacts/chart/versions/chart-v1` }]] });
+    expect(h.refs.map((ref) => ref.chatId)).toEqual(["chat-1", "chat-1", "chat-1", "chat-1"]);
+    expect(h.row().state).toBe("sent");
+    expect(telegramScheduledParts({ ...completed("Done."), result: { ...result("Done."), artifacts } }).map((part) => part.kind))
+      .toEqual(["content", "artifact", "artifact"]);
+  });
+
+  it("never sends an artifact again whose message Telegram may have received: the row settles unknown", async () => {
+    let richCalls = 0;
+    const h = setup({
+      context: () => ({ ...completed("Done."), result: { ...result("Done."), artifacts: [{ artifactId: "page", title: "Page", versionId: "page-v1" }] } }),
+      transport: (base) => ({
+        ...base,
+        call: async (input) => input.method === "sendRichMessage" && ++richCalls === 2 ? { kind: "timeout", ok: false } : base.call(input)
+      })
+    });
+    await h.queue("occurrence-1");
+    await h.sender.idle();
+    expect(h.row()).toMatchObject({ attempts: 1, state: "unknown" });
+    h.advance(60 * 60_000);
+    await h.sender.sweep();
+    expect(richCalls).toBe(2);
+    expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
   });
 
   it("puts a long result's heading alone when the first message has no room for it, every message within Telegram's limits", () => {
