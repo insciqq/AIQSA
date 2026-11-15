@@ -42,11 +42,12 @@ Nothing else is needed: no tmux, no administrator rights.
 
 ## Install on Windows
 
-1. In AIQSA, open **AIQSA Connect** (`/connect`), choose **Add a computer**
-   and **Download for Windows**. The file is named after your installation,
-   for example `AIQSA Connect - ai.example.com.exe`; keep that name, because
-   the program reads the AIQSA address from it. A link below the button
-   offers the other architecture (ARM64 or x64).
+1. In AIQSA, open **Settings › Computers** (the gear at the bottom of the chat
+   list) and, under **Add a computer**, choose **Download for Windows**. The
+   file is named after your installation, for example
+   `AIQSA Connect - ai.example.com.exe`; keep that name, because the program
+   reads the AIQSA address from it. A link below the button offers the other
+   architecture (ARM64 or x64).
 2. Double-click the file. The program is not signed, so Windows may show
    "Windows protected your PC": choose **More info**, then **Run anyway**.
 3. Confirm the install window. AIQSA Connect installs for your Windows account
@@ -77,13 +78,13 @@ download for the same installation replaces the installed program when it
 differs, then opens AIQSA.
 
 If your installation is reached by an IPv6 address, the file name cannot carry
-it: the AIQSA Connect page then offers the plain program and a
+it: Settings › Computers then offers the plain program and a
 `.\aiqsa-connect-windows-<arch>.exe login <address>` command to run in
 PowerShell in the download folder.
 
 ## Install on macOS and Linux
 
-The AIQSA Connect page shows these commands with your installation's address.
+Settings › Computers in AIQSA shows these commands with your installation's address.
 
 ```bash
 curl -fsSL https://ai.example.com/connect/install.sh | sh
@@ -189,7 +190,7 @@ the shortcut otherwise, and it stays deleted until the next update.
 
 ## Disconnect and uninstall
 
-You can always remove a computer in AIQSA → AIQSA Connect with **Revoke**: its
+You can always remove a computer in AIQSA → Settings › Computers with **Revoke**: its
 token stops working at once.
 
 **Windows.** Disconnect this computer in the tray menu keeps the program

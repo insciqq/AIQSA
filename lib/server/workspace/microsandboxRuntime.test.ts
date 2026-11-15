@@ -696,7 +696,7 @@ describe("Microsandbox Workspace lifecycle", () => {
     ] });
     const bundle = JSON.parse(Buffer.concat(value.secretPipe.write.mock.calls.map(([bytes]) => bytes)).toString()) as { environment: unknown; guide: string };
     expect(bundle.environment).toEqual({ SHOP_TOKEN: "synthetic-shop-token", ...run });
-    expect(bundle.guide).toContain("Not in command environments (names reserved for the Workspace browser; rename them in Studio → Secrets):\n" +
+    expect(bundle.guide).toContain("Not in command environments (names reserved for the Workspace browser; rename them in Settings → Secrets):\n" +
       "- `AIQSA_BROWSER_LOCALE`\n- `AIQSA_BROWSER_SESSIONS_DIR`");
     sdk.callTool.mockResolvedValue({ content: [{ type: "text", text: JSON.stringify({ ok: true, data: { execSessionId: "synthetic_exec" } }) }] });
     await value.runtime.callBoundTool({ ...callInput, originalName: "sandbox_shell", arguments: { command: "env" } });

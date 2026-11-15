@@ -2,7 +2,7 @@ import { workspaceActivitySecretValues } from "../../workspace/activityText";
 import type { AcceptedWorkspaceSecret } from "../../workspace/secrets/store";
 
 /**
- * How Memory recognizes the values of the owner's saved secrets (Studio >
+ * How Memory recognizes the values of the owner's saved secrets (Settings >
  * Secrets) in its own text: fact writes refuse them (`./savedSecrets.ts`),
  * history indexing replaces them with a marker before anything is stored,
  * embedded or recalled (`../history/sourceProjection.ts`,

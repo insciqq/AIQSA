@@ -116,7 +116,7 @@ const MESSAGES: Record<Refusal, string> = {
   skill_save_directory_managed: "Managed Skills under /workspace/.aiqsa are read-only copies. Copy the folder to /workspace/project/<folder>, edit it there and save that folder.",
   skill_save_directory_invalid: "Save a folder inside /workspace/project (or this run's /workspace/output directory).",
   skill_save_file_invalid: "Each file must be a relative path inside the folder, listed once, and SKILL.md must be one of them.",
-  skill_save_file_not_text: "Saving from chat accepts only UTF-8 text files of at most 1 MiB. The user can import binary files from Studio › Skills (library import).",
+  skill_save_file_not_text: "Saving from chat accepts only UTF-8 text files of at most 1 MiB. The user can import binary files from Settings › Skills (library import).",
   skill_save_secret_detected: "A file contains the value of one of the user's Workspace secrets. Remove it and read the credential from the environment at run time.",
   skill_save_workspace_busy: "A file was being written while it was read. Finish writing, then save again.",
   skill_save_workspace_unavailable: "A listed path is missing, a folder, a symlink or a special file, or the Workspace is unavailable. Check the file list.",
@@ -125,7 +125,7 @@ const MESSAGES: Record<Refusal, string> = {
   skill_save_answer_limit: "This answer already saved a Skill; one answer saves at most one.",
   skill_save_rate_limited: `The user saved ${SKILL_SAVE_HOURLY_LIMIT} Skills from chat in the last hour; saving again needs to wait.`,
   skill_not_available: "That Skill is not available to the user. Save it as a new Skill instead if the user wants one.",
-  skill_archived: "That Skill is archived. The user can restore it in Studio › Skills first, or the folder can be saved as a new Skill.",
+  skill_archived: "That Skill is archived. The user can restore it in Settings › Skills first, or the folder can be saved as a new Skill.",
   skill_version_conflict: "The Skill changed since the version this folder was built on, so nothing was saved. Merge the current files below into the folder, then save again with target set to this skillId and expectedVersion set to currentVersion.",
   skill_restore_arguments_invalid: "To restore, set target to the Skill, restoreRevision to a version number (0 lists the versions) and directory and files to null.",
   skill_restore_not_own: "Only the user's own Skills can be restored. Another user's Skill can be saved from a folder as the user's own copy instead.",
@@ -288,7 +288,7 @@ function versionList(list: SkillSaveVersionList): Record<string, unknown> {
     versions: list.versions.map((version) => ({ revision: version.revision, createdAt: version.createdAt, files: version.files,
       ...(version.current ? { current: true } : {}), ...(version.changeNote ? { changeNote: version.changeNote } : {}),
       ...(version.restoredFrom ? { restoredFrom: version.restoredFrom } : {}) })),
-    ...(list.more ? { olderVersions: "Older versions exist; the user can see all of them in Studio › Skills." } : {}) };
+    ...(list.more ? { olderVersions: "Older versions exist; the user can see all of them in Settings › Skills." } : {}) };
 }
 
 function notSavedResult(call: Pick<ModelToolCall, "id" | "name">, outcome: Exclude<SkillSaveOutcome, { kind: "saved" }>,

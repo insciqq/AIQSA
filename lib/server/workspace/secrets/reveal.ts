@@ -11,7 +11,7 @@ function utf8Text(bytes: Buffer): string | null {
 }
 
 /**
- * What the owner sees of a saved value in Studio › Secrets (operator decision
+ * What the owner sees of a saved value in Settings › Secrets (operator decision
  * 2026-10-27): a file as UTF-8 text when it decodes, otherwise only its size.
  * A browser session's cookies are never shown.
  */

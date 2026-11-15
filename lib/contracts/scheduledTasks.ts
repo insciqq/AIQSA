@@ -1,6 +1,6 @@
 /**
  * Scheduled tasks wire contract, shared by the owner API (`/api/me/scheduled-tasks`),
- * the runner and the Studio UI. Schedule computation lives in
+ * the runner and the Settings UI. Schedule computation lives in
  * `lib/domain/scheduledTaskSchedule.ts`; this leaf only owns shapes and bounds.
  */
 

@@ -103,7 +103,7 @@ describe("resource change cards", () => {
       .toMatchObject({ audience: { groupName: `${"g".repeat(199)}…` } });
   });
 
-  it("link an Assistant's Studio sheet", () => {
+  it("link an Assistant's Settings sheet", () => {
     expect(assistantLibraryPath("asst 1")).toBe("/?library=assistants&assistant=asst%201");
   });
 });

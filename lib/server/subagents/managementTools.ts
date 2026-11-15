@@ -52,7 +52,7 @@ import {
 
 /**
  * `create_subagent`, `edit_subagent` and `delete_subagent`: the main agent
- * changes its user's custom sub-agents through the same service as Studio
+ * changes its user's custom sub-agents through the same service as Settings
  * (`definitionService.ts`), and each change commits with its tool call and
  * shows a card (`lib/contracts/resourceChanges.ts`, `subagent`). A creation's
  * Undo deletes it and an edit's Undo restores the previous revision; deleting
@@ -203,7 +203,7 @@ export function subagentChanges(before: SubagentDefinitionRecord, after: Subagen
 
 const REFUSALS: Readonly<Record<string, string>> = {
   [CODES.definitionExists]: "The user already has a custom sub-agent with this name. Choose another name, or edit that one with edit_subagent.",
-  [CODES.definitionLimit]: `The user has ${SUBAGENT_DEFINITION_LIMITS.perUser} custom sub-agents, the most one user keeps. They can delete one in Studio > Sub-agents first.`,
+  [CODES.definitionLimit]: `The user has ${SUBAGENT_DEFINITION_LIMITS.perUser} custom sub-agents, the most one user keeps. They can delete one in Settings > Sub-agents first.`,
   [CODES.definitionConflict]: "The custom sub-agent changed since the version you passed, so nothing was saved. Its current definition is below; edit again from it with its version.",
   [CODES.notFound]: "The user has no custom sub-agent with this name.",
   [CODES.catalogUnavailable]: "The user's models could not be read right now, so nothing was saved. Try once more; if it fails again, tell the user.",
@@ -272,7 +272,7 @@ export async function executeSubagentManagement(service: AgentSubagentService, c
     if (options.signal?.aborted) throw error;
     logSelfServiceFailure(error);
     if (error instanceof ResourceChangeCardError) {
-      return refused(call, error.message, "The change could not be shown to the user as a card, so nothing was changed. The user can do it in Studio > Sub-agents.");
+      return refused(call, error.message, "The change could not be shown to the user as a card, so nothing was changed. The user can do it in Settings > Sub-agents.");
     }
     return refused(call, FAILED, "Saving the custom sub-agent failed; nothing was saved. Try once more; if it fails again, tell the user.");
   }

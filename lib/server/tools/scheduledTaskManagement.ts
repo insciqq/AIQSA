@@ -397,7 +397,7 @@ function refusalText(code: Refusal, detail?: string): string {
 
     case "scheduled_task_limit":
     case "scheduled_task_hourly_limit":
-      return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Studio > Automations.`;
+      return `${scheduledTaskErrorMessage(code)} The user can pause or delete automations in Settings > Automations.`;
     case "scheduled_task_model_unavailable":
     case "scheduled_task_model_cannot_report":
     case "scheduled_task_search_unavailable":

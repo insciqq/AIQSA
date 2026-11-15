@@ -105,7 +105,7 @@ function parseEdits(args: Record<string, unknown>): Edits | { message: string } 
       if (seen.has(path.toLowerCase())) return { message: `files lists ${JSON.stringify(path)} twice.` };
       seen.add(path.toLowerCase());
       if (typeof file.content !== "string") return { message: `files[${index}].content must be the file's text.` };
-      if (file.content.includes("\0")) return { message: `files[${index}].content must be text without NUL characters; binary files can be imported in Studio > Skills.` };
+      if (file.content.includes("\0")) return { message: `files[${index}].content must be text without NUL characters; binary files can be imported in Settings > Skills.` };
       const bytes = Buffer.from(file.content, "utf8");
       if (bytes.length > MANAGE_SKILL_LIMITS.fileBytes) return { message: `${path} is larger than 1 MiB, the most a chat save takes for one file.` };
       total += bytes.length;
@@ -136,7 +136,7 @@ function versionList(list: SkillSaveVersionList): Record<string, unknown> {
     versions: list.versions.map((version) => ({ createdAt: version.createdAt, files: version.files, revision: version.revision,
       ...(version.current ? { current: true } : {}), ...(version.changeNote ? { changeNote: version.changeNote } : {}),
       ...(version.restoredFrom ? { restoredFrom: version.restoredFrom } : {}) })),
-    ...(list.more ? { olderVersions: "Older versions exist; the user sees all of them in Studio > Skills." } : {}) };
+    ...(list.more ? { olderVersions: "Older versions exist; the user sees all of them in Settings > Skills." } : {}) };
 }
 
 function conflictDetails(conflict: SkillSaveConflict): Record<string, unknown> {
@@ -147,7 +147,7 @@ function conflictDetails(conflict: SkillSaveConflict): Record<string, unknown> {
 }
 
 const REFUSALS: Readonly<Record<Extract<AgentSkillRefusal, Readonly<{ kind: "refused" }>>["code"], string>> = {
-  skill_archived: "That Skill is archived. The user can restore it in Studio > Skills first, or it can be saved as a new Skill.",
+  skill_archived: "That Skill is archived. The user can restore it in Settings > Skills first, or it can be saved as a new Skill.",
   skill_not_available: "That Skill is not available to the user. Save it as a new Skill instead if the user wants one.",
   skill_restore_conflict: "The Skill changed after this answer read it, so nothing was restored. Tell the user its current version below; restore again with target set to this skillId and expectedVersion set to currentVersion only if they still want it.",
   skill_restore_not_own: "Only the user's own Skills can be restored. Another user's Skill can be saved as the user's own copy instead.",
@@ -177,7 +177,7 @@ function refusalResult(call: ModelToolCall, refusal: AgentSkillRefusal, restore:
         case "skill_file_unknown":
           return refused(call, refusal.code, `The Skill's version has no file ${(refusal.files ?? []).map((file) => JSON.stringify(file)).join(", ")} to remove.`);
         case "skill_binary_files_kept":
-          return refused(call, refusal.code, "This Skill has binary files that a chat save cannot keep. Remove them with removeFiles, or the user can change the Skill in Studio > Skills.",
+          return refused(call, refusal.code, "This Skill has binary files that a chat save cannot keep. Remove them with removeFiles, or the user can change the Skill in Settings > Skills.",
             { files: refusal.files ?? [] });
         case "skill_save_secret_detected":
           return refused(call, refusal.code, "A file contains the value of one of the user's saved secrets. Remove it; scripts read credentials from environment variables at run time.",
@@ -219,7 +219,7 @@ export async function executeManageSkill(service: AgentSkillService | undefined,
       const proposal = await service.proposeDelete(skillId);
       if (proposal.kind === "refused") {
         return refused(call, proposal.code, proposal.code === "skill_delete_not_own"
-          ? "Only the user's own Skills can be deleted. The user can stop using a colleague's Skill in Studio > Skills."
+          ? "Only the user's own Skills can be deleted. The user can stop using a colleague's Skill in Settings > Skills."
           : "That Skill is not available to the user.");
       }
       return { artifacts: [resourceChangeArtifact(proposal.card)], callId: call.id,
@@ -247,7 +247,7 @@ export async function executeManageSkill(service: AgentSkillService | undefined,
     if (options.signal?.aborted) throw error;
     logSelfServiceFailure(error);
     if (error instanceof ResourceChangeCardError) {
-      return refused(call, error.message, "The proposal could not be shown to the user as a card, so nothing was proposed. The user can do it in Studio > Skills.");
+      return refused(call, error.message, "The proposal could not be shown to the user as a card, so nothing was proposed. The user can do it in Settings > Skills.");
     }
     return refused(call, "skill_save_failed", "Saving the Skill failed; nothing was saved. Try once more; if it fails again, tell the user.");
   }

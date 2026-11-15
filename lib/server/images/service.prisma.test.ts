@@ -297,7 +297,7 @@ describe("durable conversational images", () => {
     expect(await admit(personal.plan)).toMatchObject({ providerModelId: chosen });
     // The default is no longer this user's effective choice.
     await expect(admit(following.plan)).rejects.toBeInstanceOf(ProviderAdmissionConflictError);
-    // A later Studio change affects only future admissions; the accepted binding stays.
+    // A later Settings change affects only future admissions; the accepted binding stays.
     await admit(personal.plan);
     await f.chooseImageModel(null);
     expect(await f.db.providerRunBinding.findFirstOrThrow({ where: { modelRunId: f.runId, bindingKey: "image" } }))
