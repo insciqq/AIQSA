@@ -220,7 +220,7 @@ describe("answer outputs v2", () => {
     expect(screen.getAllByRole("status").map(status => status.textContent)).toEqual(["Artifact wasn’t created. Creation was stopped."]);
   });
 
-  it("shows safe Sources under the actions row and Thinking above", () => {
+  it("shows safe Sources from the actions row and Thinking above", () => {
     render(
       <RunAnswerV2
         actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
@@ -239,11 +239,11 @@ describe("answer outputs v2", () => {
     const toggle = screen.getByTestId("answer-sources-toggle");
     expect(toolbar).toContainElement(toggle);
     expect(toggle).toHaveAccessibleName("Sources, 1 item");
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-haspopup", "dialog");
     fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle).toHaveAttribute("aria-controls", screen.getByTestId("answer-sources").id);
+    expect(screen.getByRole("dialog", { name: "Sources" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Cross-language retrieval" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     openProcess();
     expect(screen.getByTestId("answer-reasoning")).toHaveTextContent("Thinking");
     expect(screen.getByTestId("answer-reasoning").textContent).not.toContain("**");

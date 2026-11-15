@@ -563,7 +563,13 @@ test("DeepSeek Search API built in: setup with the key enables it without Add so
     const toggle = answer.getByTestId("answer-sources-toggle");
     await expect(toggle, "the answer shows its sources").toBeVisible({ timeout: 60_000 });
     await toggle.click();
-    summary.citedSources = await answer.getByTestId("answer-sources").getByRole("link").count();
+    const sheet = page.getByTestId("answer-sources");
+    await expect(sheet.getByRole("dialog", { name: "Sources" })).toBeVisible();
+    // Uncited sources wait behind their site rows; open the first one.
+    if (await sheet.getByTestId("answer-sources-cited").count() === 0) {
+      await sheet.getByTestId("answer-source-site").first().getByRole("button").click();
+    }
+    summary.citedSources = await sheet.getByRole("link").count();
     expect(summary.citedSources, "at least one cited source link").not.toBe(0);
   } finally {
     await page.goto("about:blank").catch(() => undefined);
@@ -677,7 +683,13 @@ test("DeepSeek Search API: one search through the new source, cited sources, one
     const toggle = answer.getByTestId("answer-sources-toggle");
     await expect(toggle, "the answer shows its sources").toBeVisible({ timeout: 60_000 });
     await toggle.click();
-    const links = answer.getByTestId("answer-sources").getByRole("link");
+    const sheet = page.getByTestId("answer-sources");
+    await expect(sheet.getByRole("dialog", { name: "Sources" })).toBeVisible();
+    // Uncited sources wait behind their site rows; open the first one.
+    if (await sheet.getByTestId("answer-sources-cited").count() === 0) {
+      await sheet.getByTestId("answer-source-site").first().getByRole("button").click();
+    }
+    const links = sheet.getByRole("link");
     summary.citedSources = await links.count();
     expect(summary.citedSources, "at least one cited source link").not.toBe(0);
     await page.screenshot({ path: testInfo.outputPath("deepseek-search-api-answer-sources.png") });

@@ -91,8 +91,12 @@ for (const viewport of [
     await expect(summary).toContainText("OpenAI (CodexLB) ×1 · 1 skipped");
     await expect(summary).not.toContainText("in progress");
     await page.getByTestId("answer-sources-toggle").click();
+    // Nothing is cited, so the sheet opens on the searched sites.
+    await page.getByRole("dialog", { name: "Sources" }).getByRole("button", { name: "example.com · 1" }).click();
     await expect(page.getByRole("link", { name: /Reference/ })).toHaveAttribute("href", "https://example.com/reference");
     await expectNoHorizontalOverflow(page);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Sources" })).toHaveCount(0);
     await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
     await page.screenshot({ path: testInfo.outputPath("search-counts-reloaded.png") });
     await summary.click();
