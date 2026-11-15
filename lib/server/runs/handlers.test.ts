@@ -798,6 +798,7 @@ describe("model run route handlers", () => {
     ["send", { enabled: false, reason: "user_declined" }, "user_declined"],
     ["send", { enabled: false, reason: "installation_disabled" }, "installation_disabled"],
     ["send", { enabled: false, reason: "model_no_tools" }, "model_no_tools"],
+    ["send", { enabled: false, reason: "connector" }, "connector"],
     ["send", { enabled: false, reason: "made_up" }, "unknown"],
     ["send", { enabled: false, reason: 7 }, "unknown"],
     ["send", { enabled: false }, "unknown"],

@@ -240,7 +240,8 @@ export function discordSendBody(input: Readonly<{
       ? { assistantId: input.newChatAssistantId, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } }
       : {}),
     timeZone: "UTC",
-    workspace: { enabled: false }
+    // The connector's rules leave out the Workspace (`lib/server/connectors/turn.ts`); the reason only names that in `run_accepted`.
+    workspace: { enabled: false, reason: "connector" }
   };
 }
 
