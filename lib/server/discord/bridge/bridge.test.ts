@@ -191,7 +191,7 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(run!.body).toEqual(discordSendBody({
       admissionId: `dc-${question.id}`, blocks: [{ text: sentText(run!.body), type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1"
     }));
-    expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: false } });
+    expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: false, reason: "connector" } });
     expect(sentText(run!.body)).toContain(`Discord thread "what is the release status?" in #agent-test, server "Example server".`);
     // The question line links the asking message (a merge request tool cites it).
     expect(sentText(run!.body)).toContain(
