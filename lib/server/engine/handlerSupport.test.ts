@@ -30,11 +30,16 @@ describe("the self-service tools' chats", () => {
     expect(selfServiceToolsFor(prepared(), { scheduled: false })).toEqual(all);
   });
 
-  it("never include a connector's turn, whose bridge cannot show their cards", () => {
-    for (const connectorTurn of ["telegram", "discord"] as const) {
-      expect(selfServiceToolsFor(prepared(), { connectorTurn })).toEqual([]);
-      expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { connectorTurn })).toEqual([]);
-    }
+  it("are what the same chat takes on the web in a Telegram turn, whose bot shows each change with its buttons", () => {
+    // Operator decision 2026-11-16: Telegram gets every web capability it can show.
+    expect(selfServiceToolsFor(prepared(), { connectorTurn: "telegram" })).toEqual(all);
+    expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { connectorTurn: "telegram" })).toEqual(["read_aiqsa_guide", "manage_skill"]);
+    expect(selfServiceToolsFor(prepared({}, { monitoringVerdictTool: true }), { connectorTurn: "telegram" })).toEqual([]);
+  });
+
+  it("never include a Discord turn, a service account's run with no one to confirm", () => {
+    expect(selfServiceToolsFor(prepared(), { connectorTurn: "discord" })).toEqual([]);
+    expect(selfServiceToolsFor(prepared({ assistant: { id: "a" } }), { connectorTurn: "discord" })).toEqual([]);
     expect(selfServiceToolsFor(prepared(), {})).toEqual(all);
   });
 });

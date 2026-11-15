@@ -6632,6 +6632,10 @@ enum TelegramCallbackKind {
   stop_run
   unlink_confirm
   open_settings
+  // Undo of a change an answer made to the user's own resources, and Confirm or Cancel of a proposal.
+  change_undo
+  change_confirm
+  change_cancel
 }
 
 enum TelegramRunDeliveryState {
