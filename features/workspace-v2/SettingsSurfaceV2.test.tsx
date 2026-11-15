@@ -1,9 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PowerAppShellV2Props, ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
 import type { Notice } from "@/components/app-shell/types";
+import { FakeEventSource } from "@/features/connect/connect.testFixtures";
 import { settingsSectionsV2 } from "@/features/library-v2/LibraryV2";
 import type { StudioNavigationV2 } from "@/features/library-v2/contracts";
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
@@ -49,10 +50,11 @@ const composer = {
   workspace: { available: false, loading: false }
 } as unknown as ShellComposerView;
 
-function shellProps(studio: StudioNavigationV2, telegramAvailable: boolean, notice: Notice | null): PowerAppShellV2Props {
+function shellProps(studio: StudioNavigationV2, telegramAvailable: boolean, notice: Notice | null, connect: boolean): PowerAppShellV2Props {
   return {
     session: {
       accountDisplayName: "Ada", accountEmail: "ada@example.test", accountId: "owner", adminEntryVisible: false,
+      connectEntryVisible: connect, connectInstallOrigin: connect ? "https://ai.example.com" : null,
       telegramAvailable, updateAccountDisplayName
     },
     settings: { ...settingsActions, library: null, memory: { open: false }, notice, studio, themeId: "dark" },
@@ -62,15 +64,19 @@ function shellProps(studio: StudioNavigationV2, telegramAvailable: boolean, noti
 }
 
 /** The shell's part: one Settings navigation, a gear and Settings over the chat. */
-function Shell({ notice = null, telegramAvailable = false }: Readonly<{ notice?: Notice | null; telegramAvailable?: boolean }>) {
+function Shell({ connect = false, notice = null, telegramAvailable = false }: Readonly<{
+  connect?: boolean;
+  notice?: Notice | null;
+  telegramAvailable?: boolean;
+}>) {
   const [open, setOpen] = useState(false);
   const studio = useStudioNavigation({
-    available: settingsSectionsV2({ telegramAvailable }),
+    available: settingsSectionsV2({ computersAvailable: connect, telegramAvailable }),
     onExit: () => setOpen(false),
     onSelect: () => setOpen(true)
   });
   return open
-    ? <LibrarySurfaceV2 composer={composer} props={shellProps(studio, telegramAvailable, notice)} />
+    ? <LibrarySurfaceV2 composer={composer} props={shellProps(studio, telegramAvailable, notice, connect)} />
     : (
       <>
         <button type="button" onClick={() => studio.open()}>Gear</button>
@@ -186,5 +192,42 @@ describe("the Settings surface", () => {
     fireEvent.click(tab("General"));
     fireEvent.click(tab("Data"));
     expect(screen.getByRole("button", { name: "Manage" })).toBeInTheDocument();
+  });
+
+  it("lists Computers only while AIQSA Connect is on, runs its live list only while it is open, and leaves when it is turned off", async () => {
+    const streams: FakeEventSource[] = [];
+    vi.stubGlobal("EventSource", class extends FakeEventSource {
+      constructor(url: string) {
+        super(url);
+        streams.push(this);
+      }
+    });
+    const { unmount } = render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Gear" }));
+    expect(screen.queryByRole("tab", { name: "Computers" })).toBeNull();
+    unmount();
+
+    render(<Shell connect />);
+    fireEvent.click(screen.getByRole("button", { name: "Gear" }));
+    const tail = within(screen.getByRole("tablist", { name: "Settings sections" })).getAllByRole("tab").slice(-3);
+    expect(tail.map(node => node.textContent)).toEqual(["Proxies", "Computers", "Claude Code & Codex"]);
+    expect(streams).toEqual([]);
+
+    fireEvent.click(tab("Computers"));
+    const section = await screen.findByTestId("settings-computers-panel");
+    expect(within(section).getByRole("heading", { level: 2, name: "Computers" })).toBeVisible();
+    // The install steps name the origin the server passed.
+    expect(within(section).getByTestId("connect-add-computer")).toHaveTextContent("ai.example.com");
+    expect(streams).toHaveLength(1);
+    fireEvent.click(tab("General"));
+    expect(streams[0]!.closed).toBe(true);
+
+    fireEvent.click(tab("Computers"));
+    expect(streams).toHaveLength(2);
+    act(() => streams[1]!.send("closed", { code: "connect_disabled" }));
+    await waitFor(() => expect(tab("General")).toHaveAttribute("aria-selected", "true"));
+    expect(view()).toBe("section");
+    expect(screen.queryByRole("tab", { name: "Computers" })).toBeNull();
+    expect(streams[1]!.closed).toBe(true);
   });
 });

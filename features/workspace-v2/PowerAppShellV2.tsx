@@ -301,6 +301,7 @@ export function PowerAppShellV2({
   accountEmail,
   adminEntryVisible = false,
   connectEntryVisible = false,
+  connectInstallOrigin = null,
   greetingPeriod = null,
   telegramAvailable = false
 }: {
@@ -308,7 +309,10 @@ export function PowerAppShellV2({
   accountDisplayName: string;
   accountEmail: string | null;
   adminEntryVisible?: boolean;
+  /** AIQSA Connect is on for this installation: Settings lists Computers and the composer offers a computer. */
   connectEntryVisible?: boolean;
+  /** The origin Settings › Computers names in its install commands; null when not known. */
+  connectInstallOrigin?: string | null;
   greetingPeriod?: GreetingPeriod | null;
   /** Settings lists Telegram. */
   telegramAvailable?: boolean;
@@ -1088,7 +1092,8 @@ export function PowerAppShellV2({
       void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
     }
   });
-  const settingsSections = useMemo(() => settingsSectionsV2({ telegramAvailable }), [telegramAvailable]);
+  const settingsSections = useMemo(() => settingsSectionsV2({ computersAvailable: connectEntryVisible, telegramAvailable }),
+    [connectEntryVisible, telegramAvailable]);
   const studio = useStudioNavigation({
     available: settingsSections,
     onExit() {
@@ -1371,6 +1376,7 @@ export function PowerAppShellV2({
     activeChatTitle,
     adminEntryVisible,
     connectEntryVisible,
+    connectInstallOrigin,
     telegramAvailable,
     dismissNotice: () => setNotice(null),
     notice,

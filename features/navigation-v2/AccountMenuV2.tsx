@@ -28,7 +28,8 @@ export function accountInitialsV2(label: string | null | undefined): string {
  * Center for administrators, and Sign out. Settings is an item only where
  * `onSettings` is passed: the chat list footer leaves it out because its gear
  * sits beside the entry. The chat list footer and Control Center show the
- * entry as a row with the account label; the Connect pages as an avatar.
+ * entry as a row with the account label; the pair page's header (its right
+ * end) as an avatar whose menu opens below it.
  */
 export function AccountMenuV2({
   accountId,
@@ -73,7 +74,7 @@ export function AccountMenuV2({
         aria-haspopup="menu"
         aria-label="Account menu"
         data-tooltip={variant === "avatar" ? accountLabel || "Account" : undefined}
-        data-tooltip-side={variant === "avatar" ? "right" : undefined}
+        data-tooltip-side={variant === "avatar" ? "left" : undefined}
         ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
       >

@@ -25,7 +25,7 @@ export function openBrowserEventSource(url: string): ConnectEventSource {
 const EVENT_NAMES = ["devices", "device", "closed", "ping"] as const satisfies
   readonly ConnectComputerEventsStreamEvent["event"][];
 
-/** Why the page must leave AIQSA Connect: the feature was turned off, or the sign-in ended. */
+/** Why the computer list must stop: the feature was turned off, or the sign-in ended. */
 export type ConnectLeaveReason = "disabled" | "signed_out";
 
 export type ConnectComputerFeedSnapshot = Readonly<{

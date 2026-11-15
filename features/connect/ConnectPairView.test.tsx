@@ -1,13 +1,12 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectPairView } from "./ConnectPairView";
-import { ConnectTestShell, jsonResponse, testShellValue } from "./connectShell.testFixtures";
+import { ConnectShell } from "./ConnectShell";
+import { jsonResponse } from "./connectComputers.testFixtures";
 
 const navigation = vi.hoisted(() => ({ push: vi.fn() }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/connect/pair", useRouter: () => ({ push: navigation.push }) }));
-vi.mock("next/link", () => ({
-  default: ({ children, href, ...props }: { children: React.ReactNode; href: string }) => <a href={href} {...props}>{children}</a>
-}));
+vi.mock("@/components/app-shell/sessionActions", () => ({ signOutCurrentSession: vi.fn() }));
 
 const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
 const pairing = {
@@ -30,9 +29,13 @@ afterEach(() => {
 });
 
 function renderPair(code: string | null) {
-  const shell = testShellValue([]);
-  render(<ConnectTestShell value={shell.value}><ConnectPairView code={code} /></ConnectTestShell>);
-  return shell;
+  const leave = vi.fn();
+  render(
+    <ConnectShell accountId="account-1" accountLabel="Dana" adminEntryVisible={false} onLeave={leave}>
+      <ConnectPairView code={code} />
+    </ConnectShell>
+  );
+  return { leave };
 }
 
 describe("ConnectPairView", () => {
@@ -50,7 +53,11 @@ describe("ConnectPairView", () => {
     expect(facts).toHaveTextContent("0.3.20");
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(await screen.findByTestId("connect-pair-approved")).toHaveTextContent("Use a computer");
+    const approved = await screen.findByTestId("connect-pair-approved");
+    expect(approved).toHaveTextContent("Use a computer");
+    // The computer now shows in Settings › Computers, a whole-page load into the chat shell.
+    expect(within(approved).getByRole("link", { name: "See your computers in Settings" })).toHaveAttribute("href", "/?library=computers");
+    expect(approved).not.toHaveTextContent("Open AIQSA Connect");
     const [url, init] = fetchMock.mock.calls[1]!;
     expect(url).toBe("/api/connect/pairings/by-code/BCDF-2345");
     expect(init?.method).toBe("POST");
@@ -100,7 +107,20 @@ describe("ConnectPairView", () => {
 
   it("leaves the mode when it was turned off", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ code: "connect_disabled" }, 403));
-    const { value } = renderPair("BCDF-2345");
-    await vi.waitFor(() => expect(value.leave).toHaveBeenCalledWith("disabled"));
+    const { leave } = renderPair("BCDF-2345");
+    await vi.waitFor(() => expect(leave).toHaveBeenCalledWith("disabled"));
+  });
+
+  it("stands alone: a slim header with Chats, the title and the account menu, and no rail", () => {
+    renderPair(null);
+    expect(screen.queryByTestId("connect-rail")).toBeNull();
+    expect(screen.queryByRole("navigation")).toBeNull();
+    const header = screen.getByTestId("connect-page-header");
+    expect(within(header).getByRole("link", { name: "Chats" })).toHaveAttribute("href", "/");
+    expect(within(header).getByRole("heading", { level: 1, name: "Connect a computer" })).toBeVisible();
+    fireEvent.click(within(header).getByRole("button", { name: "Account menu" }));
+    // No gear sits beside it here, so the menu keeps Settings.
+    expect(within(header).getByRole("menuitem", { name: "Settings" })).toBeVisible();
+    expect(within(header).getByRole("menuitem", { name: "Sign out" })).toBeVisible();
   });
 });

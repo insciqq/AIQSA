@@ -101,4 +101,22 @@ describe("opening Settings from the shell", () => {
     expect(screen.getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
     expect(surface).toHaveAttribute("data-view", "list");
   });
+
+  it("opens Settings › Computers where /connect sends, with the origin the server passed, only while AIQSA Connect is on", async () => {
+    window.history.replaceState(null, "", "/?library=computers");
+    const { unmount } = render(
+      <PowerAppShellV2 accountDisplayName="User" accountEmail="user@example.test" accountId="user-1"
+        connectEntryVisible connectInstallOrigin="https://ai.example.com" />
+    );
+    await shownSection("Computers");
+    expect(await screen.findByTestId("connect-add-computer")).toHaveTextContent("ai.example.com");
+    expect(window.location.search).toBe("");
+    unmount();
+
+    window.history.replaceState(null, "", "/?library=computers");
+    render(shell());
+    await screen.findByTestId("library-v2");
+    expect(screen.queryByRole("tab", { name: "Computers" })).toBeNull();
+    expect(screen.queryByTestId("settings-computers-panel")).toBeNull();
+  });
 });

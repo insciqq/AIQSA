@@ -2,7 +2,6 @@ import { isValidElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  appBaseUrl: "https://ai.example.com/",
   notFound: vi.fn((): never => {
     throw new Error("NEXT_NOT_FOUND");
   }),
@@ -27,10 +26,8 @@ vi.mock("../(chat)/viewer", () => ({
   },
   loadChatViewer: async () => mocks.viewer
 }));
-vi.mock("@/lib/server/auth/config", () => ({ getAuthConfig: () => ({ appBaseUrl: mocks.appBaseUrl, configured: true }) }));
 vi.mock("next/navigation", () => ({ notFound: mocks.notFound, redirect: mocks.redirect }));
 vi.mock("@/features/connect/ConnectShell", () => ({ ConnectShell: () => null }));
-vi.mock("@/features/connect/ConnectHomeView", () => ({ ConnectHomeView: () => null }));
 vi.mock("@/features/connect/ConnectPairView", () => ({ ConnectPairView: () => null }));
 
 import { ConnectPairView } from "@/features/connect/ConnectPairView";
@@ -49,7 +46,6 @@ const viewer = (connectEnabled: boolean) => ({
 
 afterEach(() => {
   mocks.viewer = null;
-  mocks.appBaseUrl = "https://ai.example.com/";
   vi.clearAllMocks();
 });
 
@@ -64,17 +60,30 @@ describe("AIQSA Connect routes", () => {
     await expect(ConnectLayout({ children: "page" })).rejects.toThrow("NEXT_NOT_FOUND");
   });
 
-  it("render the shell with the installation origin", async () => {
+  it("render the pair page's shell with the account", async () => {
     mocks.viewer = viewer(true);
     const shell = element(await ConnectLayout({ children: "page" }));
     expect(shell.type).toBe(ConnectShell);
     expect(shell.props).toMatchObject({
       accountId: "user-1",
       accountLabel: "Dana",
-      children: "page",
-      installOrigin: "https://ai.example.com"
+      adminEntryVisible: false,
+      children: "page"
     });
-    expect(shell.props).not.toHaveProperty("browserNotificationsEnabled");
+    expect(shell.props).not.toHaveProperty("installOrigin");
+  });
+
+  it("send /connect to Settings › Computers, without other query parameters", async () => {
+    mocks.viewer = viewer(true);
+    await expect(ConnectPage({ searchParams: Promise.resolve({ tab: "x", utm_source: "mail" }) })).rejects.toThrow("NEXT_REDIRECT");
+    expect(mocks.redirect).toHaveBeenCalledOnce();
+    expect(mocks.redirect).toHaveBeenCalledWith("/?library=computers");
+  });
+
+  it("answer /connect with not found while the feature is off", async () => {
+    mocks.viewer = viewer(false);
+    await expect(ConnectPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("NEXT_NOT_FOUND");
+    expect(mocks.redirect).not.toHaveBeenCalled();
   });
 
   it("leave sign-in to the page, which returns to its exact address", async () => {
@@ -83,6 +92,7 @@ describe("AIQSA Connect routes", () => {
     const location = new URL(mocks.redirect.mock.calls[0]![0], "https://aiqsa.invalid");
     expect(location.searchParams.get("next")).toBe("/connect/pair?code=BCDF-2345");
     await expect(ConnectPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("NEXT_REDIRECT");
+    expect(new URL(mocks.redirect.mock.calls[1]![0], "https://aiqsa.invalid").searchParams.get("next")).toBe("/connect");
   });
 
   it("pass one pairing code and refuse repeated ones", async () => {
@@ -91,12 +101,5 @@ describe("AIQSA Connect routes", () => {
     const repeated = element(await ConnectPairPage({ searchParams: Promise.resolve({ code: ["A", "B"] }) }));
     expect(repeated.type).toBe(ConnectPairView);
     expect(repeated.props.code).toBeNull();
-  });
-
-  it("offer no install commands for an installation address that is not a plain origin", async () => {
-    mocks.viewer = viewer(true);
-    mocks.appBaseUrl = "https://user:secret@ai.example.com/";
-    const shell = element(await ConnectLayout({ children: "page" }));
-    expect(shell.props).toMatchObject({ installOrigin: null });
   });
 });

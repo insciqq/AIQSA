@@ -69,6 +69,7 @@ import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
 import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnectionSection";
+import { ConnectComputersSection } from "@/features/connect/ConnectComputersSection";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
@@ -188,6 +189,9 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   const [instructionsSubview, setInstructionsSubview] = useState<LibrarySubviewV2 | null>(null);
   const [skillDirty, setSkillDirty] = useState(false);
   const [skillExit, setSkillExit] = useState<(() => void) | null>(null);
+  // An administrator turned AIQSA Connect off while Computers was open: the
+  // section leaves to General and is no longer listed until the next load.
+  const [computersOff, setComputersOff] = useState(false);
   useBeforeUnloadGuard(formDirty || formBusy || personalMcpBusy !== null);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(assistantView?.dirty);
@@ -286,6 +290,14 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       )
     },
     { id: "proxies", label: "Proxies", content: <ProxiesSettingsSectionV2 key={`${session.accountId}:${formKey}`} onBusyChange={setFormBusy} onDirtyChange={setFormDirty} /> },
+    ...(session.connectEntryVisible && !computersOff ? [{
+      id: "computers" as const,
+      label: "Computers",
+      content: (
+        <ConnectComputersSection key={session.accountId} installOrigin={session.connectInstallOrigin ?? null}
+          onDisabled={() => { setComputersOff(true); navigateToSection("general"); }} />
+      )
+    }] : []),
     ...(session.telegramAvailable ? [{ id: "telegram" as const, label: "Telegram", content: <TelegramConnectionSection /> }] : []),
     { id: "apps", label: "Claude Code & Codex", content: <ConnectedAppsSettingsSectionV2 accountId={session.accountId} onBusyChange={setFormBusy} /> },
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
