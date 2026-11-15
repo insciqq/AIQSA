@@ -681,7 +681,8 @@ test("webhook automations show their triggers, create without a schedule and iss
 
 test("an unread scheduled chat shows a dot, clears only its rendered result and its task's chat says how to change the task", async ({ page }, info) => {
   const api = await prepare(page, listFixture);
-  if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
+  // Below 1024px the chat list is a drawer that starts closed.
+  if ((page.viewportSize()?.width ?? 0) < 1024) await page.getByRole("button", { name: "Open sidebar" }).click();
   const row = page.getByRole("treeitem", { name: "Weekday news brief", exact: true });
   await expect(row).toHaveAccessibleDescription("New automation result");
   await captureState(page, info, "scheduled-navigation-unread", { sizes: [{ width: 1440, height: 900 }] });
@@ -721,10 +722,13 @@ test("an unread scheduled chat shows a dot, clears only its rendered result and 
     }
   });
   await chip.click();
-  await expect(page.getByTestId("library-v2").getByRole("tab", { name: "Automations" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Automations" }))
+    .toHaveAttribute("aria-selected", "true");
+  // The chip names its section, so a narrow screen shows it rather than the list of sections.
+  await expect(page.getByTestId("library-v2")).toHaveAttribute("data-view", "section");
   await page.getByRole("button", { name: "Back to chat", exact: true }).click();
   await expect(hint).toBeVisible();
-  // Edit task opens that task's editor in Studio › Scheduled.
+  // Edit task opens that task's editor in Settings › Automations.
   await editTask.click();
   const sheet = page.getByTestId("scheduled-task-sheet");
   await expect(sheet.getByRole("dialog", { name: "Edit automation", exact: true })).toBeVisible();
@@ -850,7 +854,8 @@ test("monitoring tasks show their type, the editor offers Type and the tool swit
 
 test("a monitoring chat folds checks with no update and recovered failures into rows and shows them unchanged on request", async ({ page }, info) => {
   await prepare(page, monitoringFixture, "light", [chatFixture(), watchChatFixture()]);
-  if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
+  // Below 1024px the chat list is a drawer that starts closed.
+  if ((page.viewportSize()?.width ?? 0) < 1024) await page.getByRole("button", { name: "Open sidebar" }).click();
   await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
   const thread = page.getByTestId("conversation-thread");
   await expect(thread.getByText("Release 1.5.0 is out:")).toBeVisible();
@@ -916,7 +921,8 @@ test("a monitoring chat folds checks with no update and recovered failures into 
 
 test("a monitoring chat whose quiet checks are left out folds the failures they followed and keeps a later one open", async ({ page }, info) => {
   await prepare(page, monitoringFixture, "light", [chatFixture(), servedWatchChatFixture()]);
-  if ((page.viewportSize()?.width ?? 0) < 768) await page.getByRole("button", { name: "Open sidebar" }).click();
+  // Below 1024px the chat list is a drawer that starts closed.
+  if ((page.viewportSize()?.width ?? 0) < 1024) await page.getByRole("button", { name: "Open sidebar" }).click();
   await page.getByRole("treeitem", { name: "Release watch", exact: true }).click();
   const thread = page.getByTestId("conversation-thread");
   await expect(page.getByTestId("scheduled-quiet-checks")).toContainText("Checked 24 times, no change · last 09:00");

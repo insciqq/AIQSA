@@ -1024,7 +1024,7 @@ test("a default Assistant starts every new personal chat with its intro; Remove 
     await expect(selector(page)).toHaveAttribute("data-state", "empty");
     await runAccountMenuAction(page, "Chat defaults");
     await expect(row.getByRole("status")).toHaveText("No longer available");
-    await captureState(page, testInfo, "studio-chat-defaults-unavailable-assistant", {
+    await captureState(page, testInfo, "settings-chat-defaults-unavailable-assistant", {
       anchor: row,
       atEachSize: async ({ size }) => {
         await expect(row.getByRole("button", { name: "Clear" }), sizeLabel(size)).toBeVisible();
@@ -1080,7 +1080,7 @@ test("an unavailable Assistant blocks sending with a neutral notice for a consum
     await expect(selector(consumerPage)).toHaveAccessibleName(/^Assistant unavailable/u);
     await expect(notice(consumerPage)).toContainText("This Assistant isn't available to you right now.");
     await expect(notice(consumerPage)).not.toContainText(missing.displayName);
-    await expect(notice(consumerPage).getByRole("button", { name: "Open in Studio" })).toHaveCount(0);
+    await expect(notice(consumerPage).getByRole("button", { name: "Open in Settings" })).toHaveCount(0);
     await captureState(consumerPage, testInfo, "chat-assistant-unavailable-consumer", {
       atEachSize: async ({ size }) => {
         await expectWithinViewport(consumerPage, notice(consumerPage).getByRole("button", { name: "Choose another" }));
@@ -1095,7 +1095,7 @@ test("an unavailable Assistant blocks sending with a neutral notice for a consum
     await expect(selector(ownerPage)).toHaveAccessibleName(`Assistant unavailable: ${retired.name}`);
     await expect(notice(ownerPage)).toContainText(`${missing.displayName} isn't available.`);
     await expect(notice(ownerPage)).toContainText("Fix the Assistant or continue without it.");
-    await expect(notice(ownerPage).getByRole("button", { name: "Open in Studio" })).toBeEnabled();
+    await expect(notice(ownerPage).getByRole("button", { name: "Open in Settings" })).toBeEnabled();
     await captureState(ownerPage, testInfo, "chat-assistant-unavailable-owner", {
       atEachSize: async () => {
         await expectWithinViewport(ownerPage, notice(ownerPage).getByRole("button", { name: "Continue without the Assistant" }));

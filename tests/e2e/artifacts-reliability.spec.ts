@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
 import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { runAccountMenuAction } from "./shell/page";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
@@ -168,9 +169,7 @@ test("runtime repair carries details through tab storage, and duplicate thumbnai
     await page.getByRole("button", { name: "Remove artifact edit" }).click();
     const close = page.getByRole("button", { name: "Close artifact", exact: true });
     if (await close.isVisible()) await close.click();
-    await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
-    const library = page.getByTestId("library-v2");
-    await library.getByRole("tab", { name: "Artifacts", exact: true }).click();
+    await runAccountMenuAction(page, "Artifacts");
     const list = page.getByTestId("library-artifacts-panel");
     await list.getByRole("searchbox", { name: "Search artifacts" }).fill(value.artifact.title);
     await expect(list.locator("iframe.v2-artifact-thumbnail-frame").first()).toBeVisible();
