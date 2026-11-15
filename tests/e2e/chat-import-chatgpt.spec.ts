@@ -178,9 +178,8 @@ async function cleanup(page: Page) {
 }
 
 async function importZip(page: Page): Promise<Locator> {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByRole("dialog", { name: "Settings" });
-  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { exact: true, name: "Data" }).click();
+  await runAccountMenuAction(page, "Data");
+  const settings = page.getByTestId("library-v2");
   await settings.getByTestId("settings-import-input").setInputFiles({ buffer: exportZip(), mimeType: "application/zip", name: "chatgpt-export.zip" });
   const report = settings.getByTestId("chat-import-report");
   await expect(report).toBeVisible({ timeout: 60_000 });
@@ -202,7 +201,8 @@ test("a sharded ChatGPT export imports with branches, citation links and counted
   // Branches: question, two sibling answers (a branch, never merged), edited question, its answer; image chat: 2.
   await expect(report).toContainText("Imported 2 chats (7 messages).");
   await expect(report).toContainText("Not imported, marked in the messages: 1 image, 1 empty chat.");
-  await page.getByRole("button", { name: "Close settings" }).click();
+  await page.getByTestId("library-v2").getByRole("button", { name: "Back to chat", exact: true }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 
   const branched = (await listChats(page)).find((chat) => chat.title === `${PREFIX} branches`);
   expect(branched).toBeTruthy();

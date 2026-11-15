@@ -75,9 +75,8 @@ async function contextFor(browser: Browser, baseURL: string, list: ListName, the
 async function openPersonal(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByTestId("app-shell")).toBeVisible();
-  await runAccountMenuAction(page, "Settings");
-  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Proxies", exact: true }).click();
-  return page.getByTestId("proxy-list-personal");
+  await runAccountMenuAction(page, "Proxies");
+  return page.getByTestId("library-v2").getByTestId("proxy-list-personal");
 }
 
 async function openAdministrator(page: Page): Promise<Locator> {
@@ -350,7 +349,7 @@ test("a member sees an administrator proxy by name only, and manages their own",
     await expect(panel).not.toContainText(SILENT_HOST);
     await expect(panel).not.toContainText(login);
 
-    const settings = page.getByRole("dialog", { name: "Settings" });
+    const settings = page.getByTestId("library-v2");
     await panel.getByRole("button", { name: "Add proxy" }).click();
     const form = panel.getByRole("form");
     await form.getByLabel("Name").fill(ownName);
@@ -364,6 +363,15 @@ test("a member sees an administrator proxy by name only, and manages their own",
     await expect(settings).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(form.getByLabel("Name")).toBeFocused();
+
+    // Leaving Settings with the unsaved proxy asks first; Keep editing keeps the form.
+    await settings.getByRole("button", { name: "Back to chat", exact: true }).click();
+    const leave = page.getByRole("dialog", { name: "Unsaved proxy changes" });
+    await expect(leave).toBeVisible();
+    await leave.getByRole("button", { name: "Keep editing", exact: true }).click();
+    await expect(leave).toHaveCount(0);
+    await expect(settings).toBeVisible();
+    await expect(form.getByLabel("Name")).toHaveValue(ownName);
 
     await form.getByLabel("Host").fill(SILENT_HOST);
     await form.getByRole("button", { name: "Save proxy" }).click();

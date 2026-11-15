@@ -118,7 +118,7 @@ test("a late restore preserves the other archived chat that is now being read", 
   });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
-  const settings = page.getByRole("dialog", { name: "Settings" });
+  const settings = page.getByTestId("library-v2");
   await settings.getByRole("button", { name: "Manage" }).click();
   const archive = settings.getByTestId("settings-archived-panel");
   await archive.getByRole("button", { name: `Open preview: ${archivedSummary.title}` }).click();
@@ -150,9 +150,9 @@ test("Archived chats is a focus-safe Data task with list, preview, and restore",
   await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  const settings = page.getByRole("dialog", { name: "Settings" });
+  const settings = page.getByTestId("library-v2");
   await settings.getByRole("button", { name: "Manage" }).click();
-  await expect(settings.getByRole("heading", { name: "Data / Archived chats" })).toBeVisible();
+  await expect(settings.getByRole("navigation", { name: "Settings location" })).toHaveText("Data / Archived chats");
   await expect(settings.getByRole("button", { name: "Back to Data" })).toBeFocused();
   const archive = settings.getByTestId("settings-archived-panel");
   await expect(archive.getByText(/Last message Sep 2, 2026 · 2 messages/u)).toBeVisible();
@@ -181,7 +181,7 @@ test("Archived chat controls stay reachable on mobile and nest permanent deletio
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
 
-  const settings = page.getByTestId("settings-v2");
+  const settings = page.getByTestId("library-v2");
   await settings.getByRole("button", { name: "Manage" }).click();
   const archive = settings.getByTestId("settings-archived-panel");
   await expect(archive.getByRole("button", { name: "Open preview: Quarterly evidence review" })).toBeVisible();
@@ -200,10 +200,14 @@ test("Archived chat controls stay reachable on mobile and nest permanent deletio
   await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
   const confirmation = page.getByRole("dialog", { name: "Delete this chat permanently?" });
   await expect(confirmation).toBeVisible();
-  await expect(settings).toHaveAttribute("aria-hidden", "true");
+  // The confirmation isolates the page: Settings beneath it leaves the accessibility tree and takes no input.
+  const back = settings.getByRole("button", { name: "Back to Data" });
+  await expect(back).toHaveCount(0);
+  expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(true);
   await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(confirmation).toHaveCount(0);
-  await expect(settings).not.toHaveAttribute("aria-hidden", "true");
+  await expect(back).toBeVisible();
+  expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(false);
   await expect(archive.getByRole("button", { name: "Actions: Quarterly evidence review" })).toBeFocused();
 
   await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();

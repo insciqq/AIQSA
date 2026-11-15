@@ -54,16 +54,15 @@ async function login(page: Page, email: string, password: string) {
 }
 
 async function openSoundSettings(page: Page) {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "General", exact: true }).click();
+  await runAccountMenuAction(page, "General");
+  const settings = page.getByTestId("library-v2");
   await expect(settings.getByRole("switch", { name: "Answer sound" })).toBeEnabled();
   return settings;
 }
 
 async function closeSettings(page: Page) {
-  await page.getByRole("button", { name: "Close settings", exact: true }).click();
-  await expect(page.getByTestId("settings-v2")).toHaveCount(0);
+  await page.getByTestId("library-v2").getByRole("button", { name: "Back to chat", exact: true }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 }
 
 test("ordinary accounts persist mute and choice, explicitly audition native audio, and retain completion visuals", async ({ browser }) => {

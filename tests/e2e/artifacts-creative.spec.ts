@@ -3,6 +3,7 @@ import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
 import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
 
@@ -228,8 +229,7 @@ test("artifact requests and independent navigation remain blocked on every viewe
       await page.goto(surface === "standalone" ? fixture.privatePath : surface === "public" ? publication : `/c/${fixture.chatId}`);
       if (surface === "chat") await page.getByRole("button", { name: "Open artifact: " + fixture.artifact.title, exact: true }).click();
       if (surface === "library") {
-        await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
-        await page.getByTestId("library-v2").getByRole("tab", { name: "Artifacts", exact: true }).click();
+        await runAccountMenuAction(page, "Artifacts");
         await page.getByTestId("library-artifacts-panel").getByRole("searchbox", { name: "Search artifacts" }).fill(fixture.artifact.title);
         await page.getByRole("button", { name: "Open " + fixture.artifact.title, exact: true }).click();
       }

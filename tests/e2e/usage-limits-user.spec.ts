@@ -118,9 +118,8 @@ for (const viewport of [
       await page.screenshot({ path: testInfo.outputPath("02-composer-critical.png") });
       await expectNoPageOverflow(page);
 
-      await runAccountMenuAction(page, "Settings");
-      await page.getByTestId("settings-v2").getByRole("button", { name: "Account", exact: true }).click();
-      const block = page.getByTestId("settings-usage-limits");
+      await runAccountMenuAction(page, "Account");
+      const block = page.getByTestId("library-v2").getByTestId("settings-usage-limits");
       await block.scrollIntoViewIfNeeded();
       await expect(block).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath("03-settings.png") });
