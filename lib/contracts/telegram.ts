@@ -46,7 +46,10 @@ export const TELEGRAM_CALLBACK_KINDS = [
   "toggle_agent",
   "stop_run",
   "unlink_confirm",
-  "open_settings"
+  "open_settings",
+  "change_undo",
+  "change_confirm",
+  "change_cancel"
 ] as const;
 export type TelegramCallbackKind = (typeof TELEGRAM_CALLBACK_KINDS)[number];
 export const telegramCallbackKindSchema = z.enum(TELEGRAM_CALLBACK_KINDS);

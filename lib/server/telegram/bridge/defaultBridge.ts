@@ -1,5 +1,6 @@
 import { registerTelegramAgentStatus } from "../agentStatus";
 import { registerTelegramApprovals } from "../approvals";
+import { lazyTelegramChangeGateway, registerTelegramChanges } from "../changes";
 import { telegramControlHooks } from "../control/hooks";
 import type { TelegramDefaults } from "../defaultTelegram";
 import { telegramHandlerRegistry } from "../dispatcher";
@@ -45,11 +46,17 @@ export function startTelegramChatBridge(telegram: TelegramBridgeDefaults): Teleg
     }))
   });
   const registry = telegramHandlerRegistry();
-  // Approvals, the Workspace status and answer files follow the bridge's runs and leave with its handlers.
+  // Approvals, change messages, the Workspace status and answer files follow the bridge's runs and leave with its handlers.
   const removers = [
     bridge.register(registry),
     registry.registerMessage(media),
     registerTelegramApprovals({ access: telegram.access, conversation: bridge.conversation, registry, sessions: telegram.sessions }),
+    registerTelegramChanges({
+      access: telegram.access, answer: (input) => gateway.answer(input), registry, sessions: telegram.sessions,
+      gateway: lazyTelegramChangeGateway(async () => (await import("../changes/defaultGateway")).createDefaultTelegramChangeGateway({
+        access: telegram.access
+      }))
+    }),
     registerTelegramAgentStatus({
       access: telegram.access, messageRefs: telegram.messageRefs, runLinks: telegram.runLinks, sessions: telegram.sessions
     }),

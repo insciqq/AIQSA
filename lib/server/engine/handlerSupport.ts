@@ -41,18 +41,22 @@ export type NativeEngineHandlerDeps = Readonly<{
 }>;
 
 /**
- * The self-service tools a run takes: all of them in an interactive web run
- * of a personal or temporary chat; in an Assistant chat only the guide and
- * Skill saves (operator decision 2026-10-29), because the Assistant's
- * instructions carry its author's authority and a replaced secret or an
- * edited Assistant has no Undo, while a Skill save shows its changes with
- * Undo. Scheduled occurrences and connector turns (Telegram, Discord: a
- * bridge cannot show their cards or Undo) take none, and every change fences
- * its run again as it commits (`selfServiceRunAllowedInTransaction`).
+ * The self-service tools a run takes: all of them in an interactive run of a
+ * personal or temporary chat, on the web or in Telegram; in an Assistant chat
+ * only the guide and Skill saves (operator decision 2026-10-29), because the
+ * Assistant's instructions carry its author's authority and a replaced secret
+ * or an edited Assistant has no Undo, while a Skill save shows its changes
+ * with Undo. A Telegram turn takes what the same chat takes on the web
+ * (operator decision 2026-11-16): the bot shows each change as a message with
+ * Undo, Confirm and Cancel buttons (`lib/server/telegram/changes/`).
+ * Scheduled occurrences and Discord turns (a service account's runs, with no
+ * one to confirm) take none, and every change fences its run again as it
+ * commits (`selfServiceRunAllowedInTransaction`).
  */
 export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
   options: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}): readonly string[] {
-  if (options.scheduled === true || options.connectorTurn !== undefined || prepared.normalizedRequest.monitoringVerdictTool) return [];
+  const connectorWithoutChanges = options.connectorTurn !== undefined && options.connectorTurn !== "telegram";
+  if (options.scheduled === true || connectorWithoutChanges || prepared.normalizedRequest.monitoringVerdictTool) return [];
   if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
   // Custom sub-agents change like the user's other resources, in the same chats (`managementTools.ts`).
   return [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...subagentManagementToolNames({ assistant: false })];

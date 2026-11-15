@@ -1947,7 +1947,8 @@ export async function prepareRun(
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   // Frozen for every run with tools, whichever path admits it: a matching site must not go direct just because this
-  // is a scheduled or Telegram turn. Those take no `manage_proxy`, as for every self-service tool (`selfServiceToolsFor`).
+  // is a scheduled or connector turn. Scheduled and Discord turns take no `manage_proxy`, as for every self-service tool
+  // (`selfServiceToolsFor`).
   const proxyPlan = fetchUrlOffered && deps.proxies ? await deps.proxies.planForRun(input.userId) : null;
   let fetchUrlPlan: FetchUrlPlan | undefined;
   if (fetchUrlOffered && scheduledOccurrence) {

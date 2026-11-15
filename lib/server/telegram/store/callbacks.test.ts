@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { TELEGRAM_CALLBACK_DATA_PATTERN } from "../../../contracts/telegram";
 import {
-  createPrismaTelegramCallbackStore, newTelegramCallbackId, normalizeTelegramCallbackPayload, TelegramCallbackPayloadError
+  createPrismaTelegramCallbackStore, newTelegramCallbackId, normalizeTelegramCallbackPayload, TELEGRAM_CALLBACK_GROUP_KEY,
+  telegramCallbackGroup, TelegramCallbackPayloadError
 } from "./callbacks";
 
 const NOW = new Date("2026-10-19T08:00:00.000Z");
@@ -77,5 +78,22 @@ describe("Telegram button rows", () => {
     });
     delegate.updateMany.mockResolvedValueOnce({ count: 0 });
     await expect(callbacks.consume({ id: "A".repeat(22), now: NOW })).resolves.toBe(false);
+  });
+
+  it("consumes a grouped button with every button of its group, in one conditional update", async () => {
+    const { delegate, store: callbacks } = store(null);
+    const resolved = { linkId: "link-1", payload: { change: "x", [TELEGRAM_CALLBACK_GROUP_KEY]: "group-1" } };
+    const group = telegramCallbackGroup(resolved);
+    expect(group).toEqual({ linkId: "link-1", value: "group-1" });
+    expect(telegramCallbackGroup({ linkId: "link-1", payload: { change: "x" } })).toBeUndefined();
+    delegate.updateMany.mockResolvedValueOnce({ count: 2 });
+    await expect(callbacks.consume({ group, id: "A".repeat(22), now: NOW })).resolves.toBe(true);
+    expect(delegate.updateMany).toHaveBeenCalledWith({
+      data: { consumedAt: NOW },
+      where: { consumedAt: null, expiresAt: { gt: NOW }, linkId: "link-1", payload: { equals: "group-1", path: [TELEGRAM_CALLBACK_GROUP_KEY] } }
+    });
+    // Its other button was pressed first: the whole group is used.
+    delegate.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(callbacks.consume({ group, id: "B".repeat(22), now: NOW })).resolves.toBe(false);
   });
 });

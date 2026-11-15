@@ -98,13 +98,19 @@ describe("native harness and self-service tools", () => {
     expect(without.definitions().map((tool) => tool.name)).toEqual(expect.arrayContaining(["save_skill"]));
     expect(without.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
     expect(without.replacement?.("save_skill")).toBeUndefined();
-    // A connector's turn takes neither: its bridge shows no change card.
-    for (const connectorTurn of ["telegram", "discord"] as const) {
-      const turn = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator },
-        { connectorTurn }));
-      expect(turn.definitions().map((tool) => tool.name)).not.toContain("save_skill");
-      expect(turn.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
-    }
+    // A Discord turn takes neither: its runs are a service account's, with no one to show a change to.
+    const discord = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator },
+      { connectorTurn: "discord" }));
+    expect(discord.definitions().map((tool) => tool.name)).not.toContain("save_skill");
+    expect(discord.definitions().map((tool) => tool.name)).not.toContain("manage_skill");
+    // A Telegram turn takes what the web chat takes (operator decision 2026-11-16): its bot shows the save with Undo.
+    const telegram = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), selfService: selfService().services,
+      workspace: fakeWorkspace().coordinator }, { connectorTurn: "telegram" }));
+    expect(telegram.definitions().map((tool) => tool.name)).toContain("manage_skill");
+    expect(telegram.definitions().map((tool) => tool.name)).not.toContain("save_skill");
+    const telegramWithout = await buildToolRegistry(input(workspaceChat, { secrets: secrets(), workspace: fakeWorkspace().coordinator },
+      { connectorTurn: "telegram" }));
+    expect(telegramWithout.definitions().map((tool) => tool.name)).toEqual(expect.arrayContaining(["save_skill"]));
   });
 
   it("declares each tool's own effects, approval-free, in one vocabulary", async () => {
