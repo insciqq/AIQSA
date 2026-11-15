@@ -550,7 +550,9 @@ describe("run lifecycle v2 presentation", () => {
     const phrases = runIds.map(runWaitingPhraseV2);
     expect(phrases.every((phrase) => (RUN_WAITING_PHRASES_V2 as readonly string[]).includes(phrase))).toBe(true);
     expect(new Set(phrases).size).toBeGreaterThan(3);
-    expect(RUN_WAITING_PHRASES_V2).toContain("Thinking…");
+    expect(RUN_WAITING_PHRASES_V2[0]).toBe("Thinking…");
+    expect(new Set(RUN_WAITING_PHRASES_V2).size).toBe(RUN_WAITING_PHRASES_V2.length);
+    expect(RUN_WAITING_PHRASES_V2.every((phrase) => phrase.endsWith("…"))).toBe(true);
     // The same run reads the same phrase on every render, event and reconnect.
     for (const runId of runIds.slice(0, 8)) {
       const phrase = runWaitingPhraseV2(runId);

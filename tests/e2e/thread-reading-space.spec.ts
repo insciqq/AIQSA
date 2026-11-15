@@ -1,4 +1,5 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
+import { RUN_WAITING_PHRASES_V2 } from "@/features/run-lifecycle-v2/runPresentation";
 import type { ThreadWorkspaceActivityEntry } from "../../lib/contracts/workspace";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { scrollMessage } from "./shell/thread";
@@ -9,7 +10,8 @@ import { signInWithLocalToken } from "./support/localAuth";
 const chatId = "reading-space-chat";
 const otherChatId = "reading-space-other";
 const timestamp = "2026-10-21T10:00:00.000Z";
-const waitingPhrase = /^(Thinking|Pondering|Mulling it over|Working on it|Considering|Reflecting|Deliberating|Musing)…$/u;
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+const waitingPhrase = new RegExp(`^(?:${RUN_WAITING_PHRASES_V2.map(escapeRegExp).join("|")})$`, "u");
 const earlierAnswer = Array.from({ length: 24 }, (_, index) =>
   `Earlier answer paragraph ${index + 1} keeps the thread taller than the screen.`).join("\n\n");
 const history = [
