@@ -1,7 +1,7 @@
 "use client";
 
 import { ConnectComputerFeed, type ConnectComputerFeedSnapshot } from "@/features/connect/connectDeviceFeed";
-import type { ConnectComputerSource } from "@/features/connect/connectShellContext";
+import type { ConnectComputerSource } from "@/features/connect/connectComputersContext";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 export type ComposerComputersV2 = ConnectComputerFeedSnapshot & Readonly<{
@@ -20,7 +20,7 @@ const idleSource: ConnectComputerSource = {
 
 /**
  * The user's computers for the composer's chip and picker, live through the
- * same `/api/connect/events` feed as `/connect`. The stream is open only while
+ * same `/api/connect/events` feed as Settings › Computers. The stream is open only while
  * `active` (a computer is chosen or the picker is open). Fixtures and tests
  * pass a fixed `source`.
  */

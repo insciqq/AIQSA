@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectComputerList } from "./ConnectDeviceList";
-import { ConnectTestShell, MAC_ID, jsonResponse, testComputers, testShellValue } from "./connectShell.testFixtures";
+import { ConnectTestComputers, MAC_ID, jsonResponse, testComputers, testComputersValue } from "./connectComputers.testFixtures";
 
 const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
 
@@ -16,8 +16,8 @@ afterEach(() => {
 });
 
 function renderList() {
-  const shell = testShellValue(testComputers());
-  render(<ConnectTestShell value={shell.value}><ConnectComputerList /></ConnectTestShell>);
+  const shell = testComputersValue(testComputers());
+  render(<ConnectTestComputers value={shell.value}><ConnectComputerList /></ConnectTestComputers>);
   return shell;
 }
 
@@ -77,20 +77,20 @@ describe("ConnectComputerList", () => {
   });
 
   it("separates loading and failure from an empty list", () => {
-    const loading = testShellValue(null);
-    render(<ConnectTestShell value={loading.value}><ConnectComputerList /></ConnectTestShell>);
+    const loading = testComputersValue(null);
+    render(<ConnectTestComputers value={loading.value}><ConnectComputerList /></ConnectTestComputers>);
     expect(screen.getByRole("status")).toHaveTextContent("Loading your computers");
     cleanup();
-    const failed = testShellValue(null);
+    const failed = testComputersValue(null);
     render(
-      <ConnectTestShell value={{ ...failed.value, snapshot: { computers: null, connection: "connecting", loadError: "network_error" } }}>
+      <ConnectTestComputers value={{ ...failed.value, snapshot: { computers: null, connection: "connecting", loadError: "network_error" } }}>
         <ConnectComputerList />
-      </ConnectTestShell>
+      </ConnectTestComputers>
     );
     expect(screen.getByRole("alert")).toHaveTextContent("AIQSA could not be reached");
     cleanup();
-    const empty = testShellValue([]);
-    render(<ConnectTestShell value={empty.value}><ConnectComputerList /></ConnectTestShell>);
+    const empty = testComputersValue([]);
+    render(<ConnectTestComputers value={empty.value}><ConnectComputerList /></ConnectTestComputers>);
     expect(screen.getByTestId("connect-no-computers")).toHaveTextContent("No computers yet");
   });
 });

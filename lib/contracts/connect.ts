@@ -246,8 +246,10 @@ export const CONNECT_DEVICES_PATH = `${CONNECT_BROWSER_API_PREFIX}/devices`;
 export const CONNECT_EVENTS_PATH = `${CONNECT_BROWSER_API_PREFIX}/events`;
 export const CONNECT_PAIRINGS_BY_CODE_PATH = `${CONNECT_BROWSER_API_PREFIX}/pairings/by-code`;
 
-// Pages and public downloads.
+// Pages and public downloads. `/connect` itself only redirects to Settings › Computers.
 export const CONNECT_PAGE_PATH = "/connect";
+/** Settings › Computers in the chat shell: the user's computers and how to add one. */
+export const CONNECT_SETTINGS_PATH = "/?library=computers";
 export const CONNECT_PAIR_PAGE_PATH = `${CONNECT_PAGE_PATH}/pair`;
 export const CONNECT_INSTALL_SCRIPT_PATH = `${CONNECT_PAGE_PATH}/install.sh`;
 export const CONNECT_CLIENT_DOWNLOAD_PREFIX = `${CONNECT_PAGE_PATH}/download`;

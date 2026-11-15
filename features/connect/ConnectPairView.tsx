@@ -2,18 +2,16 @@
 
 import { UiV2Button } from "@/components/ui-v2";
 import {
-  CONNECT_PAGE_PATH,
+  CONNECT_SETTINGS_PATH,
   connectPairPagePath,
   normalizeConnectUserCode,
   type ConnectPairingDecision,
   type ConnectPairingLookupResponse
 } from "@/lib/contracts/connect";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import { decideConnectPairing, lookupConnectPairing, type ConnectFailureCode } from "./connectApi";
-import { ConnectPageHeader } from "./ConnectShell";
-import { useConnectShell } from "./connectShellContext";
+import { ConnectPageHeader, useConnectLeave } from "./ConnectShell";
 import { connectErrorMessage, connectPlatformLabel } from "./connectText";
 
 type PairState =
@@ -73,7 +71,7 @@ function CodeForm({ initial }: Readonly<{ initial: string }>) {
 
 /** `/connect/pair?code=`: the user approves or denies a computer that ran `aiqsa-connect login`. */
 export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | null }>) {
-  const { leave } = useConnectShell();
+  const leave = useConnectLeave();
   const code = rawCode ? normalizeConnectUserCode(rawCode) : null;
   const [busy, setBusy] = useState<ConnectPairingDecision | null>(null);
   const [decisionError, setDecisionError] = useState<string | null>(null);
@@ -153,7 +151,10 @@ export function ConnectPairView({ code: rawCode }: Readonly<{ code: string | nul
           The AIQSA agent can now work on this computer in chats where you choose it with + → Use a computer.
           On macOS or Linux, run aiqsa-connect service install there to keep it running.
         </p>
-        <Link className="v2-connect-link v2-focusable mt-4 inline-block text-sm" href={CONNECT_PAGE_PATH}>Open AIQSA Connect</Link>
+        {/* The chat shell is another layout: a whole-page load, which opens the section from its address. */}
+        <a className="v2-connect-link v2-focusable mt-4 inline-block text-sm" href={CONNECT_SETTINGS_PATH}>
+          See your computers in Settings
+        </a>
       </div>
     );
   } else if (state.kind === "denied") {

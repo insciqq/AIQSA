@@ -59,6 +59,8 @@ export type ShellSessionView = {
   adminEntryVisible: boolean;
   /** AIQSA Connect is on for this installation. */
   connectEntryVisible?: boolean;
+  /** The origin Settings › Computers names in its install commands; null when not known. */
+  connectInstallOrigin?: string | null;
   /** Settings lists Telegram. */
   telegramAvailable?: boolean;
   dismissNotice(): void;

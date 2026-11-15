@@ -160,7 +160,7 @@ func describeAPIError(origin string, err error) string {
 	case protocol.CodeUnauthorized:
 		return "device revoked — run aiqsa-connect login"
 	case protocol.CodeClientOutdated:
-		return "this aiqsa-connect is too old for the server; install it again from AIQSA → AIQSA Connect"
+		return "this aiqsa-connect is too old for the server; install it again from AIQSA → Settings › Computers"
 	}
 	return fmt.Sprintf("AIQSA at %s refused the request (%s)", origin, apiErr.LogCode())
 }

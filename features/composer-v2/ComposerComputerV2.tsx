@@ -3,7 +3,7 @@
 import { UiV2Icon, UiV2MenuActions, type UiV2MenuAction } from "@/components/ui-v2";
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
-import type { ConnectComputerSource } from "@/features/connect/connectShellContext";
+import type { ConnectComputerSource } from "@/features/connect/connectComputersContext";
 import { connectFolderName } from "@/features/connect/connectText";
 import type { ChatComputerBinding, ConnectComputerWire } from "@/lib/contracts/computer";
 import { useState } from "react";

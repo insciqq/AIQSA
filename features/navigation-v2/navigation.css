@@ -1066,75 +1066,14 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Icon rail: only the Connect pages (features/connect/ConnectShell.tsx)  */
-/* still use it; the chat shell and Control Center have none.             */
-/* ---------------------------------------------------------------------- */
-.v2-rail {
-  position: relative;
-  z-index: 31;
-  display: flex;
-  width: 3.5rem;
-  min-height: 100dvh;
-  max-height: 100dvh;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
-  border-right: 1px solid var(--v2-color-pane-divider);
-  color: var(--v2-color-text2);
-  background: var(--v2-color-rail);
+/* The avatar entry sits at the right end of a page header (the pair
+   page, features/connect/ConnectShell.tsx); its menu opens below it. */
+.v2-navigation-account[data-variant="avatar"] {
+  flex: none;
+  margin-top: 0;
 }
 
-.v2-rail-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.v2-rail-bottom {
-  margin-top: auto;
-}
-
-.v2-rail-button {
-  display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 0.625rem;
-  color: var(--v2-color-text2);
-  background: transparent;
-  text-decoration: none;
-  cursor: pointer;
-  transition:
-    color var(--v2-motion-fast),
-    background-color var(--v2-motion-fast);
-}
-
-.v2-rail-button > .v2-icon {
-  width: 1.125rem;
-  height: 1.125rem;
-}
-
-.v2-rail-button:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
-}
-
-.v2-rail-button[aria-current="page"] {
-  color: var(--v2-color-text);
-  background: var(--v2-color-active);
-}
-
-/* The rail's account entry is the avatar only; its menu opens upward. */
-.v2-rail .v2-navigation-account {
-  margin-top: 0.25rem;
-}
-
-.v2-rail .v2-navigation-account-trigger {
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-trigger {
   width: 2.5rem;
   min-height: 2.5rem;
   justify-content: center;
@@ -1142,16 +1081,17 @@ html[data-motion="off"] .v2-sidebar-floats {
   border-radius: 0.625rem;
 }
 
-.v2-rail .v2-navigation-account-avatar {
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-avatar {
   width: 1.75rem;
   height: 1.75rem;
   font-size: 0.625rem;
 }
 
-.v2-rail .v2-navigation-account-menu {
-  right: auto;
-  bottom: 0;
-  left: calc(100% + 0.5rem);
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-menu {
+  top: calc(100% + 0.375rem);
+  right: 0;
+  bottom: auto;
+  left: auto;
   width: 13rem;
 }
 
@@ -1190,35 +1130,11 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 }
 
-/* Touch: the rail's destinations and account avatar are 44px targets
-   (6px either side inside the 56px rail). */
+/* Touch: the header's account avatar is a 44px target. */
 @media (hover: none), (pointer: coarse) {
-  .v2-rail-button {
-    width: 2.75rem;
-    height: 2.75rem;
-  }
-
-  .v2-rail .v2-navigation-account-trigger {
+  .v2-navigation-account[data-variant="avatar"] .v2-navigation-account-trigger {
     width: 2.75rem;
     min-height: 2.75rem;
-  }
-}
-
-/* A short touch screen (a phone on its side) keeps every 44px rail target
-   on screen: the targets sit edge to edge instead of 4px apart. */
-@media (max-height: 26rem) and ((hover: none) or (pointer: coarse)) {
-  .v2-rail {
-    gap: 0;
-    padding-top: 0.5rem;
-    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
-  }
-
-  .v2-rail-group {
-    gap: 0;
-  }
-
-  .v2-rail .v2-navigation-account {
-    margin-top: 0;
   }
 }
 

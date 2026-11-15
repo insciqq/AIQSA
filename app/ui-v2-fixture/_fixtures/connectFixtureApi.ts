@@ -1,4 +1,4 @@
-import type { ConnectComputerSource } from "@/features/connect/connectShellContext";
+import type { ConnectComputerSource } from "@/features/connect/connectComputersContext";
 import type { ConnectComputerWire } from "@/lib/contracts/computer";
 
 /**

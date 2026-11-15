@@ -58,10 +58,10 @@ func runLogout(inv *invocation) int {
 	switch {
 	case loadErr != nil:
 		fmt.Fprintln(inv.stdout, "Removed this computer's unreadable AIQSA credentials.")
-		fmt.Fprintln(inv.stdout, "If the computer is still listed in AIQSA → AIQSA Connect, remove it there.")
+		fmt.Fprintln(inv.stdout, "If the computer is still listed in AIQSA → Settings › Computers, remove it there.")
 	case revokeErr != nil:
 		fmt.Fprintf(inv.stdout, "Removed this computer's AIQSA credentials, but %s.\n", describeAPIError(creds.Origin, revokeErr))
-		fmt.Fprintln(inv.stdout, "The computer is still listed in AIQSA: remove it in AIQSA → AIQSA Connect. A running aiqsa-connect up keeps its connection until it stops.")
+		fmt.Fprintln(inv.stdout, "The computer is still listed in AIQSA: remove it in AIQSA → Settings › Computers. A running aiqsa-connect up keeps its connection until it stops.")
 	default:
 		fmt.Fprintf(inv.stdout, "Disconnected this computer from %s and removed its credentials.\n", creds.Origin)
 	}

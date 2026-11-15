@@ -207,7 +207,7 @@ export function ConnectAddComputer({ installOrigin }: Readonly<{ installOrigin: 
   return (
     <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-4" data-testid="connect-add-computer">
       <div>
-        <h2 className="text-base font-semibold text-ink" id={headingId}>Add a computer</h2>
+        <h3 className="text-base font-semibold text-ink" id={headingId}>Add a computer</h3>
         <p className="mt-1 max-w-2xl text-sm leading-6 text-ink-secondary">
           In a chat where you choose it, the AIQSA agent can then work with files and run commands on that computer,
           with your permissions on it.

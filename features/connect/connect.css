@@ -1,6 +1,6 @@
-/* AIQSA Connect: the computer list, adding a computer and pairing. */
+/* AIQSA Connect: Settings › Computers (the computer list, adding a computer) and the pair page. */
 
-/* Notch and home indicator: the mode's own shell sits inside the safe area. */
+/* Notch and home indicator: the pair page's own shell sits inside the safe area. */
 .v2-connect-shell {
   padding-top: env(safe-area-inset-top);
   padding-right: env(safe-area-inset-right);
@@ -25,12 +25,12 @@
   color: var(--v2-color-text);
 }
 
-.v2-connect-page {
+/* Settings › Computers below its heading: the list, then how to add one. */
+.v2-connect-section-body {
   display: grid;
-  width: 100%;
-  max-width: 46rem;
+  min-width: 0;
   gap: 2.25rem;
-  margin: 0 auto;
+  padding-top: 1.5rem;
 }
 
 .v2-connect-online-dot {

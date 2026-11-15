@@ -357,7 +357,7 @@ func (c *Controller) Disconnect() {
 		revokeErr := c.API(creds.Origin, creds.DeviceToken).RevokeSelf(ctx)
 		cancel()
 		if revokeErr != nil {
-			c.UI.Notify(fmt.Sprintf("AIQSA at %s could not be reached, so this computer is still listed there. Remove it in AIQSA → AIQSA Connect.", Host(creds.Origin)))
+			c.UI.Notify(fmt.Sprintf("AIQSA at %s could not be reached, so this computer is still listed there. Remove it in AIQSA → Settings › Computers.", Host(creds.Origin)))
 		}
 	}
 	if !errors.Is(err, config.ErrNotLoggedIn) {
