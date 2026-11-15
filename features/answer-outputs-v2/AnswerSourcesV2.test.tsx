@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import type { ThreadArtifactSummary, ThreadSearchSource } from "@/lib/contracts/chats";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { describe, expect, it, vi } from "vitest";
+import { researchAnswerViewV2 } from "./researchAnswerView";
 
 vi.mock("@/components/app-shell/shellApi", () => ({ shellFetch: vi.fn() }));
 
@@ -138,5 +139,27 @@ describe("answer sources", () => {
     fireEvent.keyDown(within(sheet).getByRole("button", { name: "Close" }), { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sources" })).not.toBeInTheDocument());
     await waitFor(() => expect(chip).toHaveFocus());
+  });
+
+  it("counts the links of a research report that only the page shows, not just the summary", () => {
+    const summary = "Take the first option; the page has the comparison.";
+    const report = [1, 2, 3].map((page) => `- Finding ${page} ([source](https://site-05.example/page-${page})).`).join("\n");
+    const text = `${summary}\n\n## Report\n\n${report}`;
+    const researchArtifact: ThreadArtifactSummary = { ...artifact, generatedArtifacts: [{
+      artifactId: "page", entrypoint: "index.html", kind: "html", researchPage: { notesStart: null, summaryEnd: summary.length },
+      title: "Comparison", versionId: "page-v1", versionNumber: 1
+    }] };
+    // As the chat renders it: the summary shows, the whole text marks citations.
+    const view = researchAnswerViewV2(text, researchArtifact.generatedArtifacts);
+    expect(view.content).toBe(summary);
+    render(
+      <RunAnswerV2 answerText={text} artifact={researchArtifact} content={view.content}
+        presentation={{ kind: "complete", runId: "run-1" }} />
+    );
+    expect(screen.getByTestId("answer-sources-toggle")).toHaveAccessibleName("Sources, 3 items");
+    const cited = within(openSheet()).getByTestId("answer-sources-cited");
+    expect(within(cited).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Result 1 on site 5", "Result 2 on site 5", "Result 3 on site 5"
+    ]);
   });
 });

@@ -233,10 +233,10 @@ function AnswerSourcesSheetBodyV2({ cited, uncited }: Readonly<{
  * source when it cites none. The sheet lists the cited ones first and the
  * rest of the run's searches grouped by site.
  */
-export function useAnswerSourcesV2({ artifact, content }: Readonly<{
+export function useAnswerSourcesV2({ artifact, text }: Readonly<{
   artifact: ThreadArtifactSummary | null;
-  /** The answer text as shown; its links mark sources as cited. */
-  content: string;
+  /** The message's whole text, a research report included even where only its summary shows; its links mark sources as cited. */
+  text: string;
 }>): Readonly<{ chip: ReactNode; sheet: ReactNode }> {
   const [open, setOpen] = useState(false);
   const presented = useMemo(
@@ -246,9 +246,9 @@ export function useAnswerSourcesV2({ artifact, content }: Readonly<{
   // A settled answer's text no longer changes, so the links are read once.
   const split = useMemo(
     () => artifact && presented && presented.sources.length > 0
-      ? splitCitedSourcesV2(presented.sources, answerCitedUrlsV2(artifact.citations, content))
+      ? splitCitedSourcesV2(presented.sources, answerCitedUrlsV2(artifact.citations, text))
       : null,
-    [artifact, content, presented]
+    [artifact, presented, text]
   );
   if (!artifact || !split) return { chip: null, sheet: null };
   const count = split.cited.length > 0 ? split.cited.length : split.uncited.length;

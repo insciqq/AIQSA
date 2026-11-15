@@ -279,6 +279,8 @@ export type RunAnswerV2Props = Readonly<{
    */
   browserLiveWaitingKey?: string | null;
   content: string;
+  /** The message's whole text when `content` shows only part of it (a research summary); its links mark sources as cited. */
+  answerText?: string;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
   /** The memory-saved notice, rendered under the process line and above the text. */
@@ -322,6 +324,7 @@ function RunAnswerBodyV2({
   browserLiveChatId = null,
   browserLiveWaitingKey = null,
   content,
+  answerText,
   leadingSlot = null,
   noticeSlot = null,
   onPinSkill,
@@ -344,7 +347,7 @@ function RunAnswerBodyV2({
   workspaceActivity = null
 }: RunAnswerV2Props) {
   const settled = settledRunPresentationV2(presentation);
-  const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null, content });
+  const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null, text: answerText ?? content });
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and memory once the artifact summary lands).
