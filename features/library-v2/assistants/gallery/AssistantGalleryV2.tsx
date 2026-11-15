@@ -145,7 +145,7 @@ function useNoticeFocus(notice: LibraryNotice | null, listed: unknown) {
 }
 
 /**
- * Studio › Assistants (PRD 10.1): filter chips whose counts equal what each
+ * Settings › Assistants (PRD 10.1): filter chips whose counts equal what each
  * lists, a category, a search over name, description and author, and the
  * Featured, Pinned and recently updated groups under All.
  */
@@ -164,7 +164,7 @@ export function AssistantGalleryV2({
   busy: boolean;
   catalogError: string | null;
   catalogState: "error" | "loading" | "ready";
-  /** Null until Studio has loaded the Assistants section. */
+  /** Null until Settings has loaded the Assistants section. */
   gallery: AssistantGalleryView | null;
   /** The chip, category and search the gallery starts with; All, Any and none by default. */
   initialQuery?: Partial<AssistantGalleryQuery>;

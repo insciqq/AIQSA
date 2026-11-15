@@ -1429,7 +1429,7 @@ export function useMessageRunActions({
       return;
     }
     // The open chat is read at call time: a starter sent right after a
-    // navigation (a Studio starter chip) must follow the chat now open.
+    // navigation (a starter chip in Settings) must follow the chat now open.
     const current = useWorkspaceStore.getState();
     if (!text || current.activeChatDetailLoading) {
       return;

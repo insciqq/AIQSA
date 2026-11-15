@@ -18,7 +18,7 @@ import {
 
 /**
  * The browser's calls to the owner-only custom sub-agent routes, used by
- * Studio > Sub-agents and the answer's change cards. A response that does
+ * Settings › Sub-agents and the answer's change cards. A response that does
  * not decode fails like a server error, never as guessed state.
  */
 

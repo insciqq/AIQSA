@@ -9,12 +9,12 @@ afterEach(() => {
 });
 
 describe("Agent onboarding", () => {
-  it("sends Studio users to the same Settings owner without loading metadata or waking tools", () => {
+  it("asks the shell for Settings › Claude Code & Codex without loading metadata or waking tools", () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     render(<McpHubConnection />);
     fireEvent.click(screen.getByRole("button", { name: "Connect Claude Code or Codex" }));
-    expect(useSettingsDestinationStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: "connected_apps" });
+    expect(useSettingsDestinationStore.getState().settingsRequest).toEqual({ section: "apps" });
     expect(fetch).not.toHaveBeenCalled();
   });
 

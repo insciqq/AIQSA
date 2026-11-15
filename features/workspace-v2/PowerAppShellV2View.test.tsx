@@ -4,12 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { composerGalleryConfig } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
-import { initialSettingsDestinationSnapshot, useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { resetComposerControlStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { isCurrentChatRouteResolution, navigateToChatAddress, resolveChatRoute, type ChatRoute } from "@/components/app-shell/chatRoute";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
+import { AnswerSoundSettingsRowV2 } from "@/features/settings-v2/SettingsSectionsV2";
 import {
-  AnswerSoundSettingsRowV2,
   RunSetupV2,
   TemporaryChatIndicatorV2,
   WorkspaceHeaderV2,
@@ -19,9 +18,7 @@ import {
   presentAnswerV2,
   retryAutoMcpDiscoveryV2,
   applyLoadAllAfterMcpDiscoveryFailureV2,
-  settingsBusyMessageV2,
   composerMcpServersV2,
-  openPersonalConnectionsSettingsV2,
   blankConversationOrientationV2,
   chatLocationCrumbV2,
   BackgroundRunStatusV2,
@@ -82,20 +79,6 @@ describe("MCP discovery failure actions v2", () => {
       expect.objectContaining({ enabled: false, id: "office", source: "installation" }),
       expect.objectContaining({ attention: "reauthorization_required", enabled: true, id: "notion", knownToolCount: 3, source: "personal" })
     ]);
-  });
-
-  it("opens Settings on Connections for a personal connection", () => {
-    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
-    openPersonalConnectionsSettingsV2();
-    expect(useSettingsDestinationStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: "connections" });
-    useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
-  });
-
-  it("reports Settings busy with the owner's message, connections first", () => {
-    expect(settingsBusyMessageV2({ accountBusy: false, connectedAppsBusy: false, connectionsBusyMessage: null })).toBeNull();
-    expect(settingsBusyMessageV2({ accountBusy: true, connectedAppsBusy: false, connectionsBusyMessage: null })).toBe("Updating account…");
-    expect(settingsBusyMessageV2({ accountBusy: false, connectedAppsBusy: true, connectionsBusyMessage: null })).toBe("Revoking app access…");
-    expect(settingsBusyMessageV2({ accountBusy: true, connectedAppsBusy: true, connectionsBusyMessage: "Disconnecting…" })).toBe("Disconnecting…");
   });
 
   it("preserves Auto on Retry and switches only on explicit Load all", () => {

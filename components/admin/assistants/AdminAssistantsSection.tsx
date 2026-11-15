@@ -59,7 +59,7 @@ function currentHref(): string {
 }
 
 /**
- * The Studio detail sheet of a listed Assistant: what every person who can
+ * The detail sheet in Settings of a listed Assistant: what every person who can
  * use it sees, so no private definition is reachable from here.
  */
 function studioAssistantHref(assistantId: string): string {
@@ -334,7 +334,7 @@ function ListedView({ feedback, onPendingCount, requestConfirmation, refreshSign
       <ListStatus error={error} loaded={page !== null} loading={loading} loadingLabel="Loading Assistants…" onRetry={retry} subject="Assistants" />
       {page && items.length === 0 && !error ? (
         <EmptyState
-          body="Assistants appear here when you approve a request to list one, or when an administrator lists their own Assistant from Studio."
+          body="Assistants appear here when you approve a request to list one, or when an administrator lists their own Assistant from Settings."
           title="No Assistants are listed for everyone yet"
         />
       ) : null}
@@ -419,7 +419,7 @@ function RequestsView({ onOpen, onPendingCount, refreshSignal }: Readonly<{
       <ListStatus error={error} loaded={page !== null} loading={loading} loadingLabel="Loading requests…" onRetry={retry} subject="Requests" />
       {page && requests.length === 0 && !error ? (
         <EmptyState
-          body="Owners ask to list an Assistant for everyone from its Sharing panel in Studio. New requests appear here."
+          body="Owners ask to list an Assistant for everyone from its Sharing panel in Settings. New requests appear here."
           title="No requests waiting for review"
         />
       ) : null}

@@ -1,3 +1,12 @@
+/*
+ * Settings: the list of sections and the open section. From 1024px (unless
+ * the screen is a short touch screen) they sit side by side, `section column
+ * | content`. Narrower, and on short touch screens, they take turns:
+ * `data-view="list"` shows the list under the "Settings" title,
+ * `data-view="section"` shows a section under its Back control. The header's
+ * crumb row and list are grid items of the surface (the header itself has no
+ * box), so either layout places them without a second structure.
+ */
 .v2-library {
   display: grid;
   min-width: 0;
@@ -10,28 +19,51 @@
   background: var(--v2-color-canvas);
 }
 
-/* The horizontal tab strip must never widen the column (it scrolls). */
 .v2-library-header {
-  min-width: 0;
-  z-index: 1;
-  border-bottom: 1px solid var(--v2-color-border);
-  background: var(--v2-color-canvas);
-  padding:
-    max(0.625rem, env(safe-area-inset-top))
-    max(1rem, env(safe-area-inset-right))
-    0
-    max(1rem, env(safe-area-inset-left));
+  display: contents;
 }
 
-/* Section crumb on the left, Back to chat on the right. */
+/* The crumb (or the list's title) on the left, Back to chat on the right. */
 .v2-library-heading-row {
+  position: relative;
+  z-index: 1;
   display: flex;
-  width: min(100%, var(--v2-wide-measure));
-  min-height: 2rem;
-  margin: 0 auto;
+  grid-area: 1 / 1 / 2 / 2;
+  min-width: 0;
+  min-height: calc(var(--v2-header-height) + env(safe-area-inset-top));
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.375rem;
+  padding:
+    env(safe-area-inset-top)
+    max(0.75rem, env(safe-area-inset-right))
+    0
+    max(1rem, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--v2-color-border);
+  background: var(--v2-color-canvas);
+}
+
+/* Touch: the 44px controls keep about 6px above and below instead of touching the bar. */
+@media (hover: none), (pointer: coarse) {
+  .v2-library-heading-row {
+    min-height: calc(3.5rem + env(safe-area-inset-top));
+  }
+}
+
+/* The page's name: the narrow list's visible title, for assistive technology elsewhere. */
+.v2-library-list-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+/* Back from a section to the list exists only where they take turns. */
+.v2-library-list-back {
+  display: none;
 }
 
 .v2-library-crumb {
@@ -51,9 +83,11 @@
   white-space: nowrap;
 }
 
-/* The sub-view's Back control never wraps; the crumb gives way instead. */
+/* Back to chat and a sub-view's Back control sit at the end and never wrap;
+   the crumb gives way instead. */
 .v2-library-heading-row > .v2-button {
   flex: 0 0 auto;
+  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -96,54 +130,68 @@
   }
 }
 
-.v2-library-column-title,
-.v2-library-column-label {
-  display: none;
-  margin: 0;
-  padding: 0.25rem 0.625rem;
-  color: var(--v2-color-text3);
-  font-size: 0.75rem;
-  font-weight: 500;
+/* Below 768px a sub-view keeps only its own name in the crumb. */
+@media (max-width: 767px) {
+  .v2-library-crumb[data-subview] > :is(span, button) {
+    display: none;
+  }
+}
+
+/* The list of sections: five groups, the first unlabelled. It scrolls on
+   its own and keeps the selected section in view. */
+.v2-library-tabs-scroll {
+  display: grid;
+  grid-area: 2 / 1 / 3 / 2;
+  min-width: 0;
+  min-height: 0;
+  align-content: start;
+  padding: 0.75rem max(0.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(0.5rem, env(safe-area-inset-left));
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .v2-library-column-title {
+  display: none;
+  margin: 0;
+  padding: 0.25rem 0.5rem 0.5rem;
   color: var(--v2-color-text);
   font-size: 0.8125rem;
   font-weight: 600;
 }
 
-.v2-library-tabs-scroll {
-  display: flex;
-  min-width: 0;
-  width: min(100%, var(--v2-wide-measure));
-  margin: 0.625rem auto 0;
-  gap: 1.25rem;
-  overflow-x: auto;
-  scrollbar-width: thin;
+.v2-library-column-label {
+  margin: 1rem 0 0.25rem;
+  padding: 0 0.5rem;
+  color: var(--v2-color-text3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.5rem;
 }
 
 .v2-library-tabs,
 .v2-library-tabs-group {
-  display: flex;
-  width: max-content;
-  gap: 1.25rem;
+  display: grid;
+  min-width: 0;
+  gap: 0.125rem;
 }
 
 .v2-library-tab {
   position: relative;
-  display: inline-flex;
+  display: flex;
+  min-width: 0;
   min-height: 2.5rem;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0 0.125rem;
+  gap: 0.625rem;
+  padding: 0 0.5rem;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-radius: var(--v2-radius-s);
   color: var(--v2-color-text2);
   background: transparent;
   font: inherit;
-  font-size: 0.84375rem;
+  font-size: 0.9375rem;
   font-weight: 500;
-  white-space: nowrap;
+  text-align: left;
   cursor: pointer;
 }
 
@@ -151,12 +199,24 @@
   color: var(--v2-color-text3);
 }
 
+.v2-library-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Drilling into a section, where the list and a section take turns. */
+.v2-library-tab > .v2-library-tab-chevron {
+  margin-left: auto;
+}
+
 /* The chat MCP chip's attention signal, on the section icon's top-right
-   corner: icon edge (inline padding + 1rem) plus the chip's 0.1875rem offset. */
+   corner: icon edge (inline padding + 1rem) less the chip's 0.1875rem offset. */
 .v2-library-tab-signal {
   position: absolute;
   top: calc(50% - 0.6875rem);
-  left: 0.9375rem;
+  left: 1.3125rem;
   width: 0.375rem;
   height: 0.375rem;
   border-radius: 50%;
@@ -166,179 +226,161 @@
 
 .v2-library-tab:hover:not(:disabled) {
   color: var(--v2-color-text);
+  background: var(--v2-color-hover);
 }
 
+/* The selected section reads by fill and edge; its icon takes the ink. */
 .v2-library-tab[data-selected="true"] {
-  border-bottom-color: var(--v2-color-accent);
   color: var(--v2-color-text);
+  background: var(--v2-color-active);
+  box-shadow: inset 0 0 0 1px var(--v2-color-border);
 }
 
-/* Below 768px the menu island floats over the crumb row: clear it. */
-@media (max-width: 767px) {
-  .v2-library-heading-row {
-    gap: 0.625rem;
-    padding-left: 3.25rem;
-  }
+.v2-library-tab[data-selected="true"] > .v2-icon:first-child {
+  color: var(--v2-color-accent);
+}
 
-  /* Compact: a sub-view keeps only its own name in the crumb. */
-  .v2-library-crumb[data-subview] > :is(span, button) {
+/* A notice about Settings floats over the top of the section, like the chat's. */
+.v2-library-notice {
+  z-index: 2;
+  display: flex;
+  grid-area: 2 / 1 / 3 / 2;
+  width: min(42rem, calc(100% - 2rem));
+  margin-top: 0.75rem;
+  align-self: start;
+  justify-self: center;
+  pointer-events: none;
+}
+
+.v2-library-panel {
+  grid-area: 2 / 1 / 3 / 2;
+}
+
+/*
+ * Where the list and a section do not fit side by side (below 1024px, and
+ * short touch screens such as a phone held sideways), they take turns. The
+ * list keeps a readable 40rem measure under its title; a section has its
+ * Back control and name in the crumb row, and leaves the chat to the list.
+ */
+@media (max-width: 1023px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
+  .v2-library[data-view="list"] .v2-library-panel,
+  .v2-library[data-view="list"] .v2-library-crumb,
+  .v2-library[data-view="section"] .v2-library-tabs-scroll,
+  .v2-library[data-view="section"] .v2-library-exit {
     display: none;
   }
-}
 
-/* The full Library section set can clip anywhere in the tab strip (phones,
-   narrow tablets and short touch screens) after text enlargement. Keep quiet
-   edge cues and enough scroll padding to reveal the final tab. */
-@media (max-width: 1023px), (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
-  .v2-library-tabs-scroll {
-    padding-left: 1rem;
-    padding-right: 2.5rem;
-    overscroll-behavior-inline: contain;
-    scroll-padding-inline: 1rem 2.5rem;
-    -webkit-mask-image: linear-gradient(
-      to right,
-      transparent,
-      black 1rem,
-      black calc(100% - 2.5rem),
-      transparent
-    );
-    mask-image: linear-gradient(
-      to right,
-      transparent,
-      black 1rem,
-      black calc(100% - 2.5rem),
-      transparent
-    );
+  .v2-library[data-view="list"] .v2-library-heading-row {
+    padding-left: max(1rem, env(safe-area-inset-left), calc((100% - 40rem) / 2));
+    padding-right: max(0.75rem, env(safe-area-inset-right), calc((100% - 40rem) / 2 - 0.5rem));
+  }
+
+  .v2-library[data-view="list"] .v2-library-list-title {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+    color: var(--v2-color-text);
+    font-size: 1.0625rem;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
+  .v2-library[data-view="section"] .v2-library-heading-row {
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+  }
+
+  .v2-library[data-view="section"] .v2-library-list-back {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  .v2-library-tabs {
+    width: min(100%, 41rem);
+    margin: 0 auto;
+  }
+
+  .v2-library-tabs-group:first-child > .v2-library-tab:first-child {
+    margin-top: 0.25rem;
+  }
+
+  /* The list's section names read at a touch size; the chevron says each opens. */
+  .v2-library-tab > .v2-library-tab-chevron {
+    color: var(--v2-color-text3);
+  }
+
+  .v2-library-tab[data-selected="true"] > .v2-library-tab-chevron {
+    color: var(--v2-color-text2);
   }
 }
 
 /*
- * Beside the rail from 768px the Library keeps the phone's stacked header:
- * the crumb row takes the rail header's measure and the section tab strip
- * follows it, so a narrow tablet (768–1023px) or a short touch screen (a
- * phone held sideways) gives the content the whole width. The same tablist
- * is the section column on wider screens (below).
- */
-@media (min-width: 768px) and (max-width: 1023px), (min-width: 768px) and (hover: none) and (max-height: 30rem), (min-width: 768px) and (pointer: coarse) and (max-height: 30rem) {
-  .v2-library-header {
-    padding-top: env(safe-area-inset-top);
-  }
-
-  .v2-library-heading-row {
-    min-height: var(--v2-header-height);
-  }
-
-  .v2-library-tabs-scroll {
-    margin-top: 0;
-  }
-}
-
-/*
- * From 1024px, unless the screen is a short touch screen, the Library is
- * rail | section column | content (PRD §4.1/§4.10): the header's crumb row
- * sits above the content and the tablist becomes the second column on the
+ * From 1024px, unless the screen is a short touch screen, Settings is
+ * `section column | content` across the full width: the crumb row with Back
+ * to chat sits above the section, and the list is the first column on the
  * sidebar surface.
  */
 @media (min-width: 1024px) and (min-height: 30.01rem), (min-width: 1024px) and (hover: hover) and (pointer: fine) {
   .v2-library {
     grid-template-columns: var(--v2-sidebar-width) minmax(0, 1fr);
-    grid-template-rows: var(--v2-header-height) minmax(0, 1fr);
-  }
-
-  .v2-library-header {
-    display: contents;
+    grid-template-rows: calc(var(--v2-header-height) + env(safe-area-inset-top)) minmax(0, 1fr);
   }
 
   .v2-library-heading-row {
     grid-area: 1 / 2 / 2 / 3;
-    width: auto;
-    margin: 0;
-    padding: 0 max(0.75rem, env(safe-area-inset-right)) 0 1rem;
-    border-bottom: 1px solid var(--v2-color-border);
-    background: var(--v2-color-canvas);
+    padding-left: 1rem;
   }
 
   .v2-library-tabs-scroll {
     grid-area: 1 / 1 / 3 / 2;
-    display: grid;
-    width: auto;
-    align-content: start;
-    gap: 0.25rem;
-    margin: 0;
-    padding: 0.875rem 0.5rem 0.75rem;
+    padding:
+      max(0.875rem, env(safe-area-inset-top))
+      0.5rem
+      max(0.75rem, env(safe-area-inset-bottom))
+      max(0.5rem, env(safe-area-inset-left));
     border-right: 1px solid var(--v2-color-border);
     background: var(--v2-color-sidebar);
-    overflow: hidden auto;
   }
 
-  .v2-library-column-title,
-  .v2-library-column-label {
+  .v2-library-column-title {
     display: block;
   }
 
   .v2-library-column-label {
-    margin-top: 0.5rem;
-  }
-
-  .v2-library-tabs,
-  .v2-library-tabs-group {
-    display: grid;
-    width: auto;
-    gap: 0.125rem;
+    margin-top: 0.875rem;
+    padding: 0 0.625rem;
+    line-height: 1.375rem;
   }
 
   .v2-library-tab {
-    display: flex;
     min-height: 2.25rem;
     padding: 0 0.625rem;
-    border-bottom: 0;
-    border-radius: var(--v2-radius-s);
-    text-align: left;
-  }
-
-  .v2-library-tab:hover {
-    background: var(--v2-color-hover);
-  }
-
-  .v2-library-tab[data-selected="true"] {
-    background: var(--v2-color-active);
-  }
-
-  .v2-library-tab[data-selected="true"] > .v2-icon {
-    color: var(--v2-color-accent);
+    font-size: 0.84375rem;
   }
 
   .v2-library-tab-signal {
     left: 1.4375rem;
   }
 
-  .v2-library-panel {
-    grid-area: 2 / 2 / 3 / 3;
-  }
-}
-
-/* Touch: the crumb row takes the rail's 56px measure, so the 44px Back
-   control keeps about 6px above and below instead of touching the bar. */
-@media (min-width: 768px) and ((hover: none) or (pointer: coarse)) {
-  .v2-library-heading-row {
-    min-height: 3.5rem;
-  }
-}
-
-/* A short touch screen (a phone held sideways, at any width) keeps the
-   stacked header. While a sub-view is open the crumb row's "Back to …" leads
-   back to the list, so the section strip yields its height to the editor;
-   leaving the sub-view restores it and focus returns to the selected tab. */
-@media (hover: none) and (max-height: 30rem), (pointer: coarse) and (max-height: 30rem) {
-  .v2-library-header:has(.v2-library-crumb[data-subview]) .v2-library-tabs-scroll {
+  .v2-library-tab-chevron {
     display: none;
+  }
+
+  .v2-library-panel,
+  .v2-library-notice {
+    grid-area: 2 / 2 / 3 / 3;
   }
 }
 
 @media (min-width: 1024px) and (min-height: 30.01rem) and ((hover: none) or (pointer: coarse)) {
   .v2-library {
-    grid-template-rows: 3.5rem minmax(0, 1fr);
+    grid-template-rows: calc(3.5rem + env(safe-area-inset-top)) minmax(0, 1fr);
   }
+}
+
+.v2-library-notice > * {
+  pointer-events: auto;
 }
 
 .v2-library-panel {
@@ -1246,15 +1288,6 @@
 }
 
 @container (max-width: 42rem) {
-  .v2-library-title-icon,
-  .v2-library-title p {
-    display: none;
-  }
-
-  .v2-library-title h1 {
-    font-size: 1rem;
-  }
-
   .v2-resource-heading {
     align-items: stretch;
     flex-direction: column;
@@ -1783,7 +1816,7 @@
   }
 }
 
-/* Studio › Scheduled: a quiet list in the Secrets row anatomy, and its editor sheet. */
+/* Settings › Automations: a quiet list in the Secrets row anatomy, and its editor sheet. */
 .v2-scheduled-meta { display: block; margin-top: 0.25rem; color: var(--v2-color-text3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 .v2-scheduled-note, .v2-scheduled-notice { margin: 1rem 0 0; color: var(--v2-color-text2); font-size: 0.8125rem; line-height: 1.5; overflow-wrap: anywhere; }
 .v2-scheduled-notice { color: var(--v2-color-text); }

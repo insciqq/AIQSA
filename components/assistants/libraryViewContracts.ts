@@ -739,7 +739,7 @@ export type AssistantGalleryView = {
   onPinToggle(assistantId: string, pinned: boolean): void;
   /** Opens the Sharing sheet (owner). */
   onShare(assistantId: string): void;
-  /** Chooses the Assistant for a new chat and leaves Studio; false when refused. */
+  /** Chooses the Assistant for a new chat and leaves Settings; false when refused. */
   onStartChat(assistantId: string): Promise<boolean>;
   recentAssistantIds: string[];
   viewer: { canPublishInstallation: boolean; defaultAssistantId: string | null };
@@ -856,7 +856,7 @@ export type AssistantLibraryView = {
   catalogState: "error" | "loading" | "ready";
   deletion: AssistantDeleteDialogView | null;
   detail: AssistantDetailSheetView | null;
-  /** Unsaved editor or Sharing changes; every exit from Studio asks first. */
+  /** Unsaved editor or Sharing changes; every exit from Settings asks first. */
   dirty: boolean;
   editor: AssistantEditorView | null;
   gallery: AssistantGalleryView;
@@ -869,6 +869,6 @@ export type AssistantLibraryView = {
   onOpenMcpSettings(): void;
   onRetryCatalog(): void;
   sharing: AssistantSharingSheetView | null;
-  /** Which Studio subview is visible; editor is non-null when active. */
+  /** Which Settings subview is visible; editor is non-null when active. */
   task: "editor" | "list";
 };

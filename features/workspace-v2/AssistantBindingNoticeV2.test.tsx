@@ -19,7 +19,7 @@ function handlers() {
 }
 
 describe("Assistant binding notice v2", () => {
-  it("names the owner's missing dependency with Open in Studio and blocks nothing else", () => {
+  it("names the owner's missing dependency with Open in Settings and blocks nothing else", () => {
     const actions = handlers();
     render(<AssistantBindingNoticeV2 current={chatHeaderGalleryCurrent("unavailable-owner")} pending={false} {...actions} />);
 
@@ -28,8 +28,8 @@ describe("Assistant binding notice v2", () => {
       "Jira MCP isn't available.Fix the Assistant or continue without it."
     );
     expect(within(notice).getAllByRole("button").map((button) => button.textContent))
-      .toEqual(["Open in Studio", "Choose another", "Continue without the Assistant"]);
-    fireEvent.click(within(notice).getByRole("button", { name: "Open in Studio" }));
+      .toEqual(["Open in Settings", "Choose another", "Continue without the Assistant"]);
+    fireEvent.click(within(notice).getByRole("button", { name: "Open in Settings" }));
     expect(actions.onOpenInStudio).toHaveBeenCalledWith("assistant-jira");
     fireEvent.click(within(notice).getByRole("button", { name: "Choose another" }));
     expect(actions.onChooseAnother).toHaveBeenCalledOnce();
@@ -46,7 +46,7 @@ describe("Assistant binding notice v2", () => {
     const notice = screen.getByTestId("assistant-binding-notice");
     expect(notice).toHaveTextContent("This Assistant isn't available to you right now.");
     expect(notice).not.toHaveTextContent("Private CRM");
-    expect(within(notice).queryByRole("button", { name: "Open in Studio" })).toBeNull();
+    expect(within(notice).queryByRole("button", { name: "Open in Settings" })).toBeNull();
   });
 
   it("uses its own sentences for archived, deleted and unresolved Assistants", () => {

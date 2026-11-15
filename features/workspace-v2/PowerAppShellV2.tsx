@@ -6,6 +6,7 @@ import { releasePendingUpload, trackPendingUploads } from "@/components/app-shel
 import type { WorkspaceUploadConfigWire } from "@/lib/contracts/workspaceUploads";
 import type { GreetingPeriod } from "@/lib/domain/greeting";
 
+import { settingsSectionsV2 } from "@/features/library-v2/LibraryV2";
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { requestScheduledTaskEdit, useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
@@ -309,7 +310,7 @@ export function PowerAppShellV2({
   adminEntryVisible?: boolean;
   connectEntryVisible?: boolean;
   greetingPeriod?: GreetingPeriod | null;
-  /** Settings → Connections shows the Telegram block. */
+  /** Settings lists Telegram. */
   telegramAvailable?: boolean;
 }) {
   const catalog = useWorkspaceStore((state) => state.catalogAccountId === accountId ? state.catalog : null);
@@ -418,13 +419,10 @@ export function PowerAppShellV2({
   const setSelectedSearchPlan = useComposerControlStore((state) => state.setSelectedSearchPlan);
   const setShowCitations = useComposerControlStore((state) => state.setShowCitations);
   const setShowReasoningBlocks = useComposerControlStore((state) => state.setShowReasoningBlocks);
-  const settingsOpen = useSettingsDestinationStore((state) => state.settingsOpen);
-  const settingsSection = useSettingsDestinationStore((state) => state.settingsSection);
   const memoryOpen = useSettingsDestinationStore((state) => state.memoryOpen);
   const closeMemoryLibrary = useSettingsDestinationStore((state) => state.closeMemory);
   const openMemoryLibrary = useSettingsDestinationStore((state) => state.openMemoryLibrary);
-  const openGeneralSettings = useSettingsDestinationStore((state) => state.openSettings);
-  const closeGeneralSettings = useSettingsDestinationStore((state) => state.closeSettings);
+  const settingsRequest = useSettingsDestinationStore((state) => state.settingsRequest);
   const librarySnapshot = useAssistantLibraryStore();
   const skillSnapshot = useSkillLibraryStore();
   const imageModelSnapshot = useImageModelStore();
@@ -1070,7 +1068,7 @@ export function PowerAppShellV2({
   }
 
   /**
-   * Leaves Studio (through its draft and busy guards) before a navigation to
+   * Leaves Settings (through its draft and busy guards) before a navigation to
    * a chat, so the chat shows instead of only taking the address behind it.
    */
   function leaveStudioThen(proceed: () => void) {
@@ -1090,15 +1088,15 @@ export function PowerAppShellV2({
       void resolveChatAddress(route, resolution, useWorkspaceStore.getState().catalog);
     }
   });
+  const settingsSections = useMemo(() => settingsSectionsV2({ telegramAvailable }), [telegramAvailable]);
   const studio = useStudioNavigation({
-    available: ["assistants", "instructions", "skills", "subagents", "memory", "files", "artifacts", "scheduled", "mcp",
-      "secrets", "defaults"],
+    available: settingsSections,
     onExit() {
       assistantLibraryActions.closeLibrary();
       closeMemoryLibrary();
+      setSettingsNotice(null);
     },
     onSelect(tab) {
-      closeGeneralSettings();
       if (tab !== "memory") closeMemoryLibrary();
       if (tab === "memory") {
         assistantLibraryActions.closeLibrary();
@@ -1108,14 +1106,18 @@ export function PowerAppShellV2({
       }
     }
   });
+  const openStudio = studio.open;
   function openMcpSettings() { studio.open("mcp"); }
-  const openConnectionsSettings = useEventCallback(() => {
-    useSettingsDestinationStore.getState().openSettings("connections");
-  });
-  useMcpOAuthReturn(accountId, useEventCallback(openMcpSettings), openConnectionsSettings);
+  useMcpOAuthReturn(accountId, openStudio);
+  // Callers without the shell's props (MCP Hub's link to Claude Code & Codex) ask through the destination store.
+  useEffect(() => {
+    if (!settingsRequest) return;
+    useSettingsDestinationStore.getState().clearSettingsRequest(settingsRequest);
+    openStudio(settingsRequest.section ?? undefined);
+  }, [openStudio, settingsRequest]);
   const openAssistantLibrary = () => studio.open("assistants");
   const openMemoryLibraryDestination = () => studio.open("memory");
-  const openSettingsDestination = () => openGeneralSettings();
+  const openSettingsDestination = () => studio.open();
   const [assistantPickerOpen, setAssistantPickerOpen] = useState(false);
   const setAssistantPickerOpenEvent = useEventCallback((open: boolean) => {
     setAssistantPickerOpen(open);
@@ -1300,7 +1302,7 @@ export function PowerAppShellV2({
     };
     next();
   });
-  // Stable, so a caller that outlives its render (a Studio starter chip) sends from the current chat.
+  // Stable, so a caller that outlives its render (a starter chip in Settings) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));
 
   const {
@@ -1594,7 +1596,7 @@ export function PowerAppShellV2({
     runCatalogRef.current = catalog;
   }, [catalog]);
   // Scheduled results: unread rows, one notice per new result, seen on open.
-  const scheduledChatVisible = !librarySnapshot.open && !memoryOpen && !settingsOpen;
+  const scheduledChatVisible = !librarySnapshot.open && !memoryOpen;
   useScheduledTaskUpdates({
     accountId,
     activeChatId,
@@ -1611,7 +1613,7 @@ export function PowerAppShellV2({
             label: "Open",
             onClick: () => {
               setNotice(null);
-              // Like a chat row: Studio closes and the chat opens as one history entry.
+              // Like a chat row: Settings closes and the chat opens as one history entry.
               if (chatId) leaveStudioThen(() => navigateChatRoute(() => void activatePersonalChatDeepLink(chatId)));
               else studio.open("scheduled");
             }
@@ -2047,7 +2049,6 @@ export function PowerAppShellV2({
   const settingsView = {
     studio,
     closeMemory: closeMemoryLibrary,
-    closeSettings: closeGeneralSettings,
     dismissNotice: () => setSettingsNotice(null),
     library: buildAssistantLibraryView(
       {
@@ -2069,11 +2070,7 @@ export function PowerAppShellV2({
     openLibrary: openAssistantLibrary,
     openMemory: openMemoryLibraryDestination,
     openMcp: openMcpSettings,
-    settings: {
-      open: settingsOpen,
-      section: settingsSection,
-      themeId
-    },
+    themeId,
     updateTheme: changeTheme
   } satisfies ShellSettingsView;
 

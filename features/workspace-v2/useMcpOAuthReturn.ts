@@ -1,9 +1,17 @@
 import { useEffect } from "react";
 import { consumeMcpOAuthReturn, refreshMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import { refreshPersonalMcp } from "@/components/app-shell/personalMcpStore";
-import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
+import { legacySettingsSection } from "@/components/app-shell/settingsDestinationStore";
+import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 
-export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void, openConnectionsSettings?: () => void): void {
+/**
+ * Opens the Settings section an address names with `?settings=<section>`
+ * (links outside the chat shell, answers and bookmarks from the former
+ * Settings dialog) and lands both MCP OAuth returns in MCP servers: the
+ * installation's (`?settings=mcp` or `?library=mcp` with `oauth`) and a
+ * personal connection's (`?settings=connections`). The parameter is consumed.
+ */
+export function useMcpOAuthReturn(accountId: string, openSection: (section: LibraryTabIdV2) => void): void {
   useEffect(() => {
     let current = true;
     // Account cleanup can run during React effect replay. Consume the URL
@@ -11,28 +19,23 @@ export function useMcpOAuthReturn(accountId: string, openMcpSettings: () => void
     queueMicrotask(() => {
       if (!current) return;
       const url = new URL(window.location.href);
-      // A link from outside the chat shell (AIQSA Connect) to the agent connection commands.
-      const direct = url.searchParams.get("settings");
-      if (direct === "connected_apps" || direct === "proxies") {
+      const named = url.searchParams.get("settings");
+      const personal = named === "connections";
+      const installation = named === "mcp" || (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth"));
+      if (!personal && !installation) {
+        const section = legacySettingsSection(named);
+        if (!section) return;
         url.searchParams.delete("settings");
         window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-        useSettingsDestinationStore.getState().openSettings(direct);
+        openSection(section);
         return;
       }
-      const shouldOpenConnections = url.searchParams.get("settings") === "connections";
-      const shouldOpenMcp = url.searchParams.get("settings") === "mcp" ||
-        (url.searchParams.get("library") === "mcp" && url.searchParams.has("oauth"));
-      if (!shouldOpenMcp && !shouldOpenConnections) return;
       consumeMcpOAuthReturn(url);
-      if (shouldOpenConnections) {
-        // A personal outcome refreshes only the personal store; Studio's catalog is unaffected.
-        openConnectionsSettings?.();
-        void refreshPersonalMcp().catch(() => undefined);
-        return;
-      }
-      openMcpSettings();
-      void refreshMcpSettings(true).catch(() => undefined);
+      openSection("mcp");
+      // A personal outcome refreshes only the personal store; the installation catalog is unaffected.
+      if (personal) void refreshPersonalMcp().catch(() => undefined);
+      else void refreshMcpSettings(true).catch(() => undefined);
     });
     return () => { current = false; };
-  }, [accountId, openConnectionsSettings, openMcpSettings]);
+  }, [accountId, openSection]);
 }

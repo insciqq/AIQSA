@@ -4,9 +4,9 @@ import type { McpOAuthOutcome } from "./mcpSettingsStore";
 import { loadPersonalMcpConnections, PersonalMcpApiError, type PersonalMcpConnection } from "./personalMcpApi";
 
 /**
- * The account's personal MCP connections: Settings → Connections edits them
+ * The account's personal MCP connections: Settings › MCP servers edits them
  * and the composer discloses them. They never enter the installation store,
- * whose list and limits belong to Studio.
+ * whose list and limits belong to the installation.
  */
 export type PersonalMcpLoadState = "error" | "idle" | "loading" | "ready";
 

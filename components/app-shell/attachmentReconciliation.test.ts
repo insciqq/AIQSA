@@ -201,11 +201,11 @@ describe("attachment reconciliation", () => {
       await pending;
       expect(errorOf(session)).toBe("Text model does not support this attachment: scan.png. Text model can't read images, " +
         "and no Vision Model is available to analyze them. To use images, choose a model that supports images, " +
-        "pick an image model that can edit in Studio → Chat defaults → Image model or ask an administrator to assign the Vision Model.");
+        "pick an image model that can edit in Settings › Chat defaults › Image model or ask an administrator to assign the Vision Model.");
       // Known settings answer at once without another read.
       useComposerSessionStore.getState().updateSession(session, { operationError: null });
       await reportRejectedAttachments(["scan.png"], toolModel, { workspaceAvailable: false });
-      expect(errorOf(session)).toContain("Studio → Chat defaults → Image model");
+      expect(errorOf(session)).toContain("Settings › Chat defaults › Image model");
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 

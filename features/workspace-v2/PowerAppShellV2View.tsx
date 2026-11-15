@@ -14,7 +14,7 @@ import { ScheduledTaskChatHintV2 } from "@/features/scheduled-tasks/ScheduledTas
 import { useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
 import { ScheduledTurnV2 } from "@/features/scheduled-tasks/ScheduledTurnV2";
 import { scheduledTaskContinuingIn } from "@/features/scheduled-tasks/useScheduledTaskUpdates";
-import { BrowserNotificationsBannerV2, BrowserNotificationsSettingsRowV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
+import { BrowserNotificationsBannerV2 } from "@/features/browser-notifications/BrowserNotificationsV2";
 import { openAssistantDetail } from "@/components/app-shell/assistantGalleryActions";
 
 import { setArtifactEditSession } from "@/components/artifacts/artifactEditSession";
@@ -38,8 +38,6 @@ import { cancelWorkspaceUpload, retryWorkspaceUpload, useWorkspaceUploadProgress
 import { useUploadPreviews } from "@/components/app-shell/pendingUploads";
 import { AnnouncementsProvider } from "@/components/announcements/AnnouncementsProvider";
 
-import { ANSWER_SOUNDS } from "@/lib/contracts/answerSound";
-
 import { useChatPdfRoutePreview } from "@/components/app-shell/useChatPdfRoutePreview";
 import { useChatContinuation } from "@/components/app-shell/useChatContinuation";
 import { composerContextGauge } from "@/components/app-shell/composerContextStats";
@@ -53,9 +51,6 @@ import {
   MemoryResumeConfirmationDialog,
   MessageDeleteConfirmationDialog
 } from "@/components/app-shell/ConfirmationDialog";
-import { ConnectedAppsSection } from "@/components/app-shell/ConnectedAppsSection";
-import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
-import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnectionSection";
 import { PermanentChatDeletionSurface } from "@/components/app-shell/PermanentChatDeletionSurface";
 import { ShareDialog } from "@/components/app-shell/ShareDialog";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
@@ -81,7 +76,6 @@ import {
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import type { PersonalMcpConnection } from "@/components/app-shell/personalMcpApi";
 import { ensurePersonalMcpLoaded, usePersonalMcpStore } from "@/components/app-shell/personalMcpStore";
-import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import {
   refreshSkillLibrary,
   useSkillLibraryStore
@@ -174,26 +168,8 @@ import {
   transportLostForMessageV2,
   type InterruptedRunV2
 } from "@/features/workspace-v2/runTransportPresentation";
-import { AccountSettingsRowsV2 } from "@/features/settings-v2/AccountSettingsRowsV2";
-import { ArchivedChatsPanelV2 } from "@/features/settings-v2/ArchivedChatsPanelV2";
-import { DataSettingsRowsV2 } from "@/features/settings-v2/DataSettingsRowsV2";
 import { importedFromLabel } from "@/features/chat-import/importLabels";
 import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
-import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
-import { deleteAllPersonalChats } from "@/components/app-shell/accountApi";
-import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
-import {
-  SettingsGroupLabelV2,
-  SettingsRowV2,
-  SettingsSwitchV2,
-  SettingsV2
-} from "@/features/settings-v2/SettingsV2";
-import { accountInitialsV2 } from "@/features/navigation-v2/AccountMenuV2";
-import { signOutCurrentSession } from "@/components/app-shell/sessionActions";
-import {
-  openPermanentChatDeletionStatus,
-  usePermanentChatDeletionStore
-} from "@/components/app-shell/permanentChatDeletionStore";
 import { attachmentItemsForV2, uploadProgressBytes } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
@@ -431,21 +407,6 @@ export function retryAutoMcpDiscoveryV2(regenerate: () => void): void {
 }
 
 /**
- * Settings blocks closing and navigation while an owner reports busy. The
- * connections section reports only create, OAuth start and delete, each with
- * its own message.
- */
-export function settingsBusyMessageV2(input: Readonly<{
-  accountBusy: boolean;
-  connectedAppsBusy: boolean;
-  connectionsBusyMessage: string | null;
-}>): string | null {
-  if (input.connectionsBusyMessage) return input.connectionsBusyMessage;
-  if (input.connectedAppsBusy) return "Revoking app access…";
-  return input.accountBusy ? "Updating account…" : null;
-}
-
-/**
  * The personal chat composer's MCP disclosure: installation servers, then the
  * account's enabled personal connections. A snapshot; Settings owns polling.
  */
@@ -478,10 +439,6 @@ export function composerMcpServersV2(
       source: "personal" as const
     }))
   ];
-}
-
-export function openPersonalConnectionsSettingsV2(): void {
-  useSettingsDestinationStore.getState().openSettings("connections");
 }
 
 export function applyLoadAllAfterMcpDiscoveryFailureV2(regenerate: () => void): void {
@@ -587,7 +544,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const { branches, composer, overlays, session, settings, thread, workspace } = props;
   const blankGreeting = useBlankGreetingV2(session.accountDisplayName, session.greetingPeriod ?? null);
   const refreshThreadLayout = thread.refreshLayout;
-  const [libraryInitialTab, setLibraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
+  const [libraryInitialTab] = useState<LibraryTabIdV2 | undefined>(() => {
     if (typeof window === "undefined") return undefined;
     const target = new URL(window.location.href).searchParams.get("library");
     return libraryTabGroups.flatMap(group => group.tabs).find(id => id === target);
@@ -624,9 +581,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     closeArtifactPanel(false);
   }, [session.accountId]);
   /**
-   * Opens the Studio destination of a `?library=<tab>` query: on load from the
+   * Opens the Settings section of a `?library=<tab>` query: on load from the
    * address, and from a card link inside a chat, which keeps the chat's
-   * address because Studio has none of its own.
+   * address because Settings has none of its own.
    */
   const openLibraryQuery = useEventCallback((query: URLSearchParams) => {
     const target = libraryTabGroups.flatMap(group => group.tabs).find(id => id === query.get("library"));
@@ -658,13 +615,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     ? scheduledTaskContinuingIn(state.tasks, session.activeChatId) : null);
   // "Report a problem…": the answer and chat it reports on, while its dialog is open.
   const [problemReportTarget, setProblemReportTarget] = useState<Readonly<{ chatId: string; messageId: string }> | null>(null);
-  const [connectedAppsBusy, setConnectedAppsBusy] = useState(false);
-  const [connectionsBusyMessage, setConnectionsBusyMessage] = useState<string | null>(null);
-  const [accountBusy, setAccountBusy] = useState(false);
-  const settingsBusyMessage = settingsBusyMessageV2({ accountBusy, connectedAppsBusy, connectionsBusyMessage });
-  const [accountDirty, setAccountDirty] = useState(false);
-  const [accountKey, setAccountKey] = useState(0);
-  const [dataSubview, setDataSubview] = useState<null | "archived">(null);
   const [skillLibraryScope, setSkillLibraryScope] = useState<string | null>(null);
   const [composerDockHeight, setComposerDockHeight] = useState(0);
   const [composerBottomInset, setComposerBottomInset] = useState(0);
@@ -690,10 +640,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const permanentChatDeletionAvailable = useMemorySettingsStore(
     (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
   );
-  const permanentChatDeletionModalOpen = usePermanentChatDeletionStore(
-    (state) => Boolean(state.target) || state.statusOpen
-  );
-  const archivedManageRef = useRef<HTMLButtonElement>(null);
   const composerDockRef = useRef<HTMLDivElement>(null);
   const setComposerDockRef = useCallback((dock: HTMLDivElement | null) => {
     composerDockRef.current = dock;
@@ -744,11 +690,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const personalMemoryOpen = settings.memory.open;
   const libraryOpen = Boolean(settings.library || personalMemoryOpen);
   const routeChatId = parseChatRoutePath(useChatRoutePath())?.chatId ?? null;
-
-  const closeDataSubview = () => {
-    setDataSubview(null);
-    window.requestAnimationFrame(() => archivedManageRef.current?.focus());
-  };
   const activeChatSummary = session.activeChatId ? currentWorkspaceChat(session.activeChatId) : null;
   // The chat's computer: chosen here for the next messages, else the one the chat last ran with.
   const activeChatComputer = useWorkspaceStore(state => session.activeChatId
@@ -775,7 +716,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     messageKey: thread.visibleMessages.filter((message) => message.role === "user")
       .map((message) => message.id).join(",")
   });
-  const artifactPanelAllowed = composer.memory.mode !== "TEMPORARY" && !libraryOpen && !settings.settings.open;
+  const artifactPanelAllowed = composer.memory.mode !== "TEMPORARY" && !libraryOpen;
   const visibleArtifactPanel = artifactPanelAllowed && artifactPanel?.chatId === session.activeChatId ? artifactPanel : null;
   useEffect(() => {
     if (artifactPanel && (!artifactPanelAllowed || artifactPanel.chatId !== session.activeChatId)) closeArtifactPanel(false);
@@ -930,7 +871,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     }
   }, [selectedSkills, skillCatalog]);
   // The tab title follows the visible active chat (rename/switch included);
-  // the Library replaces it while it owns the workspace. Next.js re-applies
+  // Settings replaces it while it owns the workspace. Next.js re-applies
   // its static route metadata after hydration, so the effect also watches the
   // <title> node and re-asserts the shell-owned value when something else
   // overwrites it.
@@ -1119,7 +1060,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onLayerChange={setComposerLayer}
       onMakeModelDefault={composer.makeModelDefault}
       onOpenMcpSettings={settings.openMcp}
-      onOpenPersonalMcpSettings={openPersonalConnectionsSettingsV2}
+      onOpenPersonalMcpSettings={settings.openMcp}
       onOpenModelParameters={() => setRunSetupOpen(true)}
       onOpenSkillLibrary={openSkillLibrary}
       paletteAssistants={paletteAssistants}
@@ -1563,11 +1504,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     );
   };
 
-  // The account menu always opens the account's own Settings.
-  const openAccountSettings = () => {
-    setDataSubview(null);
-    settings.open();
-  };
+  // The gear opens Settings on the last visited section, else General.
+  const openAccountSettings = () => settings.open();
   // Choosing a chat or a new chat in navigation adds one history entry.
   const selectNavigationChat = (chat: ChatNavigationSummaryWire) => {
     // The chat's own row leads from its sub-agent's thread back to the chat.
@@ -2009,132 +1947,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onSelectionChange={selectManualSkills} restoreFocus={restoreSkillFocus}
       />
 
-      {settings.settings.open ? (
-        <SettingsV2
-          busy={settingsBusyMessage !== null}
-          busyMessage={settingsBusyMessage ?? undefined}
-          connectedAppsContent={(
-            <ConnectedAppsSection
-              accountId={session.accountId}
-              onBusyChange={setConnectedAppsBusy}
-            />
-          )}
-          dirty={accountDirty}
-          generalSlot={(
-            <>
-              <AnswerSoundSettingsRowV2 composer={composer} />
-              {composer.browserNotifications ? (
-                <BrowserNotificationsSettingsRowV2 notifications={composer.browserNotifications} />
-              ) : null}
-              <SettingsRowV2
-                description="Show numbered source citations inside answers."
-                title="Citations"
-              >
-                <SettingsSwitchV2
-                  checked={composer.showCitations}
-                  label="Citations"
-                  onChange={() => composer.toggleCitationsVisibility()}
-                />
-              </SettingsRowV2>
-              <SettingsRowV2
-                description="Show the model's reasoning as a disclosure above the answer."
-                title="Reasoning blocks"
-              >
-                <SettingsSwitchV2
-                  checked={composer.showReasoningBlocks}
-                  label="Reasoning blocks"
-                  onChange={() => composer.toggleReasoningBlockVisibility()}
-                />
-              </SettingsRowV2>
-              <SettingsRowV2
-                description="Shift+Enter inserts a new line. Off: Enter inserts a new line, Ctrl+Enter sends."
-                testId="settings-send-with-enter"
-                title="Send with Enter"
-              >
-                <SettingsSwitchV2
-                  checked={composer.sendWithEnter}
-                  label="Send with Enter"
-                  onChange={(next) => composer.setSendWithEnter(next)}
-                />
-              </SettingsRowV2>
-            </>
-          )}
-          initialSection={settings.settings.section}
-          noticeSlot={settings.notice ? (
-            <ShellNotice notice={settings.notice} onDismiss={settings.dismissNotice} />
-          ) : null}
-          obscured={permanentChatDeletionModalOpen}
-          onSectionChange={() => setDataSubview(null)}
-          panels={{
-            account: (
-              <SettingsAccountPanelV2
-                key={`${session.accountId}:${accountKey}`}
-                onBusyChange={setAccountBusy}
-                onDirtyChange={setAccountDirty}
-                accountEmail={session.accountEmail}
-                accountId={session.accountId}
-                adminEntryVisible={session.adminEntryVisible}
-                onDisplayNameChange={session.updateAccountDisplayName}
-              />
-            ),
-            connections: (
-              <>
-                {session.telegramAvailable ? <TelegramConnectionSection /> : null}
-                <PersonalMcpConnectionsSection onBusyChange={setConnectionsBusyMessage} />
-              </>
-            ),
-            data: dataSubview === "archived" ? (
-              <ArchivedChatsPanelV2 onRestored={workspace.archived.onRestored} />
-            ) : (
-              <>
-                <SettingsRowV2
-                  description="Restore or permanently delete chats you archived."
-                  title="Archived chats"
-                >
-                  <UiV2Button
-                    ref={archivedManageRef}
-                    icon="chevron-right"
-                    onClick={() => setDataSubview("archived")}
-                  >
-                    Manage
-                  </UiV2Button>
-                </SettingsRowV2>
-                <SettingsPendingDeletionRowV2 />
-                <SettingsRowV2
-                  description="Uploads stay bound to the messages where they were added."
-                  title="Files"
-                />
-                <DataSettingsRowsV2
-                  accountId={session.accountId}
-                  onDeleteAll={deleteAllPersonalChats}
-                  onDeleted={() => {
-                    void workspace.pane.actions.retry();
-                    void loadChatNavigation();
-                  }}
-                  onImported={() => {
-                    void workspace.pane.actions.retry();
-                    void loadChatNavigation();
-                  }}
-                />
-              </>
-            ),
-          }}
-          subview={dataSubview === "archived"
-            ? { label: "Archived chats", onBack: closeDataSubview }
-            : undefined}
-          themeId={settings.settings.themeId}
-          onClose={() => {
-            setDataSubview(null);
-            settings.dismissNotice();
-            settings.closeSettings();
-          }}
-          onDiscard={() => {
-            setAccountDirty(false);
-            setAccountKey(value => value + 1);
-          }}
-          onThemeChange={settings.updateTheme}
-        />
-      ) : null}
       {overlays.share.target ? (
         <ShareDialog key={overlays.share.target.chat.id} target={overlays.share.target} onClose={overlays.share.close} />
       ) : null}
@@ -2197,134 +2009,5 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       <PermanentChatDeletionSurface composerInset={composerBottomInset} />
     </main>
     </AnnouncementsProvider>
-  );
-}
-
-
-function SettingsPendingDeletionRowV2() {
-  const reviewRef = useRef<HTMLButtonElement>(null);
-  const reference = usePermanentChatDeletionStore((state) => state.reference);
-  const status = usePermanentChatDeletionStore((state) => state.status?.status ?? null);
-  const pending = Boolean(reference && status && status !== "COMPLETE");
-  return (
-    <SettingsRowV2
-      description={pending
-        ? "A permanent deletion is still in progress."
-        : "Nothing is waiting for permanent deletion."}
-      title="Pending permanent deletion"
-    >
-      {pending ? (
-        <UiV2Button
-          ref={reviewRef}
-          icon="chevron-right"
-          onClick={() => openPermanentChatDeletionStatus(() => reviewRef.current)}
-        >
-          Review
-        </UiV2Button>
-      ) : null}
-    </SettingsRowV2>
-  );
-}
-
-function SettingsAccountPanelV2({
-  accountEmail,
-  accountId,
-  adminEntryVisible,
-  onDisplayNameChange,
-  onDirtyChange,
-  onBusyChange
-}: Readonly<{ accountEmail: string | null; accountId: string; adminEntryVisible: boolean;
-  onDisplayNameChange(displayName: string): void;
-  onDirtyChange(dirty: boolean): void; onBusyChange(busy: boolean): void;
-}>) {
-  const [signingOut, setSigningOut] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [signOutError, setSignOutError] = useState(false);
-  const controlCenterHref = useControlCenterHref();
-  useEffect(() => { onBusyChange(saving || signingOut); return () => onBusyChange(false); }, [onBusyChange, saving, signingOut]);
-  return (
-    <>
-      <AccountSettingsRowsV2 accountEmail={accountEmail} adminEntryVisible={adminEntryVisible}
-        onDisplayNameChange={onDisplayNameChange} onDirtyChange={onDirtyChange} onBusyChange={setSaving} />
-      {adminEntryVisible ? (
-        <SettingsRowV2
-          description="Installation resources, providers, users and policies."
-          title="Control Center"
-        >
-          <a className="v2-button v2-focusable" data-tone="ghost" href={controlCenterHref}>
-            <UiV2Icon name="shield" />
-            <span>Open</span>
-          </a>
-        </SettingsRowV2>
-      ) : null}
-      <SettingsGroupLabelV2>Session</SettingsGroupLabelV2>
-      <SettingsRowV2
-        description="Ends this browser session and removes unsent drafts from this device."
-        title="Sign out"
-      >
-        <UiV2Button
-          busy={signingOut}
-          disabled={saving}
-          onClick={() => {
-            setSigningOut(true);
-            setSignOutError(false);
-            void signOutCurrentSession({ accountId }).then((result) => {
-              if (!result.ok) {
-                setSignOutError(true);
-                setSigningOut(false);
-              }
-            });
-          }}
-        >
-          Sign out
-        </UiV2Button>
-        {signOutError ? <span className="v2-live-menu-error" role="alert">Could not sign out.</span> : null}
-      </SettingsRowV2>
-    </>
-  );
-}
-
-export function AnswerSoundSettingsRowV2({ composer }: Readonly<{
-  composer: Pick<ShellComposerView, "notificationSoundEnabled" | "notificationSoundId" |
-    "notificationSoundReady" | "toggleNotificationSound" | "selectAnswerSound" | "previewAnswerSound">;
-}>) {
-  const [previewFailed, setPreviewFailed] = useState(false);
-  const previewSequence = useRef(0);
-  useEffect(() => () => { previewSequence.current += 1; }, []);
-  return (
-    <SettingsRowV2
-      description={previewFailed
-        ? <span role="status">Preview could not play. Try Play again or check your browser’s audio settings.</span>
-        : "Play a short sound when an answer finishes. Preview also works with sound off."}
-      title="Answer sound"
-    >
-      <SettingsSwitchV2
-        checked={composer.notificationSoundEnabled}
-        disabled={!composer.notificationSoundReady}
-        label="Answer sound"
-        onChange={() => composer.toggleNotificationSound()}
-      />
-      <SettingsSelectV2
-        disabled={!composer.notificationSoundReady}
-        label="Completion sound"
-        options={ANSWER_SOUNDS}
-        value={composer.notificationSoundId}
-        onChange={(sound) => {
-          setPreviewFailed(false);
-          composer.selectAnswerSound(sound);
-        }}
-      />
-      <UiV2Button
-        aria-label="Play preview"
-        disabled={!composer.notificationSoundReady}
-        onClick={() => {
-          const sequence = ++previewSequence.current;
-          setPreviewFailed(false);
-          void composer.previewAnswerSound(composer.notificationSoundId).then((played) => {
-            if (sequence === previewSequence.current) setPreviewFailed(!played);
-          });
-        }}
-      >Play</UiV2Button>
-    </SettingsRowV2>
   );
 }

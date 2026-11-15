@@ -156,7 +156,7 @@ function InstructionsV2({ editor, locked }: Readonly<{ editor: AssistantEditorVi
 }
 
 /**
- * The heading and Studio crumb: the draft's name, else the last saved name
+ * The heading and Settings crumb: the draft's name, else the last saved name
  * while its field is cleared. "New assistant" is for create mode only.
  */
 export function assistantEditorTitle(editor: Pick<AssistantEditorView, "draft" | "savedName">): string {

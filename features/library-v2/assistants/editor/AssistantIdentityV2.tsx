@@ -143,7 +143,7 @@ export function AssistantIdentityV2({ editor, locked }: Readonly<{
   const { draft } = editor;
   const nameError = editor.errors?.fields.name;
   const nameRef = useRef<HTMLInputElement>(null);
-  // Focus on open, after the Studio crumb has taken focus for the new subview.
+  // Focus on open, after the Settings crumb has taken focus for the new subview.
   useEffect(() => {
     const frame = requestAnimationFrame(() => nameRef.current?.focus({ preventScroll: true }));
     return () => cancelAnimationFrame(frame);

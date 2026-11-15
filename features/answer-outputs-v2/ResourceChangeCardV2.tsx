@@ -72,7 +72,7 @@ const quoted = (names: readonly string[]) => names.map((name) => `“${name}”`
 
 /** How the chat shell opens what a card links to; see `shellLinkClick`. */
 export type ResourceChangeNavigationV2 = Readonly<{
-  /** Opens a Studio address (`/?library=...`) in the shell. */
+  /** Opens a Settings address (`/?library=...`) in the shell. */
   onOpenLibrary?(href: string): void;
   /** Starts a new chat with an Assistant, as `/assistant/<id>` does. */
   onStartAssistantChat?(assistantId: string): void;
@@ -95,7 +95,7 @@ function IconLinkV2({ href, icon, label, onOpen }: Readonly<{ href: string; icon
   );
 }
 
-/** A Studio link: a plain click opens Studio in the shell, so the address and the view agree. */
+/** A Settings link: a plain click opens Settings in the shell, so the address and the view agree. */
 function CardLinkV2({ href, icon, label }: Readonly<{ href: string; icon: UiV2IconName; label: string }>) {
   const { onOpenLibrary } = useContext(CardNavigationContext);
   return <IconLinkV2 href={href} icon={icon} label={label} onOpen={onOpenLibrary ? () => onOpenLibrary(href) : undefined} />;
@@ -160,7 +160,7 @@ function ConfirmV2({ busy, confirmLabel, keepLabel, label, onConfirm, onKeep, te
 /**
  * One card in the generated-file card's frame: the name, then one quiet line
  * joining the heading (what happened or what is asked) with `meta`; `detail`
- * (what is not needed at a glance, and stays visible in Studio) is that
+ * (what is not needed at a glance, and stays visible in Settings) is that
  * line's tooltip. The verbs are icons beside the text; `children` (what a
  * deletion changes, a diff), the question, the status and the error take
  * rows of their own, which may widen the card while shown.
@@ -292,7 +292,7 @@ function SecretCardV2({ card, live }: Readonly<{ card: SecretChangeCard; live: b
       heading={outcome?.heading ?? (remote === "missing" ? "Secret already deleted" : remote === "changed" ? "Secret not deleted" : "Delete secret?")}
       headingRef={state.headingRef}
       icon="key" meta={kind} name={card.name} resource="secret" state={outcome ? "done" : asking ? "asking" : remote}
-      status={outcome?.message ?? (remote === "changed" ? "The secret changed after this proposal, so nothing was deleted. Review it in Studio › Secrets." : null)}
+      status={outcome?.message ?? (remote === "changed" ? "The secret changed after this proposal, so nothing was deleted. Review it in Settings › Secrets." : null)}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete secret" keepLabel="Keep secret" label={`Delete ${card.name}`}
           text={`Delete “${card.name}”? Chats and the Workspace stop receiving it. This cannot be undone.`}
@@ -337,7 +337,7 @@ function SkillDeleteCardV2({ card, live }: Readonly<{ card: SkillDeleteProposalC
     <CardV2 actions={asking ? null : <CardLinkV2 href={SKILL_LIBRARY_PATH} icon="wand" label="Open library" />} error={state.error}
       heading={outcome?.heading ?? (remote === "missing" ? "Skill no longer available" : remote === "changed" ? "Skill not deleted" : "Delete Skill?")}
       headingRef={state.headingRef} icon="wand" name={card.name} resource="skill" state={outcome ? "done" : asking ? "asking" : remote}
-      status={outcome?.message ?? (remote === "changed" ? "The Skill changed after this proposal, so nothing was deleted. Review it in Studio › Skills." : null)}
+      status={outcome?.message ?? (remote === "changed" ? "The Skill changed after this proposal, so nothing was deleted. Review it in Settings › Skills." : null)}
       confirm={asking ? (
         <ConfirmV2 busy={state.busy} confirmLabel="Delete Skill" keepLabel="Keep Skill" label={`Delete ${card.name}`}
           text={`Delete “${card.name}” with all its versions? This cannot be undone.`} onConfirm={remove}
@@ -360,7 +360,7 @@ function assistantRemote(result: AssistantApiResult<{ archived: boolean; version
   return result.data.archived ? "archived" : result.data.version === version ? "current" : "changed";
 }
 
-/** The Studio routes' refusals as a card shows them; null: an unexpected failure. */
+/** The Settings routes' refusals as a card shows them; null: an unexpected failure. */
 function assistantRefusal(result: Extract<AssistantApiResult<unknown>, { ok: false }>): Readonly<{ remote?: Remote; message?: string }> | null {
   if (result.status === 404) return { remote: "missing" };
   switch (result.code) {
@@ -368,7 +368,7 @@ function assistantRefusal(result: Extract<AssistantApiResult<unknown>, { ok: fal
     case "assistant_archived": return { remote: "archived" };
     case "assistant_skill_audience_mismatch":
       return { message: `Share ${result.skills?.length ? `these Skills: ${quoted(result.skills)}` : "every linked Skill"} with this audience first, then publish again.` };
-    case "assistant_listing_request_not_needed": return { message: "As an administrator, publish it for everyone in Studio › Assistants." };
+    case "assistant_listing_request_not_needed": return { message: "As an administrator, publish it for everyone in Settings › Assistants." };
     case "assistant_already_listed": return { message: "It is already listed for everyone." };
     case "forbidden": return { message: "You can publish only to groups you belong to." };
     default: return null;
@@ -396,12 +396,12 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
     });
   }
 
-  const open = <CardLinkV2 href={assistantLibraryPath(card.assistantId)} icon="assistant" label="Open in Studio" />;
+  const open = <CardLinkV2 href={assistantLibraryPath(card.assistantId)} icon="assistant" label="Open in Settings" />;
   const remoteStatus = remote === "missing" ? "This Assistant no longer exists."
-    : remote === "archived" ? "The Assistant is archived; restore it in Studio › Assistants first."
+    : remote === "archived" ? "The Assistant is archived; restore it in Settings › Assistants first."
       : remote === "changed" ? card.action === "created"
         ? "Undo is not available: the Assistant changed after this, and that change is kept."
-        : "The Assistant changed after this proposal, so nothing was done. Review it in Studio › Assistants." : null;
+        : "The Assistant changed after this proposal, so nothing was done. Review it in Settings › Assistants." : null;
   const settled = remote === "missing" || remote === "archived" || remote === "changed";
 
   if (card.action === "updated") {
@@ -424,7 +424,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
           {outcome || settled ? null : (
             <UndoButtonV2 busy={state.busy} label={`Undo creating ${card.name}`}
               onClick={() => act(() => setAssistantArchived(card.assistantId, card.definitionVersion, true),
-                { heading: "Assistant archived", message: "Undone: the Assistant is archived. You can restore it in Studio › Assistants." }, "Undo failed. Try again.")} />
+                { heading: "Assistant archived", message: "Undone: the Assistant is archived. You can restore it in Settings › Assistants." }, "Undo failed. Try again.")} />
           )}
           {outcome || remote === "missing" ? null : <StartAssistantChatLinkV2 assistantId={card.assistantId} />}
           {remote === "missing" ? null : open}
@@ -476,7 +476,7 @@ function AssistantCardV2({ card, live }: Readonly<{ card: AssistantChangeCard; l
             ? act(() => publishAssistant(card.assistantId, { expectedVersion: card.definitionVersion, groupId: audience.groupId, scope: "group" }),
               { heading: "Assistant published", message: `Members of ${audience.groupName} can use it now.` }, "Publishing failed. Try again.")
             : act(() => requestAssistantListing(card.assistantId, card.definitionVersion),
-              { heading: "Listing requested", message: "An administrator reviews it; Studio › Assistants shows the outcome." }, "The listing request failed. Try again.")}
+              { heading: "Listing requested", message: "An administrator reviews it; Settings › Assistants shows the outcome." }, "The listing request failed. Try again.")}
           onKeep={() => state.finish({ heading: "Not published", message: null })} />
       ) : null} />
   );
@@ -533,11 +533,11 @@ function SubagentCardV2({ card, live }: Readonly<{ card: SubagentChangeCard; liv
     });
   }
 
-  const open = <CardLinkV2 href={SUBAGENTS_LIBRARY_PATH} icon="bot" label="Open in Studio" />;
+  const open = <CardLinkV2 href={SUBAGENTS_LIBRARY_PATH} icon="bot" label="Open in Settings" />;
   const settled = remote === "missing" || remote === "changed";
   const remoteStatus = remote === "missing" ? "This sub-agent no longer exists."
     : remote === "changed" ? card.action === "delete_proposed"
-      ? "The sub-agent changed after this proposal, so nothing was deleted. Review it in Studio › Sub-agents."
+      ? "The sub-agent changed after this proposal, so nothing was deleted. Review it in Settings › Sub-agents."
       : movedOnly ? "Undo is not available: the default sub-agent changed after this, and that change is kept."
         : "Undo is not available: the sub-agent changed after this, and that change is kept." : null;
 
@@ -673,7 +673,7 @@ function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCar
  * Changes the answer made to the user's own secrets and Assistants, and its
  * proposals to delete or publish one: a change already happened and offers
  * Undo where AIQSA can reverse it; a proposal asks inline, and only the
- * user's click performs it through the Studio routes, guarded by the version
+ * user's click performs it through the Settings routes, guarded by the version
  * the card names. `live`: the answer is still running. `navigation`: how the
  * shell opens the cards' links.
  */

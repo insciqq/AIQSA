@@ -68,7 +68,7 @@ type AssistantBindingNoticePropsV2 = Readonly<{
   current: ShellComposerAssistant | null;
   onChooseAnother(): void;
   onContinueWithout(): void;
-  /** Absent where Studio is not the owner's repair route. */
+  /** Absent where Settings is not the owner's repair route. */
   onOpenInStudio?: ((assistantId: string) => void) | null;
   onRestore?: ((assistantId: string) => void) | null;
   pending: boolean;
@@ -119,7 +119,7 @@ function BindingNoticeV2({
     </UiV2Button>
   );
   const repair = assistantId && copy.action === "studio" && onOpenInStudio
-    ? choice("Open in Studio", () => onOpenInStudio(assistantId))
+    ? choice("Open in Settings", () => onOpenInStudio(assistantId))
     : assistantId && copy.action === "restore" && onRestore
       ? choice("Restore", () => onRestore(assistantId))
       : null;

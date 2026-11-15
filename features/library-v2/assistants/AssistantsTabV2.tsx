@@ -19,14 +19,14 @@ export type AssistantsTabPropsV2 = Readonly<{
   /** The chat composer: starters, temporary chats. */
   composer: ShellComposerView;
   onOpenMcpSettings(): void;
-  /** Leaves the editor page through the Studio unsaved-changes guard. */
+  /** Leaves the editor page through the Settings unsaved-changes guard. */
   onRequestClose(): void;
-  /** Null until Studio has opened the Assistants section. */
+  /** Null until Settings has opened the Assistants section. */
   view: AssistantLibraryView | null;
 }>;
 
 /**
- * Studio › Assistants. The one entry the Studio shell renders for the tab:
+ * Settings › Assistants. The one entry the Settings surface renders for the tab:
  * the gallery or the editor page, and the sheets over them. Each surface
  * lives in its own slot file so the gallery and the editor change
  * independently.
@@ -50,7 +50,7 @@ export function AssistantsTabV2(props: AssistantsTabPropsV2) {
   );
 }
 
-/** The Studio crumb for the tab's current subview, or null on the gallery. */
+/** The Settings crumb for the tab's current subview, or null on the gallery. */
 export function assistantsTabSubviewV2(
   view: AssistantLibraryView | null,
   onBack: () => void

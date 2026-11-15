@@ -7,7 +7,7 @@ import {
 } from "@/lib/contracts/mcp";
 import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2Monogram, UiV2Switch } from "@/components/ui-v2";
 import { UiV2Sheet } from "@/components/ui-v2/SheetV2";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { DiscardChangesConfirmationDialog } from "./ConfirmationDialog";
 import { useBeforeUnloadGuard } from "./useBeforeUnloadGuard";
@@ -36,6 +36,7 @@ import {
   mcpSetupAttention,
   type McpReadinessPresentation
 } from "./mcpReadiness";
+import { usePersonalMcpStore } from "./personalMcpStore";
 
 function errorText(error: unknown, server: UserMcpServer): string {
   if (!(error instanceof McpSettingsApiError)) {
@@ -565,10 +566,13 @@ function ServerRow({
 
 export function McpSettingsSection({
   onBusyChange,
-  onOpenDefaults
+  onOpenDefaults,
+  personalConnections
 }: {
   onBusyChange?(busy: boolean): void;
   onOpenDefaults?(): void;
+  /** The user's own connections, listed under the installation servers. */
+  personalConnections?: ReactNode;
 } = {}) {
   const error = useMcpSettingsStore((state) => state.error);
   const loadState = useMcpSettingsStore((state) => state.loadState);
@@ -579,6 +583,14 @@ export function McpSettingsSection({
   const [filter, setFilter] = useState<"all" | "enabled" | "setup">("all");
   const [query, setQuery] = useState("");
   const [busyServerIds, setBusyServerIds] = useState<ReadonlySet<string>>(() => new Set());
+  // A personal connection's OAuth return lands here: its outcome shows in
+  // the user's own connections, below the installation servers.
+  const personalOutcome = usePersonalMcpStore((state) => state.oauthOutcome);
+  const personalRef = useRef<HTMLDivElement | null>(null);
+  const showPersonal = Boolean(personalConnections);
+  useEffect(() => {
+    if (showPersonal && personalOutcome) personalRef.current?.scrollIntoView?.({ block: "start" });
+  }, [personalOutcome, showPersonal]);
   const enabledServers = servers.filter((server) => server.enabled);
   const enabledCount = enabledServers.length;
   // The same count the rows show: reported tool names when the runtime has
@@ -630,6 +642,14 @@ export function McpSettingsSection({
         description="Enabled servers join your private tool catalog for chats and authorized MCP Hub apps. A chat uses them in Auto or Load all mode. Policy, secrets, and the full inventory stay with the administrator."
         action={<UiV2Button busy={loadState === "loading"} disabled={loadState === "loading"} onClick={() => void refreshMcpSettings(true).catch(() => undefined)}>Refresh status</UiV2Button>}
       >MCP servers</SectionHeading>
+      {personalConnections ? (
+        <div className="v2-settings-section-heading v2-settings-mcp-group">
+          <div>
+            <h3 className="v2-settings-section-title">Installation servers</h3>
+            <p className="v2-settings-section-description">Servers your administrators set up for this installation.</p>
+          </div>
+        </div>
+      ) : null}
       {servers.length ? <p className="v2-settings-note">{enabledCount} of {servers.length} server{servers.length === 1 ? "" : "s"} enabled{enabledCount && enabledToolCount ? ` · ${toolCountLabel(enabledToolCount)}` : ""}</p> : null}
 
       {oauthOutcome ? (
@@ -709,6 +729,8 @@ export function McpSettingsSection({
       {error && servers.length > 0 ? (
         <p className="v2-settings-field-note" role="status">Status could not be refreshed. Try again.</p>
       ) : null}
+
+      {personalConnections ? <div className="v2-settings-mcp-personal" ref={personalRef}>{personalConnections}</div> : null}
 
       <McpConsentsSection />
       {/* Footnote: how a chat consumes the enabled catalog (A13). */}

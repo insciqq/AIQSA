@@ -76,7 +76,7 @@ async function loadDetail(assistantId: string) {
 
 /**
  * Opens the detail sheet. It needs no controller input, so a deep link can
- * call it right after Studio opens the Assistants section. A null id (a
+ * call it right after Settings opens the Assistants section. A null id (a
  * malformed link) shows the same neutral notice as an unknown one, without
  * a request.
  */

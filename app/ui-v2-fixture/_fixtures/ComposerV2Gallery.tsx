@@ -487,7 +487,7 @@ function galleryReasoningConfig(config: ComposerConfig, state: ComposerGallerySt
 }
 
 /**
- * A personal chat's MCP disclosure: Studio's installation server plus the
+ * A personal chat's MCP disclosure: the installation server plus the
  * account's enabled personal connections, two of them needing attention.
  */
 const galleryPersonalMcpServers: ComposerConfig["mcpServers"] = [

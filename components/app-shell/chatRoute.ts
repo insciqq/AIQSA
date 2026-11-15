@@ -278,7 +278,7 @@ export function useShownChatRoute(): void {
 
 /**
  * Follows browser back/forward inside the chat pages. A guard that blocks the
- * traversal (busy or unsaved Studio work) puts the shown route back on top;
+ * traversal (busy or unsaved Settings work) puts the shown route back on top;
  * releasing it later adds the traversed route as a new entry.
  */
 export function useChatRouteHistory(input: Readonly<{

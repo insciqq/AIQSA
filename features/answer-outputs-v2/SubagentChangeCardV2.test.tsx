@@ -42,7 +42,7 @@ describe("ResourceChangeCardsV2: custom sub-agents", () => {
     const fetchMock = respond({ [`GET ${path}`]: view(created.definitionId, 1), [`DELETE ${path}`]: noContent() });
     render(<ResourceChangeCardsV2 cards={[created]} />);
     expect(screen.getByText("Sub-agent created")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open in Studio" })).toHaveAttribute("href", "/?library=subagents");
+    expect(screen.getByRole("link", { name: "Open in Settings" })).toHaveAttribute("href", "/?library=subagents");
     fireEvent.click(await screen.findByRole("button", { name: "Undo creating browser" }));
     expect(await screen.findByText("Sub-agent removed")).toBeVisible();
     expect(bodies(fetchMock, "DELETE")).toEqual([[path, { expectedVersion: 1 }]]);

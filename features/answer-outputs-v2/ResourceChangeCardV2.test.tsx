@@ -183,7 +183,7 @@ describe("ResourceChangeCardsV2: Skills", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete Skill" }));
     const item = screen.getByTestId("resource-change-card");
     await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent(
-      "The Skill changed after this proposal, so nothing was deleted. Review it in Studio › Skills."));
+      "The Skill changed after this proposal, so nothing was deleted. Review it in Settings › Skills."));
     expect(item).toHaveTextContent("Skill not deleted");
     expect(within(item).queryByRole("group")).toBeNull();
     expect(within(item).getByRole("link", { name: "Open library" })).toBeVisible();
@@ -217,11 +217,11 @@ describe("ResourceChangeCardsV2: Skills", () => {
 describe("ResourceChangeCardsV2: Assistants", () => {
   it("links a new Assistant and undoes it by archiving the version it created", async () => {
     const card = fresh(assistant);
-    // The Studio client reads a 204 as success without a detail to decode.
+    // The Settings client reads a 204 as success without a detail to decode.
     const fetchMock = respond({ "PATCH /api/me/assistants/asst_1": () => new Response(null, { status: 204 }) });
     render(<ResourceChangeCardsV2 cards={[card]} live />);
     const item = screen.getByTestId("resource-change-card");
-    expect(within(item).getByRole("link", { name: "Open in Studio" })).toHaveAttribute("href", "/?library=assistants&assistant=asst_1");
+    expect(within(item).getByRole("link", { name: "Open in Settings" })).toHaveAttribute("href", "/?library=assistants&assistant=asst_1");
     expect(within(item).getByRole("link", { name: "Start a chat" })).toHaveAttribute("href", "/assistant/asst_1");
     fireEvent.click(within(item).getByRole("button", { name: "Undo creating Reporter" }));
     await waitFor(() => expect(item).toHaveTextContent("Assistant archived"));
@@ -242,16 +242,16 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(onStartAssistantChat).toHaveBeenCalledExactlyOnceWith("asst_1");
   });
 
-  it("opens Studio links through the shell, so the address keeps naming the shown chat", () => {
+  it("opens Settings links through the shell, so the address keeps naming the shown chat", () => {
     respond({});
     const onOpenLibrary = vi.fn();
     render(<AnswerOutputsV2 artifact={{ citations: [], reasoningText: [], sources: [],
       resourceChanges: [fresh(assistant), fresh(secret)] }} live
       onOpenLibrary={onOpenLibrary} />);
-    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Studio" }))).toBe(false);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Settings" }))).toBe(false);
     expect(fireEvent.click(screen.getByRole("link", { name: "Open Secrets" }))).toBe(false);
     expect(onOpenLibrary.mock.calls).toEqual([["/?library=assistants&assistant=asst_1"], ["/?library=secrets"]]);
-    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Studio" }), { metaKey: true })).toBe(true);
+    expect(fireEvent.click(screen.getByRole("link", { name: "Open in Settings" }), { metaKey: true })).toBe(true);
     expect(onOpenLibrary).toHaveBeenCalledTimes(2);
   });
 
@@ -275,7 +275,7 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     expect(meta).toHaveAttribute("title", "Assistant updated · Instructions, Model\nInstructions changed\nModel: GPT-5.5 → Claude Sonnet");
     expect(screen.getByLabelText("Changes in the instructions of Reporter")).toHaveTextContent("− Be brief.");
     expect(screen.queryByRole("button")).toBeNull();
-    expect(within(item).getByRole("link", { name: "Open in Studio" })).toBeVisible();
+    expect(within(item).getByRole("link", { name: "Open in Settings" })).toBeVisible();
   });
 
   it("asks before deleting with the consequences and deletes the version it named", async () => {
@@ -305,7 +305,7 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     const everyone = fresh({ ...assistant, action: "publish_proposed" as const, audience: { kind: "everyone" as const } });
     render(<ResourceChangeCardsV2 cards={[everyone]} live />);
     fireEvent.click(screen.getByRole("button", { name: "Request listing" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("As an administrator, publish it for everyone in Studio › Assistants."));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("As an administrator, publish it for everyone in Settings › Assistants."));
     expect(bodies(fetchMock, "POST").at(-1)).toEqual(["/api/me/assistants/asst_1/listing-requests", { expectedVersion: everyone.definitionVersion }]);
     cleanup();
     respond({ "POST /api/me/assistants/asst_1/publications": { publication: {} } });
@@ -321,7 +321,7 @@ describe("ResourceChangeCardsV2: Assistants", () => {
     fireEvent.click(screen.getByRole("button", { name: "Publish" }));
     const item = screen.getByTestId("resource-change-card");
     await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent(
-      "The Assistant changed after this proposal, so nothing was done. Review it in Studio › Assistants."));
+      "The Assistant changed after this proposal, so nothing was done. Review it in Settings › Assistants."));
     expect(item).toHaveTextContent("Not published");
     expect(within(item).queryByRole("group")).toBeNull();
     expect(bodies(fetchMock, "POST")).toHaveLength(1);
@@ -373,7 +373,7 @@ describe("ResourceChangeCardsV2: layout", () => {
     // A compact card fits its grid cell; a question takes the whole measure while it asks.
     expect(items.map((item) => getComputedStyle(item).gridColumn === "1 / -1")).toEqual([false, false, true, true, false, false, true, true]);
     // A new Assistant's three verbs are icons beside its text.
-    const created = within(items[4]!).getByRole("link", { name: "Open in Studio" }).closest(".v2-resource-change-card-actions") as HTMLElement;
+    const created = within(items[4]!).getByRole("link", { name: "Open in Settings" }).closest(".v2-resource-change-card-actions") as HTMLElement;
     expect(within(created).getByRole("button", { name: "Undo creating Reporter" })).toHaveClass("v2-icon-button");
     expect(within(created).getByRole("link", { name: "Start a chat" })).toHaveAttribute("href", "/assistant/asst_1");
   });

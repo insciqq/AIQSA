@@ -27,7 +27,7 @@ export async function requestWorkspaceSecrets(mutation?: WorkspaceSecretMutation
   return { secrets, browserAutosave: decodeWorkspaceBrowserAutosaveReport(data?.browserAutosave) };
 }
 
-/** The owner's saved value for Studio › Secrets: held only in component state, never in browser storage. */
+/** The owner's saved value for Settings › Secrets: held only in component state, never in browser storage. */
 export async function revealWorkspaceSecret(id: string, signal?: AbortSignal): Promise<WorkspaceSecretReveal> {
   const { response, data } = await send({ action: "reveal", id }, signal);
   const code = data?.error;

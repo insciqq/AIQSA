@@ -10,7 +10,7 @@ import { listScheduledTasks, ScheduledTaskApiError } from "./scheduledTasksApi";
 
 /**
  * The one browser owner of the signed-in account's scheduled task list. The
- * Studio panel and the background update watcher read and refresh it; every
+ * Settings panel and the background update watcher read and refresh it; every
  * mutation response replaces its task in place.
  */
 export type ScheduledTasksState = Readonly<{

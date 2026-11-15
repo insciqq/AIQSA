@@ -475,7 +475,7 @@ describe("ScheduledTasksPanel", () => {
     expect(remove).toHaveBeenCalledWith(task.id);
   });
 
-  it("opens a task's chat without reporting itself busy, so Studio can close over it", async () => {
+  it("opens a task's chat without reporting itself busy, so Settings can close over it", async () => {
     const task = scheduledTaskFixture({ chatId: "chat-1" });
     list.mockResolvedValue(listed([task]));
     let finish!: () => void;
@@ -488,7 +488,7 @@ describe("ScheduledTasksPanel", () => {
     // A second click while the chat opens is not a second navigation.
     fireEvent.click(screen.getByRole("button", { name: "Open chat for Weekday news brief" }));
     await act(async () => { await Promise.resolve(); });
-    // Studio refuses to close while the panel reports busy; the chat open must not.
+    // Settings refuses to close while the panel reports busy; the chat open must not.
     expect(onBusyChange).not.toHaveBeenCalledWith(true);
     await act(async () => { finish(); await Promise.resolve(); });
     expect(onOpenChat).toHaveBeenCalledOnce();
@@ -621,7 +621,7 @@ describe("ScheduledTasksPanel", () => {
   });
 
   it.each([
-    ["paused", "Memory is paused, so runs read nothing. Turn it on in Studio › Memory."],
+    ["paused", "Memory is paused, so runs read nothing. Turn it on in Settings › Memory."],
     ["needs_setup", "Memory needs administrator setup, so runs read nothing yet."]
   ] as const)("shows the owner's %s Memory on the task's switch and keeps the task's own choice editable", async (memory, hint) => {
     const task = scheduledTaskFixture({ memoryEnabled: false });
