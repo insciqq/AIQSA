@@ -182,7 +182,7 @@
  *     through Quick Setup, which checks DeepSeek's two models and its Search API. A source missing its client route is created
  *     with its live check, one on another model is re-saved with Save and check, then each source's Test runs and must show a real
  *     search with sources, or the harness stops with `research_search_<source>_<code>`. The plan becomes the organization's default and
- *     every send names it; Q and R then search on it too. It stays on the stand like the rest of the setup.
+ *     every send names it; Q, R and V then search on it too. It stays on the stand like the rest of the setup.
  *   - AIQSA_SUBAGENTS_ADMIN_PROXY_FILE: a file of mode 0600 holding exactly
  *     `{ "url": "http://host:port", "username": "...", "password": "...", "country": "RU", "hints": [".ru"] }` (http, https or socks5).
  *     Before the questions T adds it as an administrator proxy (`/api/admin/proxies`), runs its check (`.../check`) and requires `ok`;
@@ -221,6 +221,17 @@
  *   Oracle: the run completed, the paragraph was kept, nothing rewrote the answer and the word is not before the paragraph;
  *   `order_not_reached: true` when the callback did not land during the answer, which is not a failure. Paid calls: about 3-6 codex-lb requests
  *   (the main agent's two or three rounds, the sub-agent's one or two) in about 2-4 minutes.
+ * - V: hand-over without a Workspace, only when named, one chat and one send. It reproduces a connector turn without a Workspace whose
+ *   sub-agent briefed its own helper to write a report file under `/workspace/project/`, and the helper, with no file tool, searched MCP
+ *   tools for one and ended `partial`. The message goes as a connector sends it (`workspace: { enabled: false, reason: "connector" }`) on the
+ *   first Search route and asks the main agent to give a two-part lookup about SQLite to `v-lead` in the foreground, which does one part and
+ *   gives the other to its own helper `v-helper` in the foreground; each agent makes exactly one search, and nothing in the message names files.
+ *   Oracles, counted inside SQL: the main run completes; the main agent made a `call_subagent` and a sub-agent made one that started a helper;
+ *   no `call_subagent` brief names `/workspace`; every sub-agent turn ended `done` with outcome `done` (`partialTurns`, `blockedTurns` count the
+ *   others); no sub-agent's `find_tools` query names a file or a write (`SCENARIO_V_FILE_QUERY_PATTERN`); no run of the chat has a
+ *   WorkspaceRunBinding and the chat has no Workspace session. `searches` counts the returned searches and is not an oracle. This needs
+ *   DEEPSEEK_API_KEY for the Search source, as Q does. Paid calls: about 6-11 codex-lb requests (main agent 2-4, `v-lead` 2-4, `v-helper` 2-3)
+ *   and 2 searches, in a few minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -282,6 +293,7 @@ import {
   decodeSubagentSummaryResponse, decodeSubagentThreadView
 } from "../lib/contracts/subagentViews";
 import { decodeUploadAttachmentResponse } from "../lib/contracts/uploads";
+import type { WorkspaceNotRequestedReason } from "../lib/contracts/workspace";
 import { registerBulkResultMcpServer, type BulkRegistrationClient } from "../tests/e2e/support/bulkResultMcpEndpoint";
 import { createWriteApprovalFixture, startMutableMcpEndpoint } from "../tests/e2e/support/mutableMcpEndpoint";
 import {
@@ -296,13 +308,13 @@ import {
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, SCENARIO_R_PHRASES, SUBAGENT_SCENARIO_NEEDS,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, oracleV, SCENARIO_R_PHRASES, SCENARIO_V_FILE_QUERY_PATTERN, SUBAGENT_SCENARIO_NEEDS,
   SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_HANDOFF_QUESTION, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
   type PageReads, type RPhraseResult, type TDraftFinding, type TEvidenceRow, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
-  type SubagentScenarioId, type ToolRow, type TurnRow, type WakeUpRow
+  type SubagentScenarioId, type ToolRow, type TurnRow, type VEvidence, type WakeUpRow
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
 import { readConnections } from "./context-compaction-journey-support";
@@ -344,7 +356,7 @@ type Context = Readonly<{
   marginSeconds: number;
   model: CatalogModel;
   options: SubagentHarnessOptions;
-  /** The Search routes Q and R run on: the client route, and the hosted one when the stand's model offers it. */
+  /** The Search routes Q, R and V run on: the client route, and the hosted one when the stand's model offers it. */
   search: readonly SearchRoute[];
   second: CatalogModel | null;
   research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null;
@@ -416,7 +428,8 @@ type SendAttempt = Readonly<{ code: string; ok: false } | { ok: true; runId: str
  */
 async function trySend(ctx: Context, run: Run, chatId: string, text: string,
   files: readonly Readonly<{ attachmentId: string; fileName: string; type: "file" }>[] = [],
-  controls: Readonly<{ deepResearch?: boolean; mcp?: Readonly<{ mode: "load_all" }>; search?: SearchRoute; workspace?: Readonly<{ enabled: boolean }> }> = {},
+  controls: Readonly<{ deepResearch?: boolean; mcp?: Readonly<{ mode: "load_all" }>; search?: SearchRoute;
+    workspace?: Readonly<{ enabled: boolean; reason?: WorkspaceNotRequestedReason }> }> = {},
   onStream?: (response: Response) => Promise<void>): Promise<SendAttempt> {
   const { deepResearch, search, ...others } = controls;
   const leaf = await activeLeaf(ctx, chatId);
@@ -1604,6 +1617,50 @@ async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
   return { success: !failed && routes.length > 0, usage };
 }
 
+/** V's counts over the chat's runs, threads and turns; briefs and queries are matched inside SQL and only counts leave it. */
+async function handOverEvidence(db: PostgresClient, chatId: string): Promise<Omit<VEvidence, "settled" | "terminal">> {
+  const { rows } = await db.query<Omit<VEvidence, "settled" | "terminal" | "turns"> & { blocked: number; done: number; partial: number; total: number }>(
+    `WITH runs AS (SELECT "id" FROM "ModelRun" WHERE "chatId" = $1),
+      calls AS (SELECT "toolName", "subagentThreadId", "state"::text AS "state", "arguments"::text AS "arguments" FROM "ModelRunToolCall"
+        WHERE "modelRunId" IN (SELECT "id" FROM runs))
+    SELECT (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND "subagentThreadId" IS NULL) AS "mainCalls",
+      (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND "subagentThreadId" IS NOT NULL) AS "subagentCalls",
+      (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
+      (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM "SubagentThread" WHERE "chatId" = $1 AND "parentThreadId" IS NOT NULL) AS "helperThreads",
+      (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1) AS "total",
+      (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1 AND "state"::text = 'done' AND "outcome"::text = 'done') AS "done",
+      (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1 AND "outcome"::text = 'partial') AS "partial",
+      (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1 AND "outcome"::text = 'blocked') AS "blocked",
+      (SELECT count(*)::int FROM "WorkspaceRunBinding" WHERE "modelRunId" IN (SELECT "id" FROM runs)) AS "workspaceBindings",
+      EXISTS (SELECT 1 FROM "WorkspaceSession" WHERE "chatId" = $1) AS "sessionStarted"`, [chatId, SCENARIO_V_FILE_QUERY_PATTERN]);
+  const row = rows[0] ?? fail("hand_over_evidence_missing");
+  const { blocked, done, partial, total, ...counts } = row;
+  return { ...counts, turns: { blocked, done, partial, total } };
+}
+
+/**
+ * V: hand-over without a Workspace. One send as a connector's turn makes it (`reason: "connector"`), on the first Search route; the main agent
+ * gives a two-part lookup to `v-lead`, which splits it with its own helper. Every oracle is a count over the chat (`handOverEvidence`).
+ */
+async function scenarioV(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const route = ctx.search[0] ?? fail("search_route_missing");
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario V");
+  run.chats.push(chat.id);
+  const sent = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.V(), [], { search: route, workspace: { enabled: false, reason: "connector" } });
+  if (!sent.ok) {
+    Object.assign(run.line, { admissionRefusal: stableCode(sent.code), checksFailed: ["admission_refused"], wallSeconds: seconds(started) });
+    return { success: false, usage: null };
+  }
+  const terminal = await waitRun(ctx, sent.runId);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+  const verdict = oracleV({ ...await handOverEvidence(ctx.db, chat.id), settled, terminal: terminal.status });
+  Object.assign(run.line, { checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal, wallSeconds: seconds(started) });
+  return { success: verdict.failed.length === 0, usage };
+}
+
 const R_PHRASE_MS = 5 * 60_000;
 
 async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
@@ -2604,6 +2661,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "S": outcome = await scenarioS(ctx, run); break;
       case "T": outcome = await scenarioT(ctx, run); break;
       case "U": outcome = await scenarioU(ctx, run); break;
+      case "V": outcome = await scenarioV(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -2715,7 +2773,7 @@ async function main() {
       }
       if (blind?.model.capabilities.imageInput) fail("text_model_has_image_input");
     }
-    // Q and R search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
+    // Q, R and V search for real: the DeepSeek client route always, and the codex-lb hosted route when its model offers one.
     const search: SearchRoute[] = [];
     if (researchOptions?.search) {
       search.push(await productionSearch(api, route, secret, researchOptions.search, model));

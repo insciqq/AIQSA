@@ -62,7 +62,7 @@ const flag = (value: boolean) => value ? 1 : 0;
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -80,7 +80,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}, V: { search: true }
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -146,7 +146,7 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
   // Production Search (T's acceptance option) brings its own sources, and `researchEvalOptions` asks for the DeepSeek key only when
-  // that source is selected; without it Q, R and T search on the DeepSeek client route.
+  // that source is selected; without it Q, R, T and V search on the DeepSeek client route.
   const productionSearch = env.AIQSA_SUBAGENTS_T_SEARCH?.trim() === "production";
   if (needs.some((need) => need.search) && !productionSearch && !env.DEEPSEEK_API_KEY?.trim()) fail("deepseek_key_required");
   if (needs.some((need) => need.testProxy) && parseTestProxy(env.AIQSA_SUBAGENTS_TEST_PROXY) === null) fail("test_proxy_required");
@@ -199,6 +199,7 @@ export const SUBAGENT_NAMES = Object.freeze({
   listener: "p-listener",
   reader: "q-reader",
   racer: "u-sleeper",
+  handOver: { helper: "v-helper", lead: "v-lead" },
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -563,6 +564,17 @@ export const SUBAGENT_PROMPTS = Object.freeze({
       "примерно на 1500 слов о том, как работает холодильник, обычными абзацами без заголовков и списков. Первый абзац — не меньше трёх " +
       "предложений. О суб-агенте в ответе не пиши."
   }),
+  // Nothing in it names files or the Workspace: what the lead's brief asks of its helper is the model's own, under the product's prompt.
+  // Search calls are counted: paid search prompts name exactly how many, because models fan out otherwise.
+  V: () => [
+    `Поручи небольшой поиск в интернете ровно одному суб-агенту ${SUBAGENT_NAMES.handOver.lead} и дождись его отчёта (не в фоне). Сам не ищи.`,
+    "Вопрос из двух частей про встраиваемую базу данных SQLite: 1) под какой лицензией распространяется исходный код SQLite; " +
+      "2) в каком году вышла первая версия SQLite.",
+    `Скажи ${SUBAGENT_NAMES.handOver.lead}, чтобы первую часть он нашёл сам, а вторую поручил одному своему помощнику ` +
+      `${SUBAGENT_NAMES.handOver.helper} (не в фоне), дождался его ответа и собрал обе части вместе. Каждому из них хватит ровно одного ` +
+      "веб-поиска: не больше одного поиска на агента, страницы не открывать, ответ взять из результатов поиска.",
+    "Когда получишь его отчёт, ответь мне двумя короткими строками: лицензия и год."
+  ].join("\n\n"),
   P: Object.freeze({
     // The brief says nothing about the user: following the message is the product's doing, not this prompt's.
     start: () => `Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.listener} и больше ничего не делай. ` +
@@ -1545,6 +1557,56 @@ export function oracleQ(input: QEvidence): OracleVerdict {
   if (!input.settled) failed.push("callbacks_owed");
   return { counts: { mainCalls: pageReadTotal(input.main), mainReads: pageReadCount(input.main, "read"), readerCalls: pageReadTotal(input.reader),
     readerReads: pageReadCount(input.reader, "read"), ...(input.searches === null ? {} : { searches: input.searches }) }, failed };
+}
+
+/**
+ * A `find_tools` query that looks for a way to write a file (V), as a regular expression SQL matches case-insensitively (`~*`) and the
+ * tests read with JavaScript's `iu` flags. The Cyrillic capitals are spelled out: a database under the C locale folds no Cyrillic case.
+ */
+export const SCENARIO_V_FILE_QUERY_PATTERN = "(file|write|[фФ]айл|[зЗ]апис)";
+
+/** V's counts, all from read-only SQL over the chat: no brief, query or answer leaves it. */
+export type VEvidence = Readonly<{
+  /** `call_subagent` calls, by any agent, whose arguments name `/workspace`. */
+  briefsNamingWorkspace: number;
+  /** `find_tools` calls by sub-agents whose arguments match `SCENARIO_V_FILE_QUERY_PATTERN`. */
+  fileToolSearches: number;
+  /** Threads a sub-agent started. */
+  helperThreads: number;
+  /** `call_subagent` calls by the main agent. */
+  mainCalls: number;
+  /** Search calls that returned, by every agent: recorded so a fan-out shows, never an oracle. */
+  searches: number;
+  sessionStarted: boolean;
+  settled: boolean;
+  /** `call_subagent` calls by sub-agents. */
+  subagentCalls: number;
+  /** The main run's status. */
+  terminal: string;
+  /** Every sub-agent turn of the chat; `done` counts state and outcome both `done`. */
+  turns: Readonly<{ blocked: number; done: number; partial: number; total: number }>;
+  workspaceBindings: number;
+}>;
+
+/**
+ * V's verdict: without a Workspace, agents hand work over in reports. The main agent delegated and its sub-agent started a helper, no brief
+ * names `/workspace`, every turn ended done with outcome done, no sub-agent looked for a file tool, and no run of the chat got a Workspace.
+ */
+export function oracleV(input: VEvidence): OracleVerdict {
+  const failed: string[] = [];
+  if (input.terminal !== "complete") failed.push("run_not_complete");
+  if (input.mainCalls === 0) failed.push("main_did_not_delegate");
+  if (input.subagentCalls === 0 || input.helperThreads === 0) failed.push("helper_not_started");
+  if (input.briefsNamingWorkspace > 0) failed.push("brief_names_workspace");
+  if (input.turns.total === 0 || input.turns.done < input.turns.total) failed.push("subagent_turn_not_done");
+  if (input.fileToolSearches > 0) failed.push("file_tool_searched");
+  if (input.workspaceBindings > 0) failed.push("workspace_bound");
+  if (input.sessionStarted) failed.push("workspace_session_started");
+  if (!input.settled) failed.push("callbacks_owed");
+  return { counts: { blockedTurns: input.turns.blocked, briefsNamingWorkspace: input.briefsNamingWorkspace, doneTurns: input.turns.done,
+    fileToolSearches: input.fileToolSearches, helperThreads: input.helperThreads, mainCalls: input.mainCalls, partialTurns: input.turns.partial,
+    searches: input.searches, sessionStarted: flag(input.sessionStarted), subagentCalls: input.subagentCalls, turns: input.turns.total,
+    workspaceBindings: input.workspaceBindings }, failed };
 }
 
 export const SCENARIO_S_NAME = "ru-test";

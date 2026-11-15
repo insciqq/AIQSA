@@ -8,7 +8,7 @@ import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
-  SCENARIO_R_PHRASES, SCENARIO_S_PROMPTS, oracleQ, oracleR, oracleS, parseTestProxy, researchMetrics,
+  SCENARIO_R_PHRASES, SCENARIO_S_PROMPTS, SCENARIO_V_FILE_QUERY_PATTERN, oracleQ, oracleR, oracleS, oracleV, parseTestProxy, researchMetrics,
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
@@ -50,7 +50,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(23);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(24);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("U");
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
@@ -214,6 +214,44 @@ describe("a sub-agent's children (O)", () => {
     expect(oracleP({ ...held, reportHoldsWord: false }).failed).toEqual(["user_message_not_followed"]);
     expect(oracleP({ ...held, mainChatHoldsNote: true }).failed).toEqual(["user_message_in_main_chat"]);
     expect(oracleP({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
+  });
+
+  it("V runs only when named, with Search, names no file in its message and fails each acceptance line by name", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("V");
+    expect(selectedSubagentScenarios("v")).toEqual(["V"]);
+    expect(() => subagentHarnessOptions({}, ["V"], "m")).toThrow("browser_scenarios_deepseek_key_required");
+    const prompt = SUBAGENT_PROMPTS.V();
+    expect(prompt).toContain(SUBAGENT_NAMES.handOver.lead);
+    expect(prompt).toContain(SUBAGENT_NAMES.handOver.helper);
+    expect(prompt).toContain("ровно одного веб-поиска");
+    expect(prompt).not.toMatch(/workspace|файл|запиш|запис/iu);
+    const held = { briefsNamingWorkspace: 0, fileToolSearches: 0, helperThreads: 1, mainCalls: 1, searches: 2, sessionStarted: false, settled: true,
+      subagentCalls: 1, terminal: "complete", turns: { blocked: 0, done: 2, partial: 0, total: 2 }, workspaceBindings: 0 };
+    expect(oracleV(held)).toEqual({ counts: { blockedTurns: 0, briefsNamingWorkspace: 0, doneTurns: 2, fileToolSearches: 0, helperThreads: 1, mainCalls: 1,
+      partialTurns: 0, searches: 2, sessionStarted: 0, subagentCalls: 1, turns: 2, workspaceBindings: 0 }, failed: [] });
+    // Searches are recorded, never judged: a fan-out is visible in the line but fails nothing.
+    expect(oracleV({ ...held, searches: 9 }).failed).toEqual([]);
+    expect(oracleV({ ...held, terminal: "error" }).failed).toEqual(["run_not_complete"]);
+    expect(oracleV({ ...held, mainCalls: 0 }).failed).toEqual(["main_did_not_delegate"]);
+    expect(oracleV({ ...held, subagentCalls: 0 }).failed).toEqual(["helper_not_started"]);
+    expect(oracleV({ ...held, helperThreads: 0 }).failed).toEqual(["helper_not_started"]);
+    expect(oracleV({ ...held, briefsNamingWorkspace: 1 }).failed).toEqual(["brief_names_workspace"]);
+    // The production case: the helper's turn ended `partial` after it looked for a file tool.
+    expect(oracleV({ ...held, fileToolSearches: 1, turns: { blocked: 0, done: 1, partial: 1, total: 2 } }).failed)
+      .toEqual(["subagent_turn_not_done", "file_tool_searched"]);
+    expect(oracleV({ ...held, turns: { blocked: 1, done: 1, partial: 0, total: 2 } }).failed).toEqual(["subagent_turn_not_done"]);
+    expect(oracleV({ ...held, turns: { blocked: 0, done: 0, partial: 0, total: 0 } }).failed).toEqual(["subagent_turn_not_done"]);
+    expect(oracleV({ ...held, workspaceBindings: 1 }).failed).toEqual(["workspace_bound"]);
+    expect(oracleV({ ...held, sessionStarted: true }).failed).toEqual(["workspace_session_started"]);
+    expect(oracleV({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
+  });
+
+  it("V's file-tool pattern matches a query for a way to write a file, in English or Russian, and not an ordinary search", () => {
+    const pattern = new RegExp(SCENARIO_V_FILE_QUERY_PATTERN, "iu");
+    for (const query of ["write file", "File system", "{\"query\":\"save report to disk, write\"}", "запись файла", "Файловый инструмент", "Записать отчёт"]) {
+      expect(pattern.test(query)).toBe(true);
+    }
+    for (const query of ["web search", "{\"query\":\"sqlite license\"}", "поиск страниц", "отчёт"]) expect(pattern.test(query)).toBe(false);
   });
 
   it("runs only when named", () => {
