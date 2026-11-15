@@ -57,7 +57,8 @@ export async function showSettingsSection(page: Page, name: SettingsSectionName)
     await settings.getByRole("button", { name: "Back to Settings" }).click();
   }
   await tab.click();
-  await expect(tab).toHaveAttribute("aria-selected", "true");
+  // The section view hides the list where they take turns, so the selected row is read with hidden elements included.
+  await expect(settings.getByRole("tab", { name, exact: true, includeHidden: true })).toHaveAttribute("aria-selected", "true");
   await expect(settings).toHaveAttribute("data-view", "section");
   return tab;
 }
