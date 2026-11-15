@@ -546,7 +546,8 @@ test("Save & try from the Code reviewer template opens a Temporary chat with the
     const created = (await response.json() as AssistantDetailResponse).assistant;
 
     await expect(page.getByTestId("library-v2")).toHaveCount(0);
-    await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+    // A chat with no message yet shows the Temporary switch, on; the indicator replaces it once the chat exists.
+    await expect(page.getByTestId("header-temporary-toggle")).toHaveAttribute("aria-pressed", "true");
     const selector = page.getByTestId("header-assistant-selector");
     await expect(selector).toHaveAttribute("data-state", "chosen");
     await expect(selector).toHaveAccessibleName(`Assistant: ${name}`);

@@ -517,7 +517,8 @@ test("Save & try opens a Temporary chat and Edit Assistant returns to the editor
   await editor.getByRole("button", { name: "Save & try" }).click();
 
   await expect(library).toHaveCount(0);
-  await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+  // A chat with no message yet shows the Temporary switch, on.
+  await expect(page.getByTestId("header-temporary-toggle")).toHaveAttribute("aria-pressed", "true");
   const selector = page.getByRole("button", { name: `Assistant: ${name}` });
   await expect(selector).toBeVisible();
   await selector.click();
