@@ -4,6 +4,7 @@ import { ArrowLeft, Bell, CheckCheck, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { UiV2Icon } from "@/components/ui-v2";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import type { UserAnnouncementDetail, UserAnnouncementPage } from "@/lib/contracts/announcements";
 import { AnnouncementRequestError, getAnnouncement, listAnnouncements } from "./api";
@@ -191,18 +192,22 @@ function AnnouncementsInbox({ onClose }: Readonly<{ onClose(): void }>) {
   );
 }
 
-export function AnnouncementsBell({ compact = true }: Readonly<{ compact?: boolean }>) {
+/**
+ * The announcements entry at the foot of the chat list: an icon button whose
+ * unread dot is ringed in the list's surface. Its tooltip opens upward
+ * because the entry sits at the bottom of the screen.
+ */
+export function AnnouncementsBell() {
   const [open, setOpen] = useState(false);
   const announcements = useAnnouncements();
   if (!announcements) return null;
   const { unreadCount, refresh } = announcements;
   return <>
     <button type="button" aria-label={unreadCount ? `Announcements, ${unreadCount} unread` : "Announcements"} aria-haspopup="dialog" aria-expanded={open}
-      className={compact ? "v2-rail-button v2-focusable relative" : "v2-focusable relative flex min-h-11 w-full items-center gap-3 rounded-control px-3 text-sm text-ink-secondary hover:bg-control-hover"}
-      data-tooltip={compact ? "Announcements" : undefined} data-tooltip-side="right" onClick={() => { setOpen(true); void refresh(); }}>
-      <Bell className="size-5 shrink-0" aria-hidden="true" />
-      {!compact ? <span className="flex-1 text-left">Announcements</span> : null}
-      {unreadCount > 0 ? <span aria-hidden="true" className={compact ? "absolute right-1 top-1 size-2 rounded-full bg-proof ring-2 ring-workspace-rail" : "rounded-full bg-proof px-1.5 text-xs text-proof-contrast"}>{compact ? null : unreadCount > 99 ? "99+" : unreadCount}</span> : null}
+      className="v2-icon-button v2-focusable relative"
+      data-tooltip="Announcements" data-tooltip-side="top" onClick={() => { setOpen(true); void refresh(); }}>
+      <UiV2Icon name="bell" />
+      {unreadCount > 0 ? <span aria-hidden="true" className="absolute right-1 top-1 size-2 rounded-full bg-proof ring-2 ring-workspace-rail" /> : null}
     </button>
     {open ? <AnnouncementsInbox onClose={() => setOpen(false)} /> : null}
   </>;

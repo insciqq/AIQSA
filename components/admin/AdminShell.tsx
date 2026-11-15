@@ -223,36 +223,18 @@ function addressReturnPath(search: string): string {
  * beforeunload guard owns document-level draft safety.
  */
 function ChatsLink({
-  className,
   onClick,
-  returnPath,
-  variant
+  returnPath
 }: Readonly<{
-  className?: string;
   onClick?(event: MouseEvent<HTMLAnchorElement>): void;
   returnPath: string;
-  variant: "rail" | "row";
 }>) {
   const browserReady = useSyncExternalStore(subscribeToBrowser, browserSnapshot, serverSnapshot);
   const href = browserReady ? addressReturnPath(window.location.search) : returnPath;
-  if (variant === "rail") {
-    return (
-      <a
-        aria-label="Chats"
-        className={`v2-rail-button v2-focusable ${className ?? ""}`.trim()}
-        data-tooltip="Chats"
-        data-tooltip-side="right"
-        href={href}
-        onClick={onClick}
-      >
-        <UiV2Icon name="chat" />
-      </a>
-    );
-  }
   return (
-    <a className={`v2-navigation-destination v2-focusable ${className ?? ""}`.trim()} href={href} onClick={onClick}>
+    <a className="v2-navigation-destination v2-focusable" href={href} onClick={onClick}>
       <UiV2Icon name="chat" />
-      Chats
+      <span>Chats</span>
     </a>
   );
 }
@@ -319,40 +301,16 @@ export function AdminShell({
 
   return (
     <div
-      className="grid min-h-[100dvh] min-w-0 grid-cols-[minmax(0,1fr)] bg-app-canvas text-ink md:grid-cols-[3.5rem_minmax(0,1fr)] lg:grid-cols-[3.5rem_16.25rem_minmax(0,1fr)]"
+      className="grid min-h-[100dvh] min-w-0 grid-cols-[minmax(0,1fr)] bg-app-canvas text-ink lg:grid-cols-[16.25rem_minmax(0,1fr)]"
       data-drawer-open={drawerOpen ? "true" : undefined}
       data-testid="admin-shell"
     >
       <UiV2IconSprite />
 
-      {/* Production CSS chunks may load navigation.css after Tailwind, so
-          utilities that `.v2-rail` and `.v2-navigation-footer` also set are important. */}
-      <nav aria-label="Workspace" className="v2-rail !sticky top-0 max-md:!hidden" data-testid="admin-rail">
-        <span aria-hidden="true" className="v2-rail-brand">
-          <UiV2Icon name="brand" />
-        </span>
-        <div className="v2-rail-group">
-          <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="rail" />
-        </div>
-        <div className="v2-rail-group v2-rail-bottom">
-          <span
-            aria-current="page"
-            aria-label="Control Center"
-            className="v2-rail-button"
-            data-tooltip="Control Center"
-            data-tooltip-side="right"
-            role="link"
-          >
-            <UiV2Icon name="shield" />
-          </span>
-          <AccountMenuV2 accountId={accountId} accountLabel={accountLabel} variant="avatar" />
-        </div>
-      </nav>
-
       {drawerOpen ? (
         <button
           aria-label="Dismiss sections"
-          className="fixed inset-0 z-[29] bg-scrim/70 md:left-14 lg:hidden"
+          className="fixed inset-0 z-[29] bg-scrim/70 lg:hidden"
           data-testid="admin-drawer-scrim"
           onClick={closeSectionIndex}
           type="button"
@@ -364,7 +322,7 @@ export function AdminShell({
         aria-modal={drawerOpen ? true : undefined}
         className={[
           "flex min-w-0 flex-col border-r border-trace-subtle bg-workspace-rail outline-none",
-          "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 max-lg:w-[min(17.5rem,calc(100vw-3rem))] max-lg:shadow-overlay md:max-lg:left-14 md:max-lg:w-[16.25rem]",
+          "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-30 max-lg:w-[min(17.5rem,calc(100vw-3rem))] max-lg:shadow-overlay",
           "lg:sticky lg:top-0 lg:h-[100dvh]",
           drawerOpen ? "" : "max-lg:hidden"
         ].join(" ")}
@@ -386,8 +344,10 @@ export function AdminShell({
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-4" data-testid="admin-section-scroll">
           {sectionIndex}
         </div>
-        <div className="v2-navigation-footer md:!hidden">
-          <ChatsLink onClick={onReturnToChat} returnPath={returnPath} variant="row" />
+        {/* The way back to the chats and the account entry, at every width
+            (no rail since operator decision 2026-11-16). */}
+        <div className="v2-navigation-footer" data-testid="admin-section-footer">
+          <ChatsLink onClick={onReturnToChat} returnPath={returnPath} />
           <AccountMenuV2 accountId={accountId} accountLabel={accountLabel} variant="row" />
         </div>
       </aside>

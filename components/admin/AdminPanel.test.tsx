@@ -541,15 +541,24 @@ describe("AdminPanel", () => {
     expect(await within(section).findByLabelText("Send a test to")).toHaveValue("grace_hopper@example.com");
   });
 
-  it("opens the Overview by default inside the rail, section column and topbar shell", async () => {
+  it("opens the Overview by default inside the section column and topbar shell, with no rail", async () => {
     mockAdminFetch(seededAttention);
     window.history.replaceState(null, "", "/admin");
     render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
 
     const overview = await screen.findByTestId("admin-section-overview");
     expect(screen.getByTestId("admin-topbar-title")).toHaveTextContent("Overview");
-    expect(screen.getAllByRole("link", { name: "Chats" })[0]).toHaveAttribute("href", "/");
-    expect(screen.getByRole("navigation", { name: "Workspace" })).toBeInTheDocument();
+    // The way back to the chats and the account entry live in the section
+    // column's footer at every width (operator decision 2026-11-16).
+    expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByTestId("admin-rail")).toBeNull();
+    const footer = within(screen.getByTestId("admin-section-column")).getByTestId("admin-section-footer");
+    expect(within(footer).getByRole("link", { name: "Chats" })).toHaveAttribute("href", "/");
+    fireEvent.click(within(footer).getByRole("button", { name: "Account menu" }));
+    const accountMenu = screen.getByRole("menu", { name: "Account" });
+    expect(within(accountMenu).getByRole("menuitem", { name: "Sign out" })).toBeInTheDocument();
+    expect(within(accountMenu).queryByRole("menuitem", { name: "Settings" })).toBeNull();
+    fireEvent.click(within(footer).getByRole("button", { name: "Account menu" }));
     expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute("aria-current", "page");
     for (const group of ["Models", "People", "Platform"]) {
       expect(screen.getByText(group)).toBeInTheDocument();
