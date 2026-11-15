@@ -155,7 +155,7 @@ function CommandRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
   );
 }
 
-function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
+function PlainRowV2({ entry, live }: { entry: ThreadWorkspaceActivityEntry; live: boolean | undefined }) {
   const duration = workspaceDurationV2(entry.durationMs);
   const failure = failureCopy(entry);
   const skipped = entry.kind === "outputs_export" ? workspaceOutputSkipsCopyV2(entry.skipped) : null;
@@ -163,7 +163,7 @@ function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
     <div className="v2-workspace-row">
       <ActivityMarkV2 phase={entry.kind === "elided" ? "unknown" : entry.phase} />
       <span className="v2-workspace-row-copy">
-        <span className="v2-workspace-row-label">{workspaceActivityLabelV2(entry)}</span>
+        <span className="v2-workspace-row-label">{workspaceActivityLabelV2(entry, { live })}</span>
         {duration ? <span className="v2-workspace-row-meta">{duration}</span> : null}
         {failure ? <span className="v2-workspace-row-note" role="note">{failure}</span> : null}
         {skipped ? <span className="v2-workspace-row-note" role="note">{skipped}</span> : null}
@@ -177,10 +177,13 @@ function PlainRowV2({ entry }: { entry: ThreadWorkspaceActivityEntry }) {
 
 export type WorkspaceActivityTimelineV2Props = Readonly<{
   activity: ThreadWorkspaceActivity;
+  /** Whether the answer still runs; an ended answer's plan row stops reading as progress. */
+  live?: boolean;
 }>;
 
-function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
+function WorkspaceActivityOverlay({ activity, live, rows, onClose }: Readonly<{
   activity: ThreadWorkspaceActivity;
+  live: boolean | undefined;
   rows: readonly ThreadWorkspaceActivityEntry[];
   onClose(): void;
 }>) {
@@ -188,7 +191,7 @@ function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
   if (!portalReady) return null;
   const renderRows = (entries: readonly ThreadWorkspaceActivityEntry[]) => entries.map((entry) => (
     <li data-kind={entry.kind} data-phase={entry.phase} key={entry.id}>
-      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} />}
+      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} live={live} />}
     </li>
   ));
   return createPortal(
@@ -208,7 +211,7 @@ function WorkspaceActivityOverlay({ activity, rows, onClose }: Readonly<{
  * cards that open into a terminal-style excerpt only on user action.
  * Native disclosure state survives updates to the same keyed row.
  */
-export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimelineV2Props) {
+export function WorkspaceActivityTimelineV2({ activity, live }: WorkspaceActivityTimelineV2Props) {
   const rows = aggregateWorkspaceActivityV2(activity.entries);
   const compact = compactEntries(rows);
   const [overlay, setOverlay] = useState(false);
@@ -216,7 +219,7 @@ export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimel
   if (rows.length === 0) return null;
   const renderRows = (entries: readonly ThreadWorkspaceActivityEntry[]) => entries.map((entry) => (
     <li data-kind={entry.kind} data-phase={entry.phase} key={entry.id}>
-      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} />}
+      {entry.kind === "command" && entry.command ? <CommandRowV2 entry={entry} /> : <PlainRowV2 entry={entry} live={live} />}
     </li>
   ));
   return (
@@ -227,7 +230,7 @@ export function WorkspaceActivityTimelineV2({ activity }: WorkspaceActivityTimel
         </div>
       ) : null}
       <ol className="v2-workspace-timeline" data-testid="workspace-activity">{renderRows(compact.visible)}</ol>
-      {overlay ? <WorkspaceActivityOverlay activity={activity} rows={rows} onClose={() => setOverlay(false)} /> : null}
+      {overlay ? <WorkspaceActivityOverlay activity={activity} live={live} rows={rows} onClose={() => setOverlay(false)} /> : null}
     </>
   );
 }

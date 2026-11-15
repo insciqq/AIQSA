@@ -216,3 +216,64 @@ for (const viewport of [
     });
   });
 }
+
+// An answer that failed after long work, whose agent wrote its plan once and
+// never marked a step done: the ended line names the plan's size, not
+// "0 of 3 complete", and no step reads as still in progress.
+for (const viewport of [
+  { width: 1440, height: 900, theme: "dark", touch: false },
+  { width: 390, height: 844, theme: "dark", touch: true }
+] as const) {
+  test.describe(`ended plan ${viewport.width}px`, () => {
+    test.use({ hasTouch: viewport.touch, isMobile: viewport.touch });
+
+    test(`an ended answer's unfinished plan reads as its steps at ${viewport.width}px`, async ({ context, page }, testInfo) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
+      await installMatrixCatalogFixture(page, { folders: [], chats: [{
+        id: "answer-steps-ended-plan-chat", title: "Ended plan", activeLeafMessageId: "ended-plan-answer",
+        createdAt: timestamp, updatedAt: timestamp, defaultProvider: "openai", defaultModelId: "gpt-5.5",
+        folderId: null, pinned: false, messageCount: 1,
+        messages: [{ id: "ended-plan-answer", role: "assistant", status: "error", parentMessageId: null,
+          createdAt: timestamp, content: "", errorMessage: "The provider could not finish the answer.",
+          citationMessageId: null, modelId: "gpt-5.5", modelRunId: "answer-steps-ended-plan-run", provider: "openai",
+          workDurationMs: 854_000,
+          toolActivity: { calls: [
+            { durationMs: 2_400, origin: "web_search", round: 1, status: "complete", toolName: "web_search" },
+            { durationMs: 1_300, fetchOutcome: "read", fetchTarget: "docs.example/guide", origin: "web_fetch", round: 2,
+              status: "complete", toolName: "fetch_url" }
+          ] },
+          workspaceActivity: { entries: [
+            { id: "plan", kind: "plan", phase: "running", items: [
+              { active: true, completed: false, text: "Collect the release notes of every synthetic service for one quarter." },
+              { completed: false, text: "Compare the breaking changes across the services." },
+              { completed: false, text: "Write the migration checklist." }
+            ] }
+          ] }
+        }]
+      }] });
+      await signInWithLocalToken(page, "/c/answer-steps-ended-plan-chat");
+
+      const disclosure = page.getByTestId("tool-activity-disclosure");
+      const summary = disclosure.locator(":scope > summary");
+      await expect(summary).toContainText("Worked for 14m 14s · Plan · 3 steps");
+      await expect(summary).not.toContainText("complete");
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath("ended-plan-line.png") });
+
+      if (await disclosure.getAttribute("open") === null) await summary.click();
+      await expect(disclosure).toHaveAttribute("open");
+      const steps = disclosure.getByRole("list", { name: "Plan steps" }).getByRole("listitem");
+      await expect(steps).toHaveCount(3);
+      for (const index of [0, 1, 2]) {
+        await expect(steps.nth(index)).toHaveAttribute("data-state", "pending");
+        await expect(steps.nth(index)).toContainText("Not done");
+      }
+      await expect(disclosure).not.toContainText("In progress");
+      await expect(disclosure.locator(".v2-spinner")).toHaveCount(0);
+      await expectNoHorizontalOverflow(page);
+      await disclosure.getByTestId("answer-plan").scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath("ended-plan-open.png") });
+    });
+  });
+}

@@ -223,12 +223,29 @@ describe("workspace activity presentation", () => {
     expect(visibleWorkspaceActivityV2(onlyPlan)).toBeNull();
     expect(workspaceLiveLabelV2(onlyPlan)).toBeNull();
     expect(workspacePlanV2(onlyPlan)).toEqual(plan);
-    expect(workspacePlanSummaryV2(plan)).toBe("Plan · 1 of 2 complete");
+    expect(workspacePlanSummaryV2(plan, { live: true })).toBe("Plan · 1 of 2 complete");
     const withWork = { entries: [plan, command("c", "running")] };
     expect(visibleWorkspaceActivityV2(withWork)?.entries).toEqual([command("c", "running")]);
     expect(workspaceLiveLabelV2(withWork)).toBe("Running npm test…");
     expect(workspacePlanV2({ entries: [{ ...plan, items: [] }] })).toBeNull();
     expect(workspacePlanV2(null)).toBeNull();
+  });
+
+  it("counts a plan's steps only while the answer runs, unless the agent finished every one", () => {
+    const plan = { id: "plan:run", items: [{ completed: true, text: "Read" }, { active: true, completed: false, text: "Chart" },
+      { completed: false, text: "Send" }], kind: "plan", phase: "running" } as const;
+    const done = { ...plan, items: plan.items.map((item) => ({ completed: true, text: item.text })), phase: "succeeded" } as const;
+    expect(workspacePlanSummaryV2(plan, { live: true })).toBe("Plan · 1 of 3 complete");
+    expect(workspacePlanSummaryV2(plan, { live: false })).toBe("Plan · 3 steps");
+    expect(workspacePlanSummaryV2({ ...plan, items: [plan.items[1]] }, { live: false })).toBe("Plan · 1 step");
+    expect(workspacePlanSummaryV2(done, { live: false })).toBe("Plan · 3 of 3 complete");
+    expect(workspacePlanSummaryV2(done, { live: true })).toBe("Plan · 3 of 3 complete");
+    // The timeline row follows the answer when told, else the row's own phase.
+    expect(workspaceActivityLabelV2(plan, { live: true })).toBe("Plan · 1 of 3 complete");
+    expect(workspaceActivityLabelV2(plan, { live: false })).toBe("Plan · 3 steps");
+    expect(workspaceActivityLabelV2(plan)).toBe("Plan · 1 of 3 complete");
+    expect(workspaceActivityLabelV2({ ...plan, phase: "unknown" })).toBe("Plan · 3 steps");
+    expect(workspaceActivityLabelV2(done, { live: false })).toBe("Plan · 3 of 3 complete");
   });
 
   it("retains newer persisted entries and adds unseen live steps", () => {
