@@ -4,7 +4,9 @@ import { createDefaultConnectorRunGateway } from "./defaultRunGateway";
 
 const sendDeps = vi.hoisted(() => vi.fn());
 const findOwnedChat = vi.hoisted(() => vi.fn());
+const workspaceSnapshot = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/server/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/server/workspace/defaultServices", () => ({ workspaceAvailabilityService: { snapshot: workspaceSnapshot } }));
 vi.mock("@/lib/server/mcp/defaultRuntime", () => ({ kickDefaultMcpRuntime: vi.fn() }));
 vi.mock("@/lib/server/runs/defaultSendMessageDeps", () => ({ createDefaultSendMessageDeps: () => ({ repository: { findOwnedChat } }) }));
 vi.mock("@/lib/server/runs/handlers", () => ({
@@ -40,5 +42,16 @@ describe("the default connector run gateway", () => {
     await expect(gateway.chat("service-1", "chat-2")).resolves.toMatchObject({ assistantId: "assistant-1", memoryMode: "NORMAL" });
     findOwnedChat.mockResolvedValueOnce(null);
     await expect(gateway.chat("service-1", "chat-3")).resolves.toBeNull();
+  });
+
+  it("offers the Workspace only while the installation has it switched on and its runner ready", async () => {
+    const gateway = createDefaultConnectorRunGateway({ auth: () => async () => null, connectorTurn: "discord" });
+    const snapshot = (enabled: boolean, state: string) => ({ policy: { enabled, internetEnabled: false }, runtime: { state } });
+    workspaceSnapshot.mockResolvedValueOnce(snapshot(true, "ready"));
+    await expect(gateway.workspaceOffered()).resolves.toBe(true);
+    workspaceSnapshot.mockResolvedValueOnce(snapshot(false, "ready"));
+    await expect(gateway.workspaceOffered()).resolves.toBe(false);
+    workspaceSnapshot.mockResolvedValueOnce(snapshot(true, "unavailable"));
+    await expect(gateway.workspaceOffered()).resolves.toBe(false);
   });
 });

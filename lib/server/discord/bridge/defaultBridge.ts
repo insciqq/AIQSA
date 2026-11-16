@@ -98,7 +98,9 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
       };
     },
     rest: discord.rest,
-    uploads
+    uploads,
+    // The same reading the turn's send asks for the Workspace with.
+    workspaceOffered: () => gateway.workspaceOffered()
   });
   const bridge = createDiscordBridge({
     answerFiles: createDiscordAnswerFiles({ read: defaultTelegramFileReader() }),

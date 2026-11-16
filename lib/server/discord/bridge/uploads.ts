@@ -3,11 +3,15 @@ import type { ContentBlock } from "../../../domain/content";
 /**
  * Files the bridge hands to a Discord run go through the ordinary upload
  * route as the service account (a synthetic multipart request to the upload
- * handler in process, as Telegram's media does): a chat upload, never a
- * Workspace one, so no per-user Workspace slot can throttle every thread. A
- * busy process gate (429) is asked again with a growing pause; a file still
- * processing is waited for up to 90 s. The history file of a long thread
- * (`discord-history.md`) uses it now; attachments use it later (`dc-files`).
+ * handler in process, as Telegram's media does): the history file of a long
+ * thread (`discord-history.md`) and the turn's attachments
+ * (`lib/server/discord/files.ts`). While the installation offers the
+ * Workspace, attachments take its upload scope, so any file type reaches the
+ * thread's Workspace as on the web. That route has no per-user slot, only the
+ * process gate (`AIQSA_UPLOAD_MAX_CONCURRENCY`), so one service account's
+ * threads never throttle each other; the per-user cap belongs to the
+ * browser's chunked direct uploads alone. A busy gate (429) is asked again
+ * with a growing pause; a file still processing is waited for up to 90 s.
  */
 
 export const DISCORD_UPLOAD_READY_TIMEOUT_MS = 90_000;
@@ -27,8 +31,18 @@ export type DiscordUploadResult =
   | Readonly<{ ok: true; block: ContentBlock }>
   | Readonly<{ ok: false; code: string }>;
 
+/**
+ * `workspace`: any file type, for a turn with the Workspace; the upload route takes a file only the Workspace reads
+ * only while the installation offers it.
+ */
+export type DiscordUploadScope = "attachment" | "workspace";
+
 export type DiscordUploads = Readonly<{
-  uploadFile(input: Readonly<{ userId: string; fileName: string; mimeType: string; data: Uint8Array }>): Promise<DiscordUploadResult>;
+  uploadFile(input: Readonly<{
+    userId: string; fileName: string; mimeType: string; data: Uint8Array;
+    /** The chat upload scope when absent. */
+    scope?: DiscordUploadScope;
+  }>): Promise<DiscordUploadResult>;
 }>;
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -63,6 +77,7 @@ export function createDiscordUploads(deps: Readonly<{
       for (let attempt = 1; ; attempt += 1) {
         const form = new FormData();
         form.set("file", new File([new Uint8Array(input.data)], input.fileName, { type: input.mimeType }));
+        if (input.scope === "workspace") form.set("scope", "workspace");
         const response = await services.upload({ request: new Request(UPLOAD_URL, { body: form, method: "POST" }), userId: input.userId });
         const body: unknown = await response.json().catch(() => null);
         if (!response.ok) {

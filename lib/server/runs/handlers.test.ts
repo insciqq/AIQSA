@@ -5062,17 +5062,12 @@ describe("Discord turns through the ordinary send handler", () => {
     expect(state.created?.normalizedRequest.mcpApproval).toBeUndefined();
   });
 
-  it("refuses a chat that is not excluded from Memory and a Workspace request before anything is accepted", async () => {
+  it("refuses a chat that is not excluded from Memory before anything is accepted", async () => {
     const plain = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     const refused = await send({ ...authDeps, connectorTurn: "discord", nativeEngine: nativeEngineFake().deps,
       providers: { fake: createFakeProviderAdapter() }, repository: plain.repository });
     expect([refused.status, await refused.json()]).toEqual([409, { error: DISCORD_RUN_REFUSALS.chatMemory }]);
     expect(plain.state.created).toBeNull();
-    const { repository, state } = discordRepository();
-    const workspace = await send({ ...authDeps, connectorTurn: "discord", nativeEngine: nativeEngineFake().deps,
-      providers: { fake: createFakeProviderAdapter() }, repository }, { workspace: { enabled: true } });
-    expect([workspace.status, await workspace.json()]).toEqual([409, { error: DISCORD_RUN_REFUSALS.workspace }]);
-    expect(state.created).toBeNull();
   });
 
   it("neither checks nor records the user's message limits, while budgets and the installation cap still refuse", async () => {

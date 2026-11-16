@@ -7,12 +7,20 @@
  *
  * Every connector turn starts no background sub-agents (it answers and stops
  * those of its branch), and never gets Deep research, the user's computer or
- * the live browser. A Telegram turn takes the self-service tools, Skill saves
- * and sub-agent management its chat takes on the web, shown as messages with
- * Undo, Confirm and Cancel (operator decision 2026-11-16,
- * `lib/server/telegram/changes/`); a Discord turn takes none
- * (`selfServiceToolsFor`). What differs by connector is in `connectorTurnRules`.
+ * the live browser. Every connector turn has the Workspace like a web chat
+ * whenever the installation offers it, with no switch (operator decisions
+ * 2026-11-16, `connectorWorkspaceRequest`); nobody can take its browser over
+ * from Telegram or Discord, so `browser_handoff` says what blocked the agent
+ * there (`lib/server/tools/browserHandoff.ts`). A Telegram turn takes the
+ * self-service tools, Skill saves and sub-agent management its chat takes on
+ * the web, shown as messages with Undo, Confirm and Cancel (operator decision
+ * 2026-11-16, `lib/server/telegram/changes/`); a Discord turn takes none
+ * (`selfServiceToolsFor`), and its service account never signs in, so it has
+ * no saved secrets for a thread's Workspace to receive. What differs by
+ * connector is in `connectorTurnRules`.
  */
+
+import type { WorkspaceNotRequestedReason } from "../../contracts/workspace";
 
 export type ConnectorTurn = "telegram" | "discord";
 
@@ -37,9 +45,7 @@ export const DISCORD_RUN_REFUSALS = Object.freeze({
   /** The chat is not excluded from Memory (a `NORMAL` or Temporary chat, or a new chat's draft that is not excluded). */
   chatMemory: "discord_chat_memory_on",
   /** A Discord answer is never regenerated: a new Discord message is a new turn. */
-  regenerate: "discord_regenerate_unavailable",
-  /** The message or its chat asks for the Workspace (and so its browser). */
-  workspace: "discord_workspace_unavailable"
+  regenerate: "discord_regenerate_unavailable"
 } as const);
 
 export type ConnectorTurnRules = Readonly<{
@@ -53,8 +59,6 @@ export type ConnectorTurnRules = Readonly<{
    * be excluded from Memory, and the run gets no standing facts and no `memory_search` (owner decision 2026-11-12, O-08).
    */
   memory: boolean;
-  /** The Workspace (with its browser and handoff) may run; when false a message that asks for it is refused. */
-  workspace: boolean;
   /** The user's per-user message limits are checked and recorded; budgets and the installation cap apply either way (D-12e). */
   messageLimits: boolean;
   /** The automation tools (create and manage scheduled tasks) may be offered. */
@@ -65,14 +69,29 @@ export type ConnectorTurnRules = Readonly<{
 
 const RULES: Readonly<Record<ConnectorTurn, ConnectorTurnRules>> = Object.freeze({
   // Telegram turns are the linked user's interactive personal runs (`agent_docs/RUN_CONTRACTS.md`).
-  telegram: Object.freeze({ automations: true, memory: true, messageLimits: true, note: null, unattendedMcp: false, workspace: true }),
+  telegram: Object.freeze({ automations: true, memory: true, messageLimits: true, note: null, unattendedMcp: false }),
   // Discord turns are runs of the installation's service account for a Discord thread (owner decisions 2026-11-12).
   discord: Object.freeze({
-    automations: false, memory: false, messageLimits: false, note: DISCORD_CONNECTOR_NOTE, unattendedMcp: true, workspace: false
+    automations: false, memory: false, messageLimits: false, note: DISCORD_CONNECTOR_NOTE, unattendedMcp: true
   })
 });
 
 /** The rules of a connector turn; null for a run no connector admitted. */
 export function connectorTurnRules(turn: ConnectorTurn | undefined): ConnectorTurnRules | null {
   return turn ? RULES[turn] : null;
+}
+
+/**
+ * The Workspace intent a connector turn sends: always, as the web composer asks
+ * for it (operator decisions 2026-10-20 and 2026-11-16), except on an
+ * installation that does not offer it now or with a model that calls no tools,
+ * which name why for the content-free `run_accepted` record. An Assistant
+ * chat's model must call tools, so its turns pass `toolCalling` true.
+ */
+export function connectorWorkspaceRequest(
+  offered: boolean, toolCalling: boolean
+): Readonly<{ enabled: true }> | Readonly<{ enabled: false; reason: WorkspaceNotRequestedReason }> {
+  if (!offered) return { enabled: false, reason: "installation_disabled" };
+  if (!toolCalling) return { enabled: false, reason: "model_no_tools" };
+  return { enabled: true };
 }

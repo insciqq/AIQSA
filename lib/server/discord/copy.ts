@@ -68,6 +68,14 @@ export function discordThreadLimitText(perHour: number, retryInMinutes: number):
   return `This thread has reached its limit of ${perHour} questions per hour. Try again in ${Math.max(1, retryInMinutes)} min.`;
 }
 
+/** Why an answer that needed the thread's Workspace got none (`bridge/refusals.ts`), never "Something went wrong". */
+export const DISCORD_WORKSPACE_COPY = Object.freeze({
+  busy: "This thread's Workspace is busy right now. Ask again in a minute.",
+  full: "This thread's Workspace has no room for these files. Send smaller files or ask in a new thread.",
+  unavailable: "The Workspace that runs code is unavailable right now. Ask again later.",
+  failed: "The Workspace could not finish this answer. Ask again."
+});
+
 export function discordFilesOnlyInAiqsaText(count: number): string {
   return count === 1 ? "1 file is only in AIQSA" : `${count} files are only in AIQSA`;
 }
