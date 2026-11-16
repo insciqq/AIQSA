@@ -150,6 +150,39 @@ describe("PersonalMcpConnectionsSection", () => {
     expect(followMcpOAuthStart).not.toHaveBeenCalled();
   });
 
+  function restoreFromCache() {
+    const restored = new Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    act(() => { window.dispatchEvent(restored); });
+  }
+
+  it("keeps an authorization start that has not answered locked when the page returns from the cache", async () => {
+    vi.mocked(startMcpOAuth).mockImplementation(() => new Promise(() => undefined));
+    stubApi([oauthServer()]);
+    const busy = vi.fn();
+    await renderLoaded(busy);
+    const connect = within(row("Notion")).getByRole("button", { name: "Connect Notion" });
+    fireEvent.click(connect);
+    await waitFor(() => expect(busy).toHaveBeenLastCalledWith("Opening authorization…"));
+    restoreFromCache();
+    fireEvent.click(connect);
+    expect(startMcpOAuth).toHaveBeenCalledTimes(1);
+    expect(busy).toHaveBeenLastCalledWith("Opening authorization…");
+  });
+
+  it("releases an authorization that left for the sign-in site when the page returns from the cache", async () => {
+    stubApi([oauthServer()]);
+    const busy = vi.fn();
+    await renderLoaded(busy);
+    fireEvent.click(within(row("Notion")).getByRole("button", { name: "Connect Notion" }));
+    await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalled());
+    expect(busy).toHaveBeenLastCalledWith("Opening authorization…");
+    restoreFromCache();
+    await waitFor(() => expect(busy).toHaveBeenLastCalledWith(null));
+    fireEvent.click(within(row("Notion")).getByRole("button", { name: "Connect Notion" }));
+    await waitFor(() => expect(startMcpOAuth).toHaveBeenCalledTimes(2));
+  });
+
   it("offers Disconnect and add again when the sign-in details changed and prefills the form", async () => {
     vi.mocked(startMcpOAuth).mockRejectedValue(Object.assign(new Error("mcp_oauth_policy_forbidden"), { code: "mcp_oauth_policy_forbidden" }));
     stubApi([oauthServer({ endpoint: "https://mcp.notion.example/mcp" })], (path, init) =>

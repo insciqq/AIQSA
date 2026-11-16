@@ -21,6 +21,13 @@ vi.mock("@/components/app-shell/accountApi", async (importOriginal) => ({
   ...accountApi
 }));
 
+// The sign-in start ends in a document navigation, which the test page does not perform.
+const followMcpOAuthStart = vi.hoisted(() => vi.fn());
+vi.mock("@/components/app-shell/mcpSettingsApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/components/app-shell/mcpSettingsApi")>(),
+  followMcpOAuthStart
+}));
+
 // Stable owners, as the shell's are: the account form reloads when its callback changes.
 const updateAccountDisplayName = vi.fn();
 const settingsActions = {
@@ -213,7 +220,14 @@ describe("the Settings surface", () => {
     expect(leavingAsksFirst()).toBe(false);
   });
 
-  it("never asks to leave while a personal MCP sign-in is starting, and frees Settings when the page comes back", async () => {
+  /** Back from another site restores the page from the back/forward cache. */
+  function restoreFromCache() {
+    const restored = new Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    act(() => { window.dispatchEvent(restored); });
+  }
+
+  it("never asks to leave while a personal MCP sign-in is starting, and keeps a start without an answer locked", async () => {
     stubFetch({
       "/api/me/mcp-connections": async () => Response.json({ servers: [notionConnection] }),
       "/api/me/mcp-connections/notion/oauth/connect": neverAnswers
@@ -224,10 +238,26 @@ describe("the Settings surface", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled());
     expect(leavingAsksFirst()).toBe(false);
 
-    // Back from the sign-in site restores the page from the back/forward cache.
-    const restored = new Event("pageshow");
-    Object.defineProperty(restored, "persisted", { value: true });
-    act(() => { window.dispatchEvent(restored); });
+    // The request is still in flight: a restored page must not let a second start begin beside it.
+    restoreFromCache();
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled();
+  });
+
+  it("frees Settings when the page comes back from the sign-in site", async () => {
+    followMcpOAuthStart.mockClear();
+    stubFetch({
+      "/api/me/mcp-connections": async () => Response.json({ servers: [notionConnection] }),
+      "/api/me/mcp-connections/notion/oauth/connect": async () => Response.json({ location: "https://auth.example.test/authorize?state=test" })
+    });
+    render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Open MCP servers" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Notion" }));
+    await waitFor(() => expect(followMcpOAuthStart).toHaveBeenCalledWith("https://auth.example.test/authorize?state=test"));
+    // The document is leaving: Settings stays locked, and leaving does not ask.
+    expect(screen.getByRole("button", { name: "Back to chat" })).toBeDisabled();
+    expect(leavingAsksFirst()).toBe(false);
+
+    restoreFromCache();
     await waitFor(() => expect(screen.getByRole("button", { name: "Back to chat" })).toBeEnabled());
   });
 
