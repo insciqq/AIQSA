@@ -1388,7 +1388,8 @@ test("Control Center keeps the current workflow in the short-landscape viewport"
     await expect
       .poll(() => page.getByTestId("admin-section-scroll").evaluate((element) => getComputedStyle(element).overflowY))
       .toBe("auto");
-    await expect(page.getByRole("link", { exact: true, name: "Providers" })).toBeInViewport();
+    // The list scrolls above the footer (Chats, the account entry), and opens on the current section.
+    await expect(drawer.getByRole("link", { exact: true, name: "Users" })).toBeInViewport();
 
     const sectionScroll = page.getByTestId("admin-section-scroll");
     const scrollBounds = await sectionScroll.boundingBox();

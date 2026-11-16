@@ -58,9 +58,10 @@ function selectedSection(library: Locator): Locator {
 /**
  * While Settings is open the chat list and the floating controls are absent
  * at every width, and the list shortcuts (Ctrl+K, Ctrl+Shift+S) do nothing.
+ * Checked on a section without an editor: an editor may keep shortcuts of
+ * its own (the Assistant editor saves on Ctrl+S).
  */
-async function expectSettingsOwnsTheShell(page: Page, draft: Locator) {
-  const value = await draft.inputValue();
+async function expectSettingsOwnsTheShell(page: Page) {
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(navigation).toBeHidden();
   await expect(page.getByRole("button", { name: "Open sidebar" })).toHaveCount(0);
@@ -70,7 +71,6 @@ async function expectSettingsOwnsTheShell(page: Page, draft: Locator) {
   await expect(navigation).toBeHidden();
   await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
   await expect(page.getByTestId("library-v2")).toBeVisible();
-  await expect(draft).toHaveValue(value);
 }
 
 async function screenshot(page: Page, info: TestInfo, name: string) {
@@ -86,7 +86,8 @@ for (const width of [1440, 390]) {
     const library = page.getByTestId("library-v2");
     const confirmation = page.getByTestId("discard-changes-confirmation");
     const backToSettings = library.getByRole("button", { name: "Back to Settings", exact: true });
-    let shellChecked = false;
+    await runAccountMenuAction(page, "General");
+    await expectSettingsOwnsTheShell(page);
     for (const resource of resources) {
       // The narrow Assistant editor is a sub-view: its own Back is the way
       // to another section there, so only the wide layout switches directly.
@@ -96,10 +97,6 @@ for (const width of [1440, 390]) {
       for (const destination of destinations) {
         const input = await openDraft(page, resource);
         const draft = await input.inputValue();
-        if (!shellChecked) {
-          await expectSettingsOwnsTheShell(page, input);
-          shellChecked = true;
-        }
         if (destination === "tab" && width === 390) {
           // The list keeps the section mounted underneath: going to the list
           // and back keeps the draft and the scroll position, with no guard.
