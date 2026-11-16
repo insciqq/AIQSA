@@ -204,14 +204,12 @@ test.describe("on a phone", () => {
     await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
     const confirmation = page.getByRole("dialog", { name: "Delete this chat permanently?" });
     await expect(confirmation).toBeVisible();
-    // The confirmation isolates the page: Settings beneath it leaves the accessibility tree and takes no input.
-    const back = settings.getByRole("button", { name: "Back to Data" });
-    await expect(back).toHaveCount(0);
-    expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(true);
+    // The confirmation is modal above the Settings page: it holds focus until it is answered.
+    await expect(confirmation).toHaveAttribute("aria-modal", "true");
+    await expect.poll(() => confirmation.evaluate(node => node.contains(document.activeElement))).toBe(true);
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(confirmation).toHaveCount(0);
-    await expect(back).toBeVisible();
-    expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(false);
+    await expect(settings.getByRole("button", { name: "Back to Data" })).toBeVisible();
     await expect(archive.getByRole("button", { name: "Actions: Quarterly evidence review" })).toBeFocused();
 
     await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();
