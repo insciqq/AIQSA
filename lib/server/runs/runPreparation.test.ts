@@ -1301,6 +1301,11 @@ describe("run preparation", () => {
       }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
         ...(mode === "nonvisual" ? { content: imageContent } : {}) }))));
       expect(prepared.normalizedRequest.prompt.system?.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode !== "empty");
+      // A sub-agent turn without the Workspace reads what a chat without one does: the guidance stays where image generation
+      // makes it the chat's text, never where only the Workspace did.
+      const { prompt } = prepared.normalizedRequest;
+      const withoutWorkspace = splitTurnGuidance(splitTurnGuidance(prompt.system ?? "", prompt.turnGuidance).chat, prompt.workspaceGuidance).chat;
+      expect(withoutWorkspace.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode === "image-plan");
       expect(prepared.normalizedRequest.prompt.system).not.toContain("image attachments are present in your model input");
       expect(prepared.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer");
       expect(prepared.normalizedRequest.prompt.system?.includes("Inspect the authorized file index")).toBe(hasImage);

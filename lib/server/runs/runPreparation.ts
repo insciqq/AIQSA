@@ -1832,7 +1832,10 @@ export async function prepareRun(
     appendTurnGuidance(workspaceMissingContentNotice(attachments, workspaceAdmissionPlan.normalized.inboxIndexPath));
   }
   if (imagePlan || workspaceEnabled && imageReferences.length > 0) {
-    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
+    // Without image generation only the Workspace makes this the chat's text (a chat without one carries it as the turn's), so
+    // it is recorded with the Workspace's parts and a sub-agent turn without the Workspace leaves it out.
+    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n"),
+      ...(imagePlan ? {} : { workspaceGuidance: [...prompt.workspaceGuidance ?? [], IMAGE_EDITING_GUIDANCE] }) };
   } else if (imageReferences.length > 0) appendTurnGuidance(IMAGE_EDITING_GUIDANCE);
   if (imageUnavailableGuidance) {
     prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
