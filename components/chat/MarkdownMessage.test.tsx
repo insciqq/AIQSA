@@ -631,7 +631,7 @@ describe("MarkdownMessage", () => {
     expect(screen.getByText(/<script>alert\(1\)<\/script>/)).toBeVisible();
   });
 
-  it("opens the Studio sections the agent links to in this tab and keeps other app paths inert", () => {
+  it("opens the Settings sections the agent links to in this tab and keeps other app paths inert", () => {
     render(<MarkdownMessage content={"[Skills](/?library=skills), [Editor](/?library=assistants&assistant=a1-b2), " +
       "[Logout](/api/auth/logout), [Odd](/?library=admin) and [Up](/?library=../skills)"} />);
 

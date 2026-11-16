@@ -36,7 +36,7 @@ import {
  * Confirm and Cancel together. A press then reads the run's answer again as
  * the link's user (a run of anyone else, or of another chat, is not found),
  * finds the change there and sends the web card's request through the same
- * Studio route as that user (`./gateway.ts`), guarded by the version the card
+ * Settings route as that user (`./gateway.ts`), guarded by the version the card
  * names. The pressed message shows what happened, or why nothing did; a
  * failure offers the buttons again. While the press's link no longer reaches
  * its chat with Telegram access allowed, nothing is done; when it stops
@@ -352,7 +352,7 @@ export function registerTelegramChanges(deps: Readonly<{
   };
 }
 
-/** A gateway whose routes load on the first press, so the bot starts without the Studio stacks. */
+/** A gateway whose routes load on the first press, so the bot starts without the Settings stacks. */
 export function lazyTelegramChangeGateway(load: () => Promise<TelegramChangeGateway>): TelegramChangeGateway {
   let loaded: Promise<TelegramChangeGateway> | null = null;
   return Object.freeze({

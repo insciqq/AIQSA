@@ -264,7 +264,7 @@ describe("scheduled task cards in an answer", () => {
     expect(screen.queryByTestId("answer-outputs")).toBeNull();
   });
 
-  it("opens Studio's editor on the task once the account's list knows it", async () => {
+  it("opens Settings's editor on the task once the account's list knows it", async () => {
     activateScheduledTasksAccount("account-1");
     const fetchMock = vi.fn(async () => Response.json({ tasks: [listed], emailAvailable: false, telegramAvailable: false,
       limits: { maxActive: 10, maxTotal: 50, maxActiveHourly: 3 } }));
@@ -329,7 +329,7 @@ describe("cards of webhook automations", () => {
     // The server's own address replaces the page's.
     expect(screen.getByTestId("webhook-url")).toHaveTextContent(serverUrl);
     expect(screen.getByTestId("webhook-curl")).toHaveTextContent(`Authorization: Bearer ${token}`);
-    // The account's list reads the task again, so Studio shows the token as issued.
+    // The account's list reads the task again, so Settings shows the token as issued.
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/me/scheduled-tasks", expect.anything()));
     expect(setItem).not.toHaveBeenCalled();
     expect(JSON.stringify(shown)).not.toContain("aiqsa_wh_");

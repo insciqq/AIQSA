@@ -18,7 +18,7 @@ import type { WorkspaceSecretKind } from "../../../contracts/workspaceSecrets";
  * (`features/answer-outputs-v2/ResourceChangeCardV2.tsx`, `SkillSaveCardV2.tsx`,
  * `ScheduledTaskCardV2.tsx`). Undo appears where the web card has it, and a
  * proposal asks Confirm or Cancel; each operation is the request the web card
- * sends to its Studio route, guarded by the version the card names
+ * sends to its Settings route, guarded by the version the card names
  * (`./defaultGateway.ts` sends it as the user). Pure: no I/O.
  */
 
@@ -30,7 +30,7 @@ export type TelegramChange =
   | Readonly<{ kind: "skill_save"; card: SkillSaveCard }>
   | Readonly<{ kind: "task"; card: ScheduledTaskCard }>;
 
-/** A request a card's button makes through its Studio route, as the web card makes it. */
+/** A request a card's button makes through its Settings route, as the web card makes it. */
 export type TelegramChangeOperation =
   | Readonly<{ kind: "secret_delete"; secretId: string; versionId: string }>
   | Readonly<{ kind: "proxy_delete"; proxyId: string; expectedVersion: number }>
@@ -154,7 +154,7 @@ function secretPlan(card: SecretChangeCard): TelegramChangePlan {
     .filter(Boolean).join(" · ");
   const names = card.envNames.length > 1 ? card.envNames.join(", ") : null;
   const remove: TelegramChangeOperation = { kind: "secret_delete", secretId: card.secretId, versionId: card.versionId };
-  const base = { noun: "secret", Noun: "Secret", review: "Studio › Secrets", undo: null, proposal: null };
+  const base = { noun: "secret", Noun: "Secret", review: "Settings › Secrets", undo: null, proposal: null };
   if (card.action === "updated") {
     return { ...base, view: view(card.previousName && !card.valueReplaced ? "Secret renamed" : "Secret updated", card.name, meta, [
       names, card.previousName ? `Renamed from “${card.previousName}”.` : null,
@@ -173,7 +173,7 @@ function secretPlan(card: SecretChangeCard): TelegramChangePlan {
 
 function skillDeletePlan(card: SkillDeleteProposalCard): TelegramChangePlan {
   return {
-    noun: "Skill", Noun: "Skill", review: "Studio › Skills", undo: null,
+    noun: "Skill", Noun: "Skill", review: "Settings › Skills", undo: null,
     view: view("Delete Skill?", card.name, null, [
       "It goes with all its versions. This cannot be undone.",
       card.assistantCount > 0 && `Linked by ${plural(card.assistantCount, "Assistant", "Assistants")}, which lose it.`,
@@ -217,7 +217,7 @@ function skillSavePlan(card: SkillSaveCard): TelegramChangePlan {
 }
 
 function assistantPlan(card: AssistantChangeCard): TelegramChangePlan {
-  const base = { noun: "Assistant", Noun: "Assistant", review: "Studio › Assistants", undo: null, proposal: null };
+  const base = { noun: "Assistant", Noun: "Assistant", review: "Settings › Assistants", undo: null, proposal: null };
   const expectedVersion = card.definitionVersion;
   const assistantId = card.assistantId;
   if (card.action === "updated") {
@@ -226,7 +226,7 @@ function assistantPlan(card: AssistantChangeCard): TelegramChangePlan {
   }
   if (card.action === "created") {
     return { ...base, view: view("Assistant created", card.name, null), undo: {
-      done: doneWith({ heading: "Assistant archived", status: "Undone: the Assistant is archived. You can restore it in Studio › Assistants." }),
+      done: doneWith({ heading: "Assistant archived", status: "Undone: the Assistant is archived. You can restore it in Settings › Assistants." }),
       failure: "Undo failed. Try again.", operation: { assistantId, expectedVersion, kind: "assistant_archive" }
     } };
   }
@@ -252,7 +252,7 @@ function assistantPlan(card: AssistantChangeCard): TelegramChangePlan {
   }
   return { ...base, publish: true, view: view("Publish Assistant?", card.name, "For everyone", ["An administrator reviews this version first."]),
     proposal: { confirmLabel: "Request listing",
-      done: doneWith({ heading: "Listing requested", status: "An administrator reviews it; Studio › Assistants shows the outcome." }),
+      done: doneWith({ heading: "Listing requested", status: "An administrator reviews it; Settings › Assistants shows the outcome." }),
       failure: "The listing request failed. Try again.", keepLabel: "Not now", kept: "Not published",
       operation: { assistantId, expectedVersion, kind: "assistant_listing" } } };
 }
@@ -266,7 +266,7 @@ function defaultUndoNote(change: SubagentDefaultChange, outcome: SubagentDefault
 }
 
 function subagentPlan(card: SubagentChangeCard): TelegramChangePlan {
-  const base = { noun: "sub-agent", Noun: "Sub-agent", review: "Studio › Sub-agents", undo: null, proposal: null };
+  const base = { noun: "sub-agent", Noun: "Sub-agent", review: "Settings › Sub-agents", undo: null, proposal: null };
   const definitionId = card.definitionId;
   const expectedVersion = card.definitionVersion;
   if (card.action === "delete_proposed") {
@@ -366,7 +366,7 @@ function assistantRefusal(code: string, skills: readonly string[] | undefined): 
   switch (code) {
     case "assistant_skill_audience_mismatch":
       return `Share ${skills?.length ? `these Skills: ${quoted(skills)}` : "every linked Skill"} with this audience first, then publish again.`;
-    case "assistant_listing_request_not_needed": return "As an administrator, publish it for everyone in Studio › Assistants.";
+    case "assistant_listing_request_not_needed": return "As an administrator, publish it for everyone in Settings › Assistants.";
     case "assistant_already_listed": return "It is already listed for everyone.";
     case "forbidden": return "You can publish only to groups you belong to.";
     default: return null;
@@ -400,7 +400,7 @@ export function telegramChangeResult(plan: TelegramChangePlan, verb: TelegramCha
       return shown(plan.publish ? { heading: unchangedHeading, status: `This ${plan.noun} no longer exists.` }
         : { heading: `${plan.Noun} already deleted`, status: null });
     case "archived":
-      return shown({ heading: unchangedHeading, status: `The ${plan.Noun} is archived; restore it in ${plan.review ?? "Studio"} first.` });
+      return shown({ heading: unchangedHeading, status: `The ${plan.Noun} is archived; restore it in ${plan.review ?? "Settings"} first.` });
     // As on the web, the card keeps asking: the user may share the Skills first, or try again.
     case "refused": return { retry: true, view: { ...plan.view, status: assistantRefusal(outcome.code, outcome.skills) ?? action.failure } };
     case "failed": return { retry: true, view: { ...plan.view, status: action.failure } };

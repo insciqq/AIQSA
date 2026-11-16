@@ -373,7 +373,7 @@ export function AnswerOutputsV2({
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
-  /** Opens a Studio address (`/?library=...`) a card links to in the shell. */
+  /** Opens a Settings address (`/?library=...`) a card links to in the shell. */
   onOpenLibrary?(href: string): void;
   /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
   onStartAssistantChat?(assistantId: string): void;

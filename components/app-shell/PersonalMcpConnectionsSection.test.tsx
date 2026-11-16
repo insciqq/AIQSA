@@ -163,7 +163,7 @@ describe("PersonalMcpConnectionsSection", () => {
     expect(document.getElementById("personal-mcp-url")).toHaveFocus();
   });
 
-  it("shows an OAuth outcome on its connection and never in Studio's store", async () => {
+  it("shows an OAuth outcome on its connection and never in Settings's store", async () => {
     stubApi([oauthServer({ oauthState: "ready", readiness: "ready" })]);
     setPersonalMcpOAuthOutcome({ kind: "cancelled", serverId: "oauth-1" });
     await renderLoaded();

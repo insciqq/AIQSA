@@ -23,12 +23,12 @@ describe("Search source selection", () => {
     const onChange = vi.fn();
     function Picker() {
       const [ids, setIds] = useState<readonly string[]>(["One"]);
-      return <SearchPlanPickerV2 options={options} selectedIds={ids} lastSourceNote="To turn search off, use Chat defaults in Studio."
+      return <SearchPlanPickerV2 options={options} selectedIds={ids} lastSourceNote="To turn search off, use Chat defaults in Settings."
         onChange={next => { onChange(next); setIds(next); }} />;
     }
     render(<Picker />);
     expect(screen.getByRole("checkbox", { name: /One/u })).toBeDisabled();
-    expect(screen.getByText("To turn search off, use Chat defaults in Studio.")).toBeVisible();
+    expect(screen.getByText("To turn search off, use Chat defaults in Settings.")).toBeVisible();
     for (const name of ["Two", "Three"]) fireEvent.click(screen.getByRole("checkbox", { name }));
     expect(screen.getByRole("checkbox", { name: /Four/u })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /Four/u }).closest("label")).toHaveTextContent(`Choose up to ${MAX_SEARCH_PLAN_OPTIONS} sources`);

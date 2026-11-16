@@ -1687,7 +1687,7 @@ describe("message run actions", () => {
         useWorkspaceStore.setState({ chats: [chat(), created] });
         return created;
       });
-      // Rendered while chat-a was open, as a Studio starter chip's callback was.
+      // Rendered while chat-a was open, as a Settings starter chip's callback was.
       const actions = useAssistantChat({ attachments: [], createChat, draft: "" });
 
       // Start chat opens a new personal chat and chooses the Assistant for it.
@@ -2085,10 +2085,10 @@ describe("message run actions", () => {
         expect(selectComposerSession(useComposerSessionStore.getState(), composerSessionKey("chat-a")).draft).toBe("");
       });
 
-      it("sends with the chat as it is after a pick was refused for an unsaved Studio draft", async () => {
+      it("sends with the chat as it is after a pick was refused for an unsaved Settings draft", async () => {
         const log: string[] = [];
         const choices = libraryChoices(log);
-        // Studio replaces the chat while it holds an editor, so a pick from
+        // Settings replaces the chat while it holds an editor, so a pick from
         // the chat never meets this refusal; even then nothing is dropped.
         installAssistantEditor({ editor: { baseline: "saved before the change" } });
         const actions = useAssistantChat({ attachments: [], chatAssistantUpdates: choices.chatAssistant, draft: "Hello" });

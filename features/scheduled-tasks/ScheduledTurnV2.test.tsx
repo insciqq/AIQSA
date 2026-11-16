@@ -33,7 +33,7 @@ describe("ScheduledTurnV2", () => {
     expect(screen.queryByText(/Tell me when PR 12/u)).toBeNull();
   });
 
-  it("names the day of an earlier run, and stays plain text without Studio or a time", () => {
+  it("names the day of an earlier run, and stays plain text without Settings or a time", () => {
     const { rerender } = render(<ScheduledTurnV2 anchorId="turn-1" content={prompt} createdAt="2026-10-02T08:00:00.000Z" now={now}
       timeZone="Europe/London" title="PR watch" />);
     expect(screen.getByTestId("scheduled-turn")).toHaveTextContent("Automation · PR watch·Fri 2 Oct, 09:00·Show instructions");

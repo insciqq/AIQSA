@@ -1,5 +1,5 @@
 /**
- * Synthetic `/api/me/mcp-connections` for the Settings → Connections gallery
+ * Synthetic `/api/me/mcp-connections` for the Settings › MCP servers gallery
  * states. It answers in the browser, so a state renders without a session or
  * a real MCP server. The submitted URL's host picks an error scenario:
  *

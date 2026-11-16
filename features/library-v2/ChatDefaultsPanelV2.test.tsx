@@ -51,7 +51,7 @@ function renderDefaults(assistant: Partial<DefaultAssistantView>) {
   return view;
 }
 
-describe("Studio Chat defaults", () => {
+describe("Settings Chat defaults", () => {
   it("keeps the model row and explains unavailable defaults while the catalog is absent", () => {
     render(<ChatDefaultsPanelV2 composer={{ catalog: null }} onNavigate={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Default model" })).toBeDisabled();
@@ -163,7 +163,7 @@ function renderImageModel(patch: Partial<ImageModelView>) {
   return { view, row: screen.getByTestId("settings-default-image-model") };
 }
 
-describe("Studio Chat defaults image model", () => {
+describe("Settings Chat defaults image model", () => {
   it("follows the organization default, lists every published model and saves only an explicit choice", () => {
     const { view, row } = renderImageModel({});
     expect(row).toHaveTextContent("Creates and edits images in your chats.");

@@ -115,7 +115,7 @@ describe("assistantLibraryController", () => {
     expect(store().mcpOptions).toEqual([]);
   });
 
-  it("opens Studio on the gallery with every sheet closed", () => {
+  it("opens Settings on the gallery with every sheet closed", () => {
     useAssistantLibraryStore.setState({
       detail: { assistantId: "a", detail: null, error: null, requestId: 1, state: "loading" },
       newAssistantOpen: true
@@ -168,7 +168,7 @@ describe("assistantLibraryController", () => {
     expect(input.activateBlankWorkspace).not.toHaveBeenCalled();
   });
 
-  it("starts a chat from the gallery, leaves Studio and closes its sheets", async () => {
+  it("starts a chat from the gallery, leaves Settings and closes its sheets", async () => {
     mocks.fetchAssistantDetail.mockResolvedValue({ data: assistantDetail(), ok: true });
     useAssistantLibraryStore.setState({
       detail: { assistantId: "assistant-1", detail: assistantDetail(), error: null, requestId: 1, state: "ready" },

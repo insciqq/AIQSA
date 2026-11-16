@@ -22,7 +22,7 @@ import { telegramRequestAuth } from "../bridge/requestAuth";
 import { createTelegramChangeGateway, type TelegramChangeGateway, type TelegramChangeRoutes } from "./gateway";
 
 /**
- * The change buttons' routes in this process: each Studio route's own handler
+ * The change buttons' routes in this process: each Settings route's own handler
  * factory with its production dependencies, built for one press with the
  * button user's Telegram resolver in place of the browser session's. Loaded
  * on the first press, so the bot starts without these stacks.

@@ -147,7 +147,7 @@ describe("Telegram dispatcher: who the bot answers", () => {
 
   it("answers a stranger's refused link codes within the same hourly limit, a linked user's every time, and confirms a link always", async () => {
     const { advance, deliver, fake, link, linking } = setup();
-    const expired = "This link has expired. Create a new one in AIQSA → Settings → Connections.";
+    const expired = "This link has expired. Create a new one in AIQSA → Settings → Telegram.";
     const stranger = fake.inject.addUser();
     for (let index = 0; index < 5; index += 1) await deliver(fake.inject.command(stranger, "start", `${"A".repeat(42)}${index}`));
     await deliver(fake.inject.text(stranger, "hello?"));
@@ -247,7 +247,7 @@ describe("Telegram dispatcher: who the bot answers", () => {
     const stranger = fake.inject.addUser();
     await deliver(fake.inject.command(stranger, "start", "A".repeat(43)));
     expect(linking.linkFromStart).toHaveBeenCalledWith(expect.objectContaining({ code: "A".repeat(43) }));
-    expect(textsTo(fake, stranger.id)).toEqual(["This link has expired. Create a new one in AIQSA → Settings → Connections."]);
+    expect(textsTo(fake, stranger.id)).toEqual(["This link has expired. Create a new one in AIQSA → Settings → Telegram."]);
     const owner = fake.inject.addUser();
     link(owner);
     await deliver(fake.inject.command(owner, "help"));
