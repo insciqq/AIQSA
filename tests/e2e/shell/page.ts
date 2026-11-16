@@ -34,9 +34,10 @@ export async function runAccountMenuAction(page: Page, name: "Settings" | Settin
 
 /**
  * Leaves the open Settings page for the chat with its one visible "Back to
- * chat" control (the header row's button from 1024px, the list's and the
- * section's close control where they take turns). A sub-view has no such
- * control: leave it with its own Back first.
+ * chat" control (the section column's first row from 1024px, the list's back
+ * arrow and the section's close control where they take turns). Where a
+ * section shows alone, a sub-view hides that control: leave it with its own
+ * Back first.
  */
 export async function leaveSettings(page: Page): Promise<void> {
   const settings = page.getByTestId("library-v2");

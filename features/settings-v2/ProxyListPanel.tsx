@@ -409,7 +409,12 @@ function ProxyRow({ audience, checking, confirmDelete, error, locked, onCancelDe
       </span>
     </div>
     {confirmDelete ? <div className="v2-proxy-actions" role="group" aria-label={`Delete ${proxy.name}`}
-      onKeyDown={(event) => { if (event.key === "Escape" && !locked) { event.preventDefault(); event.stopPropagation(); onCancelDelete(); } }}>
+      onKeyDown={(event) => {
+        // A locked confirmation keeps the key instead of letting it leave Settings.
+        if (event.key !== "Escape") return;
+        event.preventDefault(); event.stopPropagation();
+        if (!locked) onCancelDelete();
+      }}>
       <p className="v2-proxy-confirm">Delete “{proxy.name}”? {COPY[audience].removal}</p>
       <UiV2Button type="button" tone="destructive" disabled={locked} onClick={onConfirmDelete}>Delete proxy</UiV2Button>
       <UiV2Button data-proxy-focus={`keep:${proxy.id}`} type="button" disabled={locked} onClick={onCancelDelete}>Keep proxy</UiV2Button>

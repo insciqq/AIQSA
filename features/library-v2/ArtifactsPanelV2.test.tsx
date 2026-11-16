@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ArtifactsPanelV2 } from "./ArtifactsPanelV2";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "./settingsEscape";
 import type { ArtifactLibraryItem } from "@/components/app-shell/artifactLibraryStore";
 
 const item: ArtifactLibraryItem = { id: "artifact", title: "A useful quarterly chart", kind: "chart", currentVersionId: "v1", sourceChatId: "chat",
@@ -47,6 +48,24 @@ describe("Library artifacts", () => {
     expect(screen.getByRole("textbox", { name: "Artifact title" })).toHaveValue("New title");
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Artifact title" }), { key: "Escape" });
     expect(trigger).toHaveFocus();
+  });
+  it("cancels a delete confirmation on Settings' Escape, and keeps a busy rename's Escape from reaching Settings", () => {
+    const registry = createSettingsEscapeRegistry();
+    const value = props();
+    const { rerender } = render(<SettingsEscapeContext.Provider value={registry}><ArtifactsPanelV2 {...value} /></SettingsEscapeContext.Provider>);
+    fireEvent.click(screen.getByRole("button", { name: `Actions for ${item.title}` }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(`Delete “${item.title}” and all its versions?`);
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(registry.top()).toBeNull();
+    expect(value.onChange).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: `Actions for ${item.title}` }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    rerender(<SettingsEscapeContext.Provider value={registry}><ArtifactsPanelV2 {...value} mutations={{ [item.id]: true }} /></SettingsEscapeContext.Provider>);
+    expect(fireEvent.keyDown(screen.getByRole("textbox", { name: "Artifact title" }), { key: "Escape" })).toBe(false);
+    expect(screen.getByRole("textbox", { name: "Artifact title" })).toBeInTheDocument();
   });
   it("distinguishes loading, load failure, empty and filtered results", () => {
     const { rerender } = render(<ArtifactsPanelV2 {...props({ recent: null, loadState: "loading" })} />);

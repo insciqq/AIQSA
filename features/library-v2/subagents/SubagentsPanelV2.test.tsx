@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentDefinitionListResponse, SubagentDefinitionView } from "@/lib/contracts/subagentDefinitions";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "../settingsEscape";
 import { SubagentsPanelV2 } from "./SubagentsPanelV2";
 
 const MODELS = [{ connectionName: "Codex LB", defaultEffort: "medium", displayName: "Cheap Model", efforts: ["low", "medium"], modelId: "model-cheap" },
@@ -67,6 +68,35 @@ describe("Settings > Sub-agents", () => {
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByText(/Undone: “browser” is deleted/u)).toBeVisible();
     expect(mutations().at(-1)).toEqual(["DELETE", "/api/me/subagents/def_1", { expectedVersion: 1 }]);
+  });
+
+  it("takes the editor's one step back on Settings' Escape, asking first about unsaved changes", async () => {
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}><SubagentsPanelV2 /></SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "New sub-agent" }));
+    fireEvent.change(screen.getByLabelText(/^Name/u), { target: { value: "browser" } });
+    act(() => registry.top()?.onEscape());
+    expect(screen.getByText("Discard your unsaved changes to this sub-agent?")).toBeVisible();
+    // The question answers first: Escape keeps editing.
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByText("Discard your unsaved changes to this sub-agent?")).toBeNull();
+    expect(screen.getByLabelText(/^Name/u)).toHaveValue("browser");
+    fireEvent.change(screen.getByLabelText(/^Name/u), { target: { value: "" } });
+    act(() => registry.top()?.onEscape());
+    expect(await screen.findByRole("button", { name: "New sub-agent" })).toBeVisible();
+    expect(registry.top()).toBeNull();
+  });
+
+  it("cancels a delete confirmation on Settings' Escape", async () => {
+    list = { ...list, definitions: [summary(VIEW)] };
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}><SubagentsPanelV2 /></SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for browser" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("button", { name: "Keep sub-agent" })).toBeVisible();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("button", { name: "Keep sub-agent" })).toBeNull();
+    expect(mutations()).toEqual([]);
   });
 
   it("tells two same-named models apart in the picker by their connection", async () => {

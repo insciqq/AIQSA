@@ -14,6 +14,7 @@ import { decodeInstructionPresetDraft, INSTRUCTION_PRESET_MAX_COUNT, INSTRUCTION
   type InstructionPreset, type InstructionPresetDraft, type InstructionPresetState, type InstructionPresetSummary } from "@/lib/contracts/instructionPresets";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import type { LibrarySubviewV2 } from "@/features/library-v2/contracts";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import { PlatformInstructionsPreview } from "./PlatformInstructionsPreview";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "./instructionPresetsApi";
 
@@ -110,6 +111,16 @@ export function InstructionsSettingsPanel({ onDirtyChange, onBusyChange, onSubvi
     });
   }, [busy, editorId, onSubviewChange, platformPreviewOpen, requestCloseEditor, subviewLabel]);
   useEffect(() => () => onSubviewChange?.(null), [onSubviewChange]);
+  // In Settings, Escape answers an open confirmation as its keeping choice does.
+  const deletingShown = deleting !== null && !editor && !platformPreviewOpen;
+  useSettingsEscapeStep(deletingShown, () => {
+    if (deleting) focusIntent.current = deleting.id;
+    setDeleting(null);
+  }, busy);
+  useSettingsEscapeStep(discard && editor !== null && !platformPreviewOpen, () => {
+    setDiscard(false);
+    focusIntent.current = "name";
+  }, busy);
 
   function change(patch: Partial<InstructionPresetDraft>) { setEditor(current => current && { ...current, value: { ...current.value, ...patch } }); }
   function start() {

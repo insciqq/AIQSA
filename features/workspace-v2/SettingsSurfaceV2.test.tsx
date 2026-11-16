@@ -200,6 +200,46 @@ describe("the Settings surface", () => {
     await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
   });
 
+  it("asks the same question on Escape as on Back to chat, never leaves from the field, and closes only the question first", async () => {
+    render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Gear" }));
+    fireEvent.click(tab("Account"));
+    const name = await screen.findByRole("textbox", { name: "Display name" });
+    await waitFor(() => expect(name).toHaveValue("Ada"));
+    fireEvent.change(name, { target: { value: "Ada Lovelace" } });
+
+    // A habit of "cancel" in a field never throws the typing away.
+    fireEvent.keyDown(name, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Unsaved account changes" })).toBeNull();
+    expect(screen.getByTestId("library-v2")).toBeInTheDocument();
+
+    fireEvent.keyDown(tab("Account"), { key: "Escape" });
+    const kept = await screen.findByRole("dialog", { name: "Unsaved account changes" });
+    // Escape in the question closes only the question.
+    fireEvent.keyDown(within(kept).getByRole("button", { name: "Keep editing" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Unsaved account changes" })).toBeNull());
+    expect(screen.getByTestId("library-v2")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Display name" })).toHaveValue("Ada Lovelace");
+
+    fireEvent.keyDown(tab("Account"), { key: "Escape" });
+    const leaving = await screen.findByRole("dialog", { name: "Unsaved account changes" });
+    fireEvent.click(within(leaving).getByRole("button", { name: /discard changes/iu }));
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+  });
+
+  it("takes a sub-view's Back on Escape, then leaves on the next one", async () => {
+    render(<Shell />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Data" }));
+    fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+    const back = screen.getByRole("button", { name: "Back to Data" });
+    await waitFor(() => expect(back).toHaveFocus());
+    fireEvent.keyDown(back, { key: "Escape" });
+    expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent(/^Data$/u);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage" })).toHaveFocus());
+    fireEvent.keyDown(screen.getByRole("button", { name: "Manage" }), { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+  });
+
   it("asks to leave the page with unsaved account changes, never for its own sign-out", async () => {
     stubFetch({ "/api/auth/logout": neverAnswers });
     render(<Shell />);

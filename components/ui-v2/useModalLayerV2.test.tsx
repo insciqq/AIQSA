@@ -250,8 +250,10 @@ describe("Escape after focus left the dialog", () => {
     document.body.addEventListener("keydown", handled);
     escape();
     document.body.removeEventListener("keydown", handled);
+    // A blocked layer does not close, but it keeps the key from the page behind it.
     rerender(<EscapeLayer closeBlocked label="Viewer" onClose={onClose} />);
-    expect(escape()).toBe(true);
+    expect(escape()).toBe(false);
+    expect(escape(screen.getByRole("button", { name: "Viewer first" }))).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
     rerender(<EscapeLayer label="Viewer" onClose={onClose} />);
     escape();
