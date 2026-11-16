@@ -17,7 +17,9 @@ import { createPeopleFixture, type E2ESession } from "./support/people";
  * installation, a line on the plain-http stand), which opens without signing
  * in and carries noindex. A second question in the same thread has the model
  * update the artifact: its answer links the new version, while the first link
- * still shows the first.
+ * still shows the first. The stand is plain http, so this proves the line path
+ * and the public read; the button payload is checked only against the fake
+ * Discord's validator (`lib/server/discord/bridge/artifactLinks.test.ts`).
  *
  * Runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL on a disposable test-mode stand. Public links are bearer
