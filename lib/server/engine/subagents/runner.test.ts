@@ -95,9 +95,26 @@ const request = {
   modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true },
   modelId: "fake-qsa", params: {}, personalContext: { approxTokens: 5, itemCount: 1, memoryGeneration: 1, memoryRevision: 1,
     mode: "standing-v1", text: "The user lives in Madrid." },
-  prompt: { developer: "Visible answer contract", personalInstructions: "Always answer in French.", system: "Workspace contract." },
+  prompt: { developer: "Visible answer contract", personalInstructions: "Always answer in French.", system: "Admitted chat guidance." },
   provider: "fake", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
 } as unknown as ProviderRunRequest;
+
+/**
+ * The run's request as admission builds it in a chat with a Workspace (`runPreparation.ts`): the real contract and checkpoint
+ * guidance in its system text, also recorded as appended (`prompt.workspaceGuidance`), the turn's paths as its turn guidance, and
+ * the run's other admitted guidance after them.
+ */
+const workspaceContract = workspacePromptContract({ currentAttachmentCount: 0, fileContext: "", hasEarlierExports: false, hasIndexedFiles: false,
+  searchEnabled: false, workspace: { normalized: { inboxIndexPath: WORKSPACE_INBOX_INDEX_PATH, internetEnabled: true,
+    messageManifestPath: "/workspace/inbox/manifest.json", outputDirectory: "/workspace/output/run-1", projectDirectory: WORKSPACE_PROJECT_DIRECTORY },
+  toolDefinitions: [] } as never });
+const OTHER_GUIDANCE = "Connected MCP tools: Jira.";
+const workspaceRequest = { ...request, prompt: { ...request.prompt,
+  system: [workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, workspaceContract.turn, OTHER_GUIDANCE].join("\n\n"),
+  turnGuidance: [workspaceContract.turn], workspaceGuidance: [workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE] }, workspaceCheckpoints: true,
+  workspace: { enabled: true, outputDirectory: "/workspace/output/run-1" } } as unknown as ProviderRunRequest;
+/** What a turn without the Workspace never reads in its system text or role: its paths, contract, checkpoints, section and shared browser. */
+const WORKSPACE_TALK = /\/workspace|A Workspace is available|checkpoint_outputs|# Workspace|Workspace is shared|browser is shared|Before driving a website|environment variables every Workspace command|file paths|your files|where to write files|output directory/u;
 
 const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", modelSource: "parent", provider: "connection-1",
   providerModelId: "model-1", reasoningEffort: null };
@@ -450,7 +467,7 @@ describe("sub-agent runner", () => {
     const first = ctx.requests[0]!;
     // Its own stable prompt, without the parent's answer rules or anything personal to the user's conversation; this chat has no Workspace.
     expect(first.prompt.system).toContain(subagentRoleSection("plain", false));
-    expect(first.prompt.system).toContain("Workspace contract.");
+    expect(first.prompt.system).toContain("Admitted chat guidance.");
     expect(first.prompt.developer).toBeNull();
     expect(first.prompt.personalInstructions).toBeUndefined();
     expect(first.personalContext).toBeUndefined();
@@ -661,29 +678,33 @@ describe("sub-agent runner", () => {
   });
 
   it("keeps only the turn's Workspace paths of the parent's turn guidance", () => {
-    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
+    const paths = workspaceContract.turn;
     const files = "Images in this chat: image_1 is the user's photo.";
-    const sub = subagentRequest({ ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}\n\n${files}`,
+    const sub = subagentRequest({ ...workspaceRequest, prompt: { ...workspaceRequest.prompt, system: `${workspaceRequest.prompt.system}\n\n${files}`,
       turnGuidance: [paths, files] } }, { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities,
       modelId: "fake-qsa", params: {}, provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1 });
-    expect(sub.prompt).toMatchObject({ system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] });
-    expect(workspacePromptContract({ currentAttachmentCount: 0, fileContext: "", hasEarlierExports: false, hasIndexedFiles: false,
-      searchEnabled: false, workspace: { normalized: { inboxIndexPath: "/i", internetEnabled: true, messageManifestPath: "/m",
-        outputDirectory: "/o", projectDirectory: "/p" }, toolDefinitions: [] } as never }).turn.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX))
-      .toBe(true);
+    expect(sub.prompt).toMatchObject({ system: [workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, OTHER_GUIDANCE, paths].join("\n\n"),
+      turnGuidance: [paths] });
+    expect(paths.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX)).toBe(true);
   });
 
-  it("keeps the line about the user's computer, with or without the Workspace", () => {
+  it("keeps the line about the user's computer, with or without the Workspace, whose admitted contract leaves without it", () => {
     const computer = `${COMPUTER_TURN_GUIDANCE_PREFIX}MacBook" is connected for this chat (macOS, arm64). Working folder: ~/work.`;
-    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.`;
+    const paths = workspaceContract.turn;
     const files = "Images in this chat: image_1 is the user's photo.";
-    const parent = { ...request, prompt: { ...request.prompt, system: `Contract.\n\n${paths}\n\n${files}\n\n${computer}`,
+    const parent = { ...workspaceRequest, prompt: { ...workspaceRequest.prompt,
+      system: [workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, paths, files, OTHER_GUIDANCE, computer].join("\n\n"),
       turnGuidance: [paths, files, computer] } };
     const route = { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities, modelId: "fake-qsa", params: {},
       provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1 };
-    expect(subagentRequest(parent, route).prompt).toMatchObject({ system: `Contract.\n\n${paths}\n\n${computer}`, turnGuidance: [paths, computer] });
-    expect(subagentRequest(parent, route, { withoutWorkspace: true }).prompt).toMatchObject({ system: `Contract.\n\n${computer}`,
+    expect(subagentRequest(parent, route).prompt).toMatchObject({
+      system: [workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, OTHER_GUIDANCE, paths, computer].join("\n\n"), turnGuidance: [paths, computer] });
+    expect(subagentRequest(parent, route, { withoutWorkspace: true }).prompt).toMatchObject({ system: `${OTHER_GUIDANCE}\n\n${computer}`,
       turnGuidance: [computer] });
+    // A request admitted before the record keeps its contract: nothing tells where it stands, so nothing is cut and nothing sent twice.
+    const unrecorded = { ...parent, prompt: { ...parent.prompt, workspaceGuidance: undefined } };
+    expect(subagentRequest(unrecorded, route, { withoutWorkspace: true }).prompt.system)
+      .toBe([workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, OTHER_GUIDANCE, computer].join("\n\n"));
   });
 
   describe("image tools follow the sub-agent's own route", () => {
@@ -715,9 +736,7 @@ describe("sub-agent runner", () => {
   });
 
   describe("a turn the Workspace refused", () => {
-    const paths = `${WORKSPACE_TURN_GUIDANCE_PREFIX}/workspace/out/1.\nInternet inside the workspace: enabled.`;
-    const withWorkspace = { ...request, prompt: { ...request.prompt, system: `Workspace contract.\n\n${paths}`, turnGuidance: [paths] },
-      workspaceCheckpoints: true, workspaceImageView: true, workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;
+    const withWorkspace = { ...workspaceRequest, workspaceImageView: true } as ProviderRunRequest;
 
     it("runs as in a chat without one, is told why, and blocks with that reason when it needs it", async () => {
       const ctx = setup([{ text: "Outcome: blocked (workspace_busy)\nThe task needs a shell." }], { request: withWorkspace });
@@ -730,10 +749,11 @@ describe("sub-agent runner", () => {
       expect(registered.workspaceImageView).toBeUndefined();
       const first = ctx.requests[0]!;
       expect(first.workspace).toBeUndefined();
-      expect(first.prompt.system).not.toContain("# Workspace");
-      // Nor does its role speak of the Workspace's files: it is the role of a turn without one.
+      // Nor does its system text speak of the Workspace's files: its role is a turn's without one, and the admitted contract and
+      // checkpoint guidance left with the Workspace, while the run's other guidance stays.
       expect(first.prompt.system).toContain(subagentRoleSection("plain", false));
-      expect(first.prompt.system).not.toContain("/workspace/project/");
+      expect(first.prompt.system).not.toMatch(WORKSPACE_TALK);
+      expect(first.prompt.system).toContain(OTHER_GUIDANCE);
       const texts = userTexts(first);
       expect(texts.join("\n")).not.toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
       expect(texts.at(-1)).toContain("The Workspace is not available to you in this turn (workspace_busy)");
@@ -756,6 +776,7 @@ describe("sub-agent runner", () => {
       expect(registered.workspaceImageView).toBe(true);
       expect(ctx.requests[0]!.prompt.system).toContain("# Workspace");
       expect(ctx.requests[0]!.prompt.system).toContain(SUBAGENT_ROLE_SECTION);
+      expect(ctx.requests[0]!.prompt.system).toContain(`${workspaceContract.stable}\n\n${WORKSPACE_CHECKPOINT_GUIDANCE}`);
       const texts = userTexts(ctx.requests[0]!);
       expect(texts.join("\n")).toContain(WORKSPACE_TURN_GUIDANCE_PREFIX);
       expect(texts.at(-1)).not.toContain("The Workspace is not available");
@@ -769,30 +790,21 @@ describe("sub-agent runner", () => {
   });
 
   describe("a sub-agent's texts in a chat with a Workspace", () => {
-    // The admitted request as admission builds it with a Workspace (`runPreparation.ts`): the real contract and checkpoint guidance in
-    // its system text, also recorded as appended (`prompt.workspaceGuidance`), the turn's paths as its turn guidance, and the run's other
-    // admitted guidance after them.
-    const plan = { normalized: { inboxIndexPath: WORKSPACE_INBOX_INDEX_PATH, internetEnabled: true, messageManifestPath: "/workspace/inbox/manifest.json",
-      outputDirectory: "/workspace/output/run-1", projectDirectory: WORKSPACE_PROJECT_DIRECTORY }, toolDefinitions: [] } as never;
-    const contract = workspacePromptContract({ currentAttachmentCount: 0, fileContext: "", hasEarlierExports: false, hasIndexedFiles: false,
-      searchEnabled: false, workspace: plan });
-    const otherGuidance = "Connected MCP tools: Jira.";
-    const inWorkspace = { ...request, prompt: { ...request.prompt,
-      system: [contract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, contract.turn, otherGuidance].join("\n\n"),
-      turnGuidance: [contract.turn], workspaceGuidance: [contract.stable, WORKSPACE_CHECKPOINT_GUIDANCE] }, workspaceCheckpoints: true,
-      workspace: { enabled: true, outputDirectory: "/workspace/output/run-1" } } as unknown as ProviderRunRequest;
     const secrets = { list: async () => [{ byteSize: 32, description: "", envNames: ["GITHUB_TOKEN"], kind: "env", name: "github", valueId: "value-1" }],
       read: vi.fn() } as unknown as RunSecretSource;
     const readSecret = engineTool("read_secret", "session", vi.fn());
     const parentAgent = { name: "research", runId: "run", threadId: "parent-thread", toolState: { calls: 0 }, turnId: "parent-turn" };
     const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-    /** The system text of a sub-agent's first request in that chat, on a fixed day. */
-    const systemOf = async (input: Partial<SubagentTurnInput> = {}, children?: SubagentChildHost) => {
-      const ctx = setup([{ text: "Outcome: done\nDone." }], { ...(children ? { children } : {}), now: () => Date.parse("2026-11-16T09:00:00Z"),
-        request: inWorkspace, secrets, tools: [readSecret] });
-      await ctx.runner.wait(await ctx.runner.start(ctx.input(input)));
-      return ctx.requests[0]!.prompt.system ?? "";
+    const day = () => Date.parse("2026-11-16T09:00:00Z");
+    /** A sub-agent's first turn in that chat, on a fixed day. */
+    const turnOf = async (input: Partial<SubagentTurnInput> = {}, children?: SubagentChildHost) => {
+      const ctx = setup([{ text: "Outcome: done\nPublic domain, first released in 2000." }], { ...(children ? { children } : {}), now: day,
+        request: workspaceRequest, secrets, tools: [readSecret] });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input(input)));
+      return { ctx, first: ctx.requests[0]!, result };
     };
+    const systemOf = async (input: Partial<SubagentTurnInput> = {}, children?: SubagentChildHost) =>
+      (await turnOf(input, children)).first.prompt.system ?? "";
     const typed = (toolGroups: readonly SubagentToolGroup[] | null) => ({ definitionId: "d", description: "d", instructions: "", name: "custom",
       providerModelId: null, reasoningEffort: null, revisionId: "r", toolGroups });
 
@@ -800,7 +812,7 @@ describe("sub-agent runner", () => {
       const plain = await systemOf();
       expect(plain).toContain(SUBAGENT_ROLE_SECTION);
       expect(plain).toContain("# Workspace");
-      expect(plain).toContain(contract.stable);
+      expect(plain).toContain(workspaceContract.stable);
       expect(plain).toContain(WORKSPACE_CHECKPOINT_GUIDANCE);
       expect(plain).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
       // The texts of 2026-11-16 before that change: a change here is a deliberate rewording, never a side effect.
@@ -812,6 +824,43 @@ describe("sub-agent runner", () => {
       // A custom sub-agent with every tool, or whose groups name the Workspace (here with every other tool the run offers), reads the same.
       expect(await systemOf({ type: typed(null) })).toBe(plain);
       expect(await systemOf({ type: typed(["mcp", "secrets", "skills", "workspace"]) })).toBe(plain);
+    });
+
+    it("tells a custom sub-agent without the Workspace's tools of no Workspace, and gives it none to reach", async () => {
+      const { ctx, first, result } = await turnOf({ type: typed(["web_search"]) });
+      expect(result).toMatchObject({ files: [], outcome: "done", report: "Outcome: done\nPublic domain, first released in 2000.", state: "done" });
+      // Its request has no Workspace, so neither its tools nor what reads it (image analysis by path, Skill bundles, image inputs) have one.
+      const registered = vi.mocked(ctx.host.buildRegistry).mock.calls[0]![0].request;
+      expect(registered.workspace).toBeUndefined();
+      expect(registered.workspaceCheckpoints).toBeUndefined();
+      expect(registered.workspaceImageView).toBeUndefined();
+      expect(first.workspace).toBeUndefined();
+      // Its role is a turn's without one, and its system text keeps the run's other guidance but nothing of the Workspace.
+      const system = first.prompt.system ?? "";
+      expect(system).toContain(subagentRoleSection("plain", false));
+      expect(system).not.toMatch(WORKSPACE_TALK);
+      expect(system).toContain(OTHER_GUIDANCE);
+      // Nor its turn: no paths, and no refusal, which would say the Workspace refused it.
+      expect(userTexts(first).join("\n")).not.toMatch(WORKSPACE_TALK);
+      const refused = await turnOf({ type: typed(["web_search"]), workspaceRefused: "workspace_busy" });
+      expect(userTexts(refused.first).join("\n")).not.toContain("The Workspace is not available");
+      expect(refused.first.prompt.system).toBe(system);
+    });
+
+    it("names its saved secrets without the variables only Workspace commands get", async () => {
+      const system = await systemOf({ type: typed(["secrets", "web_search"]) });
+      expect(system).toContain("Saved secrets: \"github\" (env).");
+      expect(system).not.toMatch(WORKSPACE_TALK);
+    });
+
+    it("gives a research gate with no tools, and a custom helper without the Workspace's, the texts of a turn without one", async () => {
+      // A gate's turn runs as a type of its own tools: `[]` for the gap judge (`lib/server/research/turns.ts`).
+      const gate = await systemOf({ type: typed([]) });
+      expect(gate).toContain(subagentRoleSection("plain", false));
+      expect(gate).not.toMatch(WORKSPACE_TALK);
+      const helper = await systemOf({ parentAgent, type: typed(["web_search"]) });
+      expect(helper).toContain(subagentRoleSection("child", false));
+      expect(helper).not.toMatch(WORKSPACE_TALK);
     });
   });
 

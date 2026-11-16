@@ -1789,7 +1789,9 @@ export async function prepareRun(
     const contract = workspacePromptContract({ workspace: workspaceAdmissionPlan,
       currentAttachmentCount: attachments.length, hasIndexedFiles: hasWorkspaceIndexedFiles,
       hasEarlierExports: facts.hasEarlierExports, searchEnabled: admissionPlan.searches.length > 0, fileContext });
-    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null };
+    // Also recorded as appended (`prompt.workspaceGuidance`), so a sub-agent turn without the Workspace leaves it out.
+    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null,
+      workspaceGuidance: [contract.stable] };
     workspaceTurnContract = contract.turn;
   }
 
@@ -1804,7 +1806,8 @@ export async function prepareRun(
     prompt = { ...prompt, system: [prompt.system, part].filter(Boolean).join("\n\n") };
   };
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
-  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
+  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n"),
+    workspaceGuidance: [...prompt.workspaceGuidance ?? [], WORKSPACE_CHECKPOINT_GUIDANCE] };
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
   // A chat model with verified vision looks at Workspace images itself (operator decision 2026-10-26), frozen with the

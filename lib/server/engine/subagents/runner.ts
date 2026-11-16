@@ -94,7 +94,7 @@ import {
 import type { TranscriptRepository, TranscriptThreadKey } from "../transcriptRepository";
 import { createTranscriptWriter, type TranscriptWriter } from "../transcriptWriter";
 import type { UnknownEffects } from "../unknownEffects";
-import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
+import { subagentGroupsHaveWorkspace, type FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import { withForegroundTurnStops } from "./backgroundRunner";
 import { subagentChildEngineTools, withSubagentDepthRefusals, withSubagentTools, type SubagentCallDeps } from "./callTools";
 import { subagentMessageTools, type AgentToolTurn } from "./messageTools";
@@ -110,8 +110,10 @@ import type { SubagentThreadStore } from "./threadStore";
  * thread's own items from the branch's earlier runs and this one, then the
  * main agent's brief with the user's current message verbatim (the only
  * authority for irreversible website actions), after its own stable system
- * prompt, the run's context (Skills index, pinned Skills) and the Workspace
- * prompt contract; never the main transcript. Its tools are the run's
+ * prompt, the run's context (Skills index, pinned Skills) and, when the turn
+ * has the Workspace, its prompt contract; never the main transcript. Whether
+ * it has the Workspace is its own tools' fact as much as the run's: one whose
+ * tool groups leave it out is told of no Workspace. Its tools are the run's
  * registry filtered (`registry.ts`) with what reaches the chat's other agents
  * (`messageTools.ts`), its records carry the thread key, its compaction and
  * gateway lanes are its own, and its model calls are usage of purpose
@@ -314,8 +316,11 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  * Workspace paths and its computer's line stay: the attachment, image and artifact facts describe what
  * the sub-agent was not given. Direct image view is the route's: the parent's
  * flag was decided from the parent's model, while `analyze_image` stays for
- * every model. `withoutWorkspace` is a turn the Workspace refused: it runs as in
- * a chat that has none, so no Workspace tool is offered.
+ * every model. `withoutWorkspace` is a turn without the Workspace in a chat
+ * that may have one: a sub-agent whose tool groups leave it out, or a turn the
+ * Workspace refused. It runs as in a chat that has none: no Workspace tool is
+ * offered, nothing else of the turn reads the Workspace, and its system text
+ * loses what admission appended for it (`prompt.workspaceGuidance`) with its paths.
  */
 export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute,
   options: Readonly<{ withoutWorkspace?: boolean }> = {}): ProviderRunRequest {
@@ -324,10 +329,12 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
   void _parentView;
   const recorded = request.prompt.turnGuidance ?? [];
   const split = splitTurnGuidance(request.prompt.system ?? "", recorded);
+  // Its contract and checkpoint guidance leave as admission recorded them; a request admitted before the record keeps them.
+  const chat = options.withoutWorkspace ? splitTurnGuidance(split.chat, request.prompt.workspaceGuidance).chat : split.chat;
   // The computer's line stays even without the Workspace: its tools are no Workspace tools.
   const kept = split.turn.filter((part) => part.startsWith(COMPUTER_TURN_GUIDANCE_PREFIX) ||
     !options.withoutWorkspace && part.startsWith(WORKSPACE_TURN_GUIDANCE_PREFIX));
-  const system = [split.chat, ...kept].filter((part) => part.trim()).join("\n\n");
+  const system = [chat, ...kept].filter((part) => part.trim()).join("\n\n");
   return {
     ...rest,
     ...(options.withoutWorkspace ? {} : { ...(workspace ? { workspace } : {}), ...(workspaceCheckpoints ? { workspaceCheckpoints } : {}),
@@ -769,9 +776,15 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       if (!routed.ok) return ended("failed", { reason: routed.code });
       const route = routed.route;
       const shape = host.requestShape(route);
-      // In a chat with no Workspace the refusal says only that, and there is nothing to tell the agent.
-      const workspaceRefused = host.request.workspace ? input.workspaceRefused : undefined;
-      const request = { ...subagentRequest(host.request, route, { withoutWorkspace: workspaceRefused !== undefined }), params: shape.params };
+      // Its own tools decide what it hears of the Workspace, as the run's Workspace decides the main agent's (2026-11-16): one whose
+      // tool groups leave it out, a research gate among them, never has it, so in a chat with one it runs as in a chat without.
+      const ownsWorkspace = subagentGroupsHaveWorkspace(input.type?.toolGroups ?? null);
+      // In a chat with no Workspace the refusal says only that, and there is nothing to tell the agent; nor one that never has it.
+      const workspaceRefused = host.request.workspace && ownsWorkspace ? input.workspaceRefused : undefined;
+      // Whether this turn has the Workspace: its request, role and system prompt follow this one value. Without it the request has
+      // none, so its tools and what reads it (image analysis by path, Skill bundles in the VM, image inputs) are a chat's without one.
+      const workspace = host.request.workspace?.enabled === true && ownsWorkspace && workspaceRefused === undefined;
+      const request = { ...subagentRequest(host.request, route, { withoutWorkspace: !workspace }), params: shape.params };
       const onWorkspaceActivity = async (entry: ThreadWorkspaceActivityEntry) => {
         if (WORKSPACE_LIFECYCLE_KINDS.has(entry.kind)) await host.onWorkspaceLifecycle(entry);
         if (!WRITTEN_FILE_KINDS.has(entry.kind) || entry.phase !== "succeeded") return;
@@ -799,10 +812,10 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (!turn.mailbox.some((entry) => entry.nonce === message.nonce)) turn.mailbox.push(message);
       }
       const history = runIds.flatMap((runId) => loaded.get(runId) ?? []);
-      // The Workspace lines follow what this turn's request has, as its "# Workspace" section does: a chat without one, or a
-      // turn it refused, never tells the agent to hand work over through its files.
+      // The Workspace lines follow what this turn's request has, as its "# Workspace" section does: a chat without one, a turn it
+      // refused or a sub-agent without its tools never tells the agent to hand work over through its files.
       const roleSection = subagentRoleSection(input.parentAgent ? "child" : starts ? starts.backgroundAllowed ? "starter" : "starter_foreground" : "plain",
-        request.workspace?.enabled === true);
+        workspace);
       const role = input.type?.instructions.trim() ? `${roleSection}\n\n# Your instructions\n${input.type.instructions.trim()}` : roleSection;
       const native = await withNativeSystemPrompt({ now: new Date(host.now()), request, scope: { runId: input.hostRunId, userId: host.userId },
         ...(host.secrets ? { secrets: host.secrets } : {}), selfService: role, snapshot: route.snapshot, tools: registry.definitions() });

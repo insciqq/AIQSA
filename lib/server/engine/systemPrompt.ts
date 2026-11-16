@@ -151,7 +151,9 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
     webSearch: request.searchPlan.options.length > 0,
     workspace: request.workspace?.enabled === true
   });
-  const { turnGuidance, ...admitted } = request.prompt;
+  // The Workspace's record only tells a sub-agent without it what to leave out (`subagentRequest`): its text stays in the system.
+  const { turnGuidance, workspaceGuidance: _workspace, ...admitted } = request.prompt;
+  void _workspace;
   const guidance = splitTurnGuidance(admittedRunGuidance(request.prompt), turnGuidance);
   const system = [prompt.stable, guidance.chat, prompt.environment].filter((part) => part.trim()).join("\n\n");
   return {

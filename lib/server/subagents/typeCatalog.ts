@@ -1,6 +1,15 @@
-import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_BUILT_IN_TYPE } from "../../contracts/subagents";
+import { CALL_SUBAGENT_TOOL_NAME, SUBAGENT_BUILT_IN_TYPE, SUBAGENT_TOOL_GROUPS, type SubagentToolGroup } from "../../contracts/subagents";
 import { escapeSkillXml } from "../skills/runManifest";
 import type { SubagentTypeEntry } from "./ports";
+
+/**
+ * Whether a sub-agent of these tool groups has the Workspace: every tool (null), or a list that names it. Its own tools
+ * decide what it is told of the Workspace and how the main agent briefs it (2026-11-16): one without it is never told to
+ * write a file it has no tool for, and the main agent asks for its results in its report.
+ */
+export function subagentGroupsHaveWorkspace(groups: readonly SubagentToolGroup[] | null): boolean {
+  return groups === null || groups.includes(SUBAGENT_TOOL_GROUPS.workspace);
+}
 
 /**
  * The user's custom sub-agents as the main agent sees them: names and

@@ -1200,6 +1200,10 @@ describe("run preparation", () => {
       expect(split.turn).toEqual(request.prompt.turnGuidance);
       expect(split.turn.some((part) => part.includes(`This turn's output directory: /workspace/output/`))).toBe(true);
       expect(split.chat).not.toMatch(/This turn's output directory:|\/workspace\/output\/|Bounded file references|earlier completed exports/u);
+      // So are the Workspace's own stable parts, which stay in the system text: a sub-agent turn without the Workspace leaves them out.
+      expect(request.prompt.workspaceGuidance).toEqual([expect.stringMatching(/^A Workspace is available in this chat/u), WORKSPACE_CHECKPOINT_GUIDANCE]);
+      expect(split.chat).toContain(request.prompt.workspaceGuidance!.join("\n\n"));
+      expect(splitTurnGuidance(split.chat, request.prompt.workspaceGuidance).chat).not.toMatch(/\/workspace|checkpoint_outputs|Workspace is available/u);
       chatGuidance.push(split.chat);
     }
     expect(chatGuidance[1]).toBe(chatGuidance[0]);

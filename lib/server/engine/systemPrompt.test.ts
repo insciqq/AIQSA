@@ -110,6 +110,12 @@ describe("native system prompt", () => {
     expect(morning.request.prompt.system).toContain(`${guidance}\n\n${mcpIndex}`);
     expect(morning.request.prompt.system).not.toMatch(/9:05|8:40|outputs\/run-|artifact_id/u);
     expect(morning.request.prompt).not.toHaveProperty("turnGuidance");
+    // The record of what admission appended for the Workspace serves only a sub-agent without it: the text stays, the record goes.
+    const recorded = await withNativeSystemPrompt({ now: new Date("2026-10-23T06:05:00Z"), request: request(null, { prompt: {
+      ...request(null).prompt, system: [resolveStandardChatBaseline({ now: new Date("2026-10-23T06:05:00Z"), timeZone: zone }).renderedSystemPrompt,
+        guidance, "This turn's output directory: /workspace/outputs/run-1.", mcpIndex].join("\n\n"),
+      turnGuidance: ["This turn's output directory: /workspace/outputs/run-1."], workspaceGuidance: [guidance] } }), scope, secrets, snapshot: gpt, tools: offered });
+    expect(recorded.request.prompt).toEqual(morning.request.prompt);
     expect(morning.turnContext).toBe(`<turn_context>\nCurrent local time: 09:05 AM GMT+3 (${zone}).\n\n` +
       "This turn's output directory: /workspace/outputs/run-1.\n</turn_context>");
     expect(evening.turnContext).toBe(`<turn_context>\nCurrent local time: 08:40 PM GMT+3 (${zone}).\n\n` +
