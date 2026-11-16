@@ -1444,6 +1444,14 @@ describe("run preparation", () => {
       .replace("workspace_exec_old", "workspace_exec_current")
       .replace(before.workspaceAdmissionPlan!.normalized.outputDirectory, plan.normalized.outputDirectory)
       .replace("Internet inside the workspace: enabled (public destinations only).", "Internet inside the workspace: disabled."));
+    // What admission recorded as appended changed with it: the turn's parts and the Workspace's own are found where they now stand.
+    const retriedPrompt = retried.normalizedRequest.prompt;
+    const split = splitTurnGuidance(admittedRunGuidance(retriedPrompt), retriedPrompt.turnGuidance);
+    expect(split.turn).toEqual(retriedPrompt.turnGuidance);
+    expect(split.turn.join("\n")).toContain(plan.normalized.outputDirectory);
+    expect(split.chat).not.toContain(plan.normalized.outputDirectory);
+    expect(retriedPrompt.workspaceGuidance?.join("\n")).toContain("workspace_exec_current");
+    expect(split.chat).toContain(retriedPrompt.workspaceGuidance!.join("\n\n"));
     expect(retried.providerRequest.prompt).toEqual(retried.normalizedRequest.prompt);
     expect(retried.providerRequest.tools?.map(tool => tool.name)).toContain("workspace_exec_current");
     expect(retried.providerRequest.tools?.map(tool => tool.name)).not.toContain("workspace_exec_old");

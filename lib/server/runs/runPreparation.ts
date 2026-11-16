@@ -767,12 +767,17 @@ export async function preparePdfRetry(
     };
     const newSegments = segments(plan);
     let system = request.prompt.system ?? "";
+    // The parts admission recorded as appended change with it, so each is still found where it stands (`splitTurnGuidance`).
+    let { turnGuidance, workspaceGuidance } = request.prompt;
     // Replace only the server-owned segments; the accepted user/Assistant
     // instructions, file references and unrelated tool authority stay frozen.
     for (const [index, oldSegment] of segments(prior).entries()) {
       const at = system.indexOf(oldSegment);
       if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
       system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
+      const replaced = (parts: readonly string[] | undefined) => parts?.map(part => part.split(oldSegment).join(newSegments[index]));
+      turnGuidance = replaced(turnGuidance);
+      workspaceGuidance = replaced(workspaceGuidance);
     }
     // The retry keeps the run's accepted tool limits, on or off, never the installation's current ones; only the
     // Workspace allowance comes from this admission, and it raises only a limit that is on.
@@ -780,7 +785,7 @@ export async function preparePdfRetry(
     const toolBudgets = { ...request.toolBudgets,
       maxToolCalls: workspaceToolLimit(accepted.maxToolCalls, plan.normalized.maxToolCalls),
       maxToolRounds: workspaceToolLimit(accepted.maxToolRounds, plan.normalized.maxToolRounds) };
-    const prompt = { ...request.prompt, system };
+    const prompt = { ...request.prompt, system, ...(turnGuidance ? { turnGuidance } : {}), ...(workspaceGuidance ? { workspaceGuidance } : {}) };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
     const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
