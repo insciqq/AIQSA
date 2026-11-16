@@ -45,6 +45,7 @@ import {
 } from "./status";
 import { discordCallNameMatch, discordContextTrigger, discordTrigger, type DiscordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
+import type { DiscordVoiceHook } from "../voice";
 
 /**
  * Discord messages become runs of the installation's service account, one
@@ -122,6 +123,8 @@ export type DiscordBridgeDeps = Readonly<{
   uploads?: DiscordUploads | null;
   attachments?: DiscordAttachmentHook;
   answerFiles?: DiscordAnswerFilesHook;
+  /** Transcribes a question's and its Reply target's voice messages (`../voice.ts`); absent names them as files. */
+  voice?: DiscordVoiceHook;
   publish?: (event: DiscordRunEvent, context: DiscordRunEventContext) => Promise<void>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -713,9 +716,12 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
         attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
         header: await header(placement, trigger, message.guildId), merge: joinable(context), mergeWindowMs: timing.mergeWindowMs,
         names: mentionNames(control), rest,
-        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId
+        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId,
+        voice: deps.voice
       });
-      if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
+      if (!turn.ok) {
+        return refuse(question, { code: turn.code, failureKind: "context", text: "text" in turn ? turn.text : DISCORD_COPY.contextUnavailable }, { status });
+      }
       // Files of its own, its Reply target's or in its history, or a history file: a text follow-up would lose them.
       const carriesFiles = probe.seen() || turn.blocks.length > 1;
       const admitted = await admit(question, placement, {

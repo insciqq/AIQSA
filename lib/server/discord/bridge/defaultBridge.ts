@@ -7,6 +7,7 @@ import { isDiscordBotActive } from "../control/state";
 import type { DiscordDefaults } from "../defaultDiscord";
 import { createDiscordAnswerFiles, createDiscordAttachments } from "../files";
 import { createDiscordTransport, type DiscordTransport } from "../transport";
+import { createDiscordVoice } from "../voice";
 import { getRunAttachmentLimits } from "../../runs/attachmentLimits";
 import { defaultTelegramFileReader } from "../../telegram/files";
 import { defaultUploadMaxBytes } from "../../uploads/validation";
@@ -102,6 +103,21 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
     // The same reading the turn's send asks for the Workspace with.
     workspaceOffered: () => gateway.workspaceOffered()
   });
+  // Voice messages through the Speech to text role as the service account; its stack loads on the first voice message.
+  const transcription = lazyConnectorLoader(async () => {
+    const [{ transcribeUserAudio }, { transcriptionHandlerDeps }] = await Promise.all([
+      import("../../speechToText/transcribeUserAudio"), import("../../speechToText/defaults")
+    ]);
+    return { deps: transcriptionHandlerDeps, transcribeUserAudio };
+  });
+  const voice = createDiscordVoice({
+    download: async (input) => (cdn ??= createDiscordTransport()).download(input),
+    rest: discord.rest,
+    transcribe: async (input) => {
+      const loaded = await transcription();
+      return loaded.transcribeUserAudio(loaded.deps, input);
+    }
+  });
   const bridge = createDiscordBridge({
     answerFiles: createDiscordAnswerFiles({ read: defaultTelegramFileReader() }),
     attachments,
@@ -115,7 +131,8 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
     rest: discord.rest,
     setupReady: async () => (await discord.controlService.health()).setupReady,
     shares,
-    uploads
+    uploads,
+    voice
   });
   const removers = [bridge.register(discord.registry)];
   const unregister = () => {

@@ -212,6 +212,7 @@
   "discord_unreachable",
   "discord_upload_failed",
   "discord_user_limit",
+  "discord_voice_untranscribed",
   "discord_workspace_unavailable",
   "discovery_unavailable",
   "display_name_invalid",
