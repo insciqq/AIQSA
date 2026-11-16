@@ -333,8 +333,11 @@ test("v2 drawer footer fits the account entry, Announcements and Settings on one
     }
     expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.x + boxes[0]!.width - 0.5);
     expect(boxes[2]!.x).toBeGreaterThanOrEqual(boxes[1]!.x + boxes[1]!.width - 0.5);
-    // The account label truncates rather than pushing the icons out.
-    expect(await footer.locator(".v2-navigation-footer-bar").evaluate((row) => row.scrollWidth <= row.clientWidth)).toBe(true);
+    // The account label truncates rather than pushing the icons out: the row is as wide as the drawer lets it be
+    // (its scroll width is no measure, because it counts the controls' tooltips).
+    const row = (await footer.locator(".v2-navigation-footer-bar").boundingBox())!;
+    expect(row.x + row.width).toBeLessThanOrEqual(drawer.x + drawer.width + 0.5);
+    expect(boxes[2]!.x + boxes[2]!.width).toBeLessThanOrEqual(row.x + row.width + 0.5);
     await expectNoPageOverflow(page);
   }
 });
