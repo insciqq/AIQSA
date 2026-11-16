@@ -5173,7 +5173,7 @@ describe("a Discord turn under its connector rules", () => {
     expect(telegram.normalizedRequest.memorySearch).toEqual(memorySnapshot);
   });
 
-  it("refuses the Workspace, asked for by the message or stored on the chat", async () => {
+  it("admits the Workspace as a web chat does, asked for by the message or stored on the chat (operator decision 2026-11-16)", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace = contractWorkspace();
     const deps = { ...harness.deps, workspace };
@@ -5181,11 +5181,15 @@ describe("a Discord turn under its connector rules", () => {
       sendInput(successBody({ workspace: { enabled: true } }), excluded),
       sendInput(successBody(), { ...excluded, workspaceEnabled: true })
     ]) {
-      await expect(prepareRun(deps, as("discord", input))).resolves.toMatchObject({ code: DISCORD_RUN_REFUSALS.workspace, ok: false, status: 409 });
+      const prepared = preparedFrom(await prepareRun(deps, as("discord", input)));
+      expect(prepared.workspaceAdmissionPlan).toMatchObject({ sessionId: "ws-contract" });
     }
-    expect(workspace.prepare).not.toHaveBeenCalled();
-    const off = preparedFrom(await prepareRun(deps, as("discord", sendInput(successBody({ workspace: { enabled: false } }), excluded))));
+    expect(workspace.prepare).toHaveBeenCalledTimes(2);
+    // An installation that does not offer it: the turn runs without it, its reason only labelling the record.
+    const off = preparedFrom(await prepareRun(deps, as("discord",
+      sendInput(successBody({ workspace: { enabled: false, reason: "installation_disabled" } }), excluded))));
     expect(off.workspaceAdmissionPlan).toBeUndefined();
+    expect(workspace.prepare).toHaveBeenCalledTimes(2);
   });
 
   it("offers no automation tools, which a Telegram turn keeps", async () => {

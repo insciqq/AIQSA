@@ -9,6 +9,7 @@ import type { ConnectorRunStreamEvent } from "../../connectors/runEvents";
 import type { ConnectorRunAnswer, ConnectorRunGateway } from "../../connectors/runGateway";
 import { followConnectorRunEvents } from "../../connectors/runObserver";
 import { RUN_STREAM_IDLE_MS } from "../../connectors/sse";
+import { connectorWorkspaceRequest } from "../../connectors/turn";
 import { logEvent, runInBackground } from "../../observability";
 import { discordChannelInfo, discordChannelKind, type DiscordChannelInfo } from "../access";
 import { DISCORD_DISABLED_CODE, DISCORD_NOT_ADDRESSED_CODE, DISCORD_RATE_LIMITED_CODE, DISCORD_REQUEST_INVALID_CODE } from "../codes";
@@ -61,8 +62,9 @@ import type { DiscordUploads } from "./uploads";
  *   in place, the conversation keyed by the channel.
  * - The context is read from Discord at the question (`context.ts`), admitted
  *   through the shared run gateway as a new Assistant chat excluded from
- *   Memory, without Workspace, or as the conversation's next turn on its
- *   expected leaf.
+ *   Memory, or as the conversation's next turn on its expected leaf; each turn
+ *   has the Workspace whenever the installation offers it, so each thread has
+ *   its chat's own (operator decision 2026-11-16).
  * - While a run of the conversation goes on, a question joins it as a
  *   follow-up; one the run no longer takes waits for it and becomes the next
  *   turn. Conversations run side by side; one conversation stays in order.
@@ -224,13 +226,19 @@ export function discordThreadName(text: string, author: string): Readonly<{ name
   return { name: name.trim() || discordQuestionFallbackThreadName(author), redactions: redacted.count };
 }
 
-/** The send body of a Discord turn (PRD D-17): the Assistant's rows govern, Memory excluded, no Workspace, UTC. */
+/**
+ * The send body of a Discord turn (PRD D-17): the Assistant's rows govern, Memory excluded, UTC, and the Workspace as a
+ * web chat asks for it, whenever the installation offers it (operator decision 2026-11-16). An Assistant's model must
+ * call tools, so only the installation decides; its reason names that in `run_accepted`.
+ */
 export function discordSendBody(input: Readonly<{
   admissionId: string;
   blocks: readonly ContentBlock[];
   expectedActiveLeafId: string | null;
   /** A new chat with this Assistant; null for the conversation's next turn. */
   newChatAssistantId: string | null;
+  /** Whether the installation offers the Workspace now (`ConnectorRunGateway.workspaceOffered`). */
+  workspaceOffered: boolean;
 }>): Record<string, unknown> {
   return {
     admissionId: input.admissionId,
@@ -240,8 +248,7 @@ export function discordSendBody(input: Readonly<{
       ? { assistantId: input.newChatAssistantId, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } }
       : {}),
     timeZone: "UTC",
-    // The connector's rules leave out the Workspace (`lib/server/connectors/turn.ts`); the reason only names that in `run_accepted`.
-    workspace: { enabled: false, reason: "connector" }
+    workspace: connectorWorkspaceRequest(input.workspaceOffered, true)
   };
 }
 
@@ -578,6 +585,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     const id = question.ids.questionMessageId;
     const conversation = placement.conversation;
     const unrecorded = { kind: "refused", refusal: { code: "discord_journal_failed", status: 500 } } as const;
+    // Read once, before anything is claimed, so every attempt of this send asks for the Workspace alike.
+    const workspaceOffered = await deps.gateway.workspaceOffered();
     let leaf: string | null = null;
     if (conversation) {
       const chat = await deps.gateway.chat(input.userId, conversation.chatId);
@@ -602,7 +611,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     for (let attempt = 0; ; attempt += 1) {
       const response = await deps.gateway.send({
         body: discordSendBody({
-          admissionId: `dc-${id}`, blocks: input.blocks, expectedActiveLeafId: expected, newChatAssistantId: conversation ? null : input.assistantId
+          admissionId: `dc-${id}`, blocks: input.blocks, expectedActiveLeafId: expected, newChatAssistantId: conversation ? null : input.assistantId,
+          workspaceOffered
         }),
         chatId, userId: input.userId
       });

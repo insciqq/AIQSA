@@ -626,12 +626,13 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
         const delivered: string[] = [];
-        // A Discord turn never has a Workspace (admission refuses it); were it to, nobody could take its browser over.
+        // Nobody takes a Discord thread's browser over: its chat is the service account's, which no member opens.
         const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
-          : input.scheduled || input.connectorTurn === "discord" ? { kind: "unattended" }
-            : input.connectorTurn === "telegram" ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
-              : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
-                researching: () => research?.holding() ?? false };
+          : input.scheduled ? { kind: "unattended" }
+            : input.connectorTurn === "discord" ? { kind: "discord" }
+              : input.connectorTurn === "telegram" ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
+                : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
+                  researching: () => research?.holding() ?? false };
         const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,

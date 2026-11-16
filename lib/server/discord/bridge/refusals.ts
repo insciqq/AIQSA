@@ -1,6 +1,6 @@
 import { isUsageLimitRefusalCode } from "../../../contracts/usageLimits";
 import type { ConnectorSendRefusal } from "../../connectors/runAdmission";
-import { DISCORD_BRIDGE_COPY, DISCORD_COPY } from "../copy";
+import { DISCORD_BRIDGE_COPY, DISCORD_COPY, DISCORD_WORKSPACE_COPY } from "../copy";
 import type { DiscordLimitKind } from "../store/replies";
 
 /**
@@ -46,12 +46,30 @@ const SETUP_CODES = new Set(["unauthorized", "forbidden", "user_not_available", 
  * people read that its tools are unavailable, not that nothing is set up.
  */
 const ASSISTANT_TOOL_CODES = new Set(["assistant_tools_not_available", "assistant_search_option_not_available"]);
+/**
+ * The thread's Workspace is held for now: an earlier answer's open work, export or VM in passing (the public code of
+ * every such admission refusal, `prismaRepositoryPreparation.ts`), or this turn waited past its bound for it.
+ */
+const WORKSPACE_BUSY_CODES = new Set(["workspace_busy", "workspace_followup_expired", "workspace_reset_conflict", "workspace_subagents_running"]);
+/** The runner cannot give the thread a Workspace now: switched off, unreachable or incompatible, or its VM did not start or was lost. */
+const WORKSPACE_UNAVAILABLE_CODES = new Set([
+  "workspace_disabled", "workspace_followup_unavailable", "workspace_runtime_incompatible", "workspace_runtime_unavailable",
+  "workspace_secret_unavailable", "workspace_session_create_failed", "workspace_session_lost", "workspace_unavailable"
+]);
 
 function failure(code: string, text: string | null, failureKind: DiscordFailureKind, limitKind?: DiscordLimitKind): DiscordFailure {
   return limitKind ? { code, failureKind, limitKind, text } : { code, failureKind, text };
 }
 
-/** A failure code shared by admission refusals and failed runs: usage budgets, the model key, the model, tools and context. */
+/** A Workspace refusal or failure (Discord turns have the Workspace, operator decision 2026-11-16): its own reason, never "Something went wrong". */
+function workspaceFailure(code: string, failureKind: "admission" | "run"): DiscordFailure {
+  if (WORKSPACE_BUSY_CODES.has(code)) return failure(code, DISCORD_WORKSPACE_COPY.busy, "busy");
+  if (code === "workspace_storage_full") return failure(code, DISCORD_WORKSPACE_COPY.full, failureKind);
+  if (WORKSPACE_UNAVAILABLE_CODES.has(code)) return failure(code, DISCORD_WORKSPACE_COPY.unavailable, failureKind);
+  return failure(code, DISCORD_WORKSPACE_COPY.failed, failureKind);
+}
+
+/** A failure code shared by admission refusals and failed runs: usage budgets, the model key, the model, tools, context and the Workspace. */
 function familyFailure(code: string, failureKind: "admission" | "run"): DiscordFailure | null {
   if (isUsageLimitRefusalCode(code) || code === "usage_limits_unavailable") return failure(code, DISCORD_COPY.usageLimit, failureKind);
   if (DISCORD_KEY_LIMIT_PROVIDER_CODES.has(code)) return failure("discord_key_limit", DISCORD_COPY.keyLimit, failureKind, "key");
@@ -60,6 +78,7 @@ function familyFailure(code: string, failureKind: "admission" | "run"): DiscordF
   if (code.startsWith("mcp_") || code.startsWith("search_") || code === "unsupported_search_strategy") {
     return failure(code, DISCORD_BRIDGE_COPY.toolsUnavailable, failureKind);
   }
+  if (code.startsWith("workspace_")) return workspaceFailure(code, failureKind);
   return null;
 }
 

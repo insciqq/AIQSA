@@ -1,13 +1,13 @@
 import type { ThreadArtifactSummary } from "../../contracts/chats";
 import type { ContentBlock } from "../../domain/content";
-import { uploadFormatForExtension } from "../../domain/uploadFormats";
+import { normalizedUploadMimeType, uploadFormatForExtension } from "../../domain/uploadFormats";
 import { cleanTelegramFileName as cleanOutgoingFileName, telegramAnswerFiles, type TelegramFileReader } from "../telegram/files";
 import { cleanTelegramFileName as cleanIncomingFileName } from "../telegram/media/plan";
 import type { DiscordAnswerFilesHook } from "./bridge/answer";
 import type { DiscordAttachmentHook } from "./bridge/context";
 import { logDiscordBridgeFailure } from "./bridge/journal";
 import type { DiscordContextAttachment, DiscordContextMessage } from "./bridge/messages";
-import type { DiscordUploads } from "./bridge/uploads";
+import type { DiscordUploads, DiscordUploadScope } from "./bridge/uploads";
 import { DISCORD_ATTACHMENT_COPY, discordAttachmentsNotAddedText, discordEarlierAttachmentsNamedText, discordFilesOnlyInAiqsaText } from "./copy";
 import { redactOutgoing } from "./redaction";
 import type { DiscordRest } from "./rest";
@@ -24,22 +24,26 @@ import {
  * and reach the run as image and file blocks. Images take a budget of ten by
  * priority: every image of the question (the trigger and the messages joined
  * to it) and of the message it replies to, however many, then images of the
- * included history from the newest while the budget lasts. Other files of the
- * allowed attachment formats take up to ten the same way. The run's own
- * attachment allowance (`lib/server/runs/attachmentLimits.ts`: count and
- * bytes of one message, one place kept for the history file) bounds the whole
- * set, history images going first, so admission never refuses the turn for
- * them. Bytes come from Discord's CDN through the Discord transport (at most
- * 20 MiB and the upload cap); an expired signed URL is renewed by reading the
- * message again through REST, never through `attachments/refresh-urls`.
- * Everything not added stays named in the turn's text, and the question's and
- * reference's leftovers and refused uploads get a short line why.
+ * included history from the newest while the budget lasts. Other files take
+ * up to ten the same way: those of the allowed attachment formats or, while
+ * the installation offers the Workspace (which the turn then has), any file,
+ * uploaded in the Workspace scope as Telegram's are (operator decision
+ * 2026-11-16). The run's own attachment allowance
+ * (`lib/server/runs/attachmentLimits.ts`: count and bytes of one message, one
+ * place kept for the history file) bounds the whole set, history images going
+ * first, so admission never refuses the turn for them. Bytes come from
+ * Discord's CDN through the Discord transport (at most 20 MiB and the upload
+ * cap); an expired signed URL is renewed by reading the message again through
+ * REST, never through `attachments/refresh-urls`. Everything not added stays
+ * named in the turn's text, and the question's and reference's leftovers and
+ * refused uploads get a short line why.
  *
- * Out: an answer's generated images, then its other generated files, read
- * through the download route's authority as their owner, go with the final
- * message: at most ten, each up to 20 MiB, together up to 25 MiB, names
- * cleaned and redacted; the rest is "N files are only in AIQSA". Logs carry
- * codes only, never names, URLs or content.
+ * Out: an answer's generated images, then its other generated files (the
+ * Workspace's outputs among them), read through the download route's
+ * authority as their owner, go with the final message: at most ten, each up
+ * to 20 MiB, together up to 25 MiB, names cleaned and redacted; the rest is
+ * "N files are only in AIQSA". Logs carry codes only, never names, URLs or
+ * content.
  */
 
 export const DISCORD_TURN_IMAGES_MAX = 10;
@@ -99,13 +103,21 @@ function displayName(attachment: DiscordContextAttachment): string {
   return attachment.filename.length > NOTE_NAME_MAX_CHARS ? `${attachment.filename.slice(0, NOTE_NAME_MAX_CHARS)}…` : attachment.filename;
 }
 
-/** What one attachment would be as an upload: its kind, safe name and type, or why it is only named. */
-function classify(attachment: DiscordContextAttachment, maxBytes: number):
+/**
+ * What one attachment would be as an upload: its kind, safe name and type, or why it is only named. With the
+ * Workspace any file goes, as the browser's Workspace upload takes it: a type no format lists keeps Discord's declared
+ * one (else `application/octet-stream`) and the upload route's content check decides.
+ */
+function classify(attachment: DiscordContextAttachment, maxBytes: number, scope: DiscordUploadScope):
   Readonly<{ kind: "image" | "file"; fileName: string; mimeType: string }> | NotAdded {
   const fileName = cleanIncomingFileName(attachment.filename, attachment.id, attachment.contentType ?? undefined);
-  const format = uploadFormatForExtension(fileName, "attachment");
-  if (!format) return "unsupported";
+  const format = uploadFormatForExtension(fileName, scope);
+  if (!format && scope === "attachment") return "unsupported";
   if (attachment.size !== null && attachment.size > maxBytes) return "too_large";
+  if (!format) {
+    const declared = attachment.contentType ? normalizedUploadMimeType(attachment.contentType) : undefined;
+    return { fileName, kind: "file", mimeType: declared ?? "application/octet-stream" };
+  }
   return { fileName, kind: format.kind === "image" ? "image" : "file", mimeType: format.canonicalMimeType };
 }
 
@@ -145,7 +157,10 @@ export function planDiscordAttachments(input: Readonly<{
   reference: DiscordContextMessage | null;
   history: readonly DiscordContextMessage[];
   limits: DiscordAttachmentLimits;
+  /** `workspace` for a turn with the Workspace: any file type goes; the chat upload scope when absent. */
+  scope?: DiscordUploadScope;
 }>): Readonly<{ selected: Candidate[]; skipped: Skipped[] }> {
+  const scope = input.scope ?? "attachment";
   const maxBytes = Math.max(0, Math.min(input.limits.uploadMaxBytes, DISCORD_DOWNLOAD_MAX_BYTES));
   const seenMessages = new Set<string>();
   const seenAttachments = new Set<string>();
@@ -166,7 +181,7 @@ export function planDiscordAttachments(input: Readonly<{
     for (const attachment of message.attachments) {
       if (seenAttachments.has(attachment.id)) continue;
       seenAttachments.add(attachment.id);
-      const kind = classify(attachment, maxBytes);
+      const kind = classify(attachment, maxBytes, scope);
       if (typeof kind === "string") {
         skipped.push({ name: displayName(attachment), origin, reason: kind });
         continue;
@@ -245,12 +260,20 @@ export function createDiscordAttachments(deps: Readonly<{
   download: DiscordTransport["download"];
   rest: () => DiscordRest;
   limits: () => DiscordAttachmentLimits;
+  /**
+   * Whether the installation offers the Workspace now (`ConnectorRunGateway.workspaceOffered`), which the turn's send
+   * reads the same way to ask for it: the turn's files then take the Workspace upload scope.
+   */
+  workspaceOffered: () => Promise<boolean>;
   now?: () => number;
   concurrency?: number;
 }>): DiscordAttachmentHook {
   const now = deps.now ?? Date.now;
   return async (input) => {
-    const plan = planDiscordAttachments({ ...input, limits: deps.limits() });
+    const carried = [...input.question, ...(input.reference ? [input.reference] : []), ...input.history]
+      .some((message) => message.attachments.length > 0);
+    const scope: DiscordUploadScope = carried && await deps.workspaceOffered() ? "workspace" : "attachment";
+    const plan = planDiscordAttachments({ ...input, limits: deps.limits(), scope });
     if (plan.selected.length === 0) {
       const notes = lines(plan.skipped, new Map());
       return { blocks: [], notes };
@@ -297,7 +320,7 @@ export function createDiscordAttachments(deps: Readonly<{
       const bytes = await fetchBytes(candidate);
       if (!bytes.ok) return bytes;
       const uploaded = await deps.uploads.uploadFile({
-        data: bytes.data, fileName: candidate.fileName, mimeType: candidate.mimeType, userId: input.userId
+        data: bytes.data, fileName: candidate.fileName, mimeType: candidate.mimeType, scope, userId: input.userId
       }).catch(() => ({ code: "discord_upload_failed", ok: false as const }));
       if (uploaded.ok) return uploaded;
       logDiscordBridgeFailure({ code: "discord_attachment_upload_refused", outcome: "skipped" });

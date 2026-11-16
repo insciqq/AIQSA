@@ -4,6 +4,7 @@ import type { ThreadArtifactSummary } from "../../contracts/chats";
 import type { ContentBlock } from "../../domain/content";
 import failureCodes from "../observability/failureCodes.json";
 import { createDiscordChannelDirectory, createDiscordMembership, discordChannelInfo } from "./access";
+import { DISCORD_WORKSPACE_COPY } from "./copy";
 import type { DiscordEffectiveControl } from "./control/state";
 import {
   createFakeDiscordRunGateway, createMemoryDiscordConversationStore, createMemoryDiscordLimitStore, createMemoryDiscordReplyStore,
@@ -36,7 +37,7 @@ afterEach(() => {
 const MiB = 1024 * 1024;
 const LIMITS: DiscordAttachmentLimits = { runMaxBytes: 64 * MiB, runMaxCount: 20, uploadMaxBytes: 50 * MiB };
 
-type Uploaded = { fileName: string; mimeType: string; size: number; userId: string };
+type Uploaded = { fileName: string; mimeType: string; size: number; userId: string; scope?: string };
 
 function fakeUploads(refuse: ReadonlyMap<string, string> = new Map()): DiscordUploads & { uploaded: Uploaded[] } {
   const uploaded: Uploaded[] = [];
@@ -45,7 +46,7 @@ function fakeUploads(refuse: ReadonlyMap<string, string> = new Map()): DiscordUp
     async uploadFile(input) {
       const code = refuse.get(input.fileName);
       if (code) return { code, ok: false };
-      uploaded.push({ fileName: input.fileName, mimeType: input.mimeType, size: input.data.length, userId: input.userId });
+      uploaded.push({ fileName: input.fileName, mimeType: input.mimeType, scope: input.scope, size: input.data.length, userId: input.userId });
       const attachmentId = `att_${uploaded.length}`;
       const block: ContentBlock = input.mimeType.startsWith("image/")
         ? { alt: input.fileName, attachmentId, type: "image" }
@@ -74,11 +75,12 @@ function fileNames(blocks: readonly ContentBlock[]): string[] {
   return blocks.flatMap((block) => (block.type === "file" ? [block.fileName] : []));
 }
 
-function hookFor(fake: FakeDiscord, uploads: DiscordUploads, limits: DiscordAttachmentLimits = LIMITS, download?: DiscordTransport["download"]) {
+function hookFor(fake: FakeDiscord, uploads: DiscordUploads, limits: DiscordAttachmentLimits = LIMITS, download?: DiscordTransport["download"],
+  workspaceOffered = false) {
   const rest = createDiscordRest({ token: () => fake.token, transport: fake.transport });
   return createDiscordAttachments({
     download: download ?? fake.transport.download, limits: () => limits, now: () => Date.parse("2026-11-12T09:30:00.000Z"),
-    rest: () => rest, uploads
+    rest: () => rest, uploads, workspaceOffered: async () => workspaceOffered
   });
 }
 
@@ -214,6 +216,46 @@ describe("Discord attachments in", () => {
     expect(logs.map((entry) => entry.fields.code)).toEqual(["discord_attachment_download_failed"]);
   });
 
+  it("takes any file in the Workspace scope while the installation offers the Workspace, within the same size bound", async () => {
+    const fake = createFakeDiscord();
+    const alice = fake.addUser({ username: "alice" });
+    const asked = decoded(fake, fake.postMessage({
+      attachments: [
+        png("chart"), pdf("brief"),
+        { contentType: "application/zip", data: Buffer.alloc(6), filename: "logs.zip" },
+        { contentType: "application/x-synthetic; charset=binary", data: Buffer.from("1\n2\n"), filename: "numbers.dat" },
+        { contentType: "application/zip", data: Buffer.alloc(13), filename: "big.zip" }
+      ],
+      authorId: alice, channelId: fake.channels.text, content: "run these"
+    }));
+    const uploads = fakeUploads();
+    // Twelve bytes allowed: "pdf:brief" fits, the 13-byte archive does not.
+    const plan = await hookFor(fake, uploads, { ...LIMITS, uploadMaxBytes: 12 }, undefined, true)({
+      history: [], question: [asked], reference: null, userId: "svc_1"
+    });
+
+    expect(imageNames(plan.blocks)).toEqual(["chart.png"]);
+    expect(fileNames(plan.blocks)).toEqual(["brief.pdf", "logs.zip", "numbers.dat"]);
+    expect(plan.notes).toEqual(["Attachments not added (too large): big.zip"]);
+    // Known formats keep their canonical type; others keep what Discord declared, as the browser's Workspace upload does.
+    expect(uploads.uploaded.map((entry) => `${entry.scope}:${entry.fileName}:${entry.mimeType}`).sort()).toEqual([
+      "workspace:brief.pdf:application/pdf", "workspace:chart.png:image/png", "workspace:logs.zip:application/zip",
+      "workspace:numbers.dat:application/x-synthetic"
+    ]);
+  });
+
+  it("reads whether the Workspace is offered only for a turn that carries files", async () => {
+    const fake = createFakeDiscord();
+    const alice = fake.addUser({ username: "alice" });
+    const offered = vi.fn(async () => true);
+    const rest = createDiscordRest({ token: () => fake.token, transport: fake.transport });
+    const hook = createDiscordAttachments({ download: fake.transport.download, limits: () => LIMITS, rest: () => rest, uploads: fakeUploads(),
+      workspaceOffered: offered });
+    const plain = decoded(fake, fake.postMessage({ authorId: alice, channelId: fake.channels.text, content: "no files" }));
+    expect(await hook({ history: [], question: [plain], reference: null, userId: "svc_1" })).toEqual({ blocks: [], notes: [] });
+    expect(offered).not.toHaveBeenCalled();
+  });
+
   it("registers its log codes", () => {
     const registry = failureCodes as string[];
     for (const code of DISCORD_FILE_LOG_CODES) {
@@ -301,13 +343,17 @@ function controlFor(fake: FakeDiscord): DiscordEffectiveControl {
   };
 }
 
-function harness(options: Readonly<{ generated?: Partial<ThreadArtifactSummary>; sizes?: ReadonlyMap<string, number> }> = {}) {
+function harness(options: Readonly<{
+  generated?: Partial<ThreadArtifactSummary>; sizes?: ReadonlyMap<string, number>; workspaceOffered?: boolean;
+}> = {}) {
   const fake = createFakeDiscord();
   const clock = { latest: Date.parse("2026-11-12T09:00:00.000Z") };
   const now = () => clock.latest + 500;
   const rest: DiscordRest = createDiscordRest({ token: () => fake.token, transport: fake.transport });
   const replies = createMemoryDiscordReplyStore();
-  const runs = createFakeDiscordRunGateway({ autoFinish: () => ({ text: "Here it is." }) });
+  const runs = createFakeDiscordRunGateway({
+    autoFinish: () => ({ text: "Here it is." }), ...(options.workspaceOffered === undefined ? {} : { workspaceOffered: options.workspaceOffered })
+  });
   const gateway = {
     ...runs.gateway,
     async answer(input: Readonly<{ userId: string; runId: string }>) {
@@ -330,7 +376,9 @@ function harness(options: Readonly<{ generated?: Partial<ThreadArtifactSummary>;
   const uploads = fakeUploads();
   const bridge = createDiscordBridge({
     answerFiles: createDiscordAnswerFiles({ read: reader(options.sizes) }),
-    attachments: createDiscordAttachments({ download: fake.transport.download, limits: () => LIMITS, now, rest: () => rest, uploads }),
+    attachments: createDiscordAttachments({
+      download: fake.transport.download, limits: () => LIMITS, now, rest: () => rest, uploads, workspaceOffered: () => runs.gateway.workspaceOffered()
+    }),
     control: async () => control, conversations: createMemoryDiscordConversationStore(), facts: createMemoryDiscordRunFacts(replies), gateway,
     lanes: intake.lanes, limits: createMemoryDiscordLimitStore(replies), now, replies, rest: () => rest, setupReady: async () => true,
     shares: { create: async () => "https://aiqsa.example.com/s/synthetic" }, uploads,
@@ -404,6 +452,45 @@ describe("Discord files through the bridge", () => {
     const edit = h.fake.calls({ route: "edit_message" }).at(-1)!;
     expect(edit.files).toHaveLength(10);
     expect(h.fake.violations()).toEqual([]);
+  });
+
+  it("asks for the Workspace and gives it a file only the Workspace reads while the installation offers it", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    const data = { contentType: "application/octet-stream", data: Buffer.from("3\n4\n"), filename: "numbers.dat" };
+    await h.say({ ...mentionOf(h.fake, "add these up"), attachments: [data], authorId: alice, channelId: h.fake.channels.text });
+    await h.settle();
+
+    expect(h.runs.runs[0]!.body).toMatchObject({ workspace: { enabled: true } });
+    expect(fileNames(h.blocks(0))).toEqual(["numbers.dat"]);
+    expect(h.uploads.uploaded.map((entry) => entry.scope)).toEqual(["workspace"]);
+  });
+
+  it("answers a turn the runner cannot take with the Workspace's reason and ❌, never \"Something went wrong\"", async () => {
+    const h = harness();
+    const alice = h.user("alice");
+    h.runs.refuseNext("workspace_runtime_unavailable", 503);
+    const data = { contentType: "application/octet-stream", data: Buffer.from("3\n4\n"), filename: "numbers.dat" };
+    const question = await h.say({ ...mentionOf(h.fake, "add these up"), attachments: [data], authorId: alice, channelId: h.fake.channels.text });
+    await h.settle();
+
+    const notices = h.fake.messages(h.fake.channels.text).filter((message) => message.author.id === h.fake.bot.id).map((message) => message.content);
+    expect(notices).toEqual([`❌ ${DISCORD_WORKSPACE_COPY.unavailable}`]);
+    expect(h.fake.reactions(question.id, "❌")).toEqual([h.fake.bot.id]);
+    expect(h.runs.runs).toHaveLength(0);
+  });
+
+  it("runs without the Workspace on an installation that does not offer it, naming why, and names such a file", async () => {
+    const h = harness({ workspaceOffered: false });
+    const alice = h.user("alice");
+    const data = { contentType: "application/octet-stream", data: Buffer.from("3\n4\n"), filename: "numbers.dat" };
+    await h.say({ ...mentionOf(h.fake, "add these up"), attachments: [data], authorId: alice, channelId: h.fake.channels.text });
+    await h.settle();
+
+    expect(h.runs.runs[0]!.body).toMatchObject({ workspace: { enabled: false, reason: "installation_disabled" } });
+    expect(fileNames(h.blocks(0))).toEqual([]);
+    expect((h.blocks(0)[0] as { text: string }).text).toContain("Attachments not added (file type not supported): numbers.dat");
+    expect(h.uploads.uploaded).toEqual([]);
   });
 
   it("sends the answer without its files when Discord refuses them, saying they are in AIQSA", async () => {

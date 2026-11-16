@@ -1130,10 +1130,9 @@ export async function prepareRun(
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
   }
-  // A connector's turn under its rules (only Discord's narrow them): no Workspace, so no browser or handoff either.
+  // A connector's turn under its rules (only Discord's narrow them); its Workspace is a web chat's (operator decisions 2026-11-16).
   const connectorTurn = input.origin === "wake_up" ? undefined : input.origin;
   const connector = connectorTurnRules(connectorTurn);
-  if (connector && !connector.workspace && workspaceEnabled) return failure(DISCORD_RUN_REFUSALS.workspace, 409);
   // A chat runs with its bound Assistant; the request may only bind an
   // unbound chat or repeat the binding.
   const assistantSource = chatAssistantSource(body, chat);

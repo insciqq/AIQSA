@@ -9,6 +9,8 @@ import { createDefaultSendMessageDeps } from "../runs/defaultSendMessageDeps";
 import { createGetModelRunHandler, createSendMessageHandler, stopModelRun } from "../runs/handlers";
 import { createPrismaRunFollowupOperations } from "../runs/prismaRepositoryFollowups";
 import { createRunFollowupHandler } from "../runs/runFollowupHandler";
+import { workspaceInstallationOffered } from "../workspace/availability";
+import { workspaceAvailabilityService } from "../workspace/defaultServices";
 import type { ConnectorRunGateway } from "./runGateway";
 import type { ConnectorTurn } from "./turn";
 
@@ -102,6 +104,10 @@ export function createDefaultConnectorRunGateway(deps: Readonly<{
     async activeRun({ chatId, userId }) {
       const run = await sendDeps.repository.findRecentActiveRunForChat({ chatId, since: new Date(Date.now() - NATIVE_RUN_STALE_MS), userId });
       return run ? { runId: run.id } : null;
+    },
+
+    async workspaceOffered() {
+      return workspaceInstallationOffered(await workspaceAvailabilityService.snapshot());
     }
   } satisfies ConnectorRunGateway);
 }
