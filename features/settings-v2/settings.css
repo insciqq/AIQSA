@@ -1378,6 +1378,8 @@
 
 .v2-settings-personal-mcp-form label {
   display: grid;
+  /* A field beside a taller one (the URL has help under it) keeps its own height. */
+  align-content: start;
   gap: 0.25rem;
   color: var(--v2-color-text2);
   font-size: 0.75rem;
