@@ -338,6 +338,9 @@ test("sign-in and an expired session return to the chat address with its draft",
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this question through sign-in");
     await page.screenshot({ path: testInfo.outputPath("routing-session-return-light-390.png") });
 
+    // A visit without a session. The open chat leaves first: its own polls would otherwise meet the missing
+    // session and send the tab to sign-in themselves, racing this navigation.
+    await page.goto("about:blank");
     await context.clearCookies();
     await page.goto(`/c/${chatId}`);
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}$`, "u"));
@@ -346,6 +349,7 @@ test("sign-in and an expired session return to the chat address with its draft",
     await expect(page).toHaveTitle(`${title} · AIQSA`);
 
     // A stale cookie reaches the page itself, which returns to its own address.
+    await page.goto("about:blank");
     await context.clearCookies();
     await context.addCookies([{ name: SESSION_COOKIE_NAME, value: "stale-routing-session", url: baseURL! }]);
     await page.goto(`/c/${chatId}`);
