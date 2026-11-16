@@ -28,7 +28,9 @@ import { createPeopleFixture, type E2ESession } from "./support/people";
  * With AIQSA_DISCORD_WORKSPACE_PARALLEL=<2..16> a third test asks that many
  * threads at once, each sleeping in its own VM, and records how each ended:
  * the capacity probe behind the decision on a Discord Workspace cap. Run it
- * while sampling the runner (see the report of `discord-workspace`).
+ * while sampling the runner's memory. A provider that refuses some of many
+ * simultaneous requests is recorded in the annotation, not failed: only the
+ * Workspace's own refusals are checked for their visible reason.
  *
  * Runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE, CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL on a disposable test-mode stand whose app uses a live
@@ -281,8 +283,10 @@ test("many threads at once each get a Workspace or a visible Workspace reason (c
   for (const { question } of questions) expect(await discordReply(prisma, question.id), "every question has its journal row").not.toBeNull();
   const workspaceTexts: readonly string[] = Object.values(DISCORD_WORKSPACE_COPY);
   for (const entry of settled.filter((candidate) => candidate.state !== "delivered")) {
+    expect(entry.code ?? "", "a question that got no answer has its reason code").not.toBe("");
+    // A provider that refuses some of many simultaneous requests is its own limit, recorded above, not the Workspace's.
+    if (!/^workspace_/u.test(entry.code ?? "")) continue;
     // A full or busy runner is refused visibly, with the Workspace's own reason, never "Something went wrong".
-    expect(entry.code ?? "", "a question that got no answer names a Workspace code").toMatch(/^workspace_/u);
     expect(entry.notice ?? "", "its notice is not the generic one").not.toContain(DISCORD_COPY.somethingWrong);
     expect(workspaceTexts.some((text) => (entry.notice ?? "").includes(text)), "its notice says what the Workspace could not do").toBe(true);
   }
