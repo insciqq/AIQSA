@@ -16,6 +16,7 @@ import type {
   SubagentMessaging,
   SubagentRunner,
   SubagentTurnInput,
+  SubagentTypeEntry,
   SubagentTypeResolver
 } from "../../subagents/ports";
 import { decodeFrozenSubagentDefault, type FrozenSubagentDefault } from "../../subagents/typeCatalog";
@@ -69,7 +70,7 @@ export type SubagentEngineDeps = Readonly<{
 
 export type RunSubagents = Readonly<{
   /** The user's custom sub-agents for the run's context (`renderSubagentTypeCatalog`), never the system prompt. */
-  catalog: SubagentPromptFacts["types"];
+  catalog: readonly SubagentTypeEntry[];
   /** The user's default sub-agent as admission froze it, named in that same context item. */
   defaultType: FrozenSubagentDefault | null;
   prompt: SubagentPromptFacts;
@@ -324,7 +325,7 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     userMessage: input.userMessage,
     userId: input.scope.userId
   };
-  let types: SubagentPromptFacts["types"] = [];
+  let types: readonly SubagentTypeEntry[] = [];
   if (deps.types) {
     try {
       types = await deps.types.catalog({ userId: input.scope.userId });

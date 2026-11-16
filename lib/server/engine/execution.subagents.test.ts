@@ -523,6 +523,20 @@ describe("native run with the user's custom sub-agents and default", () => {
     expect(historyText(fewer)).not.toContain("gemini-helper");
   });
 
+  it("marks a custom sub-agent and a default without the Workspace in run context only, the system prompt and tools unchanged", async () => {
+    const SEARCHER: SubagentTypeSnapshot = { ...GEMINI, definitionId: "definition-searcher", name: "searcher", revisionId: "revision-searcher",
+      toolGroups: ["web_search"] };
+    const none = (await run({})).requests[0]!;
+    const marked = (await run({ defaultType: { ...frozen(SEARCHER), workspace: false },
+      types: new FakeSubagentTypeResolver({ user: [GEMINI, SEARCHER] }) })).requests[0]!;
+    expect(marked.prompt.system).toBe(none.prompt.system);
+    expect(marked.tools).toEqual(none.tools);
+    expect(historyText(marked)).toContain("<subagent name=\\\"searcher\\\" workspace=\\\"none\\\">");
+    expect(historyText(marked)).toContain("default sub-agent is \\\"searcher\\\", marked workspace=\\\"none\\\"");
+    expect(historyText(marked)).toContain("<subagent name=\\\"gemini-helper\\\">");
+    expect(historyText(none)).not.toContain("workspace=\\\"none\\\"");
+  });
+
   it("rebuilds the item per run and never records it", async () => {
     const { memory } = await run({ defaultType: frozen(GEMINI) });
     expect(JSON.stringify(memory.appended)).not.toContain("custom_subagents");

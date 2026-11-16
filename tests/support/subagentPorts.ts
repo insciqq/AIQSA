@@ -13,6 +13,7 @@ import {
   type SubagentErrorCode
 } from "@/lib/contracts/subagents";
 import { workspaceAgentEnvironment, type WorkspaceAgent } from "@/lib/server/subagents/guestProtocol";
+import { subagentGroupsHaveWorkspace } from "@/lib/server/subagents/typeCatalog";
 import {
   WORKSPACE_OPERATIONS_BLOCKED_BY_SUBAGENTS,
   type BrowserAgentIdentity,
@@ -310,7 +311,8 @@ export class FakeSubagentTypeResolver implements SubagentTypeResolver {
   constructor(private readonly types: Readonly<Record<string, readonly SubagentTypeSnapshot[]>> = {}) {}
 
   async catalog(input: Readonly<{ userId: string }>): Promise<readonly SubagentTypeEntry[]> {
-    return (this.types[input.userId] ?? []).map((type) => ({ description: type.description, name: type.name }))
+    return (this.types[input.userId] ?? []).map((type) => ({ description: type.description, name: type.name,
+      ...(subagentGroupsHaveWorkspace(type.toolGroups) ? {} : { workspace: false as const }) }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
 

@@ -6,6 +6,7 @@ import {
   type SubagentDefaultUndoRequest,
   type SubagentDefinitionDraft
 } from "../../contracts/subagentDefinitions";
+import { subagentGroupsHaveWorkspace } from "./typeCatalog";
 
 /**
  * The custom sub-agent rows (`SubagentDefinition`, append-only
@@ -63,8 +64,11 @@ export type SubagentStoreWrite =
 
 export type SubagentStoreDelete = Readonly<{ kind: "deleted"; record: SubagentDefinitionRecord }> | SubagentStoreRefusal;
 
-/** The owner's default custom sub-agent, by id and current name. */
-export type SubagentDefaultRef = Readonly<{ definitionId: string; name: string }>;
+/**
+ * The owner's default custom sub-agent, by id and current name, and whether its current tool groups leave the Workspace
+ * out (only then present), which a run's admission freezes with it (`freezeSubagentDefault`).
+ */
+export type SubagentDefaultRef = Readonly<{ definitionId: string; name: string; workspace?: false }>;
 
 export type SubagentDefaultWrite =
   /** `previous`: the default before the move; null is the built-in sub-agent. */
@@ -256,10 +260,13 @@ export async function countSubagentDefinitionThreads(db: Pick<Prisma.Transaction
 /** The owner's default custom sub-agent; null is the built-in one. */
 export async function readSubagentDefault(db: DefaultReader, userId: string): Promise<SubagentDefaultRef | null> {
   const row = await db.userSettings.findUnique({
-    select: { defaultSubagentDefinition: { select: { id: true, name: true } } }, where: { userId }
+    select: { defaultSubagentDefinition: { select: { currentRevision: { select: { toolGroups: true } }, id: true, name: true } } }, where: { userId }
   });
   const definition = row?.defaultSubagentDefinition;
-  return definition ? { definitionId: definition.id, name: definition.name } : null;
+  if (!definition) return null;
+  // A definition with no current revision yet reads as having the Workspace: the mark only ever narrows how it is briefed.
+  const workspace = !definition.currentRevision || subagentGroupsHaveWorkspace(storedToolGroups(definition.currentRevision.toolGroups));
+  return { definitionId: definition.id, name: definition.name, ...(workspace ? {} : { workspace: false as const }) };
 }
 
 async function writeSubagentDefault(tx: Writer, userId: string, target: string | null): Promise<void> {

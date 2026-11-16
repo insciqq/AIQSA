@@ -1200,6 +1200,10 @@ describe("run preparation", () => {
       expect(split.turn).toEqual(request.prompt.turnGuidance);
       expect(split.turn.some((part) => part.includes(`This turn's output directory: /workspace/output/`))).toBe(true);
       expect(split.chat).not.toMatch(/This turn's output directory:|\/workspace\/output\/|Bounded file references|earlier completed exports/u);
+      // So are the Workspace's own stable parts, which stay in the system text: a sub-agent turn without the Workspace leaves them out.
+      expect(request.prompt.workspaceGuidance).toEqual([expect.stringMatching(/^A Workspace is available in this chat/u), WORKSPACE_CHECKPOINT_GUIDANCE]);
+      expect(split.chat).toContain(request.prompt.workspaceGuidance!.join("\n\n"));
+      expect(splitTurnGuidance(split.chat, request.prompt.workspaceGuidance).chat).not.toMatch(/\/workspace|checkpoint_outputs|Workspace is available/u);
       chatGuidance.push(split.chat);
     }
     expect(chatGuidance[1]).toBe(chatGuidance[0]);
@@ -1440,6 +1444,14 @@ describe("run preparation", () => {
       .replace("workspace_exec_old", "workspace_exec_current")
       .replace(before.workspaceAdmissionPlan!.normalized.outputDirectory, plan.normalized.outputDirectory)
       .replace("Internet inside the workspace: enabled (public destinations only).", "Internet inside the workspace: disabled."));
+    // What admission recorded as appended changed with it: the turn's parts and the Workspace's own are found where they now stand.
+    const retriedPrompt = retried.normalizedRequest.prompt;
+    const split = splitTurnGuidance(admittedRunGuidance(retriedPrompt), retriedPrompt.turnGuidance);
+    expect(split.turn).toEqual(retriedPrompt.turnGuidance);
+    expect(split.turn.join("\n")).toContain(plan.normalized.outputDirectory);
+    expect(split.chat).not.toContain(plan.normalized.outputDirectory);
+    expect(retriedPrompt.workspaceGuidance?.join("\n")).toContain("workspace_exec_current");
+    expect(split.chat).toContain(retriedPrompt.workspaceGuidance!.join("\n\n"));
     expect(retried.providerRequest.prompt).toEqual(retried.normalizedRequest.prompt);
     expect(retried.providerRequest.tools?.map(tool => tool.name)).toContain("workspace_exec_current");
     expect(retried.providerRequest.tools?.map(tool => tool.name)).not.toContain("workspace_exec_old");
