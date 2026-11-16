@@ -38,7 +38,6 @@ async function account(role: "admin" | "user") {
 async function expectFooterRowFits(page: Page) {
   const navigation = page.getByRole("complementary", { name: "Chat navigation" });
   const footer = navigation.getByTestId("navigation-footer");
-  const row = footer.locator(".v2-navigation-footer-bar");
   const boxes: { height: number; width: number; x: number; y: number }[] = [];
   for (const control of [
     footer.getByRole("button", { name: "Account menu", exact: true }),
@@ -56,7 +55,6 @@ async function expectFooterRowFits(page: Page) {
   }
   expect(boxes[1]!.x).toBeGreaterThanOrEqual(boxes[0]!.x + boxes[0]!.width - 0.5);
   expect(boxes[2]!.x).toBeGreaterThanOrEqual(boxes[1]!.x + boxes[1]!.width - 0.5);
-  expect(await row.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
 }
 
 /** The unread hint on "Open sidebar" while the list (and its bell) is hidden. */

@@ -434,6 +434,26 @@ describe("Library sub-views", () => {
     expect(screen.getByRole("tab", { name: "Skills" })).toHaveFocus();
   });
 
+  it("returns focus to Back to Settings when the section's row is hidden with the list", () => {
+    const tabs = [
+      { content: <p>Assistant owner</p>, id: "assistants" as const, label: "Assistants" },
+      { content: <p>Skill detail</p>, id: "skills" as const, label: "Skills" }
+    ];
+    const { rerender } = render(
+      <LibraryV2
+        initialTab="skills"
+        onBack={vi.fn()}
+        subview={{ backLabel: "Back to Skills", key: "detail:skill-1", label: "Review checklist", onBack: vi.fn() }}
+        tabs={tabs}
+      />
+    );
+    // Where the list and a section take turns, the stylesheet hides the row and a hidden element takes no focus.
+    vi.spyOn(screen.getByRole("tab", { name: "Skills" }), "focus").mockImplementation(() => undefined);
+
+    rerender(<LibraryV2 initialTab="skills" onBack={vi.fn()} subview={null} tabs={tabs} />);
+    expect(screen.getByRole("button", { name: "Back to Settings" })).toHaveFocus();
+  });
+
   it("leaves the sub-view from the selected tab and the crumb root without the guard", () => {
     const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => proceed());
     const onBack = vi.fn();

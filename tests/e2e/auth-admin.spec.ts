@@ -42,8 +42,10 @@ const adminSections = [
   { id: "assistants", label: "Assistants" },
   { id: "workspace", label: "Workspace" },
   { id: "connect", label: "AIQSA Connect" },
+  { id: "proxies", label: "Proxies" },
   { id: "email", label: "Email" },
   { id: "telegram", label: "Telegram" },
+  { id: "discord", label: "Discord" },
   { id: "usage", label: "Usage" }
 ] as const;
 

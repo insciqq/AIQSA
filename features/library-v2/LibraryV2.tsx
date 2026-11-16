@@ -163,14 +163,20 @@ export function LibraryV2({
 
   // Entering a sub-view (or moving between two) focuses its Back control;
   // leaving it returns focus to the section tab so keyboard users stay in
-  // Settings rather than on the document body. Editors may own both moves.
+  // Settings rather than on the document body. Where the list and a section
+  // take turns the tab is hidden and takes no focus: the section's Back to
+  // Settings control takes it instead. Editors may own both moves.
   useEffect(() => {
     const previous = previousSubview.current;
     previousSubview.current = subviewKey ? { key: subviewKey, resourceFocus } : null;
     if (subviewKey && subviewKey !== previous?.key && !resourceFocus) {
       backRef.current?.focus({ preventScroll: true });
     } else if (!subviewKey && previous && !previous.resourceFocus && selectedId) {
-      tabRefs.current[selectedId]?.focus({ preventScroll: true });
+      for (const candidate of [tabRefs.current[selectedId], listBackRef.current]) {
+        if (!candidate) continue;
+        candidate.focus({ preventScroll: true });
+        if (document.activeElement === candidate) break;
+      }
     }
   }, [resourceFocus, selectedId, subviewKey]);
 

@@ -897,6 +897,21 @@
     box-shadow: var(--v2-shadow-overlay);
   }
 
+  /* Closed by the stylesheet alone, not only by the collapsed state the
+     script sets: the server-rendered page has no such state yet, and the
+     drawer would show over the content until the page hydrates. */
+  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-navigation {
+    pointer-events: none;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateX(-100%);
+  }
+
+  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-sidebar-floats {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation-scrim {
     position: fixed;
     z-index: 29;
