@@ -15,11 +15,10 @@
  * self-service tools, Skill saves and sub-agent management its chat takes on
  * the web, shown as messages with Undo, Confirm and Cancel (operator decision
  * 2026-11-16, `lib/server/telegram/changes/`); a Discord turn takes none
- * (`selfServiceToolsFor`). Its service account stands for every thread, so its
- * runs bind no saved secrets and save no browser sign-in back to the account:
- * what one thread signs in to stays in that thread's Workspace
- * (`lib/server/workspace/secrets/store.ts`). What differs by connector is in
- * `connectorTurnRules`.
+ * (`selfServiceToolsFor`). Saved secrets are the service account's, so the
+ * browser sign-ins a thread's Workspace saves are restored in every thread's
+ * (accepted, operator decision 2026-11-16, `agent_docs/SECURITY.md`). What
+ * differs by connector is in `connectorTurnRules`.
  */
 
 import type { WorkspaceNotRequestedReason } from "../../contracts/workspace";

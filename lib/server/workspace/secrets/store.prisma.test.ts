@@ -395,27 +395,6 @@ describe("persisted personal Workspace secrets", () => {
     expect(await prisma.workspaceSecret.count({ where: { userId } })).toBe(32);
   });
 
-  it("keeps a service account's chats apart: its runs save no browser sign-in back and bind none of its saved secrets", async () => {
-    const userId = await owner();
-    await prisma.user.update({ where: { id: userId }, data: { kind: "service" } });
-    // One thread signs in: the run has no place in the account's save order, so nothing reaches the account.
-    const first = await browserRun(userId);
-    expect((await prisma.workspaceRunBinding.findUniqueOrThrow({ where: { modelRunId: first.runId } })).browserSessionSequence).toBeNull();
-    await saveBrowser(first);
-    expect(await prisma.workspaceSecret.count({ where: { userId } })).toBe(0);
-    // Even a secret the account holds reaches no other thread's Workspace.
-    await store().mutate(userId, { action: "create", name: "Account wide", description: "", value: { kind: "text", text: "synthetic token" } });
-    const second = await admitPreparingRunWithClient(prisma, await plan(userId));
-    expect(await prisma.workspaceRunBinding.findUnique({ where: { modelRunId: second.runId } })).not.toBeNull();
-    expect(await prisma.workspaceRunSecret.count({ where: { modelRunId: second.runId } })).toBe(0);
-    // A person's run next to it keeps both.
-    const personId = await owner();
-    await store().mutate(personId, { action: "create", name: "Personal", description: "", value: { kind: "text", text: "synthetic token" } });
-    const personal = await browserRun(personId);
-    expect(await prisma.workspaceRunSecret.count({ where: { modelRunId: personal.runId } })).toBe(1);
-    expect(await saveBrowser(personal)).toMatchObject({ saved: 1 });
-  });
-
   it("keeps secrets out of Workspace Off admissions and another owner's chat", async () => {
     const userId = await owner();
     await store().mutate(userId, { action: "create", name: "Personal", description: "", value: { kind: "text", text: "personal synthetic token" } });
