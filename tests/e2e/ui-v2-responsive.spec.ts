@@ -414,7 +414,7 @@ test.describe("v2 jump-to-latest geometry", () => {
   });
 });
 
-test("v2 sidebar leaves Ctrl/Cmd+K unassigned", async ({ page }) => {
+test("v2 sidebar's Ctrl/Cmd+K opens no dialog and jumps to the chat filter, which Escape leaves before the drawer", async ({ page }) => {
   await page.setViewportSize({ height: 844, width: 390 });
   await page.goto("/ui-v2-fixture?fixture=navigation");
   const opener = page.getByRole("button", { name: "Open sidebar" });
@@ -422,8 +422,15 @@ test("v2 sidebar leaves Ctrl/Cmd+K unassigned", async ({ page }) => {
   const drawer = page.getByRole("complementary", { name: "Chat navigation" });
   await expect(drawer).toBeVisible();
 
+  // The shortcut moves focus to the list's filter a moment later (`NavigationV2.tsx`). Waiting for it keeps the
+  // Escape below from racing that timer: pressed before it, Escape closed the drawer; after it, only left the field.
   await page.keyboard.press("Control+k");
+  const filter = drawer.getByRole("searchbox", { name: "Filter chats" });
+  await expect(filter).toBeFocused();
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // Escape leaves the empty field first, and the next one closes the drawer.
+  await page.keyboard.press("Escape");
+  await expect(filter).not.toBeFocused();
   await expect(drawer).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(drawer).toBeHidden();
