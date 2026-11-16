@@ -7,6 +7,7 @@ import {
   type WorkspaceBrowserAutosaveReport, type WorkspaceSecretMutation, type WorkspaceSecretReveal, type WorkspaceSecretSummary,
   type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
+import { isServiceAccount } from "../../auth/serviceAccounts";
 import { decryptSecretEnvelope, encryptSecretEnvelope, getSecretEncryptionKey } from "../../secrets/envelope";
 import { requestMemorySavedSecretScrub } from "../../memory/savedSecretScrubRequest";
 import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WorkspaceSecretError } from "./validation";
@@ -69,10 +70,22 @@ export async function advanceWorkspaceBrowserSequence(tx: Prisma.TransactionClie
   return owner.workspaceBrowserSequence;
 }
 
-export async function acceptWorkspaceBrowserSequence(tx: Prisma.TransactionClient, userId: string, chatId: string): Promise<bigint> {
+/**
+ * A service account stands for many people: every thread of a Discord server is its chat, and a Workspace in each
+ * (operator decision 2026-11-16). Saved secrets are the account's, so what one thread signs in to would reach every
+ * other thread's Workspace. Its runs therefore save no browser sign-in back to the account and bind none of its saved
+ * secrets: a sign-in stays in the Workspace of the chat that made it (`agent_docs/SECURITY.md`).
+ */
+async function standsForManyPeople(tx: Prisma.TransactionClient, userId: string): Promise<boolean> {
+  return isServiceAccount(await tx.user.findUnique({ select: { kind: true }, where: { id: userId } }));
+}
+
+/** The run's place in its owner's order of browser sign-in saves; null for a run that never saves them back. */
+export async function acceptWorkspaceBrowserSequence(tx: Prisma.TransactionClient, userId: string, chatId: string): Promise<bigint | null> {
   const chat = await tx.chat.findUniqueOrThrow({ where: { id: chatId }, select: { userId: true } });
   if (chat.userId !== userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
   await lockWorkspaceSecretOwner(tx, userId);
+  if (await standsForManyPeople(tx, userId)) return null;
   return advanceWorkspaceBrowserSequence(tx, userId);
 }
 
@@ -105,6 +118,7 @@ export async function bindWorkspaceSecrets(tx: Prisma.TransactionClient, input: 
   if (!chat) throw new WorkspaceSecretError("workspace_secret_unavailable");
   if (chat.userId !== input.userId) throw new WorkspaceSecretError("workspace_secret_unavailable");
   await lockWorkspaceSecretOwner(tx, input.userId);
+  if (await standsForManyPeople(tx, input.userId)) return;
   const secrets = await tx.workspaceSecret.findMany({
     select: { id: true, valueId: true, browserFileName: true, value: { select: { byteSize: true } } }, where: { userId: input.userId }, orderBy: { id: "asc" }
   });
