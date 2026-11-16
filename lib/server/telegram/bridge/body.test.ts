@@ -4,7 +4,7 @@ import {
 } from "./body";
 import { fakeCatalog, fakeCatalogModel, SEARCH_OPTION } from "@/tests/support/telegramChatBridge";
 
-const SETTINGS: TelegramSendSettings = { searchEnabled: true, workspaceEnabled: false };
+const SETTINGS: TelegramSendSettings = { searchEnabled: true };
 const TEXT = [{ text: "Compare X and Y as a table", type: "text" as const }];
 
 describe("Telegram send body", () => {
@@ -12,7 +12,7 @@ describe("Telegram send body", () => {
     const catalog = fakeCatalog({ defaults: { mcpMode: "load_all", skillsMode: "off" } });
     const body = buildTelegramSendBody({
       admissionId: "tg-1-77", catalog, content: TEXT, model: catalog.models[0]!, settings: SETTINGS,
-      target: { assistantId: null, kind: "new" }
+      target: { assistantId: null, kind: "new" }, workspaceOffered: true
     });
     expect(body).toEqual({
       admissionId: "tg-1-77",
@@ -26,7 +26,7 @@ describe("Telegram send body", () => {
       provider: "connection-fake",
       searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] },
       skills: { mode: "off" },
-      workspace: { enabled: false }
+      workspace: { enabled: true }
     });
   });
 
@@ -35,7 +35,7 @@ describe("Telegram send body", () => {
     const body = buildTelegramSendBody({
       admissionId: "tg-1-78", catalog, content: [], model: catalog.models[0]!, settings: SETTINGS,
       systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" },
-      target: { activeLeafMessageId: "answer-9", assistantBound: false, kind: "existing" }
+      target: { activeLeafMessageId: "answer-9", assistantBound: false, kind: "existing" }, workspaceOffered: true
     });
     expect(body).toMatchObject({ expectedActiveLeafId: "answer-9", systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } });
     expect(body).not.toHaveProperty("personalDraft");
@@ -54,7 +54,7 @@ describe("Telegram send body", () => {
     expect(telegramRunControls(fakeCatalog({ models: [odd] }), odd)).toBeNull();
     const body = buildTelegramSendBody({
       admissionId: "tg-1-79", catalog: fakeCatalog({ models: [odd] }), content: TEXT, model: odd, settings: SETTINGS,
-      target: { assistantId: null, kind: "new" }
+      target: { assistantId: null, kind: "new" }, workspaceOffered: true
     });
     expect(body).not.toHaveProperty("params");
     expect(body).toMatchObject({ modelId: odd.modelId, searchPlan: { optionIds: [SEARCH_OPTION.strategyId] } });
@@ -70,32 +70,41 @@ describe("Telegram send body", () => {
     expect(telegramSearchPlan(chosen, chosen.models[0]!, true)).toEqual({ mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] });
     expect(telegramSearchPlan(catalog, fakeCatalogModel({ searchStrategyIds: [] }), true)).toEqual({ mode: "all_selected", optionIds: [] });
     const off = buildTelegramSendBody({
-      admissionId: "tg-1-80", catalog, content: TEXT, model, settings: { ...SETTINGS, searchEnabled: false }, target: { assistantId: null, kind: "new" }
+      admissionId: "tg-1-80", catalog, content: TEXT, model, settings: { ...SETTINGS, searchEnabled: false }, target: { assistantId: null, kind: "new" },
+      workspaceOffered: true
     });
     expect(off.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
   });
 
-  it("asks a model without tool calling for no tools and no Workspace, and never sends an Agent turn", () => {
+  it("asks for the Workspace as the web composer does: always, except where it is not offered or the model calls no tools", () => {
     const plain = fakeCatalogModel({ capabilities: { ...fakeCatalogModel().capabilities, toolCalling: false } });
     expect(buildTelegramSendBody({
       admissionId: "a", catalog: fakeCatalog({ models: [plain] }), content: TEXT, model: plain,
-      settings: { searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
-    })).toMatchObject({ tools: "none", workspace: { enabled: false } });
+      settings: SETTINGS, target: { assistantId: null, kind: "new" }, workspaceOffered: true
+    })).toMatchObject({ tools: "none", workspace: { enabled: false, reason: "model_no_tools" } });
 
     const tooling = buildTelegramSendBody({
       admissionId: "c", catalog: fakeCatalog(), content: TEXT, model: fakeCatalogModel(),
-      settings: { searchEnabled: true, workspaceEnabled: true }, target: { assistantId: null, kind: "new" }
+      settings: SETTINGS, target: { assistantId: null, kind: "new" }, workspaceOffered: true
     });
     expect(tooling).not.toHaveProperty("agentEnabled");
     expect(tooling).not.toHaveProperty("tools");
     expect(tooling.workspace).toEqual({ enabled: true });
+
+    // An installation that does not offer it names that first, as the composer does.
+    for (const model of [plain, fakeCatalogModel()]) {
+      expect(buildTelegramSendBody({
+        admissionId: "d", catalog: fakeCatalog({ models: [model] }), content: TEXT, model,
+        settings: SETTINGS, target: { assistantId: null, kind: "new" }, workspaceOffered: false
+      }).workspace).toEqual({ enabled: false, reason: "installation_disabled" });
+    }
   });
 
-  it("lets an Assistant govern its rows: only the binding, the Workspace switch and the turn travel", () => {
+  it("lets an Assistant govern its rows: only the binding, the Workspace and the turn travel", () => {
     const catalog = fakeCatalog();
     const first = buildTelegramSendBody({
-      admissionId: "tg-1-81", catalog, content: TEXT, model: null, settings: { ...SETTINGS, workspaceEnabled: true },
-      target: { assistantId: "assistant-1", kind: "new" }
+      admissionId: "tg-1-81", catalog, content: TEXT, model: null, settings: SETTINGS,
+      target: { assistantId: "assistant-1", kind: "new" }, workspaceOffered: true
     });
     expect(first).toEqual({
       admissionId: "tg-1-81", assistantId: "assistant-1", content: { blocks: TEXT }, expectedActiveLeafId: null,
@@ -103,9 +112,10 @@ describe("Telegram send body", () => {
     });
     const bound = buildTelegramSendBody({
       admissionId: "tg-1-82", catalog, content: TEXT, model: catalog.models[0]!, settings: SETTINGS,
-      target: { activeLeafMessageId: "answer-3", assistantBound: true, kind: "existing" }
+      target: { activeLeafMessageId: "answer-3", assistantBound: true, kind: "existing" }, workspaceOffered: false
     });
     expect(Object.keys(bound).sort()).toEqual(["admissionId", "content", "expectedActiveLeafId", "workspace"]);
+    expect(bound.workspace).toEqual({ enabled: false, reason: "installation_disabled" });
   });
 });
 
@@ -113,7 +123,7 @@ describe("Telegram send body time zone", () => {
   it("sends the user's browser zone in ordinary and Assistant chats, and omits it when none is known", () => {
     const catalog = fakeCatalog();
     const ordinary = { admissionId: "tg-1-90", catalog, content: TEXT, model: catalog.models[0]!, settings: SETTINGS,
-      target: { assistantId: null, kind: "new" } } as const;
+      target: { assistantId: null, kind: "new" }, workspaceOffered: true } as const;
     expect(buildTelegramSendBody({ ...ordinary, timeZone: "Europe/Moscow" })).toMatchObject({ timeZone: "Europe/Moscow" });
     expect(buildTelegramSendBody({ ...ordinary, timeZone: null })).not.toHaveProperty("timeZone");
     expect(buildTelegramSendBody(ordinary)).not.toHaveProperty("timeZone");

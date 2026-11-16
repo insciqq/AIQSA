@@ -39,14 +39,16 @@ describe("default chat bridge", () => {
     const registry = telegramHandlerRegistry();
     expect(registry.messageHandlers()).toHaveLength(2);
     expect(registry.stopHandlers()).toHaveLength(1);
-    for (const kind of ["select_chat", "select_assistant", "select_model", "model_page", "toggle_search", "toggle_workspace",
-      "open_settings", "stop_run", "approval_allow_once", "approval_allow_server", "approval_deny"] as const) {
+    for (const kind of ["select_chat", "select_assistant", "select_model", "model_page", "toggle_search",
+      "open_settings", "stop_run", "approval_allow_once", "approval_allow_server", "approval_deny", "change_undo", "change_confirm",
+      "change_cancel"] as const) {
       expect(registry.callbackHandler(kind), kind).toBeTruthy();
     }
-    // A removed Agent toggle's old buttons find no handler and answer as expired.
+    // Removed Agent and Workspace toggles' old buttons find no handler and answer as expired.
     expect(registry.callbackHandler("toggle_agent")).toBeUndefined();
-    // Approvals, the Workspace status and answer files follow every run.
-    expect(runListeners()).toBe(3);
+    expect(registry.callbackHandler("toggle_workspace")).toBeUndefined();
+    // Approvals, change messages, the Workspace status and answer files follow every run.
+    expect(runListeners()).toBe(4);
     // Recovery starts at once and waits while the bot is off.
     await vi.waitFor(() => expect(first.sessions.current).toHaveBeenCalled());
 
@@ -55,7 +57,8 @@ describe("default chat bridge", () => {
     expect(registry.messageHandlers()).toHaveLength(2);
     expect(registry.stopHandlers()).toHaveLength(1);
     expect(registry.callbackHandler("approval_deny")).toBeTruthy();
-    expect(runListeners()).toBe(3);
+    expect(registry.callbackHandler("change_confirm")).toBeTruthy();
+    expect(runListeners()).toBe(4);
   });
 
   it("sweeps interrupted deliveries again once a minute and after every control change, until its services are rebuilt", async () => {

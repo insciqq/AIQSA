@@ -44,9 +44,26 @@ export type TelegramCallbackStore = Readonly<{
   resolve(input: Readonly<{
     botId: number; data: string | undefined; now: Date; telegramChatId: number; telegramUserId: number;
   }>): Promise<Readonly<{ ok: true; callback: TelegramCallbackRecord }> | Readonly<{ ok: false; reason: TelegramCallbackRefusal }>>;
-  /** Consumes a single-use button once; false when it was already used or expired. */
-  consume(input: Readonly<{ id: string; now: Date }>): Promise<boolean>;
+  /**
+   * Consumes a single-use button once; false when it was already used or expired. A button whose payload names a
+   * `group` (`TELEGRAM_CALLBACK_GROUP_KEY`) is consumed with every button of its group in one statement, so of
+   * Confirm and Cancel only the first press counts.
+   */
+  consume(input: Readonly<{ id: string; now: Date; group?: Readonly<{ linkId: string; value: string }> }>): Promise<boolean>;
 }>;
+
+/**
+ * The payload key that ties the buttons of one decision together; its value is random per keyboard. Every button of a
+ * group is created in one keyboard with one expiry and consumed together, so a group is either all open or all used.
+ */
+export const TELEGRAM_CALLBACK_GROUP_KEY = "group";
+
+/** The group a resolved button belongs to, for `consume`; none without one. */
+export function telegramCallbackGroup(callback: Pick<TelegramCallbackRecord, "linkId" | "payload">):
+  Readonly<{ linkId: string; value: string }> | undefined {
+  const value = callback.payload[TELEGRAM_CALLBACK_GROUP_KEY];
+  return typeof value === "string" && value.length > 0 ? { linkId: callback.linkId, value } : undefined;
+}
 
 export class TelegramCallbackPayloadError extends Error {
   constructor() {
@@ -126,8 +143,17 @@ export function createPrismaTelegramCallbackStore(
     },
 
     async consume(input) {
+      const open = { consumedAt: null, expiresAt: { gt: input.now } };
+      if (input.group) {
+        // One statement over the whole group: a concurrent press of its other button finds every row used.
+        const result = await prisma.telegramCallback.updateMany({
+          data: { consumedAt: input.now },
+          where: { ...open, linkId: input.group.linkId, payload: { equals: input.group.value, path: [TELEGRAM_CALLBACK_GROUP_KEY] } }
+        }).catch(retainDatabaseFailure);
+        return result.count > 0;
+      }
       const result = await prisma.telegramCallback.updateMany({
-        data: { consumedAt: input.now }, where: { consumedAt: null, expiresAt: { gt: input.now }, id: input.id }
+        data: { consumedAt: input.now }, where: { ...open, id: input.id }
       }).catch(retainDatabaseFailure);
       return result.count === 1;
     }

@@ -6,7 +6,7 @@ import { textMessageContent } from "../../../domain/content";
 import { hashToken } from "../../auth/token";
 import { prisma } from "../../prisma";
 import { TELEGRAM_CONTROL_ID } from "../control/repository";
-import { createPrismaTelegramCallbackStore } from "./callbacks";
+import { createPrismaTelegramCallbackStore, telegramCallbackGroup } from "./callbacks";
 import { createPrismaTelegramLinkStore } from "./links";
 import { createPrismaTelegramMessageRefStore } from "./messageRefs";
 import { createPrismaTelegramReceiptStore } from "./receipts";
@@ -103,6 +103,24 @@ describe("Telegram buttons, references, run links and links (stateful)", () => {
     expect(consumed.sort()).toEqual([false, true]);
     await expect(callbacks.resolve(press)).resolves.toEqual({ ok: false, reason: "consumed" });
     await expect(callbacks.resolve({ ...press, now: new Date(NOW.getTime() + 2 * DAY) })).resolves.toEqual({ ok: false, reason: "expired" });
+  });
+
+  it("consumes Confirm and Cancel of one change together, once under concurrency, and leaves other groups open", async () => {
+    const account = await linkedAccount();
+    const callbacks = createPrismaTelegramCallbackStore(prisma);
+    const grouped = (group: string) => ({ change: "c".repeat(43), chatId: "chat-1", group, runId: "run-1" });
+    const [confirm, cancel, other] = await callbacks.create({ buttons: [
+      { kind: "change_confirm", payload: grouped("group-a") }, { kind: "change_cancel", payload: grouped("group-a") },
+      { kind: "change_confirm", payload: grouped("group-b") }
+    ], linkId: account.link.id, now: NOW });
+    const press = (data: string | undefined) => ({ botId, data, now: NOW, telegramChatId: account.telegramUserId, telegramUserId: account.telegramUserId });
+    const resolved = await callbacks.resolve(press(confirm));
+    if (!resolved.ok) throw new Error("not resolved");
+    const group = telegramCallbackGroup(resolved.callback)!;
+    const consumed = await Promise.all([callbacks.consume({ group, id: confirm!.slice(2), now: NOW }), callbacks.consume({ group, id: cancel!.slice(2), now: NOW })]);
+    expect(consumed.sort()).toEqual([false, true]);
+    await expect(callbacks.resolve(press(cancel))).resolves.toEqual({ ok: false, reason: "consumed" });
+    await expect(callbacks.resolve(press(other))).resolves.toMatchObject({ ok: true });
   });
 
   it("finds a reply's chat by its bot message and forgets it with the chat or the link", async () => {

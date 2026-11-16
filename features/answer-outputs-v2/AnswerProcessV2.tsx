@@ -162,8 +162,8 @@ function ToolCallMarkV2({ status }: { status: ToolCallV2["status"] }) {
 type PlanStepState = "active" | "complete" | "pending";
 
 /** A plan step's mark: done is checked, the current step spins while the answer runs, the rest wait. */
-function PlanMarkV2({ live, state }: Readonly<{ live: boolean; state: PlanStepState }>) {
-  if (state === "active" && live) {
+function PlanMarkV2({ state }: Readonly<{ state: PlanStepState }>) {
+  if (state === "active") {
     return <span className="v2-answer-process-mark v2-spinner" data-status="running" aria-hidden="true" />;
   }
   return (
@@ -175,19 +175,23 @@ function PlanMarkV2({ live, state }: Readonly<{ live: boolean; state: PlanStepSt
 
 const PLAN_STEP_STATE_COPY: Readonly<Record<PlanStepState, string>> = { active: "In progress", complete: "Done", pending: "Not started" };
 
-/** The agent's plan as its steps, each with its state in words for assistive technology. */
+/**
+ * The agent's plan as its steps, each with its state in words for assistive
+ * technology. Once the answer has ended, the plan's last update is no longer
+ * progress: a step the agent did not mark done waits as "Not done", never "In progress".
+ */
 function PlanV2({ live, plan }: Readonly<{ live: boolean; plan: ThreadWorkspaceActivityEntry }>) {
   return (
     <section className="v2-answer-process-section" data-testid="answer-plan">
       <h3>Plan</h3>
       <ol className="v2-answer-process-steps v2-answer-plan" aria-label="Plan steps">
         {(plan.items ?? []).map((item, index) => {
-          const state: PlanStepState = item.completed ? "complete" : item.active ? "active" : "pending";
+          const state: PlanStepState = item.completed ? "complete" : item.active && live ? "active" : "pending";
           return (
             <li data-state={state} key={`${index}:${item.text}`}>
-              <PlanMarkV2 live={live} state={state} />
+              <PlanMarkV2 state={state} />
               <span className="v2-answer-process-step-name">{item.text}</span>
-              <span className="v2-sr-only">{PLAN_STEP_STATE_COPY[state]}</span>
+              <span className="v2-sr-only">{live || state === "complete" ? PLAN_STEP_STATE_COPY[state] : "Not done"}</span>
             </li>
           );
         })}
@@ -413,7 +417,7 @@ function AnswerProcessFoldV2({
   const settledDocuments = settledChatPdfDocuments(documents);
   const documentRows = [...new Set(settledDocuments.map(chatPdfRouteDescription))];
   const plan = workspacePlanV2(workspaceActivity);
-  const planSummary = plan ? workspacePlanSummaryV2(plan) : null;
+  const planSummary = plan ? workspacePlanSummaryV2(plan, { live: Boolean(liveLabel) }) : null;
   const timeline = visibleWorkspaceActivityV2(workspaceActivity, generatedFileCount);
   const outputOnlyCount = generatedFileCount > 0 && !timeline?.entries.some(entry =>
     entry.kind === "outputs_export" && (entry.count ?? 0) > 0
@@ -525,7 +529,7 @@ function AnswerProcessFoldV2({
           {timeline ? (
             <section className="v2-answer-process-section" data-testid="workspace-activity-section">
               <h3>Workspace</h3>
-              <WorkspaceActivityTimelineV2 activity={timeline} />
+              <WorkspaceActivityTimelineV2 activity={timeline} live={live} />
               {emptyWorkspaceStatus ? <p className="v2-answer-process-step-meta">{emptyWorkspaceStatus}</p> : null}
               {outputOnlyCount > 0 ? (
                 <p className="v2-answer-process-step-meta">

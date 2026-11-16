@@ -6632,6 +6632,10 @@ enum TelegramCallbackKind {
   stop_run
   unlink_confirm
   open_settings
+  // Undo of a change an answer made to the user's own resources, and Confirm or Cancel of a proposal.
+  change_undo
+  change_confirm
+  change_cancel
 }
 
 enum TelegramRunDeliveryState {
@@ -6722,6 +6726,9 @@ model TelegramLink {
   selectedModelId    String?              @db.VarChar(256)
   selectedProvider   String?              @db.VarChar(256)
   searchEnabled      Boolean              @default(true)
+  /// Retired with the Telegram Workspace switch (operator decision 2026-11-16):
+  /// every turn asks for the Workspace as the web chat does. Nothing reads or
+  /// writes it, and queries name their columns, so a later release drops it.
   workspaceEnabled   Boolean              @default(false)
   /// Retired with the Codex Agent (operator decision 2026-10-23): nothing reads
   /// or writes it, and a later release drops it once no running app selects it.

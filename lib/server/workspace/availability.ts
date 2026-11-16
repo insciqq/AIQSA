@@ -27,6 +27,11 @@ export type WorkspaceAvailabilityService = Readonly<{
   snapshot(): Promise<WorkspaceAvailabilitySnapshot>;
 }>;
 
+/** Whether the installation offers the Workspace now: switched on and its runner ready. */
+export function workspaceInstallationOffered(snapshot: WorkspaceAvailabilitySnapshot): boolean {
+  return snapshot.policy.enabled && snapshot.runtime.state === "ready";
+}
+
 export function workspaceModelSupportsTools(model: Readonly<{
   activeConfig: unknown | null;
   activeVersion: number;

@@ -1418,7 +1418,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const copiedAttachments = attachmentBlocksFromThreadContent(source.content)
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     // A research that wrote a page shows its summary, the page and the report's file; the message keeps the whole text for Copy and the rest.
-    const researchView = researchAnswerViewV2(messageText(source), artifact?.generatedArtifacts);
+    const answerText = messageText(source);
+    const researchView = researchAnswerViewV2(answerText, artifact?.generatedArtifacts);
     const answerActions: ConversationMessageActionsV2 = readAloud && actions.onReadAloud && researchView.spoken.trim()
       ? { ...actions, onReadAloud: () => readAloud.toggle(source.id, researchView.spoken) } : actions;
     return (
@@ -1471,6 +1472,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         onPinSkill={pinLoadedSkill}
         pinnedSkillIds={pinnedSkillIds}
         content={researchView.content}
+        // Links in a research report below the summary still mark sources as cited.
+        answerText={answerText}
         leadingSlot={leadingSlot}
         noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}

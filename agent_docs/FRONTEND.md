@@ -13,7 +13,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 
 - Beyond the root product stance, answers show no private identifiers or receipts.
 - The interface has one language, English (operator decision 2026-11-02): every word the product writes, the research plan card and the notes the server adds to an answer included, whatever language the user writes in. Only the model's own text follows the user, and read-aloud speaks its skip words in the voice's language.
-- Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads.
+- Each answer has one process disclosure above the body (thinking, friendly tool names, outcomes, duration), actions below it, then sources and downloads. Sources count and lead with what the answer cites (its citations and the links of its text that match a listed source); the rest of the run's search results open grouped by site in a side sheet, because a flat list of every hit, 1625 rows in production, is not read (operator decision 2026-11-16, `features/answer-outputs-v2/AnswerSourcesV2.tsx`).
 - The process line says how long the work took; search, Memory and Past chats counts and PDF routes live in the fold. A line names them only when there is no work to name, or when every search failed (operator decision 2026-10-30, reversing `f8bba8134`).
 - Counts must be true. In the fold, Search ×N counts successful calls per engine; failures show separately. Memory and Past chats counts describe what entered the context, not proven influence.
 - Users never see a PDF reading-quality warning; it would only frighten them. Route wording stays in plain words for an ordinary reader (operator decision 2026-10-30).

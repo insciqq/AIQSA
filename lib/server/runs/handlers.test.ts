@@ -798,6 +798,7 @@ describe("model run route handlers", () => {
     ["send", { enabled: false, reason: "user_declined" }, "user_declined"],
     ["send", { enabled: false, reason: "installation_disabled" }, "installation_disabled"],
     ["send", { enabled: false, reason: "model_no_tools" }, "model_no_tools"],
+    ["send", { enabled: false, reason: "connector" }, "connector"],
     ["send", { enabled: false, reason: "made_up" }, "unknown"],
     ["send", { enabled: false, reason: 7 }, "unknown"],
     ["send", { enabled: false }, "unknown"],
@@ -4977,7 +4978,8 @@ describe("interactive sends on the agent engine", () => {
     expect(toolNames(provider.requests[0])).toEqual(expect.arrayContaining(["read_secret", "manage_assistant", "manage_secret"]));
   });
 
-  it("gives Telegram turn no self-service tools, whose cards the bridge cannot show, and keeps read_secret", async () => {
+  // Operator decision 2026-11-16: a Telegram turn takes what the same chat takes on the web, its cards shown as messages with buttons.
+  it("gives Telegram turn the self-service tools of a personal chat, with read_secret", async () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
     const native = nativeEngineFake({ tools: true });
     const provider = recordingProvider();
@@ -4986,7 +4988,7 @@ describe("interactive sends on the agent engine", () => {
     await response.text();
     const tools = toolNames(provider.requests[0]);
     expect(tools).toContain("read_secret");
-    for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant"]) expect(tools).not.toContain(name);
+    for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant"]) expect(tools).toContain(name);
   });
 
   it("continues turn natively after an Allow, naming the approval, as the web and Telegram send it", async () => {

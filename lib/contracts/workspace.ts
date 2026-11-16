@@ -41,9 +41,11 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
  * Why a message request asks for no Workspace (`workspace.reason` beside
  * `enabled: false`), only for the content-free `run_accepted` record: it never
  * changes admission. `installation_disabled` covers any off state a successful
- * availability read reported (disabled or runner unavailable).
+ * availability read reported (disabled or runner unavailable). `connector`:
+ * a connector's turn (Discord) that runs without a Workspace by its rules.
  */
 export const WORKSPACE_NOT_REQUESTED_REASONS = Object.freeze([
+  "connector",
   "installation_disabled",
   "model_no_tools",
   "user_declined",

@@ -74,9 +74,15 @@ export function workspacePlanV2(activity: ThreadWorkspaceActivity | null): Threa
   return plans.at(-1) ?? null;
 }
 
-/** "Plan · 2 of 5 complete": the plan's own count, never inferred from time. */
-export function workspacePlanSummaryV2(plan: ThreadWorkspaceActivityEntry): string {
-  return `Plan · ${plan.items?.filter((item) => item.completed).length ?? 0} of ${plan.items?.length ?? 0} complete`;
+/**
+ * "Plan · 2 of 5 complete" while the answer runs: the plan's own count, never
+ * inferred from time. Once the answer has ended, an unfinished plan is no longer
+ * progress and reads "Plan · 5 steps"; nothing marks steps done for the agent.
+ */
+export function workspacePlanSummaryV2(plan: ThreadWorkspaceActivityEntry, { live }: Readonly<{ live: boolean }>): string {
+  const total = plan.items?.length ?? 0;
+  const completed = plan.items?.filter((item) => item.completed).length ?? 0;
+  return live || completed === total ? `Plan · ${completed} of ${total} complete` : `Plan · ${plural(total, "step")}`;
 }
 
 /** Consecutive successful existence/stat checks collapse into one "Checked N files" row. */
@@ -247,8 +253,15 @@ function fileLabel(entry: ThreadWorkspaceActivityEntry): string {
   }
 }
 
-/** The one human phrase for a row; server kinds never reach the reader. */
-export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): string {
+/**
+ * The one human phrase for a row; server kinds never reach the reader. `live`
+ * says whether the answer still runs (a plan's count reads as progress only
+ * then); without it, the row's own phase decides.
+ */
+export function workspaceActivityLabelV2(
+  entry: ThreadWorkspaceActivityEntry,
+  options: Readonly<{ live?: boolean }> = {}
+): string {
   const running = entry.phase === "requested" || entry.phase === "running";
   if (entry.kind === "execution_status") return entry.phase === "closed"
     ? "Workspace execution ended" : "Workspace cleanup unconfirmed";
@@ -296,7 +309,7 @@ export function workspaceActivityLabelV2(entry: ThreadWorkspaceActivityEntry): s
     case "agent_note":
       return entry.text ?? "Agent note";
     case "plan":
-      return workspacePlanSummaryV2(entry);
+      return workspacePlanSummaryV2(entry, { live: options.live ?? running });
     case "elided":
       return `${entry.count ?? 0} earlier steps omitted${entry.failedCount ? ` · ${entry.failedCount} failed` : ""}`;
     default:
