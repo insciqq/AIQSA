@@ -71,9 +71,10 @@ for (const width of [1440, 390]) {
     const library = page.getByTestId("library-v2");
     const confirm = page.getByTestId("discard-changes-confirmation");
     for (const resource of resources) {
-      // While Settings is open the chat list and its floating controls are gone at every width,
-      // so its exits are another section (from the side-by-side list), its own Back and the shortcut.
-      for (const destination of [...(width === 1440 ? ["tab"] : []), "back", "shortcut"]) {
+      // While Settings is open the chat list and its floating controls are gone at every width, so its exits are
+      // another section and Back to chat beside the open editor (both from the side-by-side layout), the editor's
+      // own Back and the shortcut.
+      for (const destination of [...(width === 1440 ? ["tab", "exit"] : []), "back", "shortcut"]) {
         const input = await openDraft(page, resource);
         const draft = await input.inputValue();
         await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
@@ -81,7 +82,8 @@ for (const width of [1440, 390]) {
         await expect(page.getByRole("link", { name: "New chat", exact: true })).toHaveCount(0);
         const navigate = async () => {
           if (destination === "tab") await library.getByRole("tab", { name: "Files", exact: true }).click();
-          else if (destination === "back") await library.getByRole("button", { name: /Back to (?:chat|Instructions)/ }).click();
+          else if (destination === "exit") await library.getByRole("button", { name: "Back to chat", exact: true }).click();
+          else if (destination === "back") await library.getByRole("button", { name: "Back to Instructions", exact: true }).click();
           else await page.keyboard.press("Control+Shift+O");
         };
         await navigate();
@@ -126,8 +128,10 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     await library.getByRole("button", { name: resource === "Instructions" ? "Save" : "Save personal values", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
-    // Settings' own Back is its one exit; the chat list stays hidden behind it.
-    await expect(library.getByRole("button", { name: /Back to (?:chat|Instructions)/ })).toBeDisabled();
+    // The editor's own Back and Back to chat beside it are Settings' exits, both locked; the chat list stays hidden.
+    const exits = library.getByRole("button", { name: /^Back to (?:chat|Instructions)$/ });
+    await expect(exits).toHaveCount(2);
+    for (const exit of await exits.all()) await expect(exit).toBeDisabled();
     await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
     await page.keyboard.press("Control+Shift+O");
     await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
@@ -135,7 +139,7 @@ test("pending migrated mutations block exits, then preserve the draft on failure
     release();
     await expect(library.getByRole("tab", { name: "Files", exact: true })).toBeEnabled();
     await expect(input).not.toHaveValue("");
-    await library.getByRole("button", { name: /Back to (?:chat|Instructions)/ }).click();
+    await library.getByRole("button", { name: "Back to Instructions", exact: true }).click();
     await page.getByTestId("discard-changes-confirmation").getByRole("button", { name: /Confirm discard/ }).click();
   }
 });

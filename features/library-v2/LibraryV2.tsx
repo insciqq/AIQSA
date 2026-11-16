@@ -380,9 +380,11 @@ export function LibraryV2({
             a close control at the end of a narrow section's crumb row, which
             yields to a sub-view's own Back there (CSS). */}
         <div className="v2-library-exit-bar">
-          <button aria-keyshortcuts={subview ? undefined : "Escape"} className="v2-button v2-focusable v2-library-exit"
-            data-tone="ghost" data-tooltip="Back to chat" data-tooltip-side={sectionShown ? "left" : "right"} disabled={busy}
-            type="button" onClick={requestExit}>
+          {/* The label is explicit: where only the icon shows, the tooltip under the pointer or on keyboard focus
+              is generated content and would otherwise be read into the name a second time. */}
+          <button aria-keyshortcuts={subview ? undefined : "Escape"} aria-label="Back to chat"
+            className="v2-button v2-focusable v2-library-exit" data-tone="ghost" data-tooltip="Back to chat"
+            data-tooltip-side={sectionShown ? "left" : "right"} disabled={busy} type="button" onClick={requestExit}>
             <UiV2Icon className="v2-library-exit-arrow" name="arrow-left" />
             <UiV2Icon className="v2-library-exit-close" name="close" />
             <span className="v2-library-exit-label">Back to chat</span>
