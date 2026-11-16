@@ -1,9 +1,11 @@
 import type { ContentBlock } from "../../../domain/content";
 import {
-  DISCORD_COPY, DISCORD_EARLIER_MESSAGES_OMITTED, discordEarlierMessagesText, discordOmittedMessagesText
+  DISCORD_COPY, DISCORD_EARLIER_MESSAGES_OMITTED, DISCORD_VOICE_COPY, discordEarlierMessagesText, discordOmittedMessagesText,
+  discordVoiceRateLimitedText, discordVoiceTranscriptLabel, discordVoiceUntranscribedText
 } from "../copy";
 import type { DiscordRest } from "../rest";
 import type { DiscordConversationKind } from "../store/conversations";
+import type { DiscordVoiceHook, DiscordVoiceOutcome } from "../voice";
 import {
   compareDiscordIds, decodeDiscordContextMessage, discordAttachmentNames, discordAuthorLabel, discordHistoryLine,
   DISCORD_CONTEXT_MESSAGE_TYPES, type DiscordContextMessage, type DiscordMentionNames
@@ -32,7 +34,11 @@ import type { DiscordUploads } from "./uploads";
  * its own block, read fresh, wherever it is. Text over 60 000 characters keeps
  * its tail inline and puts the whole history into `discord-history.md`.
  * Attachments are named in the text; the attachment hook may add them as
- * files (`dc-files`).
+ * files (`dc-files`). The voice hook (`../voice.ts`) gives the question's and
+ * the Reply target's voice messages their transcripts as their text, marked
+ * as such, before the attachment hook, which then no longer sees their audio;
+ * one left without its text gets a short line why, and a question that is only
+ * such voice messages is refused with that reason.
  */
 
 export const DISCORD_CONTEXT_TEXT_MAX = 60_000;
@@ -93,7 +99,9 @@ export type DiscordTurnContext =
     /** History messages included (inline or in the file). */
     historyCount: number;
   }>
-  | Readonly<{ ok: false; code: "discord_context_unavailable" }>;
+  | Readonly<{ ok: false; code: "discord_context_unavailable" }>
+  /** The question is only voice messages none of which could be transcribed; `text` is the reason people read. */
+  | Readonly<{ ok: false; code: "discord_voice_untranscribed"; text: string }>;
 
 export type DiscordContextInput = Readonly<{
   rest: DiscordRest;
@@ -122,6 +130,8 @@ export type DiscordContextInput = Readonly<{
    * tools that need a reference to the asking message (a merge request) can cite. Undefined leaves the link out.
    */
   guildId?: string | null;
+  /** Transcribes the question's and the Reply target's voice messages; undefined names them like any attachment. */
+  voice?: DiscordVoiceHook;
 }>;
 
 type Read = Readonly<{ messages: DiscordContextMessage[]; omitted: boolean }>;
@@ -207,6 +217,25 @@ function bounded(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+type Unheard = Extract<DiscordVoiceOutcome, { ok: false }>;
+
+/** The first failure when every message of the question is a voice message with nothing else, none transcribed. */
+function unheardQuestion(asked: readonly DiscordContextMessage[], heard: ReadonlyMap<string, DiscordVoiceOutcome>): Unheard | null {
+  let first: Unheard | null = null;
+  for (const message of asked) {
+    const outcome = heard.get(message.id);
+    if (!outcome || outcome.ok || message.text.trim() || message.attachments.length > 1) return null;
+    first ??= outcome;
+  }
+  return first;
+}
+
+function voiceRefusalText(outcome: Unheard): string {
+  return outcome.reason === "rate_limited"
+    ? discordVoiceRateLimitedText(Math.ceil((outcome.retryAfterSeconds ?? 60) / 60))
+    : DISCORD_VOICE_COPY[outcome.reason].reply;
+}
+
 /** The message's web link; `@me` stands for a direct message's server. */
 export function discordMessageLink(guildId: string | null, channelId: string, messageId: string): string {
   return `https://discord.com/channels/${guildId ?? "@me"}/${channelId}/${messageId}`;
@@ -233,17 +262,41 @@ export async function readDiscordTurnContext(input: DiscordContextInput): Promis
   const hidden = (message: DiscordContextMessage) => own.has(message.id) &&
     (own.get(message.id) === null || own.get(message.id) === input.conversationId);
   const history = candidates.filter((message) => !hidden(message));
-  const question = [input.trigger, ...merged];
+  const asked = [input.trigger, ...merged];
 
-  const plan = await input.attachments({ history, question, reference, userId: input.userId });
+  // The question's and the Reply target's voice messages become text first; their audio is then no attachment.
+  const voiced = input.voice ? [...asked, ...(reference ? [reference] : [])].filter((message) => message.voice !== null) : [];
+  const heard: ReadonlyMap<string, DiscordVoiceOutcome> = input.voice && voiced.length > 0
+    ? await input.voice({ askerId: input.trigger.authorId, messages: voiced, userId: input.userId })
+    : new Map();
+  const unheard = unheardQuestion(asked, heard);
+  if (unheard) return { code: "discord_voice_untranscribed", ok: false, text: voiceRefusalText(unheard) };
+  const withoutAudio = (message: DiscordContextMessage): DiscordContextMessage => {
+    const audio = heard.has(message.id) ? message.voice : null;
+    return audio ? { ...message, attachments: message.attachments.filter((attachment) => attachment.id !== audio.id) } : message;
+  };
+  const spoken = (message: DiscordContextMessage): string => {
+    const outcome = heard.get(message.id);
+    if (!outcome) return message.text;
+    const author = discordAuthorLabel(message);
+    const line = outcome.ok ? `${discordVoiceTranscriptLabel(author)}\n${outcome.text}`
+      : discordVoiceUntranscribedText(author, DISCORD_VOICE_COPY[outcome.reason].line);
+    return message.text ? `${message.text}\n${line}` : line;
+  };
+  const question = asked.map(withoutAudio);
+  const replied = reference ? withoutAudio(reference) : null;
+
+  const plan = await input.attachments({ history, question, reference: replied, userId: input.userId });
   const lines = history.map(discordHistoryLine);
-  const questionText = bounded(question.map((message) => `${message.text}${discordAttachmentNames(message)}`).join("\n"), QUESTION_TEXT_MAX);
+  const questionText = bounded(question.map((message) => `${spoken(message)}${discordAttachmentNames(message)}`).join("\n"), QUESTION_TEXT_MAX);
   const tail: string[] = [];
   if (input.trigger.referenceId) {
     if (reference && own.has(reference.id)) {
       tail.push(`Replying to your earlier answer, message ${reference.id}:\n${bounded(reference.text, REFERENCE_TEXT_MAX)}`);
-    } else if (reference) {
-      tail.push(`Replying to ${discordAuthorLabel(reference)}, message ${reference.id}:\n${bounded(reference.text, REFERENCE_TEXT_MAX)}${discordAttachmentNames(reference)}`);
+    } else if (replied) {
+      // A transcript keeps the question's bound: a ten-minute voice message runs to about 10 000 characters.
+      const max = heard.get(replied.id)?.ok ? QUESTION_TEXT_MAX : REFERENCE_TEXT_MAX;
+      tail.push(`Replying to ${discordAuthorLabel(replied)}, message ${replied.id}:\n${bounded(spoken(replied), max)}${discordAttachmentNames(replied)}`);
     } else if (referenceMissing) {
       tail.push(`Replying to message ${input.trigger.referenceId}, which can no longer be read.`);
     }

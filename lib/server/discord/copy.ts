@@ -137,3 +137,35 @@ export function discordReasonText(code: DiscordReasonCode): string | null {
     default: return null;
   }
 }
+
+/** Voice messages (`voice.ts`): why one stayed without its text, as the run reads it and as the bot's refusal says it. */
+export const DISCORD_VOICE_COPY = Object.freeze({
+  unavailable: {
+    line: "speech to text is not set up or unavailable",
+    reply: "I can't transcribe voice messages: speech to text is not set up on this AIQSA. Ask your AIQSA administrator, or write your question."
+  },
+  too_long: {
+    line: "longer than 10 minutes",
+    reply: "This voice message is longer than 10 minutes, too long to transcribe. Send a shorter one or write your question."
+  },
+  rate_limited: { line: "too many voice messages from this author", reply: "You've sent too many voice messages." },
+  usage_limit: { line: "usage limit reached", reply: "AIQSA usage limit reached. Ask your AIQSA administrator." },
+  unreadable: { line: "the audio could not be downloaded", reply: "I couldn't download this voice message. Send it again." },
+  no_speech: { line: "no speech recognised", reply: "I couldn't hear any speech in this voice message." },
+  failed: { line: "transcription failed", reply: "I couldn't transcribe this voice message. Try again, or write your question." }
+} as const);
+
+/** The run's line before a voice message's transcript. */
+export function discordVoiceTranscriptLabel(author: string): string {
+  return `[Transcript of a voice message from ${author}]`;
+}
+
+/** The run's line for a voice message that stayed without its text. */
+export function discordVoiceUntranscribedText(author: string, reason: string): string {
+  return `[A voice message from ${author} could not be transcribed: ${reason}]`;
+}
+
+/** The bot's refusal of a question that is only a voice message too many: when to try again. */
+export function discordVoiceRateLimitedText(retryInMinutes: number): string {
+  return `${DISCORD_VOICE_COPY.rate_limited.reply} Try again in ${Math.max(1, retryInMinutes)} min.`;
+}

@@ -149,6 +149,16 @@ export function say(fake: FakeDiscord, post: DiscordPost): FakeDiscordMessage {
   });
 }
 
+/** A person's voice message through the fake gateway: the voice flag, no text, one `audio/ogg` attachment of `durationSecs`. */
+export function sayVoice(fake: FakeDiscord, post: Readonly<{
+  channelId: string; authorId: string; audio: Buffer; durationSecs: number; replyTo?: string;
+}>): FakeDiscordMessage {
+  return fake.postVoiceMessage({
+    authorId: post.authorId, channelId: post.channelId, data: post.audio, durationSecs: post.durationSecs,
+    ...(post.replyTo ? { replyTo: post.replyTo } : {})
+  });
+}
+
 /** A thread people opened from `starterId` in `parentId`, as a Discord client does (the thread takes the message's id). */
 export async function openPeopleThread(fake: FakeDiscord, parentId: string, starterId: string, name: string): Promise<string> {
   const response = await fake.handle(new Request(`http://127.0.0.1/api/v10/channels/${parentId}/messages/${starterId}/threads`, {
