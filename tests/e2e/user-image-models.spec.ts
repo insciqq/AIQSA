@@ -30,11 +30,14 @@ const json = (value: unknown) => value as Prisma.InputJsonValue;
 const unavailableWorkspace = { workspace: { available: false, enabled: false, internetEnabled: null, sessionState: null,
   unavailableReason: "installation_disabled" } };
 const NOTICE = /Image generation and editing are unavailable for this message because [^.]+\./u;
-const EDIT_REFUSED = "Image editing is unavailable with this chat's image model, so nothing was sent to the image provider.";
+/** A refusal before dispatch is the image tool's error result (`lib/server/images/inputError.ts`), which the model relays. */
+const EDIT_REFUSED = "Image editing is unavailable with this chat's image model.";
+const NOT_SENT = "Nothing was sent to the image provider.";
 const BROKEN_NOTICE = "Image generation and editing are unavailable for this message because the image model or its provider is turned off or removed.";
 
 type ImageCall = { model: string; quality: string | null; edit: boolean };
 type AnswerCall = { imageTool: boolean; editing: boolean | null; notice: string | null };
+type ToolRefusal = { error: string; message: string };
 type StubState = {
   /** What the answer model does with the next user message when it may. */
   next: "edit" | "generate" | "text";
@@ -42,7 +45,22 @@ type StubState = {
   references: string[];
   imageCalls: ImageCall[];
   answerCalls: AnswerCall[];
+  /** The error results of image calls, as the answer model read them. */
+  toolRefusals: ToolRefusal[];
 };
+
+/** The error code and message of a tool result's output, or null for a result without them. */
+function toolRefusal(output: unknown): ToolRefusal | null {
+  if (typeof output !== "string") return null;
+  try {
+    const value = JSON.parse(output) as unknown;
+    if (typeof value !== "object" || value === null) return null;
+    const { error, message } = value as Record<string, unknown>;
+    return typeof error === "string" && typeof message === "string" ? { error, message } : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * One connection with a tool-calling answer model without vision, image model
@@ -52,7 +70,7 @@ type StubState = {
  */
 async function installImageChoiceFixture(suffix: string) {
   execFileSync(process.execPath, ["--import", "tsx", "scripts/stateful-test-target.ts"], { stdio: "pipe" });
-  const state: StubState = { next: "text", references: [], imageCalls: [], answerCalls: [] };
+  const state: StubState = { next: "text", references: [], imageCalls: [], answerCalls: [], toolRefusals: [] };
   const generated = await sharp({ create: { width: 64, height: 64, channels: 3, background: "#3366dd" } }).png().toBuffer();
   const server: Server = createServer((request, response) => {
     void (async () => {
@@ -74,7 +92,10 @@ async function installImageChoiceFixture(suffix: string) {
       }
       if (request.url !== "/responses") { send({}, 404); return; }
       const body = JSON.parse(bytes.toString()) as Record<string, unknown>;
-      const input = Array.isArray(body.input) ? body.input as { type?: string }[] : [];
+      const input = Array.isArray(body.input) ? body.input as { output?: unknown; role?: string; type?: string }[] : [];
+      // Earlier turns' tool calls and results replay in every request: only results after the latest user input are this turn's.
+      const lastInput = input.reduce((last, item, index) => item.role === "user" ? index : last, -1);
+      const turnResults = input.slice(lastInput + 1).filter((item) => item.type === "function_call_output");
       const tools = Array.isArray(body.tools) ? body.tools as { name?: string; description?: string }[] : [];
       const imageTool = tools.find((tool) => tool.name === "generate_image");
       const notice = NOTICE.exec(typeof body.instructions === "string" ? body.instructions : "")?.[0] ?? null;
@@ -82,8 +103,12 @@ async function installImageChoiceFixture(suffix: string) {
       const call = (imageIds: string[]) => [{ type: "function_call", id: randomUUID(), call_id: randomUUID(), name: "generate_image",
         arguments: JSON.stringify({ prompt: imageIds.length ? "Make it round" : "A blue square", image_ids: imageIds }), status: "completed" }];
       let output: unknown[];
-      if (input.some((item) => item.type === "function_call_output")) output = message("The image is ready.");
-      else {
+      if (turnResults.length > 0) {
+        // A refused call's reason is relayed, as a model would, instead of claiming an image.
+        const refusal = toolRefusal(turnResults.at(-1)!.output);
+        if (refusal) state.toolRefusals.push(refusal);
+        output = message(refusal?.message ?? "The image is ready.");
+      } else {
         state.answerCalls.push({ imageTool: Boolean(imageTool),
           editing: imageTool ? !/editing unavailable/u.test(imageTool.description ?? "") : null, notice });
         // A run without an image tool explains the reason it was given, as a model would.
@@ -221,6 +246,14 @@ async function settled(page: Page, connectionId: string) {
   await expect.poll(async () => prisma.modelRun.count({ where: { providerRunBindings: { some: { connectionId } },
     status: { in: ["preparing", "queued", "in_progress", "streaming"] } } }), { timeout: 45_000 }).toBe(0);
   await expect(page.getByRole("button", { name: "Stop answer", exact: true })).toHaveCount(0);
+}
+
+/** The newest answer's process steps, opened. */
+async function latestSteps(page: Page): Promise<Locator> {
+  const disclosure = page.getByTestId("tool-activity-disclosure").last();
+  await expect(disclosure).toBeVisible();
+  if (!(await disclosure.evaluate((element) => (element as HTMLDetailsElement).open))) await disclosure.locator("summary").click();
+  return disclosure.locator(".v2-answer-process-step-name");
 }
 
 async function createPersonalChat(page: Page, chatIds: string[]): Promise<string> {
@@ -373,10 +406,15 @@ test("a generation-only or broken choice is never substituted; withdrawal return
     expect(state.answerCalls.at(-1)).toMatchObject({ imageTool: true, editing: false });
     const triangle = await prisma.attachment.findFirstOrThrow({ where: { chatId, origin: "IMAGE_OUTPUT" } });
     state.references = [triangle.id];
+    // The refusal is the tool's result: the model reads why and relays it, and the answer's step shows the failure.
     state.next = "edit";
     await send(page, "Make the triangle blue");
-    await expect(page.locator(".v2-run-error-card").last()).toContainText(EDIT_REFUSED, { timeout: 45_000 });
+    await expect(page.getByTestId("conversation-thread")).toContainText(EDIT_REFUSED, { timeout: 45_000 });
     await settled(page, fixture.connectionId);
+    expect(state.answerCalls.at(-1)).toMatchObject({ imageTool: true, editing: false });
+    expect(state.toolRefusals).toEqual([{ error: "image_editing_unavailable", message: expect.stringContaining(EDIT_REFUSED) }]);
+    expect(state.toolRefusals[0]!.message).toContain(NOT_SENT);
+    await expect(await latestSteps(page)).toHaveText(["Image generation failed"]);
     expect(state.imageCalls).toEqual([{ model: "gpt-image-1", quality: "high", edit: false }]);
     expect(await admittedImageModel(chatId)).toBe(ids.imageB);
 
@@ -423,7 +461,8 @@ test("a generation-only or broken choice is never substituted; withdrawal return
     await page.goto(`/c/${chatId}`);
     await page.reload();
     await expect(chatImages(page)).toHaveCount(1, { timeout: 30_000 });
-    await expect(page.locator(".v2-run-error-card")).toContainText(EDIT_REFUSED);
+    await expect(page.getByTestId("conversation-thread")).toContainText(EDIT_REFUSED);
+    await expect(page.getByTestId("tool-activity-disclosure").filter({ hasText: "Image generation failed" })).toHaveCount(1);
     await expect(page.getByText(BROKEN_NOTICE)).toBeVisible();
   } finally {
     await fixture.cleanup(page);
