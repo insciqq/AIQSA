@@ -141,6 +141,11 @@ describe("DataSettingsRowsV2", () => {
     expect(onDeleteAll).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Keep my chats" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
+    // Escape keeps the chats too, and never reaches Settings behind the confirmation.
+    fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    expect(fireEvent.keyDown(screen.getByRole("button", { name: "Keep my chats" }), { key: "Escape" })).toBe(false);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(onDeleteAll).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete all personal chats" }));
     expect(onDeleteAll).toHaveBeenCalledTimes(1);

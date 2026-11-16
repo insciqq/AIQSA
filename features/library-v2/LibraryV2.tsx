@@ -49,6 +49,12 @@ import { formatStudioDate, formatStudioTime } from "./studioDate";
 import { MemorySettingsCardV2 } from "./MemorySettingsCardV2";
 import { canPreviewFile, FilePreviewV2, FileTypeTileV2 } from "./FilePreviewV2";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
+import {
+  createSettingsEscapeRegistry,
+  SettingsEscapeContext,
+  settingsEscapeApplies,
+  useSettingsEscapeStep
+} from "./settingsEscape";
 
 function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
@@ -136,6 +142,8 @@ export function LibraryV2({
   const [localSectionShown, setLocalSectionShown] = useState(true);
   const sectionShown = controlledSectionShown ?? localSectionShown;
   const previousInitialTab = useRef(initialTab);
+  const rootRef = useRef<HTMLElement>(null);
+  const [escapeSteps] = useState(createSettingsEscapeRegistry);
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
   const backRef = useRef<HTMLButtonElement>(null);
@@ -270,6 +278,29 @@ export function LibraryV2({
     subview.onBack();
   };
 
+  // Escape goes one step out (operator decision 2026-11-16): an open inline
+  // confirmation or pane first, then the sub-view (its Back owns the
+  // unsaved-changes confirmation), then the chat through the same guard as
+  // Back to chat. The window's bubble phase runs after every handler on the
+  // page, a modal layer's document listener included, so any of them that
+  // used the key has prevented it by then.
+  const handleEscape = useEventCallback((event: KeyboardEvent) => {
+    if (busy || !settingsEscapeApplies(event, rootRef.current)) return;
+    event.preventDefault();
+    const step = escapeSteps.top();
+    if (step) {
+      if (!step.blocked) step.onEscape();
+    } else if (subview) {
+      if (!subview.busy) subview.onBack();
+    } else {
+      requestExit();
+    }
+  });
+  useEffect(() => {
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [handleEscape]);
+
   // Choosing a row shows its section; the list keeps the section mounted
   // underneath, so returning to the list loses nothing and needs no guard.
   const chooseTab = (id: LibraryTabIdV2) => {
@@ -302,11 +333,13 @@ export function LibraryV2({
   if (!selected) return null;
 
   return (
-    <main className="v2-library" data-testid="library-v2" data-view={sectionShown ? "section" : "list"}>
+    <main ref={rootRef} className="v2-library" data-subview={subview ? "true" : undefined} data-testid="library-v2"
+      data-view={sectionShown ? "section" : "list"}>
       <UiV2IconSprite />
-      {/* The header's two parts are grid items of the surface: the crumb row
-          over the section, and the list of sections beside it on wide
-          screens or in its place on narrow ones. */}
+      <SettingsEscapeContext.Provider value={escapeSteps}>
+      {/* The header's three parts are grid items of the surface: the crumb
+          row over the section, Back to chat, and the list of sections beside
+          the section on wide screens or in its place on narrow ones. */}
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
           {/* The page's name: the narrow list's title, for assistive technology elsewhere. */}
@@ -339,19 +372,23 @@ export function LibraryV2({
             <UiV2Button ref={backRef} disabled={busy || subview.busy} icon="arrow-left" onClick={subview.onBack}>
               {subview.backLabel}
             </UiV2Button>
-          ) : (
-            // One exit at every width: the arrow and its words, or a close
-            // control where a section shows alone on a narrow screen (CSS).
-            <button className="v2-button v2-focusable v2-library-exit" data-tone="ghost" data-tooltip="Back to chat"
-              data-tooltip-side="left" disabled={busy} type="button" onClick={requestExit}>
-              <UiV2Icon className="v2-library-exit-arrow" name="arrow-left" />
-              <UiV2Icon className="v2-library-exit-close" name="close" />
-              <span className="v2-library-exit-label">Back to chat</span>
-            </button>
-          )}
+          ) : null}
+        </div>
+        {/* One exit at every width, in the DOM after the crumb so keyboard
+            order follows what is seen: the first row of the section column
+            on wide screens, a back arrow left of the narrow list's title, and
+            a close control at the end of a narrow section's crumb row, which
+            yields to a sub-view's own Back there (CSS). */}
+        <div className="v2-library-exit-bar">
+          <button aria-keyshortcuts={subview ? undefined : "Escape"} className="v2-button v2-focusable v2-library-exit"
+            data-tone="ghost" data-tooltip="Back to chat" data-tooltip-side={sectionShown ? "left" : "right"} disabled={busy}
+            type="button" onClick={requestExit}>
+            <UiV2Icon className="v2-library-exit-arrow" name="arrow-left" />
+            <UiV2Icon className="v2-library-exit-close" name="close" />
+            <span className="v2-library-exit-label">Back to chat</span>
+          </button>
         </div>
         <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Settings sections">
-          <p className="v2-library-column-title" aria-hidden="true">Settings</p>
           <div className="v2-library-tabs" role="presentation">
             {groups.map((group, groupIndex) => (
               <div className="v2-library-tabs-group" key={group.label ?? `group-${groupIndex}`} role="presentation">
@@ -403,6 +440,7 @@ export function LibraryV2({
       >
         <div className="v2-library-content">{selected.content}</div>
       </section>
+      </SettingsEscapeContext.Provider>
     </main>
   );
 }
@@ -514,6 +552,8 @@ export function FilesPanelV2({
     }
   }, [selection]);
   function closePreview() { setSelection(null); }
+  // Escape closes the preview wherever focus is in Settings, not only inside the files layout.
+  useSettingsEscapeStep(Boolean(selectedFile && selectedGroup), closePreview);
   return (
     <div className="v2-files-layout" data-testid="library-files-panel" ref={layoutRef}
       data-preview-docked={selectedFile && !compact || undefined} onKeyDown={event => {
@@ -1117,6 +1157,7 @@ function MemoryForgetRowV2({
   onConfirm(): void;
 }>) {
   const target = item.statement.length > 96 ? `${item.statement.slice(0, 93)}…` : item.statement;
+  useSettingsEscapeStep(true, onCancel, busy);
   return (
     <li className="v2-memory-row v2-memory-row-forget" data-state="forget">
       <span className="v2-memory-row-icon" aria-hidden="true"><UiV2Icon name="trash" /></span>

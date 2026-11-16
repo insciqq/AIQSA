@@ -6,6 +6,7 @@ import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import type { Catalog } from "@/lib/contracts/catalog";
 import type { ScheduledTask, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTaskSheet, type ScheduledTaskRecentRuns } from "./ScheduledTaskSheet";
@@ -530,6 +531,8 @@ function ScheduledTaskRow({
   const labelledBy = task.unseenResult ? `${titleId} ${unreadId}` : titleId;
   // A goal a monitoring check reached completes the task; it can still be resumed to keep watching.
   const resumable = task.status !== "completed" || task.completionReason === "goal_reached";
+  // In Settings, Escape answers the delete confirmation as Keep automation does.
+  useSettingsEscapeStep(deleting, onCancelDelete, busy);
   return (
     <li className="v2-scheduled-row" data-status={task.status} aria-labelledby={labelledBy}>
       <span className="v2-scheduled-row-icon" aria-hidden="true"><UiV2Icon name="clock" /></span>

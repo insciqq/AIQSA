@@ -8,6 +8,7 @@ import { UiV2Button, UiV2Icon, UiV2IconButton, UiV2MenuItem, UiV2MenuSeparator }
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { SectionHeading } from "./LibraryV2";
+import { useSettingsEscapeStep } from "./settingsEscape";
 import { formatStudioDate } from "./studioDate";
 
 export type ArtifactLibraryFilter = "recent" | "published" | "archived";
@@ -97,6 +98,8 @@ function ArtifactRow({ item, archived, busy, onOpen, onOpenChat, onChange }: Rea
     finally { pending.current = false; }
   };
   const base = `/api/artifacts/${encodeURIComponent(item.id)}/versions/${encodeURIComponent(item.currentVersionId)}/content`;
+  // In Settings, Escape cancels the delete or archive confirmation, as Cancel does.
+  useSettingsEscapeStep(action === "delete" || action === "archive", cancel, busy);
   return <li className="v2-artifact-library-row">
     <div className="v2-resource-row">
       <button className="v2-artifact-library-open v2-focusable" type="button" aria-label={`Open ${item.title}`}
@@ -124,7 +127,12 @@ function ArtifactRow({ item, archived, busy, onOpen, onOpenChat, onChange }: Rea
       </UiV2ResponsiveMenu> : null}
     </div>
     {action === "rename" ? <form className="v2-artifact-library-inline" onSubmit={event => { event.preventDefault(); void change({ title }); }}
-      onKeyDown={event => { if (event.key === "Escape" && !busy) { event.preventDefault(); cancel(); } }}>
+      onKeyDown={event => {
+        // A busy rename keeps the key: it neither cancels nor reaches Settings.
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        if (!busy) cancel();
+      }}>
       <label>Artifact title<input aria-label="Artifact title" value={title} maxLength={240} autoFocus onChange={event => setTitle(event.target.value)} /></label>
       <div><UiV2Button type="submit" tone="primary" busy={busy} disabled={!title.trim()}>Save title</UiV2Button><UiV2Button disabled={busy} onClick={cancel}>Cancel</UiV2Button></div>
     </form> : action ? <div className="v2-artifact-library-inline" role="alert">

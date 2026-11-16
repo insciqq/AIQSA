@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   telegramLinkCodeResponseSchema,
@@ -22,7 +22,7 @@ function linkCode(expiresInMs: number): TelegramLinkCodeResponse {
 const notLinked = status({ available: true, state: "not_linked" });
 const linked = status({ available: true, linkedAt: "2026-10-19T12:00:05.000Z", state: "linked", telegramUsername: "alex" });
 
-type Route = (method: string, url: string) => Response | undefined;
+type Route = (method: string, url: string) => Promise<Response> | Response | undefined;
 
 function mockFetch(route: Route) {
   const calls: { method: string; url: string }[] = [];
@@ -200,6 +200,22 @@ describe("TelegramConnectionSection", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Telegram disconnected.");
     await waitFor(() => expect(screen.getByRole("button", { name: "Connect Telegram" })).toHaveFocus());
     expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("keeps Escape inside the confirmation while disconnecting", async () => {
+    mockFetch((method, url) => {
+      if (url !== "/api/me/telegram") return undefined;
+      return method === "DELETE" ? new Promise<Response>(() => undefined) : Response.json(linked);
+    });
+    render(<TelegramConnectionSection />);
+    await waitFor(() => expect(screen.getByTestId("settings-telegram-state")).toHaveTextContent("Connected as @alex since"));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    const confirm = screen.getByTestId("settings-telegram-disconnect-confirm");
+    await waitFor(() => expect(within(confirm).getByRole("button", { name: "Disconnect" })).toHaveAttribute("aria-busy", "true"));
+    // The key neither cancels nor reaches Settings behind it.
+    expect(fireEvent.keyDown(confirm, { key: "Escape" })).toBe(false);
+    expect(screen.getByTestId("settings-telegram-disconnect-confirm")).toBeInTheDocument();
   });
 
   it("shows the access-off reason with Disconnect and offers Reconnect after the bot changed", async () => {

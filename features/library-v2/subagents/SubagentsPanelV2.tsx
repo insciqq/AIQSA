@@ -16,6 +16,7 @@ import {
   type SubagentModelOption
 } from "@/lib/contracts/subagentDefinitions";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import {
   SubagentApiError,
   createSubagentDefinition,
@@ -146,6 +147,15 @@ export function SubagentsPanelV2({ onBusyChange, onDirtyChange }: Readonly<{
     if (dirty) setDiscard(true);
     else closeEditor(editor.original?.id ?? null);
   }
+  // In Settings, Escape takes the editor's one step back (Cancel, which asks
+  // first about unsaved changes); an open confirmation answers first with its
+  // keeping choice.
+  useSettingsEscapeStep(editor !== null, requestClose, busy);
+  useSettingsEscapeStep(editor !== null && discard, () => { setDiscard(false); focusIntent.current = "name"; }, busy);
+  useSettingsEscapeStep(editor === null && deleting !== null, () => {
+    if (deleting) focusIntent.current = deleting.id;
+    setDeleting(null);
+  }, busy);
   function change(patch: Partial<Draft>) {
     setEditor((current) => current && { ...current, value: { ...current.value, ...patch } });
   }

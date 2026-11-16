@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
 import { PersonalMcpConnectionsSection } from "./PersonalMcpConnectionsSection";
 import { followMcpOAuthStart, startMcpOAuth } from "./mcpSettingsApi";
 import { useMcpSettingsStore } from "./mcpSettingsStore";
@@ -262,6 +263,24 @@ describe("PersonalMcpConnectionsSection", () => {
       (call.body as { authorizationOriginsAcknowledged?: string[] }).authorizationOriginsAcknowledged)).toEqual([
       undefined, undefined, ["https://login.one.example"], ["https://login.two.example"]
     ]);
+  });
+
+  it("cancels the sign-in site confirmation on Settings' Escape and keeps the form", async () => {
+    stubApi([], (path, init) => path === "/api/me/mcp-connections" && init?.method === "POST"
+      ? response({ authorizationOrigins: ["https://login.one.example"], error: "oauth_authorization_origin_confirmation_required",
+        issues: [{ code: "oauth_authorization_origin_confirmation_required", path: "authorizationOriginsAcknowledged" }] }, 422)
+      : undefined);
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}><PersonalMcpConnectionsSection /></SettingsEscapeContext.Provider>);
+    await waitFor(() => expect(usePersonalMcpStore.getState().loadState).not.toMatch(/idle|loading/));
+    fill("personal-mcp-url", "https://wiki.example/mcp");
+    fill("personal-mcp-auth", "oauth");
+    fireEvent.click(screen.getByRole("button", { name: "Add MCP" }));
+    await screen.findByRole("group", { name: "Confirm the sign-in site" });
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("group", { name: "Confirm the sign-in site" })).toBeNull();
+    expect(document.getElementById("personal-mcp-url")).toHaveValue("https://wiki.example/mcp");
+    expect(registry.top()).toBeNull();
   });
 
   it("sends a bare token as Bearer, a custom header verbatim, and masks the secret without engaging password managers", async () => {

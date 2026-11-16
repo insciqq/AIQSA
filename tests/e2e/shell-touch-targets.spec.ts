@@ -231,6 +231,18 @@ async function expectSettingsHeaderRoom(page: Page): Promise<void> {
   await expectRoom(back, "Back to Data");
   await back.click();
   await expect(settings.getByRole("button", { exact: true, name: "Manage" })).toBeVisible();
+
+  // The list of sections: Back to chat is a 44px back arrow left of the title, with nothing at the right.
+  await backToSettings.click();
+  await expect(settings).toHaveAttribute("data-view", "list");
+  const listHeader = await boxOf(header, "Settings header");
+  const arrow = await expectTarget(backToChat, "Back to chat arrow");
+  expect(arrow.y - listHeader.y, "Back to chat arrow room above").toBeGreaterThanOrEqual(5.49);
+  expect(listHeader.y + listHeader.height - (arrow.y + arrow.height), "Back to chat arrow room below").toBeGreaterThanOrEqual(5.49);
+  const title = await boxOf(settings.getByRole("heading", { level: 1, name: "Settings" }), "Settings title");
+  expect(arrow.x, "the arrow on screen").toBeGreaterThanOrEqual(-0.5);
+  expect(arrow.x + arrow.width, "the arrow left of the title").toBeLessThanOrEqual(title.x + 0.5);
+  await expect(header.locator("button:visible"), "nothing at the header's right").toHaveCount(0);
   await backToChat.click();
   await expect(settings).toBeHidden();
 }

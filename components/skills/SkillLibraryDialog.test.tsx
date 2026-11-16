@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
 import { requestSkillDialogNavigation, SkillLibraryDialog, SkillLibrarySection } from "./SkillLibraryDialog";
 
 const ownedSkill = {
@@ -148,6 +149,56 @@ describe("SkillLibraryDialog", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open Action closer" }));
     await screen.findByRole("heading", { name: "Action closer" });
     expect(screen.queryByRole("region", { name: "Versions" })).toBeNull();
+  });
+
+  it("steps back one pane at a time on Settings' Escape: the delete confirmation, then the detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/skill-owned/revisions")) return Response.json({ skillId: ownedSkill.id, version: 2, archived: false, nextBefore: null, versions: [] });
+      if (url.endsWith("/skill-owned")) return Response.json({ skill: ownedSkillDetail });
+      return listResponse();
+    }));
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}>
+      <SkillLibrarySection onSelectionChange={vi.fn()} selectedIds={[]} />
+    </SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Careful editor" }));
+    await screen.findByRole("heading", { name: "Careful editor" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete…" }));
+    expect(screen.getByRole("button", { name: "Delete Skill" })).toBeVisible();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("button", { name: "Delete Skill" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Careful editor" })).toBeVisible();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("heading", { name: "Careful editor" })).toBeNull();
+    expect(screen.getByText("Choose a Skill to inspect")).toBeVisible();
+    expect(registry.top()).toBeNull();
+  });
+
+  it("asks before a changed Skill draft is dropped by Settings' Escape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}>
+      <SkillLibrarySection onSelectionChange={vi.fn()} selectedIds={[]} />
+    </SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "New Skill" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Draft" } });
+    act(() => registry.top()?.onEscape());
+    const confirmation = await screen.findByRole("dialog", { name: "Unsaved Skill changes" });
+    fireEvent.click(within(confirmation).getByRole("button", { name: "Keep editing" }));
+    expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Draft");
+  });
+
+  it("registers no Settings step in the picker dialog, which owns its Escape", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/skill-owned")
+      ? Response.json({ skill: ownedSkillDetail }) : listResponse()));
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}>
+      <SkillLibraryDialog onClose={vi.fn()} onSelectionChange={vi.fn()} selectedIds={[]} />
+    </SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Careful editor" }));
+    await screen.findByRole("heading", { name: "Careful editor" });
+    expect(registry.top()).toBeNull();
   });
 
   it("enables all Skills for Auto without changing Always use selections", async () => {

@@ -167,6 +167,19 @@ describe("keyboard focus around Settings", () => {
     await waitFor(() => expect(gear).toHaveFocus());
   });
 
+  it("leaves on Escape from the section's row and returns focus to the gear, as Back to chat does", async () => {
+    render(shell());
+    const gear = await openSettingsWithTheGear();
+    const row = screen.getByRole("tab", { name: "General" });
+    expect(row).toHaveFocus();
+    fireEvent.keyDown(row, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByTestId("library-v2")).toBeNull());
+    await waitFor(() => expect(gear).toHaveFocus());
+    // Outside Settings the key is the chat's again.
+    fireEvent.keyDown(gear, { key: "Escape" });
+    expect(screen.queryByTestId("library-v2")).toBeNull();
+  });
+
   it("returns to Open sidebar when the chat list is hidden", async () => {
     stubComposition(true);
     render(shell());

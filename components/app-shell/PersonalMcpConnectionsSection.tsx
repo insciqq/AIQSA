@@ -1,6 +1,7 @@
 "use client";
 
 import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useChatRoutePath } from "./chatRoute";
 import { followMcpOAuthStart, startMcpOAuth, withMcpOAuthReturn } from "./mcpSettingsApi";
@@ -395,6 +396,14 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
     (draft.authMode !== "static" || Boolean(draft.token.trim()));
   const outcomeRow = oauthOutcome?.serverId ? connections.find((item) => item.id === oauthOutcome.serverId) ?? null : null;
   const scope = "personal-mcp";
+  const cancelConfirmation = () => {
+    setConfirmation(null);
+    focusAfterRender.current = () => urlRef.current?.focus();
+  };
+  // In Settings, Escape cancels the sign-in site confirmation, as Cancel does.
+  const confirmationShown = confirmation !== null && loadState !== "error" && loadState !== "idle"
+    && !(loadState === "loading" && connections.length === 0);
+  useSettingsEscapeStep(confirmationShown, cancelConfirmation, createBusy);
 
   let body: ReactNode;
   if (loadState === "idle" || (loadState === "loading" && connections.length === 0)) {
@@ -430,13 +439,7 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
             </ul>
             <div className="v2-settings-personal-mcp-options">
               <UiV2Button busy={createBusy} onClick={() => void submitCreate(confirmation)} tone="primary">Continue</UiV2Button>
-              <UiV2Button
-                disabled={createBusy}
-                onClick={() => {
-                  setConfirmation(null);
-                  focusAfterRender.current = () => urlRef.current?.focus();
-                }}
-              >
+              <UiV2Button disabled={createBusy} onClick={cancelConfirmation}>
                 Cancel
               </UiV2Button>
             </div>

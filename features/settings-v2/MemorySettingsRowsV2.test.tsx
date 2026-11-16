@@ -234,6 +234,20 @@ describe("MemorySettingsRowsV2", () => {
     });
   });
 
+  it("keeps Escape inside the modal confirmation while the reset runs", async () => {
+    useMemorySettingsStore.setState({ data: memoryConsumerSettingsFixture({ status: "ON" }), loadState: "ready" });
+    memoryApi.resetPersonalMemory.mockReturnValue(new Promise(() => undefined));
+    render(<MemorySettingsRowsV2 />);
+    fireEvent.click(screen.getByRole("button", { name: "Forget everything…" }));
+    const confirmation = screen.getByRole("alertdialog", { name: "Forget everything?" });
+    expect(confirmation).toHaveAttribute("aria-modal", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Forget everything" }));
+    expect(memoryApi.resetPersonalMemory).toHaveBeenCalledOnce();
+    // Busy: the key neither closes the confirmation nor reaches Settings behind it.
+    expect(fireEvent.keyDown(confirmation, { key: "Escape" })).toBe(false);
+    expect(confirmation).toBeInTheDocument();
+  });
+
   it("settles background reset progress and re-enables controls without reopening Settings", async () => {
     vi.useFakeTimers();
     useMemorySettingsStore.setState({

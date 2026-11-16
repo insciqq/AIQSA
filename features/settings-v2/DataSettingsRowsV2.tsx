@@ -103,6 +103,13 @@ export function DataSettingsRowsV2({
           aria-modal="true"
           className="v2-settings-confirm"
           role="alertdialog"
+          onKeyDown={(event) => {
+            // Escape keeps the chats, as its first button does, and never leaves Settings.
+            if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            setState({ kind: "idle" });
+          }}
         >
           <h2>Delete all personal chats?</h2>
           <p>

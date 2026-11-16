@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSkillLibraryStoreForTest } from "@/components/app-shell/skillLibraryStore";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
 import type { SkillVersionSummary, SkillVersionsResponse } from "@/lib/contracts/skillVersions";
 import { SkillVersionsSection } from "./SkillVersionsSection";
 
@@ -87,6 +88,20 @@ describe("SkillVersionsSection", () => {
     expect(screen.getByRole("group", { name: "Restore v3" })).not.toHaveTextContent("Colleagues keep");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("group", { name: "Restore v3" })).toBeNull();
+    expect(fetchMock.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("cancels on Settings' Escape without writing", async () => {
+    const fetchMock = respond({ [LIST]: history });
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}>
+      <SkillVersionsSection skill={{ id: "skill-1", name: "gitlab-digest", version: 4 }} published={false} onChanged={vi.fn()} />
+    </SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "Restore v3" }));
+    expect(screen.getByRole("group", { name: "Restore v3" })).toBeInTheDocument();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("group", { name: "Restore v3" })).toBeNull();
+    expect(registry.top()).toBeNull();
     expect(fetchMock.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
   });
 
