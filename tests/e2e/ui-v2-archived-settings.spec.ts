@@ -176,48 +176,53 @@ test("Archived chats is a focus-safe Data task with list, preview, and restore",
   await expect(settings.getByRole("button", { name: "Manage" })).toBeFocused();
 });
 
-test("Archived chat controls stay reachable on mobile and nest permanent deletion above Settings", async ({ page }) => {
-  await installArchiveRoutes(page);
-  await page.setViewportSize({ height: 844, width: 390 });
-  await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
+test.describe("on a phone", () => {
+  // The 44px targets are a rule for coarse pointers.
+  test.use({ hasTouch: true });
 
-  const settings = page.getByTestId("library-v2");
-  await settings.getByRole("button", { name: "Manage" }).click();
-  const archive = settings.getByTestId("settings-archived-panel");
-  await expect(archive.getByRole("button", { name: "Open preview: Quarterly evidence review" })).toBeVisible();
-  await expectNoHorizontalOverflow(page);
-  for (const control of [
-    settings.getByRole("button", { name: "Back to Data" }),
-    archive.getByRole("button", { name: "Restore Quarterly evidence review" }),
-    archive.getByRole("button", { name: "Actions: Quarterly evidence review" })
-  ]) {
-    const box = await control.boundingBox();
-    expect(box?.height).toBeGreaterThanOrEqual(44);
-    expect(box?.width).toBeGreaterThanOrEqual(44);
-  }
+  test("Archived chat controls stay reachable on mobile and nest permanent deletion above Settings", async ({ page }) => {
+    await installArchiveRoutes(page);
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto("/ui-v2-fixture?fixture=settings&state=archived");
 
-  await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();
-  await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
-  const confirmation = page.getByRole("dialog", { name: "Delete this chat permanently?" });
-  await expect(confirmation).toBeVisible();
-  // The confirmation isolates the page: Settings beneath it leaves the accessibility tree and takes no input.
-  const back = settings.getByRole("button", { name: "Back to Data" });
-  await expect(back).toHaveCount(0);
-  expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(true);
-  await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(confirmation).toHaveCount(0);
-  await expect(back).toBeVisible();
-  expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(false);
-  await expect(archive.getByRole("button", { name: "Actions: Quarterly evidence review" })).toBeFocused();
+    const settings = page.getByTestId("library-v2");
+    await settings.getByRole("button", { name: "Manage" }).click();
+    const archive = settings.getByTestId("settings-archived-panel");
+    await expect(archive.getByRole("button", { name: "Open preview: Quarterly evidence review" })).toBeVisible();
+    await expectNoHorizontalOverflow(page);
+    for (const control of [
+      settings.getByRole("button", { name: "Back to Data" }),
+      archive.getByRole("button", { name: "Restore Quarterly evidence review" }),
+      archive.getByRole("button", { name: "Actions: Quarterly evidence review" })
+    ]) {
+      const box = await control.boundingBox();
+      expect(box?.height).toBeGreaterThanOrEqual(44);
+      expect(box?.width).toBeGreaterThanOrEqual(44);
+    }
 
-  await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();
-  await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
-  await page.getByRole("dialog", { name: "Delete this chat permanently?" })
-    .getByRole("button", { name: "Delete permanently" }).click();
-  const status = page.getByRole("dialog", { name: "Permanent deletion" });
-  await expect(status).toBeVisible();
-  await status.getByRole("button", { name: "Close", exact: true }).last().click();
-  await expect(status).toHaveCount(0);
-  await expect(archive.getByRole("heading", { name: "No archived chats" })).toBeVisible();
-  await expect(archive.getByRole("searchbox", { name: "Search archived chats" })).toBeFocused();
+    await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();
+    await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
+    const confirmation = page.getByRole("dialog", { name: "Delete this chat permanently?" });
+    await expect(confirmation).toBeVisible();
+    // The confirmation isolates the page: Settings beneath it leaves the accessibility tree and takes no input.
+    const back = settings.getByRole("button", { name: "Back to Data" });
+    await expect(back).toHaveCount(0);
+    expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(true);
+    await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(confirmation).toHaveCount(0);
+    await expect(back).toBeVisible();
+    expect(await settings.evaluate(node => Boolean(node.closest("[inert]")))).toBe(false);
+    await expect(archive.getByRole("button", { name: "Actions: Quarterly evidence review" })).toBeFocused();
+
+    await archive.getByRole("button", { name: "Actions: Quarterly evidence review" }).click();
+    await page.getByRole("menuitem", { name: "Delete permanently…" }).click();
+    await page.getByRole("dialog", { name: "Delete this chat permanently?" })
+      .getByRole("button", { name: "Delete permanently" }).click();
+    const status = page.getByRole("dialog", { name: "Permanent deletion" });
+    await expect(status).toBeVisible();
+    await status.getByRole("button", { name: "Close", exact: true }).last().click();
+    await expect(status).toHaveCount(0);
+    await expect(archive.getByRole("heading", { name: "No archived chats" })).toBeVisible();
+    await expect(archive.getByRole("searchbox", { name: "Search archived chats" })).toBeFocused();
+  });
 });

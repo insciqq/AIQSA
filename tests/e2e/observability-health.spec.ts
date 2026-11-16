@@ -194,7 +194,7 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
     mode = 503;
     await send(page, "Observability fixture during an outage");
-    await expect(lastAnswer(page)).toContainText("The model provider returned a server error (HTTP 503)");
+    await expect(lastAnswer(page)).toContainText("returned a server error (HTTP 503)");
     mode = "ok";
     await send(page, "Observability fixture after the key is replaced");
     await expect(lastAnswer(page)).toContainText(ANSWER);

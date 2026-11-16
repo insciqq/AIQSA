@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page, type TestInfo } from "@playwrigh
 import { memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
-import { runAccountMenuAction } from "./shell/page";
+import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 
 const sizes = [{ width: 1440, height: 900 }, { width: 768, height: 1024 },
@@ -125,6 +125,8 @@ for (const width of [1440, 390]) {
         await expect(confirmation.getByRole("button", { name: "Keep editing", exact: true })).toBeFocused();
         await screenshot(page, info, `${resource}-${destination}-${width}`);
         await confirmation.getByRole("button", { name: "Keep editing", exact: true }).click();
+        // Asked from the list of sections, Keep editing leaves the list in front: the draft waits in its section.
+        if (await library.getAttribute("data-view") === "list") await showSettingsSection(page, resource);
         await expect(input).toHaveValue(draft);
         await expect(selectedSection(library)).toHaveText(resource);
         await navigate();
