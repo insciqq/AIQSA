@@ -1,6 +1,6 @@
 /*
- * Studio › Assistants editor page and the New assistant sheet.
- * The editor subview lifts the Studio width cap (as Skills does); the
+ * Settings › Assistants editor page and the New assistant sheet.
+ * The editor subview lifts the Settings width cap (as Skills does); the
  * page is its own container, with two columns from 65rem (1040px) and a
  * 22.5rem (360px) Setup column. Split in the instructions is decided by the
  * Markdown editor's own container (880px).
@@ -32,8 +32,8 @@
   mask-image: none;
 }
 
-/* The page is 30rem or narrower: the panel's 2rem of gutters below 768px.
-   From 768px the rail and the Studio column (from 1024px) leave it wider. */
+/* The page is 32rem or narrower: 30rem inside the panel's 2rem of gutters.
+   From 1024px the Settings section column leaves the panel narrower than the page. */
 @media (max-width: 32rem) {
   .v2-library-panel:has(> .v2-library-content > .v2-assistant-editor-page) {
     --v2-assistant-editor-bar-status-row: calc(1.125rem + 0.5rem);

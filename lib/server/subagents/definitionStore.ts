@@ -12,7 +12,7 @@ import {
  * `SubagentDefinitionRevision`) and the owner's default among them
  * (`UserSettings.defaultSubagentDefinitionId`). Every read and write names the
  * owner, so a definition of another user reads as missing. Writes run inside
- * the caller's transaction (a Studio route's, or a tool call's together with
+ * the caller's transaction (a Settings route's, or a tool call's together with
  * its settlement, `lib/server/tools/selfServiceCall.ts`) and first take the
  * owner's definition lock, so the per-user limit, name uniqueness, the version
  * guard and the default's compare-and-set hold without relying on a constraint

@@ -97,7 +97,7 @@ describe("AdminAssistantsSection", () => {
     expect(calls.map((call) => call.url)).toEqual(["/api/admin/assistants?state=listed&limit=30"]);
   });
 
-  it("opens a listed Assistant's Studio details from its row, between Featured and the menu", async () => {
+  it("opens a listed Assistant's Settings details from its row, between Featured and the menu", async () => {
     routes = () => listResponse("listed", [...listed, listedRow("id with/slash&x", "Odd id", null, "2026-09-13T00:00:00.000Z")]);
     render(<Harness />);
     const list = await screen.findByRole("list", { name: "Assistants listed for everyone" });

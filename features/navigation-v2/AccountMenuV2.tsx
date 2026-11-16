@@ -12,7 +12,7 @@ import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import { useState } from "react";
 import { adminAttentionIndicator, useAdminAttentionSummary } from "./useAdminAttentionSummary";
 
-/** Two-letter initials for the rail avatar: "operator@aiqsa.local" → "OP". */
+/** Two-letter initials for the account avatar: "operator@aiqsa.local" → "OP". */
 export function accountInitialsV2(label: string | null | undefined): string {
   const local = (label ?? "").split("@")[0]?.replace(/[^\p{L}\p{N}]+/gu, " ").trim() ?? "";
   if (!local) return "A";
@@ -24,9 +24,12 @@ export function accountInitialsV2(label: string | null | undefined): string {
 }
 
 /**
- * The one account entry of the shell (UX audit F11): Settings, Control
- * Center, and Sign out. The rail shows it as an avatar; the mobile drawer
- * footer shows it as a row with the account label.
+ * The one account entry of a shell (UX audit F11): who is signed in, Control
+ * Center for administrators, and Sign out. Settings is an item only where
+ * `onSettings` is passed: the chat list footer leaves it out because its gear
+ * sits beside the entry. The chat list footer and Control Center show the
+ * entry as a row with the account label; the pair page's header (its right
+ * end) as an avatar whose menu opens below it.
  */
 export function AccountMenuV2({
   accountId,
@@ -71,7 +74,7 @@ export function AccountMenuV2({
         aria-haspopup="menu"
         aria-label="Account menu"
         data-tooltip={variant === "avatar" ? accountLabel || "Account" : undefined}
-        data-tooltip-side={variant === "avatar" ? "right" : undefined}
+        data-tooltip-side={variant === "avatar" ? "left" : undefined}
         ref={triggerRef}
         onClick={() => setOpen((value) => !value)}
       >

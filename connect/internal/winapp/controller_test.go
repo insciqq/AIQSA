@@ -338,7 +338,7 @@ func TestDisconnectRemovesCredentialsWhenAIQSACannotBeReached(t *testing.T) {
 	if _, err := f.paths.LoadCredentials(); !errors.Is(err, config.ErrNotLoggedIn) {
 		t.Fatalf("credentials kept: %v", err)
 	}
-	if !strings.Contains(f.ui.noticeText(), "still listed there. Remove it in AIQSA → AIQSA Connect.") {
+	if !strings.Contains(f.ui.noticeText(), "still listed there. Remove it in AIQSA → Settings › Computers.") {
 		t.Fatalf("notices %q", f.ui.noticeText())
 	}
 }

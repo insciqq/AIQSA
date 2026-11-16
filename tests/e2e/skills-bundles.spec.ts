@@ -42,8 +42,7 @@ async function detailFor(page: Page, id: string): Promise<SkillDetail> {
 }
 
 async function openLibrary(page: Page): Promise<Locator> {
-  await runAccountMenuAction(page, "Assistants");
-  await page.getByTestId("library-v2").getByRole("tab", { name: "Skills", exact: true }).click();
+  await runAccountMenuAction(page, "Skills");
   const library = page.getByTestId("skill-library-section");
   await expect(library).toBeVisible();
   return library;

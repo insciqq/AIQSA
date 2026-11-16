@@ -69,7 +69,7 @@ func TestLogoutRemovesCredentialsWhenAIQSACannotBeReached(t *testing.T) {
 	paths := logoutPaths(t, origin)
 	code, stdout, _ := runArgs("logout")
 	if code != 0 || !strings.Contains(stdout, "Removed this computer's AIQSA credentials, but cannot reach AIQSA at "+origin) ||
-		!strings.Contains(stdout, "remove it in AIQSA → AIQSA Connect") {
+		!strings.Contains(stdout, "remove it in AIQSA → Settings › Computers") {
 		t.Fatalf("logout: %d %q", code, stdout)
 	}
 	if _, err := paths.LoadCredentials(); !errors.Is(err, config.ErrNotLoggedIn) {

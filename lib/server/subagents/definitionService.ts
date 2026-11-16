@@ -31,13 +31,13 @@ import {
 } from "./definitionStore";
 
 /**
- * The one service behind custom sub-agents: Studio's routes and the agent's
+ * The one service behind custom sub-agents: Settings' routes and the agent's
  * `create_subagent`, `edit_subagent` and `delete_subagent` validate a draft
  * the same way (contract bounds, then the user's current tool-calling models
- * and efforts) and write through the same store. A Studio write commits in
+ * and efforts) and write through the same store. A Settings write commits in
  * its own transaction; an agent write commits with its tool call and card
  * (`commitSelfServiceChange`). Deleting from the agent only proposes: the
- * user confirms in the card through the Studio route. Moving the user's default
+ * user confirms in the card through the Settings route. Moving the user's default
  * sub-agent follows the same paths, and an Undo of a change that moved it reverses
  * both in one transaction.
  */
@@ -55,7 +55,7 @@ export type SubagentDefinitionOutcome<T> = Readonly<{ ok: true; value: T }> | Re
 
 const refuse = (refusal: SubagentDefinitionRefusal): Readonly<{ ok: false; refusal: SubagentDefinitionRefusal }> => ({ ok: false, refusal });
 
-/** A record as the owner's Studio reads it, with its model's current name and availability. */
+/** A record as the owner's Settings reads it, with its model's current name and availability. */
 export function subagentDefinitionSummary(record: SubagentDefinitionRecord, models: readonly SubagentModelOption[] | null): SubagentDefinitionSummary {
   const model = record.providerModelId === null ? null : models?.find((option) => option.modelId === record.providerModelId) ?? null;
   return {
@@ -93,7 +93,7 @@ function written(write: SubagentStoreWrite): SubagentDefinitionOutcome<SubagentD
   return write.kind === "refused" ? refuse(storeRefusal(write)) : { ok: true, value: write.record };
 }
 
-/** The Studio routes' service: one owner per call, each write in its own transaction. */
+/** The Settings routes' service: one owner per call, each write in its own transaction. */
 export type SubagentDefinitionService = Readonly<{
   list(userId: string): Promise<SubagentDefinitionListResponse>;
   get(userId: string, id: string): Promise<SubagentDefinitionView | null>;

@@ -3,6 +3,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
 import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
+import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 import { authenticateWithLocalToken } from "./support/localAuth";
@@ -344,7 +345,7 @@ test("one artifact card per answer survives updates, replay and reload while his
   } finally { await fixture.cleanup(); }
 });
 
-test("Library artifact rows support preview, rename, archive confirmation, restore and deletion", async ({ page }, testInfo) => {
+test("Settings › Artifacts rows support preview, rename, archive confirmation, restore and deletion", async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   const fixture = await createFixture(page);
   const title = fixture.artifact.title;
@@ -362,11 +363,7 @@ test("Library artifact rows support preview, rename, archive confirmation, resto
     });
     const library = page.getByTestId("library-v2");
     const list = page.getByTestId("library-artifacts-panel");
-    const openLibrary = async () => {
-      await page.getByRole("navigation", { name: "Workspace" }).getByRole("button", { name: "Studio", exact: true }).click();
-      await library.getByRole("tab", { name: "Artifacts", exact: true }).click();
-    };
-    await openLibrary();
+    await runAccountMenuAction(page, "Artifacts");
     await list.getByRole("searchbox", { name: "Search artifacts" }).fill(title);
     await list.getByRole("button", { name: `Open ${title}`, exact: true }).click();
     await expect(page.locator("iframe.v2-artifact-frame")).toBeVisible({ timeout: 30_000 });
@@ -381,8 +378,11 @@ test("Library artifact rows support preview, rename, archive confirmation, resto
     await page.getByRole("menuitem", { name: "Open source chat", exact: true }).click();
     await expect(composer).toHaveValue("Keep the draft while I inspect the library");
     expect(documentRequests).toBe(0);
-    await openLibrary();
+    // The gear reopens Settings on the section the user left.
+    await runAccountMenuAction(page, "Settings");
     await expect(library.getByRole("tab", { name: "Artifacts", exact: true })).toHaveAttribute("aria-selected", "true");
+    // The gear leaves the list of sections in front where they take turns; the sizes below look at the section.
+    await showSettingsSection(page, "Artifacts");
     await list.getByRole("searchbox", { name: "Search artifacts" }).fill(title);
     for (const theme of ["light", "dark"]) {
       await page.evaluate(value => {

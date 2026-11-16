@@ -2,11 +2,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatComputerBinding, ConnectComputerWire } from "@/lib/contracts/computer";
-import type { ConnectComputerSource } from "@/features/connect/connectShellContext";
+import type { ConnectComputerSource } from "@/features/connect/connectComputersContext";
 import {
   composerGalleryAssistant,
   composerGalleryConfig
 } from "@/app/ui-v2-fixture/_fixtures/ComposerV2Gallery";
+import { initialSettingsDestinationSnapshot, useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
 import { ComposerV2 } from "./ComposerV2";
 import { requestComposerComputerPicker } from "./computerPickerRequest";
 
@@ -61,6 +62,7 @@ afterEach(() => {
   cleanup();
   fetchMock.mockReset();
   vi.unstubAllGlobals();
+  useSettingsDestinationStore.setState(initialSettingsDestinationSnapshot);
 });
 
 function baseProps() {
@@ -237,10 +239,28 @@ describe("Use a computer in the composer", () => {
     expect(screen.getByTestId("composer-v2-computer")).toHaveTextContent("build-box · workoffline");
   });
 
-  it("leads to AIQSA Connect when the user has no computers", () => {
+  it("leads to Settings › Computers in the shell when the user has no computers", () => {
     render(<Harness list={[]} />);
     const picker = openPickerFromMenu();
-    expect(within(picker).getByRole("link", { name: "Add a computer in AIQSA Connect" })).toHaveAttribute("href", "/connect");
+    const link = within(picker).getByRole("link", { name: "Add a computer in Settings" });
+    // A real address for a middle click or a new tab.
+    expect(link).toHaveAttribute("href", "/?library=computers");
+    // A plain click stays in the page: the picker closes and the shell is asked for the section.
+    expect(fireEvent.click(link)).toBe(false);
+    expect(screen.queryByTestId("computer-picker")).toBeNull();
+    expect(useSettingsDestinationStore.getState().settingsRequest).toEqual({ section: "computers" });
+  });
+
+  it("opens Settings › Computers from the list, and keeps a modified click with the browser", () => {
+    render(<Harness />);
+    const picker = openPickerFromMenu();
+    const link = within(picker).getByRole("link", { name: "Add a computer" });
+    expect(link).toHaveAttribute("href", "/?library=computers");
+    expect(fireEvent.click(link, { ctrlKey: true })).toBe(true);
+    expect(useSettingsDestinationStore.getState().settingsRequest).toBeNull();
+    expect(screen.getByTestId("computer-picker")).toBeVisible();
+    expect(fireEvent.click(link)).toBe(false);
+    expect(useSettingsDestinationStore.getState().settingsRequest).toEqual({ section: "computers" });
   });
 
   it("offers Change folder, Change computer and Stop using computer on the chip", async () => {

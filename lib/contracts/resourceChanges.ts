@@ -9,7 +9,7 @@ import { WORKSPACE_SECRET_KINDS, isWorkspaceEnvName, isWorkspaceSecretId, type W
  * its own card (`skillSaves.ts`). A change already happened when its card
  * shows. A proposal (`delete_proposed`, `publish_proposed`) changed nothing:
  * only the user's click in the card performs it, through the same owner
- * route as Studio, and the route refuses it as a conflict when the resource
+ * route as Settings, and the route refuses it as a conflict when the resource
  * changed since the proposal (a secret's revision, a Skill's, an
  * Assistant's or a custom sub-agent's definition version, a proxy's version).
  */

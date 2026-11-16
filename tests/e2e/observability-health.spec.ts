@@ -120,7 +120,8 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     mode = 401;
     await send(page, "Observability fixture after the key is revoked");
     const failed = lastAnswer(page);
-    await expect(failed).toContainText("The model provider rejected the configured credentials (HTTP 401)");
+    // The failure names the model and its provider (lib/server/providers/providerFailureMessage.ts).
+    await expect(failed).toContainText("rejected the configured credentials (HTTP 401)");
     await expect(failed).toContainText("Ask an administrator to check the provider key.");
     const reference = failed.getByTestId("run-error-reference");
     await expect(reference).toBeVisible();
@@ -193,7 +194,7 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
     mode = 503;
     await send(page, "Observability fixture during an outage");
-    await expect(lastAnswer(page)).toContainText("The model provider returned a server error (HTTP 503)");
+    await expect(lastAnswer(page)).toContainText("returned a server error (HTTP 503)");
     mode = "ok";
     await send(page, "Observability fixture after the key is replaced");
     await expect(lastAnswer(page)).toContainText(ANSWER);

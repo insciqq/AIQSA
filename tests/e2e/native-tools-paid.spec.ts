@@ -301,7 +301,7 @@ const codeWord = (prefix: string) => `${prefix}${randomUUID().replaceAll("-", ""
 const card = (page: Page, resource: string) => lastAnswer(page).locator(`[data-testid="resource-change-card"][data-resource="${resource}"]`);
 const folded = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/gu, "");
 
-/** Deletes the user's saved secret of that name through the Studio route. */
+/** Deletes the user's saved secret of that name through the route Settings › Secrets uses. */
 async function deleteSecretNamed(page: Page, name: string): Promise<void> {
   const listed = await (await page.request.get("/api/me/workspace/secrets")).json() as { secrets: { id: string; name: string; versionId: string }[] };
   for (const secret of listed.secrets.filter((entry) => entry.name === name)) {

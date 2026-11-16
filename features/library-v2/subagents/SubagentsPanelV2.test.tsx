@@ -32,7 +32,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const mutations = () => calls.filter(([method]) => method !== "GET");
 
-describe("Studio > Sub-agents", () => {
+describe("Settings > Sub-agents", () => {
   it("shows an empty state that explains sub-agents are optional", async () => {
     render(<SubagentsPanelV2 />);
     expect(await screen.findByText(/No custom sub-agents yet/u)).toBeVisible();
@@ -149,7 +149,7 @@ describe("Studio > Sub-agents", () => {
   });
 });
 
-describe("Studio > Sub-agents: the default", () => {
+describe("Settings > Sub-agents: the default", () => {
   const OTHER = { ...summary(VIEW), id: "def_2", name: "shopper" };
   const two = () => ({ ...list, definitions: [summary(VIEW), OTHER] });
   const moveTo = (id: string | null) => () => { list = { ...list, defaultDefinitionId: id }; return Response.json({ defaultDefinitionId: id }); };

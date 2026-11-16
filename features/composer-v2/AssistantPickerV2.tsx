@@ -101,7 +101,7 @@ export function AssistantPickerV2({
   assistants: readonly AssistantSummary[];
   currentAssistantId: string | null;
   loading: boolean;
-  /** "Browse all in Studio". */
+  /** "Browse all in Settings". */
   onBrowse(): void;
   onClose(): void;
   onSelect(assistantId: string): void;
@@ -293,7 +293,7 @@ export function AssistantPickerV2({
 
         <footer className="v2-assistant-popover-footer" data-testid="assistant-picker-actions">
           <button className="v2-focusable" type="button" onClick={onBrowse}>
-            Browse all in Studio
+            Browse all in Settings
             <UiV2Icon name="chevron-right" />
           </button>
         </footer>

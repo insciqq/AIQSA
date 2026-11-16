@@ -114,9 +114,9 @@ function withoutDisclaimer(text: string): string {
 }
 
 describe("Browser session user path", () => {
-  it("sends sign-in to the live browser, keeps the Studio import as the advanced path and invents no other control", () => {
+  it("sends sign-in to the live browser, keeps the Settings import as the advanced path and invents no other control", () => {
     for (const phrase of ["browser_handoff", "live browser of the web chat", "presses Done", "Never ask for a password or a code in the chat",
-      "advanced alternative", "Studio → Secrets", "Add secret", "Browser session", "Edit", "Replace saved value",
+      "advanced alternative", "Settings → Secrets", "Add secret", "Browser session", "Edit", "Replace saved value",
       "Playwright storage_state JSON", "next Workspace request"]) {
       expect(WORKSPACE_BROWSER_SESSION_USER_PATH).toContain(phrase);
     }
@@ -133,7 +133,7 @@ describe("Browser session user path", () => {
     }
   });
 
-  it("uses labels that the Studio Secrets panel actually renders", () => {
+  it("uses labels that the Settings Secrets panel actually renders", () => {
     const panel = readFileSync(new URL("../../../features/settings-v2/WorkspaceSecretsPanel.tsx", import.meta.url), "utf8");
     const studio = readFileSync(new URL("../../../features/workspace-v2/WorkspaceWelcomeV2.tsx", import.meta.url), "utf8");
     for (const label of [">Add secret<", "browser_session: \"Browser session\"", ">Edit<", "Replace saved value",

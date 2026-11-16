@@ -52,7 +52,7 @@ const ACTION_HEADINGS = {
 } as const satisfies Record<NonNullable<ScheduledTaskCard["action"]>, string>;
 
 /**
- * Opens Studio › Scheduled on the task's editor. The account's task list is
+ * Opens Settings › Automations on the task's editor. The account's task list is
  * read first, so the editor finds a task the answer has just created.
  */
 export async function openScheduledTaskEditorV2(

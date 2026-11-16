@@ -979,7 +979,7 @@ describe("assistant publish handler", () => {
     expect(await conflict.json()).toEqual({ error: "assistant_version_conflict" });
     expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ expectedVersion: 4, groupId: "group-1", scope: "group" }));
 
-    // Studio publishes the current definition and names no version.
+    // Settings publishes the current definition and names no version.
     await post({ groupId: "group-1", scope: "group" });
     expect(publish.mock.calls.at(-1)![0]).not.toHaveProperty("expectedVersion");
 

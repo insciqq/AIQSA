@@ -2,9 +2,6 @@ import type { ConnectComputerWire } from "@/lib/contracts/computer";
 import type { ConnectArch, ConnectOs } from "@/lib/contracts/connect";
 import type { ConnectFailureCode } from "./connectApi";
 
-/** The mode's only name: never "Connect" on its own. */
-export const CONNECT_PRODUCT_NAME = "AIQSA Connect";
-
 const OS_LABELS: Readonly<Record<ConnectOs, string>> = { darwin: "macOS", linux: "Linux", windows: "Windows" };
 const ARCH_LABELS: Readonly<Record<ConnectArch, string>> = { amd64: "x64", arm64: "ARM64" };
 
@@ -90,7 +87,7 @@ export function connectErrorMessage(code: ConnectFailureCode, retryAfterSeconds?
     case "connect_device_disconnected": return "This computer is offline. Start AIQSA Connect on it, then try again.";
     case "connect_device_timeout":
     case "computer_timeout": return "The computer did not answer in time. Try again.";
-    case "connect_device_limit": return "You already have the maximum of 10 computers. Revoke one in AIQSA Connect first.";
+    case "connect_device_limit": return "You already have the maximum of 10 computers. Revoke one in Settings › Computers first.";
     case "connect_device_unavailable":
     case "connect_not_found": return "This computer is no longer connected to your account.";
     case "computer_path_not_found":

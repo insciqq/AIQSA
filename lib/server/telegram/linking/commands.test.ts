@@ -58,7 +58,7 @@ describe("Telegram account commands", () => {
       "Connected to AIQSA as Alex Example. Send a message to start a new chat. /help lists commands."
     ]);
     expect(refuse.mock.calls).toEqual([
-      ["This link has expired. Create a new one in AIQSA → Settings → Connections."],
+      ["This link has expired. Create a new one in AIQSA → Settings → Telegram."],
       ["This Telegram account is connected to another AIQSA account. Disconnect it there first."]
     ]);
   });

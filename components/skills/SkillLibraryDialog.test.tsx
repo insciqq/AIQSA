@@ -563,7 +563,7 @@ describe("SkillLibraryDialog", () => {
     expect(proceed).toHaveBeenCalledOnce();
   });
 
-  it("reports an unsaved section editor to the enclosing Studio guard", async () => {
+  it("reports an unsaved section editor to the enclosing Settings guard", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => listResponse()));
     const onDirtyChange = vi.fn();
     const { unmount } = render(<SkillLibrarySection onDirtyChange={onDirtyChange} onSelectionChange={vi.fn()} selectedIds={[]} />);

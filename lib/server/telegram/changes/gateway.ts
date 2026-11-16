@@ -4,7 +4,7 @@ import type { TelegramChangeOperation, TelegramChangeOutcome } from "./plan";
 
 /**
  * How a change button acts: the request the web card sends, to the same
- * Studio route handler, in this process, as the button's user. The routes
+ * Settings route handler, in this process, as the button's user. The routes
  * authenticate through the resolver they are built with (`telegramRequestAuth`:
  * the linked user while the account is active and Telegram access holds,
  * re-read on every call) and check ownership, versions and lifecycle exactly
@@ -12,7 +12,7 @@ import type { TelegramChangeOperation, TelegramChangeOutcome } from "./plan";
  * the web card. No parallel authorization lives here.
  */
 
-/** The Studio route handlers a change button calls, each bound to the button user's resolver. */
+/** The Settings route handlers a change button calls, each bound to the button user's resolver. */
 export type TelegramChangeRoutes = Readonly<{
   /** `POST /api/me/workspace/secrets` */
   secrets(request: Request): Promise<Response>;

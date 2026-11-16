@@ -23,7 +23,9 @@ import {
   type ConnectComputerRecentDirsResponse,
   type ConnectComputerWire
 } from "@/lib/contracts/computer";
-import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
+import { CONNECT_SETTINGS_PATH } from "@/lib/contracts/connect";
+import { useSettingsDestinationStore } from "@/components/app-shell/settingsDestinationStore";
+import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
 import { useEffect, useId, useState, type FormEvent } from "react";
 import type { ComposerComputersV2 } from "./useComposerComputers";
 
@@ -85,9 +87,22 @@ function ComputerRowV2({ computer, current, now, onSelect }: Readonly<{
   );
 }
 
-function ComputerStepV2({ binding, computers, onSelect }: Readonly<{
+/**
+ * "Add a computer" opens Settings › Computers in the chat shell, over the
+ * chat; a middle or modified click loads its address in a new tab instead.
+ */
+function AddComputerLinkV2({ children, onOpen }: Readonly<{ children: string; onOpen(): void }>) {
+  return (
+    <a className="v2-connect-link v2-focusable self-start text-sm" href={CONNECT_SETTINGS_PATH} onClick={shellLinkClick(onOpen)}>
+      {children}
+    </a>
+  );
+}
+
+function ComputerStepV2({ binding, computers, onAddComputer, onSelect }: Readonly<{
   binding: ChatComputerBinding | null;
   computers: ComposerComputersV2;
+  onAddComputer(): void;
   onSelect(computerId: string): void;
 }>) {
   const now = useConnectNow();
@@ -107,7 +122,7 @@ function ComputerStepV2({ binding, computers, onSelect }: Readonly<{
         <p className="text-sm leading-6 text-ink-secondary">
           You have no computers yet. Install AIQSA Connect on a computer, approve it, then choose it here.
         </p>
-        <a className="v2-connect-link v2-focusable self-start text-sm" href={CONNECT_PAGE_PATH}>Add a computer in AIQSA Connect</a>
+        <AddComputerLinkV2 onOpen={onAddComputer}>Add a computer in Settings</AddComputerLinkV2>
       </div>
     );
   }
@@ -124,7 +139,7 @@ function ComputerStepV2({ binding, computers, onSelect }: Readonly<{
           />
         ))}
       </ul>
-      <a className="v2-connect-link v2-focusable self-start text-sm" href={CONNECT_PAGE_PATH}>Add a computer</a>
+      <AddComputerLinkV2 onOpen={onAddComputer}>Add a computer</AddComputerLinkV2>
     </div>
   );
 }
@@ -360,7 +375,15 @@ export function ComputerPickerV2({ binding, computers, initialComputerId, onChoo
           }}
         />
       ) : (
-        <ComputerStepV2 binding={binding} computers={computers} onSelect={setComputerId} />
+        <ComputerStepV2
+          binding={binding}
+          computers={computers}
+          onAddComputer={() => {
+            onClose();
+            useSettingsDestinationStore.getState().openSettings("computers");
+          }}
+          onSelect={setComputerId}
+        />
       )}
     </UiV2Sheet>
   );

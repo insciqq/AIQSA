@@ -23,7 +23,6 @@ import { AccountMenuV2 } from "./AccountMenuV2";
 import { AnnouncementsBell } from "@/components/announcements/AnnouncementsBell";
 import { useAnnouncements } from "@/components/announcements/AnnouncementsProvider";
 import { chatMenuActionsV2, flattenFolderTree, type FlattenedFolder } from "./chatMenuActions";
-import { RailV2, type RailSectionV2 } from "./RailV2";
 import {
   clearChatNavigationSearch,
   loadChatMessageMatches,
@@ -58,7 +57,6 @@ import {
   type ChatNavigationFolderWire,
   type ChatNavigationSummaryWire
 } from "@/lib/contracts/chats";
-import { CONNECT_PAGE_PATH } from "@/lib/contracts/connect";
 import {
   Fragment,
   useEffect,
@@ -70,7 +68,14 @@ import {
   type ReactNode
 } from "react";
 
+/**
+ * Desktop shows the list as a column; compact (768–1023px) and mobile show
+ * it as an overlay drawer. They differ only in how the floating controls sit.
+ */
 type SidebarCompositionV2 = "compact" | "desktop" | "mobile";
+
+/** What the content column shows: the chat, or the full-page `library` surface. */
+export type ShellSectionV2 = "chats" | "library";
 
 function currentSidebarCompositionV2(): SidebarCompositionV2 {
   if (typeof window === "undefined") return "desktop";
@@ -95,8 +100,6 @@ export type NavigationSidebarProps = Readonly<{
   activeChatId: string | null;
   /** Shows the Control Center link inside the account menu. */
   adminEntryVisible?: boolean;
-  /** Shows AIQSA Connect among the rail and drawer destinations. */
-  connectEntryVisible?: boolean;
   /**
    * Optional current per-chat state (favourite, retained Memory mode) so the
    * row menu can show what is active; unknown chats simply render stateless.
@@ -145,7 +148,6 @@ export type NavigationSidebarProps = Readonly<{
   onCopyThread?(chat: ChatNavigationSummaryWire): void;
   onExport?(chat: ChatNavigationSummaryWire, format?: "json" | "markdown" | "pdf"): void;
   onFavorite?(chat: ChatNavigationSummaryWire): void;
-  onLibrary?(): void;
   navigationBusy?: boolean;
   onLoadMore(): void;
   onLoadMoreMessageMatches?(): void;
@@ -153,12 +155,6 @@ export type NavigationSidebarProps = Readonly<{
   onOpenMessageMatch?(match: ChatMessageMatchWire): void;
   /** Requests the first message page again after it failed. */
   onRetryMessageMatches?(): void;
-  /**
-   * Mobile drawer only: the rail destinations (Library, Settings, Control
-   * Center) and the account entry live in the drawer footer because the
-   * rail is absent below 768px.
-   */
-  drawerDestinations?: boolean;
   onMemoryMode?(chat: ChatNavigationSummaryWire, mode: "EXCLUDED" | "NORMAL"): void;
   onMove?(chat: ChatNavigationSummaryWire, folderId: string | null): void;
   onMoveFolder?(folder: ChatNavigationFolderWire, folderId: string | null): void;
@@ -172,7 +168,13 @@ export type NavigationSidebarProps = Readonly<{
   onRetry(): void;
   onSelectChat(chat: ChatNavigationSummaryWire): void;
   onShare?(chat: ChatNavigationSummaryWire): void;
+  /** The footer's gear: opens Settings. */
   onSettings?(): void;
+  /**
+   * The shell hides the list (Settings is open): it leaves the tab order and
+   * the accessibility tree, and focus on it no longer counts as held.
+   */
+  inert?: boolean;
   onSearch(value: string): void;
   ready: boolean;
   searchError: string | null;
@@ -912,6 +914,7 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
     <aside
       className="v2-navigation"
       aria-label="Chat navigation"
+      inert={props.inert || undefined}
       tabIndex={-1}
     >
       <button
@@ -922,14 +925,13 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         Skip to message composer
       </button>
       <div className="v2-navigation-header">
-        {/* Desktop/compact: the column title plus the hide-list control; the
-            mobile drawer shows the wordmark and a close cross instead. */}
+        {/* The wordmark and the hide-list control at every width; the
+            control shows a panel on desktop and a close cross on a drawer. */}
         <div className="v2-navigation-brand">
           <span className="v2-navigation-wordmark">
             <span className="v2-navigation-mark" aria-hidden="true"><UiV2Icon name="brand" /></span>
-            AIQSA
+            <span>AIQSA</span>
           </span>
-          <span className="v2-navigation-column-title">Chats</span>
           <button
             className="v2-icon-button v2-focusable v2-navigation-close"
             type="button"
@@ -1216,42 +1218,29 @@ export function NavigationSidebar(props: NavigationSidebarProps) {
         ) : null}
       </div>
 
-      {props.drawerDestinations ? (
-        <div className="v2-navigation-footer">
-          <AnnouncementsBell compact={false} />
-          {/* One row of destinations (UX audit 2026-09-02 #15) so the chat
-              list keeps the drawer's height; Settings and Control Center live
-              in the account menu, exactly as on the rail. Icons share one
-              top line, so the two-line "AIQSA Connect" keeps them aligned. */}
-          <div className="v2-navigation-destinations [&>*]:!justify-start">
-            {props.onLibrary ? (
-              <button className="v2-navigation-destination v2-focusable" disabled={props.navigationBusy} type="button" onClick={props.onLibrary}>
-                <UiV2Icon name="studio" /><span>Studio</span>
-              </button>
-            ) : null}
-            {props.connectEntryVisible ? (
-              <a className="v2-navigation-destination v2-focusable" href={CONNECT_PAGE_PATH}>
-                <UiV2Icon name="terminal" /><span>AIQSA Connect</span>
-              </a>
-            ) : null}
-            {props.onSettings ? (
-              <button
-                className="v2-navigation-destination v2-focusable"
-                type="button"
-                onClick={props.onSettings}
-              >
-                <UiV2Icon name="settings" /><span>Settings</span>
-              </button>
-            ) : null}
-          </div>
+      {/* One row at every width (operator decision 2026-11-16): the account
+          entry, then Announcements and Settings. The account menu leaves
+          Settings out because the gear sits beside it. */}
+      <div className="v2-navigation-footer" data-testid="navigation-footer">
+        <div className="v2-navigation-footer-bar">
           <AccountMenuV2
             accountId={props.accountId ?? null}
             accountLabel={props.accountLabel}
             adminEntryVisible={props.adminEntryVisible}
-            onSettings={props.onSettings}
           />
+          <AnnouncementsBell />
+          {props.onSettings ? (
+            <UiV2IconButton
+              data-navigation-settings=""
+              icon="settings"
+              label="Settings"
+              tooltip="Settings"
+              tooltipSide="top"
+              onClick={props.onSettings}
+            />
+          ) : null}
         </div>
-      ) : null}
+      </div>
     </aside>
     </ChatDragDropProvider>
   );
@@ -1428,7 +1417,7 @@ export function NavigationSidebarContainer(ownerProps: Omit<NavigationSidebarPro
 }
 
 type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
-  | "activeChatId" | "chats" | "drawerDestinations" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
+  | "activeChatId" | "chats" | "error" | "favoritesComplete" | "folders" | "hasMore" | "loading"
   | "messageMatches" | "messageMatchesError" | "messageMatchesHasMore" | "messageMatchesLoading"
   | "messageMatchesReady" | "now" | "onClose" | "onLoadMore" | "onLoadMoreMessageMatches" | "onRetry"
   | "onRetryMessageMatches" | "onSearch" | "ready" | "searchError" | "searchLoading" | "searchQuery" | "subagents"
@@ -1436,12 +1425,15 @@ type ReadingRoomShellV2Props = Omit<NavigationSidebarProps,
   /** Marks an open chat so the mobile "+" island yields to the title pill. */
   chatActive?: boolean;
   children: ReactNode;
-  /** Rail "Chats" while another section is open: returns to the chat. */
+  /** Leaves another section for the chat, before a chat started from it. */
   onChats?(): void;
   /** Guards the entire navigation action before changing any surface or drawer. */
   onRequestNavigation?(proceed: () => void): void;
-  /** Which second-column section is open; the rail marks it. */
-  section?: RailSectionV2;
+  /**
+   * What the content column shows. The `library` section hides the chat list
+   * and the floating controls at every width: its own Back is the one exit.
+   */
+  section?: ShellSectionV2;
   sidebar?: ReactNode | ((onClose: () => void) => ReactNode);
 };
 
@@ -1483,6 +1475,16 @@ export function ReadingRoomShellV2({
   const previousCompositionRef = useRef<SidebarCompositionV2>("desktop");
   const previousDrawerOpenRef = useRef(false);
   const searchQuery = useWorkspaceStore((state) => state.navigationSearchQuery);
+  const listSection = section === "chats";
+  // Entering the library section closes an open drawer: the list stays hidden there.
+  const [drawerSection, setDrawerSection] = useState(section);
+  if (drawerSection !== section) {
+    setDrawerSection(section);
+    if (section !== "chats") {
+      setMobileOpen(false);
+      setCompactExpanded(false);
+    }
+  }
   const collapsed = composition === "compact" ? !compactExpanded : desktopCollapsed;
   const drawerOpen = mobileOpen || (composition === "compact" && compactExpanded);
 
@@ -1586,6 +1588,29 @@ export function ReadingRoomShellV2({
     }
   }, [collapsed, composition, drawerOpen, focusRequest, mobileOpen, section]);
 
+  // Leaving Settings removes the control that had focus (Back to chat). Focus
+  // returns where Settings is opened from: the gear while the list shows,
+  // else the control that shows it. A way out that asked for focus itself (a
+  // new chat asks for the composer), or focus something holds, is left alone.
+  const previousSectionRef = useRef(section);
+  const focusRequestAtSectionRef = useRef(0);
+  useLayoutEffect(() => {
+    const previous = previousSectionRef.current;
+    previousSectionRef.current = section;
+    if (previous === section) return;
+    const requested = focusRequest?.id ?? 0;
+    if (section !== "chats") {
+      focusRequestAtSectionRef.current = requested;
+      return;
+    }
+    if (requested !== focusRequestAtSectionRef.current) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    const listShown = composition === "mobile" ? mobileOpen : !collapsed;
+    const gear = listShown ? document.querySelector<HTMLElement>(".v2-navigation [data-navigation-settings]") : null;
+    (gear ?? openButtonRef.current)?.focus({ preventScroll: true });
+  }, [collapsed, composition, focusRequest, mobileOpen, section]);
+
   useEffect(() => {
     if (!searchQuery) return;
     const controller = new AbortController();
@@ -1616,20 +1641,14 @@ export function ReadingRoomShellV2({
     if (!drawerOpen) return;
     const navigationElement = document.querySelector<HTMLElement>(".v2-navigation");
     if (!navigationElement) return;
-    const focusRoots = composition === "compact"
-      ? [document.querySelector<HTMLElement>(".v2-rail"), navigationElement]
-          .filter((element): element is HTMLElement => Boolean(element))
-      : [navigationElement];
     const focusableSelector = [
       "button:not([disabled])",
       "input:not([disabled])",
       "a[href]",
       "[tabindex]:not([tabindex='-1'])"
     ].join(",");
-    const focusable = () => focusRoots.flatMap((root) =>
-      [...root.querySelectorAll<HTMLElement>(focusableSelector)]
-        .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true")
-    );
+    const focusable = () => [...navigationElement.querySelectorAll<HTMLElement>(focusableSelector)]
+      .filter((element) => !element.hidden && element.getAttribute("aria-hidden") !== "true");
     let cancelled = false;
     let focusFrame: number | null = null;
     let focusAttemptsRemaining = 8;
@@ -1716,10 +1735,12 @@ export function ReadingRoomShellV2({
   // Keyboard shortcuts as in ChatGPT: Ctrl/⌘+Shift+O starts a chat,
   // Ctrl/⌘+Shift+S toggles the sidebar and Ctrl/⌘+K jumps to the chat filter
   // (revealing the list first). They are ignored while a modal layer owns
-  // the keyboard (UX audit 2026-09-02 #16).
-  const shortcutsRef = useRef({ createPersonalChat, revealList, sidebarShown, toggleSidebar });
+  // the keyboard (UX audit 2026-09-02 #16). The list shortcuts do nothing in
+  // the library section, which has no list; a new chat still leaves it
+  // through its guard.
+  const shortcutsRef = useRef({ createPersonalChat, listSection, revealList, sidebarShown, toggleSidebar });
   useEffect(() => {
-    shortcutsRef.current = { createPersonalChat, revealList, sidebarShown, toggleSidebar };
+    shortcutsRef.current = { createPersonalChat, listSection, revealList, sidebarShown, toggleSidebar };
   });
   useEffect(() => {
     let filterFocusTimeout: number | undefined;
@@ -1731,6 +1752,8 @@ export function ReadingRoomShellV2({
       if (event.shiftKey && key === "o") {
         event.preventDefault();
         shortcutsRef.current.createPersonalChat("NORMAL");
+      } else if (!shortcutsRef.current.listSection) {
+        return;
       } else if (event.shiftKey && key === "s") {
         event.preventDefault();
         shortcutsRef.current.toggleSidebar();
@@ -1752,20 +1775,6 @@ export function ReadingRoomShellV2({
       window.clearTimeout(filterFocusTimeout);
     };
   }, []);
-  const showChats = () => requestNavigation(() => {
-    if (section !== "chats") {
-      closeDrawers();
-      onChats?.();
-      return;
-    }
-    if (collapsed) revealList();
-  });
-  const showLibrary = navigationOwnerProps.onLibrary
-    ? () => {
-        closeDrawers();
-        navigationOwnerProps.onLibrary?.();
-      }
-    : undefined;
   const showSettings = navigationOwnerProps.onSettings
     ? () => {
         closeDrawers();
@@ -1775,9 +1784,8 @@ export function ReadingRoomShellV2({
   const navigation = typeof sidebar === "function" ? sidebar(closeSidebar) : sidebar ?? (
     <NavigationSidebarContainer
       {...navigationOwnerProps}
-      drawerDestinations={composition === "mobile"}
+      inert={!listSection}
       onClose={closeSidebar}
-      onLibrary={showLibrary}
       onNewChat={(mode) => {
         createPersonalChat(mode);
       }}
@@ -1803,8 +1811,9 @@ export function ReadingRoomShellV2({
     />
   );
 
-  // On phones the rail is hidden: the drawer toggle carries the unread-announcements hint.
-  const unreadAnnouncementsHint = composition === "mobile" && Boolean(announcements && announcements.unreadCount > 0);
+  // The bell lives in the list's footer, so a hidden list leaves the
+  // unread-announcements hint on the control that shows it again.
+  const unreadAnnouncementsHint = !sidebarShown && Boolean(announcements && announcements.unreadCount > 0);
 
   return (
     <div
@@ -1823,20 +1832,6 @@ export function ReadingRoomShellV2({
       }}
     >
       <UiV2IconSprite />
-      {composition !== "mobile" ? (
-        <RailV2
-          accountId={navigationOwnerProps.accountId}
-          accountLabel={navigationOwnerProps.accountLabel}
-          active={section}
-          navigationBusy={navigationOwnerProps.navigationBusy}
-          adminEntryVisible={navigationOwnerProps.adminEntryVisible}
-          connectEntryVisible={navigationOwnerProps.connectEntryVisible}
-          onChats={showChats}
-          onLibrary={showLibrary}
-          onNewChat={() => createPersonalChat("NORMAL")}
-          onSettings={showSettings}
-        />
-      ) : null}
       <button
         className="v2-navigation-scrim"
         type="button"
@@ -1846,27 +1841,32 @@ export function ReadingRoomShellV2({
         onClick={closeSidebar}
       />
       {navigation}
-      <div
-        className="v2-sidebar-floats"
-        aria-label="Navigation"
-        inert={drawerOpen ? true : undefined}
-      >
-        {unreadAnnouncementsHint ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
-        <UiV2IconButton
-          ref={openButtonRef}
-          className={unreadAnnouncementsHint
-            ? "relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:ring-2 before:ring-answer-paper before:bg-proof before:content-['']"
-            : undefined}
-          aria-describedby={unreadAnnouncementsHint ? announcementHintId : undefined}
-          data-announcements-unread={unreadAnnouncementsHint || undefined}
-          icon={composition === "mobile" ? "menu" : "panel"}
-          label="Open sidebar"
-          tooltip={composition === "mobile" ? "Open navigation" : "Show chat list"}
-          tooltipSide="right"
-          aria-expanded={composition === "mobile" ? mobileOpen : !collapsed}
-          onClick={revealList}
-        />
-        {section === "chats" ? (
+      {/* The library section has no list to show and no chat to start: its
+          own Back is the one exit, so the floating controls are absent. */}
+      {listSection ? (
+        <div
+          className="v2-sidebar-floats"
+          aria-label="Navigation"
+          inert={drawerOpen ? true : undefined}
+        >
+          {unreadAnnouncementsHint ? <span id={announcementHintId} className="sr-only">Unread announcements</span> : null}
+          <UiV2IconButton
+            ref={openButtonRef}
+            className={unreadAnnouncementsHint
+              // The dot's ring is the surface behind the control: the phone
+              // island's paper, or the header bar's canvas from 768px.
+              ? `relative before:absolute before:right-1 before:top-1 before:size-2 before:rounded-full before:ring-2 before:bg-proof before:content-[''] ${
+                composition === "mobile" ? "before:ring-answer-paper" : "before:ring-app-canvas"}`
+              : undefined}
+            aria-describedby={unreadAnnouncementsHint ? announcementHintId : undefined}
+            data-announcements-unread={unreadAnnouncementsHint || undefined}
+            icon={composition === "mobile" ? "menu" : "panel"}
+            label="Open sidebar"
+            tooltip={composition === "mobile" ? "Open navigation" : "Show chat list"}
+            tooltipSide="right"
+            aria-expanded={sidebarShown}
+            onClick={revealList}
+          />
           <a
             className="v2-icon-button v2-focusable"
             href={NEW_CHAT_PATH}
@@ -1876,8 +1876,8 @@ export function ReadingRoomShellV2({
           >
             <UiV2Icon name="plus" />
           </a>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       <div className="v2-workspace-content" inert={drawerOpen ? true : undefined}>{children}</div>
     </div>
   );

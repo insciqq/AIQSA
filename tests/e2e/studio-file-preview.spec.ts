@@ -5,8 +5,10 @@ import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
 
+// 1300 and 1299 straddle the docking boundary: the Files area beside the
+// 260px section column is 1040px wide at 1300 and one pixel short at 1299.
 const sizes = [{ width: 1440, height: 900 }, { width: 1280, height: 800 }, { width: 1200, height: 800 },
-  { width: 1356, height: 800 }, { width: 1355, height: 800 }, { width: 768, height: 1024 },
+  { width: 1300, height: 800 }, { width: 1299, height: 800 }, { width: 768, height: 1024 },
   { width: 1024, height: 768 }, { width: 390, height: 844 }, { width: 844, height: 390 }];
 const markdown = "# Research notes\n\nA concise record of the decisions behind the release.\n\n" +
   "- Keep original files available\n- Show text safely\n\n| Stage | Status |\n| --- | --- |\n| Review | Complete |\n\n" +
@@ -76,6 +78,7 @@ for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize(size);
       const area = await files.boundingBox();
       const compact = area!.width < 1040;
+      if (size.width === 1300 || size.width === 1299) expect(compact, `${size.width}px straddles the boundary`).toBe(size.width === 1299);
       await files.getByRole("button", { name: "View research-chart.png" }).click();
       const preview = page.getByRole(compact ? "dialog" : "complementary", { name: "File preview: research-chart.png" });
       await expect(preview).toBeVisible();

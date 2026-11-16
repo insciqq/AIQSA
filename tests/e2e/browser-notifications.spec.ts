@@ -217,17 +217,16 @@ function bannerOf(page: Page): Locator {
 }
 
 async function openNotificationSettings(page: Page): Promise<Locator> {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "General", exact: true }).click();
+  await runAccountMenuAction(page, "General");
+  const settings = page.getByTestId("library-v2");
   const row = settings.getByTestId("settings-browser-notifications");
   await expect(row.getByRole("switch", { name: "Browser notifications", exact: true })).toBeEnabled();
   return row;
 }
 
 async function closeSettings(page: Page) {
-  await page.getByRole("button", { name: "Close settings", exact: true }).click();
-  await expect(page.getByTestId("settings-v2")).toHaveCount(0);
+  await page.getByTestId("library-v2").getByRole("button", { name: "Back to chat", exact: true }).click();
+  await expect(page.getByTestId("library-v2")).toHaveCount(0);
 }
 
 async function dismissedKeys(page: Page): Promise<string[]> {

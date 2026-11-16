@@ -191,9 +191,8 @@ test("TOTP on a directory account: the next sign-in asks for a code, a recovery 
   const password = standEnv(USERS.lena.passwordEnv);
   const first = await directorySignIn(browser, "lena", password);
   await expect(first.page.getByTestId("app-shell")).toBeVisible({ timeout: 60_000 });
-  await runAccountMenuAction(first.page, "Settings");
-  const settings = first.page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "Account", exact: true }).click();
+  await runAccountMenuAction(first.page, "Account");
+  const settings = first.page.getByTestId("library-v2");
   await settings.getByTestId("settings-two-factor").getByRole("button", { name: "Turn on…" }).click();
   const setup = settings.getByTestId("settings-two-factor-setup");
   const nextCode = authenticator(await setup.getByTestId("settings-two-factor-key").innerText());

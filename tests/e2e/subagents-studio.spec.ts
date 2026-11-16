@@ -7,7 +7,7 @@ import { expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAss
 import { signInWithLocalToken } from "./support/localAuth";
 
 /**
- * The default sub-agent switch in Studio, on a scripted owner-only server: the
+ * The default sub-agent switch in Settings, on a scripted owner-only server: the
  * pointer itself is covered on a real database by
  * `lib/server/subagents/definitionStore.prisma.test.ts`.
  */
@@ -32,8 +32,7 @@ async function openPanel(page: Page) {
     await route.fulfill({ json: { defaultDefinitionId: state.defaultDefinitionId } });
   });
   await signInWithLocalToken(page);
-  await runAccountMenuAction(page, "Instructions");
-  await page.getByTestId("library-v2").getByRole("tab", { name: "Sub-agents", exact: true }).click();
+  await runAccountMenuAction(page, "Sub-agents");
   await expect(page.getByTestId("studio-subagents").getByRole("heading", { name: "Sub-agents" })).toBeVisible();
   return { panel: page.getByTestId("studio-subagents"), state };
 }
@@ -46,7 +45,7 @@ test("the default sub-agent switch has one default, a mark and a deletion that s
   await expect(rows).toHaveCount(3);
   await expect(rows.nth(0).getByText("Default", { exact: true })).toBeVisible();
   await expect(rows.nth(1).getByText("Default", { exact: true })).toHaveCount(0);
-  await captureState(page, testInfo, "subagents-studio-default", { atEachSize: async () => expectNoHorizontalOverflow(page) });
+  await captureState(page, testInfo, "subagents-settings-default", { atEachSize: async () => expectNoHorizontalOverflow(page) });
 
   // Moving it leaves one default.
   await panel.getByRole("switch", { name: /Make long-x+ the default sub-agent/u }).click();
@@ -64,7 +63,7 @@ test("the default sub-agent switch has one default, a mark and a deletion that s
   await panel.getByRole("button", { name: "More actions for gemini-helper" }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(rows.nth(0).getByRole("alert")).toContainText("built-in");
-  await captureState(page, testInfo, "subagents-studio-delete-default", { anchor: rows.nth(0), atEachSize: async () => expectNoHorizontalOverflow(page) });
+  await captureState(page, testInfo, "subagents-settings-delete-default", { anchor: rows.nth(0), atEachSize: async () => expectNoHorizontalOverflow(page) });
 });
 
 test.describe("touch", () => {

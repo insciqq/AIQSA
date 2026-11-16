@@ -99,7 +99,7 @@ async function loadAssistantOwners() {
 }
 
 /**
- * The Studio Assistant routes' own dependencies, imported on first use: the
+ * The Settings Assistant routes' own dependencies, imported on first use: the
  * recovery scheduler loads this module at startup and must not pull in the
  * routes' defaults (sign-in, mail, MCP repositories) with it.
  */
@@ -139,7 +139,7 @@ function lazySubagentModels(client: PrismaClient): SubagentModelSource {
 
 /**
  * The owners behind the harness and self-service tools: the saved secrets
- * `read_secret` reads in any chat, the Studio paths the self-service
+ * `read_secret` reads in any chat, the Settings paths the self-service
  * tools change secrets, Skills and Assistants through, and the answer's
  * files from the user's computer.
  */

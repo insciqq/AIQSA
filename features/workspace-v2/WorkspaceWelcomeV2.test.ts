@@ -16,14 +16,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("Studio MCP attention", () => {
+describe("Settings MCP attention", () => {
   afterEach(() => {
     resetMcpSettingsStoreForTest();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  it("flags the tab from the shared observation and releases only the Studio observer", async () => {
+  it("flags the tab from the shared observation and releases only the Settings observer", async () => {
     vi.useFakeTimers();
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     const ready: UserMcpServer = {
@@ -61,7 +61,7 @@ describe("Studio MCP attention", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchMock).toHaveBeenCalledTimes(3);
 
-    // Studio alone keeps the catalog fresh while open and stops when left.
+    // Settings alone keeps the catalog fresh while open and stops when left.
     const alone = renderHook(() => useStudioMcpAttentionV2("account-1"));
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(fetchMock).toHaveBeenCalledTimes(5);

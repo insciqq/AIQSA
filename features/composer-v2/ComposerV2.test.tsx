@@ -455,7 +455,7 @@ describe("Composer v2", () => {
     expect(chip.querySelector('[data-signal="attention"]')).toBeNull();
     expect(chip).toHaveAccessibleDescription("MCP: Auto");
   });
-  it("discloses personal connections and sends one needing attention to Settings → Connections", () => {
+  it("discloses personal connections and sends one needing attention to Settings › MCP servers", () => {
     const onOpenMcpSettings = vi.fn();
     const onOpenPersonalMcpSettings = vi.fn();
     const config: ComposerConfig = {
@@ -471,9 +471,9 @@ describe("Composer v2", () => {
     expect(screen.getByTestId("composer-v2-mcp-enabled")).toHaveTextContent("Enabled servers · 3 · 1 needs attention");
     expect(screen.getByTestId("composer-v2-mcp-servers")).toHaveTextContent("Docs search (your connection)");
     expect(screen.getByRole("status")).toHaveTextContent("Notion · Reconnect required");
-    // Only installation attention turns Studio's link into Configure.
+    // Only installation attention turns the Settings link into Configure.
     expect(screen.getByRole("menuitem", { name: "Manage enabled MCP servers" })).toHaveTextContent("Manage");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Open Connections in Settings for Notion" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open MCP servers in Settings for Notion" }));
     expect(onOpenPersonalMcpSettings).toHaveBeenCalledOnce();
     expect(onOpenMcpSettings).not.toHaveBeenCalled();
   });
@@ -660,7 +660,7 @@ describe("Composer v2", () => {
     expect(within(searchDialog).queryByRole("combobox")).toBeNull();
     expect(within(searchDialog).queryByText(/Research-grade search|Saved for this chat|Let the model choose/u)).toBeNull();
     expect(within(searchDialog).getByRole("checkbox", { name: /Web Search/u })).toBeDisabled();
-    expect(searchDialog).toHaveTextContent("To turn search off, use Chat defaults in Studio.");
+    expect(searchDialog).toHaveTextContent("To turn search off, use Chat defaults in Settings.");
     fireEvent.click(screen.getByRole("checkbox", { name: /Research Search/ }));
     expect(onSearch).toHaveBeenCalledOnce();
     expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);

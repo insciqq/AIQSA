@@ -151,7 +151,7 @@ describe("what a press shows", () => {
     expect(telegramChangeResult(created, "undo", { kind: "missing" }).view.status).toBe("This secret no longer exists.");
     expect(telegramChangeResult(proposal, "confirm", { kind: "done" }).view.heading).toBe("Secret deleted");
     expect(telegramChangeResult(proposal, "confirm", { kind: "changed" }).view).toMatchObject({ heading: "Secret not deleted",
-      status: "The secret changed after this proposal, so nothing was deleted. Review it in Studio › Secrets." });
+      status: "The secret changed after this proposal, so nothing was deleted. Review it in Settings › Secrets." });
     expect(telegramChangeResult(proposal, "confirm", { kind: "missing" }).view.heading).toBe("Secret already deleted");
     expect(telegramChangeResult(proposal, "cancel", { kind: "done" }).view).toMatchObject({ heading: "Secret kept", status: null });
   });
@@ -163,7 +163,7 @@ describe("what a press shows", () => {
     expect(telegramChangeResult(publish, "confirm", { code: "assistant_skill_audience_mismatch", kind: "refused", skills: ["Pricing"] }))
       .toMatchObject({ retry: true, view: { status: "Share these Skills: “Pricing” with this audience first, then publish again." } });
     expect(telegramChangeResult(publish, "confirm", { kind: "archived" }).view).toMatchObject({ heading: "Not published",
-      status: "The Assistant is archived; restore it in Studio › Assistants first." });
+      status: "The Assistant is archived; restore it in Settings › Assistants first." });
   });
 
   it("counts an automation already gone as deleted, as the web card does", () => {

@@ -198,16 +198,20 @@ test("New chat opens a fresh chat in another tab on a middle or modified click",
   try {
     await page.goto(`/c/${chat}`);
     await expect(header).toHaveText(title);
-    const sidebarLink = page.getByRole("complementary", { name: "Chat navigation" })
-      .getByRole("link", { name: "New chat", exact: true });
-    const railLink = page.getByRole("navigation", { name: "Workspace", exact: true })
-      .getByRole("link", { name: "New chat", exact: true });
+    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+    const sidebarLink = navigation.getByRole("link", { name: "New chat", exact: true });
+    // With the list collapsed on desktop, the floating plus is the New chat link.
+    const floatLink = page.locator(".v2-sidebar-floats").getByRole("link", { name: "New chat", exact: true });
     await sidebarLink.hover();
     await page.screenshot({ path: testInfo.outputPath("new-chat-link-light-1440.png") });
 
     for (const open of [
       () => sidebarLink.click({ button: "middle" }),
-      () => railLink.click({ modifiers: ["ControlOrMeta"] })
+      async () => {
+        await navigation.getByRole("button", { name: "Close sidebar", exact: true }).click();
+        await expect(navigation).toBeHidden();
+        await floatLink.click({ modifiers: ["ControlOrMeta"] });
+      }
     ]) {
       const [tab] = await Promise.all([context.waitForEvent("page"), open()]);
       tabs.push(tab);
@@ -239,7 +243,7 @@ test("New chat opens a fresh chat in another tab on a middle or modified click",
   }
 });
 
-test("a guarded Studio draft keeps the address on the shown chat until it is discarded", async ({ page, context, baseURL }, testInfo) => {
+test("a guarded Settings draft keeps the address on the shown chat until it is discarded", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   await useAppearance(page, context, baseURL!, "light");
   await signInWithLocalToken(page);
@@ -334,6 +338,9 @@ test("sign-in and an expired session return to the chat address with its draft",
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this question through sign-in");
     await page.screenshot({ path: testInfo.outputPath("routing-session-return-light-390.png") });
 
+    // A visit without a session. The open chat leaves first: its own polls would otherwise meet the missing
+    // session and send the tab to sign-in themselves, racing this navigation.
+    await page.goto("about:blank");
     await context.clearCookies();
     await page.goto(`/c/${chatId}`);
     await expect(page).toHaveURL(new RegExp(`/login\\?next=%2Fc%2F${chatId}$`, "u"));
@@ -342,6 +349,7 @@ test("sign-in and an expired session return to the chat address with its draft",
     await expect(page).toHaveTitle(`${title} · AIQSA`);
 
     // A stale cookie reaches the page itself, which returns to its own address.
+    await page.goto("about:blank");
     await context.clearCookies();
     await context.addCookies([{ name: SESSION_COOKIE_NAME, value: "stale-routing-session", url: baseURL! }]);
     await page.goto(`/c/${chatId}`);
@@ -367,12 +375,14 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
   try {
     await page.goto(`/c/${chatId}`);
     await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
-    const controlCenter = page.getByTestId("workspace-rail").getByRole("link", { name: "Control Center" });
+    // Control Center is a link in the account menu at the foot of the chat list.
+    await page.getByTestId("navigation-footer").getByRole("button", { name: "Account menu", exact: true }).click();
+    const controlCenter = page.getByRole("menu", { name: "Account" }).getByRole("link", { name: /^Control Center/u });
     await expect(controlCenter).toHaveAttribute("href", `/admin?return=%2Fc%2F${chatId}`, { timeout: 30_000 });
     await controlCenter.click();
     await expect(page.getByTestId("admin-shell")).toBeVisible({ timeout: 30_000 });
     // The server markup already links back to the chat; sections keep that return with or without hydration.
-    const chats = page.getByTestId("admin-rail").getByRole("link", { name: "Chats" });
+    const chats = page.getByTestId("admin-section-footer").getByRole("link", { name: "Chats" });
     await expect(chats).toHaveAttribute("href", `/c/${chatId}`, { timeout: 30_000 });
     await page.getByTestId("admin-nav-users").click();
     await expect(page).toHaveURL(/section=users/u, { timeout: 30_000 });
@@ -383,7 +393,7 @@ test("Control Center returns to the chat it was opened from", async ({ page, con
     await expect(page.getByTestId("header-title")).toHaveText(title, { timeout: 30_000 });
 
     await page.goto("/admin");
-    await page.getByTestId("admin-rail").getByRole("link", { name: "Chats" }).click();
+    await page.getByTestId("admin-section-footer").getByRole("link", { name: "Chats" }).click();
     await expect(page).toHaveURL(exactPath("/"), { timeout: 30_000 });
     await expect(page.getByTestId("conversation-empty")).toBeVisible({ timeout: 30_000 });
   } finally {

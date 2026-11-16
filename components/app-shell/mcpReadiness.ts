@@ -27,7 +27,7 @@ const registryRuntimeMessages: Readonly<Record<string, string>> = {
   mcp_internal_address_forbidden: "This address belongs to AIQSA itself, so MCP cannot use it.",
   mcp_local_network_disabled: "The administrator turned off MCP connections to the local network.",
   mcp_tool_definition_changed: "An MCP tool changed. Start a new request to use the current tool.",
-  mcp_tool_disabled: "This MCP tool is switched off. Switch it on in Settings → Connections, then start a new request."
+  mcp_tool_disabled: "This MCP tool is switched off. Switch it on in Settings › MCP servers, then start a new request."
 };
 
 export function mcpRuntimeFailureMessage(code: string): string {

@@ -71,9 +71,13 @@ for (const size of sizes) {
     await authenticateWithLocalToken(page.request);
     await installMatrixCatalogFixture(page);
     await page.route("**/api/me/mcp**", async (route) => {
-      if (route.request().method() === "GET" && new URL(route.request().url()).pathname === "/api/me/mcp") {
-        await route.fulfill({ json: { servers: [server] } });
-      } else await route.fulfill({ status: 400, json: { error: "unexpected_test_mutation" } });
+      const pathname = new URL(route.request().url()).pathname;
+      if (route.request().method() !== "GET") await route.fulfill({ status: 400, json: { error: "unexpected_test_mutation" } });
+      else if (pathname === "/api/me/mcp") await route.fulfill({ json: { servers: [server] } });
+      // The same Settings section lists personal connections and Always allowed tools: none here.
+      else if (pathname === "/api/me/mcp-connections") await route.fulfill({ json: { servers: [] } });
+      else if (pathname === "/api/me/mcp-consents") await route.fulfill({ json: { consents: [] } });
+      else await route.fulfill({ status: 400, json: { error: "unexpected_test_request" } });
     });
     await page.goto("/?library=mcp");
     const library = page.getByTestId("library-v2");
@@ -135,43 +139,54 @@ for (const size of [desktop, phone]) {
 
 for (const size of [desktop, phone]) {
   const label = `${size.width}x${size.height}`;
-  test(`a dirty Studio Skill asks before a tab switch, Back to chat and browser Back at ${label}`, async ({ page }, info) => {
+  test(`a dirty Settings Skill asks before a section switch, Back to chat and browser Back at ${label}`, async ({ page }, info) => {
     test.setTimeout(120_000);
     await page.setViewportSize(size);
     await signInWithLocalToken(page);
+    // Below 1024px the list of sections and a section take turns.
+    const narrow = size.width < 1024;
     await withTwoChats(page, async (titles, ids) => {
       await runAccountMenuAction(page, "Skills");
-      const studio = page.getByTestId("library-v2");
+      const settings = page.getByTestId("library-v2");
       const library = page.getByTestId("skill-library-section");
       await library.getByRole("button", { name: "New Skill", exact: true }).click();
       const name = library.getByRole("textbox", { name: "Name", exact: true });
-      await name.fill("Unsaved Studio Skill");
+      await name.fill("Unsaved Settings Skill");
       const confirmation = page.getByRole("dialog", { name: "Unsaved Skill changes" });
 
-      await studio.getByRole("tab", { name: "Instructions", exact: true }).click();
+      // Returning to the list keeps the section and its draft; choosing another section asks.
+      if (narrow) {
+        await settings.getByRole("button", { name: "Back to Settings", exact: true }).click();
+        await expect(settings).toHaveAttribute("data-view", "list");
+        await expect(confirmation).toHaveCount(0);
+      }
+      await settings.getByRole("tab", { name: "Instructions", exact: true }).click();
       await expect(confirmation).toBeVisible();
       await expect(confirmation.getByRole("button", { name: "Keep editing" })).toBeFocused();
-      await page.screenshot({ path: info.outputPath(`studio-skill-tab-confirm-${label}.png`) });
+      await page.screenshot({ path: info.outputPath(`settings-skill-tab-confirm-${label}.png`) });
       await page.keyboard.press("Escape");
       await expect(confirmation).toHaveCount(0);
-      await expect(name).toHaveValue("Unsaved Studio Skill");
+      await expect(settings.getByRole("tab", { name: "Skills", exact: true })).toHaveAttribute("aria-selected", "true");
+      if (narrow) await settings.getByRole("tab", { name: "Skills", exact: true }).click();
+      await expect(name).toBeVisible();
+      await expect(name).toHaveValue("Unsaved Settings Skill");
 
-      await studio.getByRole("button", { name: "Back to chat", exact: true }).click();
+      await settings.getByRole("button", { name: "Back to chat", exact: true }).click();
       await expect(confirmation).toBeVisible();
       await confirmation.getByRole("button", { name: "Keep editing" }).click();
-      await expect(name).toHaveValue("Unsaved Studio Skill");
+      await expect(name).toHaveValue("Unsaved Settings Skill");
 
       await page.goBack();
       await expect(confirmation).toBeVisible();
       await expect(page).toHaveURL(exactPath(`/c/${ids.beta}`));
       await confirmation.getByRole("button", { name: "Keep editing" }).click();
-      await expect(name).toHaveValue("Unsaved Studio Skill");
+      await expect(name).toHaveValue("Unsaved Settings Skill");
       await expect(page).toHaveURL(exactPath(`/c/${ids.beta}`));
 
       await page.goBack();
       await confirmation.getByRole("button", { name: "Confirm discard changes" }).click();
       await expect(page).toHaveURL(exactPath(`/c/${ids.alpha}`));
-      await expect(studio).toHaveCount(0);
+      await expect(settings).toHaveCount(0);
       await expect(page.getByTestId("header-title")).toHaveText(titles.alpha);
       await expectPageRestored(page);
       await expectNoHorizontalOverflow(page);

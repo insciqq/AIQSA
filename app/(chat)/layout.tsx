@@ -1,5 +1,6 @@
 import { PowerAppShellV2 } from "@/features/workspace-v2/PowerAppShellV2";
 import { AIQSA_TIME_ZONE_COOKIE_NAME, greetingPeriodInTimeZone } from "@/lib/domain/greeting";
+import { connectInstallOrigin } from "@/lib/server/connect/installOrigin";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
@@ -26,6 +27,7 @@ export default async function ChatLayout({ children }: Readonly<{ children: Reac
         accountId={viewer.accountId}
         adminEntryVisible={viewer.adminEntryVisible}
         connectEntryVisible={viewer.connectEnabled}
+        connectInstallOrigin={viewer.connectEnabled ? connectInstallOrigin() : null}
         greetingPeriod={greetingPeriodInTimeZone(timeZone, new Date())}
         telegramAvailable={viewer.telegramAvailable}
       />

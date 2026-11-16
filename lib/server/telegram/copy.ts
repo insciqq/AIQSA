@@ -29,7 +29,7 @@ export const TELEGRAM_BOT_COMMANDS: readonly TelegramBotCommand[] = [
 ];
 
 export const TELEGRAM_COPY = {
-  notLinked: "This bot works for users of this AIQSA. Open AIQSA → Settings → Connections → Connect Telegram.",
+  notLinked: "This bot works for users of this AIQSA. Open AIQSA → Settings → Telegram → Connect Telegram.",
   disconnected: "This Telegram account was disconnected from AIQSA.",
   help: ["Send a message to chat with AIQSA.", ...TELEGRAM_BOT_COMMANDS.map(({ command, description }) => `/${command} — ${description}`)]
     .join("\n"),
@@ -327,7 +327,7 @@ export function telegramFilesSummaryText(input: Readonly<{ left: number; failed:
 const REASON_TEXT: Partial<Record<TelegramReasonCode, string>> = {
   telegram_not_linked: TELEGRAM_COPY.notLinked,
   telegram_access_off: "Telegram access is off for your account. Ask your AIQSA administrator.",
-  telegram_link_code_invalid: "This link has expired. Create a new one in AIQSA → Settings → Connections.",
+  telegram_link_code_invalid: "This link has expired. Create a new one in AIQSA → Settings → Telegram.",
   telegram_account_in_use: "This Telegram account is connected to another AIQSA account. Disconnect it there first.",
   telegram_unsupported_message: "This message type isn't supported. Send text, voice, photos or documents.",
   telegram_file_too_large: "Files over 20 MB can't come through Telegram. Upload it in AIQSA.",

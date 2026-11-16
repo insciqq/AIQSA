@@ -9,7 +9,7 @@ import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layo
 import { createPeopleFixture, type E2EUser, type PeopleFixture } from "./support/people";
 
 /**
- * Studio › Assistants v2 in the real application (PRD A-23 to A-30 and
+ * Settings › Assistants v2 in the real application (PRD A-23 to A-30 and
  * scenario 9). Every test signs in synthetic people, creates what it needs
  * through the shared helpers and removes it afterwards; no test depends on
  * another. Geometry is asserted with numbers; the captures in both themes at
@@ -87,7 +87,7 @@ async function readChat(request: APIRequestContext, chatId: string): Promise<Cha
 
 async function createSkill(request: APIRequestContext, name: string): Promise<{ id: string; name: string }> {
   const response = await request.post("/api/me/skills", {
-    data: { description: "Synthetic Studio fixture", instructions: "Keep the response concise.", name }
+    data: { description: "Synthetic Settings fixture", instructions: "Keep the response concise.", name }
   });
   expect(response.status(), await response.text()).toBe(201);
   const { skill } = await response.json() as { skill: { id: string; name: string } };
@@ -222,7 +222,7 @@ test("gallery chips count exactly what they list under category and search, Feat
     await expect(card(alpha)).toHaveCount(0);
     await search.fill("");
 
-    await captureState(page, testInfo, "studio-assistant-gallery", {
+    await captureState(page, testInfo, "settings-assistant-gallery", {
       atEachSize: async ({ size }) => {
         await expect(card(alpha).getByRole("button", { exact: true, name: `Start chat with ${alpha.name}` }), `${size.width}x${size.height}`)
           .toBeVisible();
@@ -233,7 +233,7 @@ test("gallery chips count exactly what they list under category and search, Feat
     // Columns from the cards' boxes: 3 from 900 px of gallery width, 2 from 600, 1 below (PRD 10.1, 11).
     await gallery.getByRole("button", { name: /^Yours \d+$/u }).click();
     const prdColumns: Readonly<Record<number, number>> = { 1024: 2, 1440: 3, 390: 1 };
-    await captureState(page, testInfo, "studio-assistant-gallery-yours", {
+    await captureState(page, testInfo, "settings-assistant-gallery-yours", {
       atEachSize: async ({ size }) => {
         const label = `${size.width}x${size.height}`;
         const width = (await gallery.boundingBox())!.width;
@@ -309,7 +309,7 @@ test("detail sheet shows five Setup rows with policies, names for the owner, cou
     await expect(sharing.getByRole("button", { exact: true, name: "Manage sharing…" })).toBeVisible();
     await expect(ownerSheet.getByRole("region", { name: "Usage" })).toContainText("in the last 30 days");
     await expectInstructionsPreview(ownerSheet);
-    await captureState(ownerPage, testInfo, "studio-assistant-detail-owner", { atEachSize: sheetGeometry(ownerPage, ownerSheet) });
+    await captureState(ownerPage, testInfo, "settings-assistant-detail-owner", { atEachSize: sheetGeometry(ownerPage, ownerSheet) });
 
     const consumerGallery = (await openAssistants(consumerPage)).gallery;
     const consumerCard = consumerGallery.getByTestId(`assistant-card-${assistant.id}`);
@@ -335,7 +335,7 @@ test("detail sheet shows five Setup rows with policies, names for the owner, cou
     const consumerDetail = JSON.stringify(await readAssistant(consumerPage.request, assistant.id));
     expect(consumerDetail).not.toContain(skill.id);
     expect(consumerDetail).not.toContain(skill.name);
-    await captureState(consumerPage, testInfo, "studio-assistant-detail-consumer", { atEachSize: sheetGeometry(consumerPage, consumerSheet) });
+    await captureState(consumerPage, testInfo, "settings-assistant-detail-consumer", { atEachSize: sheetGeometry(consumerPage, consumerSheet) });
   });
 });
 
@@ -368,7 +368,7 @@ test("editor has two columns at 1440 and one column with Setup after the starter
       await expect(toggle).toHaveAttribute("aria-pressed", name === "Fixed" ? "true" : "false");
     }
 
-    await captureState(page, testInfo, "studio-assistant-editor-existing", {
+    await captureState(page, testInfo, "settings-assistant-editor-existing", {
       atEachSize: async ({ size }) => {
         const label = `${size.width}x${size.height}`;
         const [pageBox, mainBox, setupBox, startersBox, instructionsBox] = await Promise.all([
@@ -518,7 +518,7 @@ test("Skills row keeps one list with Always or On demand per link, an honest swi
       value: { links: [{ delivery: "always", skillId: always.id }, { delivery: "always", skillId: onDemand.id }], mode: "off" }
     });
 
-    await captureState(page, testInfo, "studio-assistant-editor-skills-row", {
+    await captureState(page, testInfo, "settings-assistant-editor-skills-row", {
       anchor: row,
       atEachSize: () => expectNoHorizontalOverflow(page)
     });
@@ -546,7 +546,8 @@ test("Save & try from the Code reviewer template opens a Temporary chat with the
     const created = (await response.json() as AssistantDetailResponse).assistant;
 
     await expect(page.getByTestId("library-v2")).toHaveCount(0);
-    await expect(page.getByTestId("header-temporary-indicator")).toBeVisible();
+    // A chat with no message yet shows the Temporary switch, on; the indicator replaces it once the chat exists.
+    await expect(page.getByTestId("header-temporary-toggle")).toHaveAttribute("aria-pressed", "true");
     const selector = page.getByTestId("header-assistant-selector");
     await expect(selector).toHaveAttribute("data-state", "chosen");
     await expect(selector).toHaveAccessibleName(`Assistant: ${name}`);
@@ -592,7 +593,7 @@ test("templates and From current chat only fill the editor; nothing is created u
 
     let sheet = await openNewAssistantSheet(page, library);
     await expect(sheet.getByRole("radio")).toHaveCount(7);
-    await captureState(page, testInfo, "studio-assistant-new-sheet", {
+    await captureState(page, testInfo, "settings-assistant-new-sheet", {
       atEachSize: async () => {
         await expectWithinViewport(page, sheet.getByRole("button", { exact: true, name: "Continue" }));
         await expectNoHorizontalOverflow(page);
@@ -613,7 +614,7 @@ test("templates and From current chat only fill the editor; nothing is created u
     await expect(editor.getByRole("button", { exact: true, name: "Adjustable" })).toHaveCount(5);
     await expect(editor.getByText("Not saved yet", { exact: true })).toBeVisible();
     await expect(editor.getByTestId("assistant-editor-save")).toHaveText("Create");
-    await captureState(page, testInfo, "studio-assistant-editor-new-template", { atEachSize: () => expectNoHorizontalOverflow(page) });
+    await captureState(page, testInfo, "settings-assistant-editor-new-template", { atEachSize: () => expectNoHorizontalOverflow(page) });
     await cancelEditor(editor);
 
     expect(creations()).toBe(0);
@@ -687,7 +688,7 @@ test("delete lists the server's consequences before removing, and archive moves 
       "1 chat keeps its messages and shows that the Assistant was deleted."
     ]);
     await expect(dialog.getByRole("button", { exact: true, name: "Delete" })).toBeEnabled();
-    await captureState(page, testInfo, "studio-assistant-delete-dialog", {
+    await captureState(page, testInfo, "settings-assistant-delete-dialog", {
       atEachSize: async () => {
         await expectWithinViewport(page, dialog.getByRole("button", { exact: true, name: "Delete" }));
         await expectNoHorizontalOverflow(page);
@@ -772,7 +773,7 @@ test("a version conflict keeps the draft beside the latest saved version and sav
   });
 });
 
-test("unsaved edits of an existing Assistant are guarded on every exit from Studio · A-30", async ({ browser }) => {
+test("unsaved edits of an existing Assistant are guarded on every exit from Settings · A-30", async ({ browser }) => {
   test.setTimeout(180_000);
   await withFixtures(async ({ assistants, people }) => {
     const owner = await people.user("Guard owner");
@@ -783,13 +784,16 @@ test("unsaved edits of an existing Assistant are guarded on every exit from Stud
     const description = editor.getByLabel("Description", { exact: true });
     await description.fill("Unsaved guard draft");
     const confirmation = page.getByTestId("discard-changes-confirmation");
-    const rail = page.getByRole("navigation", { exact: true, name: "Workspace" });
+    // Settings covers the chat: no chat list and no floating New chat or Open sidebar offer a way around the guard.
+    await expect(page.getByRole("complementary", { name: "Chat navigation" })).toBeHidden();
+    await expect(page.getByRole("button", { exact: true, name: "Open sidebar" })).toHaveCount(0);
+    await expect(page.getByRole("link", { exact: true, name: "New chat" })).toHaveCount(0);
     const exits: readonly (readonly [string, () => Promise<void>])[] = [
       ["Cancel", () => editor.getByRole("button", { exact: true, name: "Cancel" }).click()],
       ["Back to Assistants", () => library.getByRole("button", { exact: true, name: "Back to Assistants" }).click()],
-      ["another Studio section", () => library.getByRole("tab", { exact: true, name: "Files" }).click()],
-      ["New chat", () => rail.getByRole("link", { exact: true, name: "New chat" }).click()],
-      ["Chats", () => rail.getByRole("button", { exact: true, name: "Chats" }).click()],
+      ["the section in the crumb", () => library.getByRole("navigation", { exact: true, name: "Settings location" })
+        .getByRole("button", { exact: true, name: "Assistants" }).click()],
+      ["another Settings section", () => library.getByRole("tab", { exact: true, name: "Files" }).click()],
       ["new chat shortcut", () => page.keyboard.press("Control+Shift+O")]
     ];
     for (const [label, exit] of exits) {

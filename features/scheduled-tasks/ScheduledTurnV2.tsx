@@ -10,8 +10,8 @@ import { browserTimeZone } from "./scheduledTaskPresentation";
  * A user turn that a scheduled task posted, as one quiet line: the task, when
  * the run started in the viewer's zone, and its instructions behind a
  * disclosure. The task wrote it, so it offers no edit or branch actions; Copy
- * sits with the instructions. The title opens Studio › Automations when
- * Studio is reachable.
+ * sits with the instructions. The title opens Settings › Automations when
+ * Settings is reachable.
  */
 export function ScheduledTurnV2({ anchorId, content, createdAt, now, onCopy, onOpen, pagerSlot, timeZone, title }: Readonly<{
   anchorId: string;

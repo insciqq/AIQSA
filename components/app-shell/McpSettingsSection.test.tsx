@@ -5,6 +5,7 @@ import { followMcpOAuthStart } from "./mcpSettingsApi";
 import { isMcpOAuthAuthorizing, markMcpOAuthAuthorizing } from "./mcpSettingsStore";
 import { MCP_RUN_PLAN_LIMITS, type UserMcpServer } from "@/lib/contracts/mcp";
 import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
+import { usePersonalMcpStore } from "./personalMcpStore";
 
 // jsdom cannot navigate; the start answer is observed where the browser would follow it.
 vi.mock("./mcpSettingsApi", async (importOriginal) => ({
@@ -87,6 +88,40 @@ describe("McpSettingsSection", () => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
     vi.mocked(followMcpOAuthStart).mockClear();
+  });
+
+  it("lists the user's own connections under the installation servers, each under its own label", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [userServer("todoist", "Todoist")] })));
+    const scrolled: Element[] = [];
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: HTMLElement) { scrolled.push(this); }
+    });
+    try {
+      render(<McpSettingsSection personalConnections={<h3>Personal connections</h3>} />);
+      const installation = await screen.findByRole("heading", { name: "Installation servers" });
+      const server = await screen.findByRole("heading", { name: "Todoist" });
+      const personal = screen.getByRole("heading", { name: "Personal connections" });
+      expect(installation.compareDocumentPosition(server) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(server.compareDocumentPosition(personal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(scrolled).toEqual([]);
+
+      // A personal connection's OAuth return brings its outcome into view.
+      act(() => usePersonalMcpStore.setState({ oauthOutcome: { kind: "connected", serverId: "personal-1" } }));
+      expect(scrolled).toEqual([personal.parentElement]);
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      usePersonalMcpStore.setState({ oauthOutcome: null });
+    }
+  });
+
+  it("names no installation group where it is the only list", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response({ servers: [userServer("todoist", "Todoist")] })));
+    render(<McpSettingsSection />);
+    await screen.findByRole("heading", { name: "Todoist" });
+    expect(screen.queryByRole("heading", { name: "Installation servers" })).toBeNull();
   });
 
   it("keeps the data warning visible and collapses exact tool and run details until requested", async () => {

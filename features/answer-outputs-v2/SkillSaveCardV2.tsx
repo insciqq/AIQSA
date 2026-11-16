@@ -192,7 +192,7 @@ function SkillSaveCardV2({ card, live, onOpenLibrary }: Readonly<{ card: SkillSa
 export function SkillSaveCardsV2({ cards, live = false, onOpenLibrary }: Readonly<{
   cards: readonly SkillSaveCard[];
   live?: boolean;
-  /** Opens Studio in the shell; see `shellLinkClick`. */
+  /** Opens Settings in the shell; see `shellLinkClick`. */
   onOpenLibrary?(href: string): void;
 }>) {
   if (cards.length === 0) return null;

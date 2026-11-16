@@ -128,6 +128,8 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
   const [replacingId, setReplacingId] = useState<string | null>(null);
   const replaceButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pendingRef = useRef(new Set<string>());
+  /** Authorization starts whose request answered and whose document is leaving for the sign-in site. */
+  const leavingRef = useRef(new Set<string>());
   const mountedRef = useRef(false);
   const headingRefs = useRef(new Map<string, HTMLHeadingElement>());
   const formHeadingRef = useRef<HTMLHeadingElement | null>(null);
@@ -171,8 +173,22 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
   }, []);
   const end = useCallback((key: string) => {
     pendingRef.current.delete(key);
+    leavingRef.current.delete(key);
     if (mountedRef.current) setPending(new Set(pendingRef.current));
   }, []);
+  // Back from the sign-in site can restore this document from the
+  // back/forward cache with an authorization that already left for that
+  // site still marked as starting, as the installation servers' rows know
+  // too: that start is over, so release it. A start whose request has not
+  // answered yet stays locked; its own outcome releases it.
+  useEffect(() => {
+    const release = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      for (const key of [...leavingRef.current]) end(key);
+    };
+    window.addEventListener("pageshow", release);
+    return () => window.removeEventListener("pageshow", release);
+  }, [end]);
   const setRowNotice = (id: string, notice: RowNotice | null) => {
     setRowNotices((current) => {
       const next = { ...current };
@@ -210,6 +226,7 @@ export function PersonalMcpConnectionsSection({ onBusyChange }: Readonly<{ onBus
       }
       followMcpOAuthStart(location);
       // The document is leaving; the control stays busy until it does.
+      leavingRef.current.add(key);
     } catch (error) {
       end(key);
       if (!mountedRef.current) return;

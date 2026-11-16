@@ -120,7 +120,7 @@ async function saveEveryoneAndFeatured() {
 }
 
 describe("Assistants tab seam", () => {
-  it("shows the gallery loading until Studio loads the section", () => {
+  it("shows the gallery loading until Settings loads the section", () => {
     render(<AssistantsTabV2 composer={composer()} onOpenMcpSettings={vi.fn()} onRequestClose={vi.fn()} view={null} />);
 
     expect(screen.getByRole("status", { name: "Loading Assistants" })).toBeInTheDocument();
@@ -152,7 +152,7 @@ describe("Assistants tab seam", () => {
   it("sends a sheet starter into the new chat only once its Assistant is chosen, and never when it became unavailable", async () => {
     const events: string[] = [];
     const input = assistantControllerInput();
-    // Studio was opened from an existing chat; Start chat leaves it for a new one.
+    // Settings was opened from an existing chat; Start chat leaves it for a new one.
     input.activateBlankWorkspace = vi.fn(() => { events.push("new chat"); });
     input.chooseAssistant = vi.fn(async (chosen) => {
       events.push(`chose ${chosen.id}`);

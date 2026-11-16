@@ -9,7 +9,7 @@ import { hasInvalidProviderToolArguments, type ModelToolCall, type ToolExecution
  */
 export const READ_AIQSA_GUIDE_TOOL_NAME = "read_aiqsa_guide";
 
-const DESCRIPTION = `Returns a section of the AIQSA guide: how AIQSA works, where things are in Studio and Settings (with links), and what you can do for the user with their own resources.
+const DESCRIPTION = `Returns a section of the AIQSA guide: how AIQSA works, where things are in Settings (with links), and what you can do for the user with their own resources.
 topic: one of ${AIQSA_GUIDE_TOPICS.join(", ")}; overview (the default) lists the others.
 Read it when the user asks about AIQSA itself or before you explain a feature you are unsure about. Static text; it changes nothing.`;
 

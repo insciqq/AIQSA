@@ -255,7 +255,7 @@ test("cards show a created, monitoring, other-zone, deleted and paused task at e
   expect(api.writes).toEqual([]);
 });
 
-test("Edit opens Studio › Scheduled on that task's editor", async ({ page }, info) => {
+test("Edit opens Settings › Automations on that task's editor", async ({ page }, info) => {
   const api = await prepare(page);
   const monitoring = cardOf(page, cards.monitoring.title);
   await editButton(monitoring, cards.monitoring.title).click();
@@ -265,6 +265,8 @@ test("Edit opens Studio › Scheduled on that task's editor", async ({ page }, i
   // The modal editor hides the page behind it from the accessibility tree.
   await expect(page.getByTestId("library-v2").getByRole("tab", { includeHidden: true, name: "Automations" }))
     .toHaveAttribute("aria-selected", "true");
+  // A card names its section, so a narrow screen shows that section rather than the list of sections.
+  await expect(page.getByTestId("library-v2")).toHaveAttribute("data-view", "section");
   await expect(sheet.getByLabel("Name", { exact: true })).toHaveValue(cards.monitoring.title);
   await expect(dialog.getByRole("group", { name: "Type", exact: true }).getByRole("radio", { name: "Monitoring", exact: true }))
     .toBeChecked();

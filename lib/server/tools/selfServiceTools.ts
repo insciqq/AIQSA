@@ -9,7 +9,7 @@
  * - `manage_secret`, `manage_skill`, `manage_assistant`, `manage_proxy` (`local` in the
  *   registry's terms: the user's own AIQSA state, through its owner, which
  *   settles the call itself, so they are never retried): each change goes
- *   through its owner's Studio path and commits with the call and its card
+ *   through its owner's Settings path and commits with the call and its card
  *   (`selfServiceCall.ts`, `selfServiceCallStore.ts`); deleting and
  *   publishing only prepare a card the user confirms.
  *   `executeSelfServiceTool` builds their services for one call from the
@@ -87,7 +87,7 @@ export type SelfServiceRunDeps = Readonly<{
   /** Conversation files the run admitted, for a secret's value from a file. */
   attachmentIds?: readonly string[];
   storage?: Pick<StorageAdapter, "getObject">;
-  /** The Studio Assistant routes' dependencies (`defaultAssistantHandlerDeps`, `defaultAssistantDeletionHandlerDeps.repository`). */
+  /** The Settings Assistant routes' dependencies (`defaultAssistantHandlerDeps`, `defaultAssistantDeletionHandlerDeps.repository`). */
   assistants: Pick<AssistantHandlerDeps, "loadCatalogData"> & Readonly<{
     repository: Pick<PrismaAssistantRepository, "getDetail" | "listForUser" | "listPublishableGroups" | "loadUserAccessibleMcpServerIds" |
       "loadUserMcpRunPlanView">;

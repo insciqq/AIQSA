@@ -563,7 +563,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
             userId: input.userId })
         }) ?? unavailable(execution.call, "tool_unavailable") });
     }
-    // The user's custom sub-agents, through the same service as Studio, each change with its card and Undo.
+    // The user's custom sub-agents, through the same service as Settings, each change with its card and Undo.
     const definitions = selfService.subagents;
     for (const descriptor of definitions ? SUBAGENT_MANAGEMENT_TOOLS : []) {
       if (!definitions || selfService.tools && !selfService.tools.includes(descriptor.name)) continue;

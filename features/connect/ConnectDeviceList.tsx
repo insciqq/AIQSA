@@ -5,7 +5,7 @@ import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ConnectComputerWire } from "@/lib/contracts/computer";
 import { useState } from "react";
 import { revokeConnectComputer } from "./connectApi";
-import { useConnectShell } from "./connectShellContext";
+import { useConnectComputers } from "./connectComputersContext";
 import { connectComputerSystemLabel, connectErrorMessage, connectLastSeenLabel } from "./connectText";
 import { useConnectNow } from "./useConnectNow";
 
@@ -38,7 +38,7 @@ function ComputerRow({
 
 /** The user's computers, live from the feed, each with Revoke behind a confirmation. */
 export function ConnectComputerList() {
-  const { snapshot, source } = useConnectShell();
+  const { snapshot, source } = useConnectComputers();
   const now = useConnectNow();
   const [revoking, setRevoking] = useState<ConnectComputerWire | null>(null);
   const [busy, setBusy] = useState(false);
@@ -94,7 +94,7 @@ export function ConnectComputerList() {
           title={`Revoke ${revoking.name}?`}
         >
           The computer is disconnected at once and the AIQSA agent can no longer work on it. Chats that use it
-          show it as removed. To use it again, connect it again from this page.
+          show it as removed. To use it again, follow the steps under Add a computer.
         </ConfirmationDialog>
       ) : null}
     </div>

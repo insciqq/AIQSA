@@ -67,7 +67,34 @@ import { scheduledTaskMemoryAvailability, scheduledTaskWorkspaceAvailability } f
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
+import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
+import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnectionSection";
+import { ConnectComputersSection } from "@/features/connect/ConnectComputersSection";
+import { ShellNotice } from "@/components/app-shell/ShellNotice";
+import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
 import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import {
+  AccountSettingsSectionV2,
+  ConnectedAppsSettingsSectionV2,
+  DataSettingsSectionV2,
+  GeneralSettingsSectionV2,
+  ProxiesSettingsSectionV2
+} from "@/features/settings-v2/SettingsSectionsV2";
+
+/** Discard copy of the Settings forms that share the surface's one form guard. */
+function formDiscardCopy(tab: LibraryTabIdV2) {
+  const copy = (title: string, body: string, dialogLabel: string) =>
+    ({ title, body, dialogLabel, cancelLabel: "Keep editing", confirmLabel: "Discard changes" });
+  switch (tab) {
+    case "subagents": return copy("Discard your unsaved sub-agent?", "Your unsaved changes to this sub-agent will be lost.",
+      "Unsaved sub-agent");
+    case "account": return copy("Discard your unsaved account changes?", "Your unsaved account changes will be lost.",
+      "Unsaved account changes");
+    case "proxies": return copy("Discard your unsaved proxy changes?", "Your unsaved proxy changes will be lost.",
+      "Unsaved proxy changes");
+    default: return copy("Discard your unsaved instructions?", "Your unsaved instructions will be lost.", "Unsaved instructions");
+  }
+}
 
 function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: Readonly<{
   composer: ShellComposerView;
@@ -107,9 +134,18 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     : undefined;
   const mcpAttention = useStudioMcpAttentionV2(session.accountId);
   const assistantView = settings.library;
-  const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open ? "memory" : "assistants");
+  const initialTab: LibraryTabIdV2 = requestedInitialTab ?? (settings.memory.open ? "memory" : "general");
   const [localTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
   const activeTab = settings.studio?.tab ?? localTab;
+  const [localSectionShown, setLocalSectionShown] = useState(true);
+  const [dataArchived, setDataArchived] = useState(false);
+  const manageArchivedRef = useRef<HTMLButtonElement>(null);
+  // Archived chats is Data's sub-view; another section closes it.
+  if (dataArchived && activeTab !== "data") setDataArchived(false);
+  const closeDataArchived = () => {
+    setDataArchived(false);
+    window.requestAnimationFrame(() => manageArchivedRef.current?.focus());
+  };
   const artifactLibrary = useArtifactLibraryStore();
   const [artifactFilter, setArtifactFilter] = useState<ArtifactLibraryFilter>("recent");
   const artifactArchived = artifactFilter === "archived";
@@ -120,7 +156,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   useEffect(() => { activateArtifactLibraryAccount(session.accountId); }, [session.accountId]);
   useEffect(() => {
     // Retain cached rows while checking for versions created since the user
-    // last visited Library. Recent and Published share this request.
+    // last visited Settings. Recent and Published share this request.
     if (activeTab === "artifacts") void refreshArtifactLibrary(artifactArchived, true);
   }, [activeTab, artifactArchived, session.accountId]);
   const closeLibrary = () => {
@@ -133,7 +169,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     artifactDetailRef.current = null;
     void refreshArtifactLibrary(artifactArchived, true);
   };
-  /** Opens a chat like a chat row does: one history entry, then Studio closes over it. */
+  /** Opens a chat like a chat row does: one history entry, then Settings closes over it. */
   const openArtifactChat = async (chatId: string) => {
     if (!await navigateChatRoute(() => props.workspace.pane.actions.openChat?.(chatId))) {
       throw new Error("This chat is no longer available.");
@@ -142,13 +178,25 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
   const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
+  // The open section's form (only one section is mounted at a time) reports
+  // unsaved and saving states here. Unsaved changes and the saves of the
+  // forms Settings always had also guard leaving the page.
   const [formDirty, setFormDirty] = useState(false);
   const [formBusy, setFormBusy] = useState(false);
+  // Busy states of Account, Proxies, Claude Code & Codex and the personal MCP
+  // connections only lock navigation inside Settings: signing out and
+  // starting an MCP sign-in end in the page's own navigation, which must not
+  // ask to leave. Those forms guard their unsaved data themselves.
+  const [sectionBusy, setSectionBusy] = useState(false);
+  const [personalMcpBusy, setPersonalMcpBusy] = useState<string | null>(null);
   const [formKey, setFormKey] = useState(0);
   const [formExit, setFormExit] = useState<{ proceed(): void; remount: boolean } | null>(null);
   const [instructionsSubview, setInstructionsSubview] = useState<LibrarySubviewV2 | null>(null);
   const [skillDirty, setSkillDirty] = useState(false);
   const [skillExit, setSkillExit] = useState<(() => void) | null>(null);
+  // An administrator turned AIQSA Connect off while Computers was open: the
+  // section leaves to General and is no longer listed until the next load.
+  const [computersOff, setComputersOff] = useState(false);
   useBeforeUnloadGuard(formDirty || formBusy);
   useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(assistantView?.dirty);
@@ -168,7 +216,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
 
   const navigationBusy = Boolean(
-    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy
+    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy || sectionBusy || personalMcpBusy
   );
   const requestNavigation = useEventCallback((proceed: () => void, remountForm: boolean = true) => {
     if (navigationBusy) return;
@@ -223,13 +271,54 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     status: null,
     useMemoryFacts: false
   };
+  const refreshChats = () => {
+    void props.workspace.pane.actions.retry();
+    void loadChatNavigation();
+  };
   const tabs: LibraryTabV2[] = [
+    { id: "general", label: "General", content: <GeneralSettingsSectionV2 composer={composer} onThemeChange={settings.updateTheme} themeId={settings.themeId} /> },
+    {
+      id: "account",
+      label: "Account",
+      content: (
+        <AccountSettingsSectionV2 key={`${session.accountId}:${formKey}`} accountEmail={session.accountEmail}
+          accountId={session.accountId} adminEntryVisible={session.adminEntryVisible} onBusyChange={setSectionBusy}
+          onDirtyChange={setFormDirty} onDisplayNameChange={session.updateAccountDisplayName} />
+      )
+    },
+    {
+      id: "data",
+      label: "Data",
+      content: (
+        <DataSettingsSectionV2 accountId={session.accountId} archived={dataArchived} manageArchivedRef={manageArchivedRef}
+          onChatsChanged={refreshChats} onOpenArchived={() => setDataArchived(true)} onRestored={props.workspace.archived.onRestored} />
+      )
+    },
+    { id: "proxies", label: "Proxies", content: <ProxiesSettingsSectionV2 key={`${session.accountId}:${formKey}`} onBusyChange={setSectionBusy} onDirtyChange={setFormDirty} /> },
+    ...(session.connectEntryVisible && !computersOff ? [{
+      id: "computers" as const,
+      label: "Computers",
+      content: (
+        <ConnectComputersSection key={session.accountId} installOrigin={session.connectInstallOrigin ?? null}
+          onDisabled={() => { setComputersOff(true); navigateToSection("general"); }} />
+      )
+    }] : []),
+    ...(session.telegramAvailable ? [{ id: "telegram" as const, label: "Telegram", content: <TelegramConnectionSection /> }] : []),
+    { id: "apps", label: "Claude Code & Codex", content: <ConnectedAppsSettingsSectionV2 accountId={session.accountId} onBusyChange={setSectionBusy} /> },
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
     { id: "subagents", label: "Sub-agents", content: <SubagentsPanelV2 key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
     { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} memory={scheduledTaskMemoryAvailability(memoryData)} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
-    { id: "mcp", label: "MCP servers", attention: mcpAttention, content: <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")} /> },
+    {
+      id: "mcp",
+      label: "MCP servers",
+      attention: mcpAttention,
+      content: (
+        <McpSettingsSection key={session.accountId} onBusyChange={setFormBusy} onOpenDefaults={() => navigateToSection("defaults")}
+          personalConnections={<PersonalMcpConnectionsSection onBusyChange={setPersonalMcpBusy} />} />
+      )
+    },
     {
       content: (
         <AssistantsTabV2
@@ -412,16 +501,21 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
         initialTab={initialTab}
         navigationGuard={(intent, proceed) => {
           if (!settings.studio) requestNavigation(proceed);
-          else if (intent.kind === "tab") settings.studio.open(intent.to, proceed);
+          else if (intent.kind === "tab") settings.studio.select(intent.to, proceed);
           else settings.studio.exit(proceed);
         }}
+        notice={settings.notice ? <ShellNotice notice={settings.notice} onDismiss={settings.dismissNotice} /> : null}
+        sectionShown={settings.studio?.sectionShown ?? localSectionShown}
         subview={activeTab === "instructions" ? instructionsSubview : activeTab === "assistants" && assistantSubview ? assistantSubview
           : activeTab === "artifacts" && artifactSubview ? {
               backLabel: "Back to artifacts", key: `artifact-${artifactSubview.id}`, label: artifactSubview.title,
               onBack: closeArtifactPreview
+            } : activeTab === "data" && dataArchived ? {
+              backLabel: "Back to Data", key: "data-archived", label: "Archived chats", onBack: closeDataArchived
             } : null}
         tabs={tabs}
         onBack={() => { if (!settings.studio) closeLibrary(); }}
+        onSectionShownChange={settings.studio?.showSection ?? setLocalSectionShown}
         onTabChange={(tab) => {
           if (settings.studio) return;
           setActiveTab(tab);
@@ -431,17 +525,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       />
       {formExit ? <DiscardChangesConfirmationDialog
         portal label="changes"
-        copy={activeTab === "subagents" ? {
-          title: "Discard your unsaved sub-agent?",
-          body: "Your unsaved changes to this sub-agent will be lost.",
-          dialogLabel: "Unsaved sub-agent",
-          cancelLabel: "Keep editing", confirmLabel: "Discard changes"
-        } : {
-          title: "Discard your unsaved instructions?",
-          body: "Your unsaved instructions will be lost.",
-          dialogLabel: "Unsaved instructions",
-          cancelLabel: "Keep editing", confirmLabel: "Discard changes"
-        }}
+        copy={formDiscardCopy(activeTab)}
         onCancel={() => setFormExit(null)}
         onConfirm={() => {
           const { proceed, remount } = formExit;
@@ -507,7 +591,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 }
 
 /**
- * Studio observes the shared MCP catalog for its lifetime so the MCP servers
+ * Settings observes the shared MCP catalog for its lifetime so the MCP servers
  * tab flags setup, authorization and runtime problems before it is opened.
  * The observer is ref-counted with the chat shell's, reads the catalog only
  * and never wakes idle servers; the rule is the chat chip's.

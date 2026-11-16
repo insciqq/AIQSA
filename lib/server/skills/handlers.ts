@@ -341,7 +341,7 @@ export function createDeleteSkillHandler(deps: SkillHandlerDeps) {
   ): Promise<Response> {
     const session = await deps.resolveAuth(request);
     if (!session) return errorJson("unauthorized", 401);
-    // Studio deletes without a body; a deletion the user confirmed in an
+    // Settings deletes without a body; a deletion the user confirmed in an
     // answer's card names the version the card showed, checked under the
     // deletion's lock.
     const value = await readJsonBodyOrNull(request, "json");

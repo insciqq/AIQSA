@@ -26,10 +26,11 @@ export function rememberStudioSection(section: LibraryTabIdV2): void {
   }
 }
 
+/** The section Settings opens on: the named one, else the last one visited, else General. */
 export function initialStudioSection(available: readonly LibraryTabIdV2[], target?: LibraryTabIdV2): LibraryTabIdV2 | undefined {
   return (target && available.includes(target) ? target : undefined)
     ?? storedStudioSection(available)
-    ?? (available.includes("assistants") ? "assistants" : available[0]);
+    ?? (available.includes("general") ? "general" : available[0]);
 }
 
 export type StoredSessionExpiredDraft = {

@@ -29,6 +29,7 @@ import {
   Fragment,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -53,25 +54,65 @@ function mt(key: Parameters<typeof memoryUiCopy>[0]): string {
   return memoryUiCopy(key);
 }
 
+/**
+ * The Settings sections in their order: preferences first (unlabelled),
+ * then what the agent is, what it keeps, what a run uses and what is linked
+ * to the account. A section without content is not listed.
+ */
 export const libraryTabGroups: readonly Readonly<{ label: string | null; tabs: readonly LibraryTabIdV2[] }>[] = [
-  { label: "Behavior", tabs: ["assistants", "instructions", "skills", "subagents"] },
+  { label: null, tabs: ["general", "account", "data"] },
+  { label: "Agent", tabs: ["assistants", "instructions", "skills", "subagents", "scheduled", "defaults"] },
   { label: "Content", tabs: ["memory", "files", "artifacts"] },
-  { label: "Tools", tabs: ["scheduled", "mcp", "secrets"] },
-  { label: null, tabs: ["defaults"] }
+  { label: "Tools", tabs: ["mcp", "secrets", "proxies"] },
+  { label: "Connections", tabs: ["computers", "telegram", "apps"] }
 ];
+
+/**
+ * Focus on a control that is still there for the user. A control that left
+ * the document, or that the page hid or made inert (the chat list's gear
+ * while Settings is open), no longer holds it.
+ */
+function focusHeldElsewhere(): boolean {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body || !active.isConnected) return false;
+  if (active.closest("[inert], [hidden], [aria-hidden='true']")) return false;
+  return window.getComputedStyle(active).visibility !== "hidden";
+}
+
+/**
+ * The sections Settings offers this account, in order: Computers only with
+ * AIQSA Connect content to show, Telegram only when the installation offers it.
+ */
+export function settingsSectionsV2(input: Readonly<{ computersAvailable?: boolean; telegramAvailable?: boolean }>): LibraryTabIdV2[] {
+  return libraryTabGroups.flatMap(group => group.tabs).filter(id =>
+    (id !== "computers" || input.computersAvailable === true) && (id !== "telegram" || input.telegramAvailable === true));
+}
+
 const tabIcons: Record<LibraryTabIdV2, UiV2IconName> = {
-  assistants: "assistant", instructions: "file-text", skills: "wand", subagents: "bot",
+  general: "sun", account: "user", data: "archive",
+  assistants: "assistant", instructions: "file-text", skills: "wand", subagents: "bot", scheduled: "clock", defaults: "sliders",
   memory: "memory", files: "file", artifacts: "artifact",
-  mcp: "plug", secrets: "key", scheduled: "clock", defaults: "sliders"
+  mcp: "plug", secrets: "key", proxies: "globe",
+  computers: "monitor", telegram: "chat", apps: "terminal"
 };
 
+/**
+ * The Settings surface: the list of sections and the selected section. From
+ * 1024px (unless the screen is a short touch screen) they sit side by side;
+ * below that the list and a section take turns by `sectionShown`, which the
+ * stylesheet reads as `data-view` and wide layouts ignore (no JavaScript
+ * media query).
+ */
 export function LibraryV2({
   activeTab: controlledTab,
   busy = false,
-  initialTab = "assistants",
+  initialTab = "general",
   navigationGuard,
+  notice = null,
   onBack,
+  onSectionShownChange,
   onTabChange,
+  sectionShown: controlledSectionShown,
   subview = null,
   tabs
 }: Readonly<{
@@ -79,41 +120,99 @@ export function LibraryV2({
   busy?: boolean;
   initialTab?: LibraryTabIdV2;
   navigationGuard?: LibraryNavigationGuardV2;
+  /** A notice about Settings, shown above the section. */
+  notice?: ReactNode;
   onBack(): void;
+  onSectionShownChange?(shown: boolean): void;
   onTabChange?(tab: LibraryTabIdV2): void;
+  /** Narrow layouts show the selected section (true) or the list of sections (false); wide ones ignore it. */
+  sectionShown?: boolean;
   /** The resource sub-view open in the selected section, if any (A14). */
   subview?: LibrarySubviewV2 | null;
   tabs: readonly LibraryTabV2[];
 }>) {
   const [localTab, setActiveTab] = useState<LibraryTabIdV2>(initialTab);
   const activeTab = controlledTab ?? localTab;
+  const [localSectionShown, setLocalSectionShown] = useState(true);
+  const sectionShown = controlledSectionShown ?? localSectionShown;
   const previousInitialTab = useRef(initialTab);
   const tabListRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Partial<Record<LibraryTabIdV2, HTMLButtonElement | null>>>({});
   const backRef = useRef<HTMLButtonElement>(null);
+  const listBackRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
+  const focusPlaced = useRef(false);
   const previousSubview = useRef<{ key: string; resourceFocus: boolean } | null>(null);
+  const previousSectionShown = useRef(sectionShown);
   const groups = libraryTabGroups.map(group => ({ ...group, tabs: group.tabs.flatMap(id => {
     const tab = tabs.find(candidate => candidate.id === id);
     return tab ? [tab] : [];
   }) })).filter(group => group.tabs.length > 0);
   const availableTabs = groups.flatMap(group => group.tabs.map(tab => tab.id));
-  const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs.find(tab => tab.id === "assistants") ?? groups[0]?.tabs[0];
+  const selected = tabs.find((tab) => tab.id === activeTab) ?? tabs.find(tab => tab.id === "general") ?? groups[0]?.tabs[0];
   const subviewKey = subview?.key ?? null;
   const resourceFocus = subview?.focus === "resource";
   const selectedId = selected?.id ?? null;
+  // The section on screen: the requested one, else the fallback shown in its place.
+  const shownTab = selectedId ?? activeTab;
+
+  const setSectionShown = useEventCallback((shown: boolean) => {
+    if (controlledSectionShown === undefined) setLocalSectionShown(shown);
+    onSectionShownChange?.(shown);
+  });
 
   // Entering a sub-view (or moving between two) focuses its Back control;
   // leaving it returns focus to the section tab so keyboard users stay in
-  // the Library rather than on the document body. Editors may own both moves.
+  // Settings rather than on the document body. Where the list and a section
+  // take turns the tab is hidden and takes no focus: the section's Back to
+  // Settings control takes it instead. Editors may own both moves.
   useEffect(() => {
     const previous = previousSubview.current;
     previousSubview.current = subviewKey ? { key: subviewKey, resourceFocus } : null;
     if (subviewKey && subviewKey !== previous?.key && !resourceFocus) {
       backRef.current?.focus({ preventScroll: true });
     } else if (!subviewKey && previous && !previous.resourceFocus && selectedId) {
-      tabRefs.current[selectedId]?.focus({ preventScroll: true });
+      for (const candidate of [tabRefs.current[selectedId], listBackRef.current]) {
+        if (!candidate) continue;
+        candidate.focus({ preventScroll: true });
+        if (document.activeElement === candidate) break;
+      }
     }
   }, [resourceFocus, selectedId, subviewKey]);
+
+  // A sub-view opens only from a section on screen: on a narrow screen it
+  // keeps showing that section rather than the list.
+  useEffect(() => {
+    if (subviewKey && !sectionShown) setSectionShown(true);
+  }, [sectionShown, setSectionShown, subviewKey]);
+
+  // Settings usually replaces or hides what had focus (a card in the chat,
+  // the gear in the chat list the shell hides). On opening, keyboard users
+  // land inside it instead of on the document body: on the section's Back
+  // control where a section shows alone, else on the section's row, else on
+  // the section itself.
+  useLayoutEffect(() => {
+    if (focusPlaced.current) return;
+    focusPlaced.current = true;
+    if (focusHeldElsewhere()) return;
+    const row = selectedId ? tabRefs.current[selectedId] : null;
+    for (const candidate of sectionShown ? [listBackRef.current, row, panelRef.current] : [row, panelRef.current]) {
+      if (!candidate) continue;
+      candidate.focus({ preventScroll: true });
+      if (document.activeElement === candidate) return;
+    }
+  }, [sectionShown, selectedId]);
+
+  // Narrow screens: showing a section moves focus to its Back control, and
+  // returning to the list moves it to the section's row. Wide layouts hide
+  // that Back control, so focus stays where it was there.
+  useLayoutEffect(() => {
+    const previous = previousSectionShown.current;
+    previousSectionShown.current = sectionShown;
+    if (previous === sectionShown || !selectedId) return;
+    if (sectionShown) listBackRef.current?.focus({ preventScroll: true });
+    else tabRefs.current[selectedId]?.focus({ preventScroll: true });
+  }, [sectionShown, selectedId]);
 
   // A deep-linked section can start beyond a narrow or short navigation area.
   // Keep the selected tab in the unfaded viewport without
@@ -136,16 +235,18 @@ export function LibraryV2({
     return () => { observer?.disconnect(); window.cancelAnimationFrame(frame); };
   }, [selectedId]);
 
-  const commitTab = useEventCallback((next: LibraryTabIdV2, focusAfterCommit = false) => {
-    if (busy || next === activeTab || !tabs.some((tab) => tab.id === next)) return;
+  /** `show` also shows the section where the list and a section take turns. */
+  const commitTab = useEventCallback((next: LibraryTabIdV2, focusAfterCommit = false, show = false) => {
+    if (busy || next === shownTab || !tabs.some((tab) => tab.id === next)) return;
     const proceed = () => {
       setActiveTab(next);
       onTabChange?.(next);
+      if (show) setSectionShown(true);
       if (focusAfterCommit) {
         window.requestAnimationFrame(() => tabRefs.current[next]?.focus());
       }
     };
-    if (navigationGuard) navigationGuard({ from: activeTab, kind: "tab", to: next }, proceed);
+    if (navigationGuard) navigationGuard({ from: shownTab, kind: "tab", to: next }, proceed);
     else proceed();
   });
 
@@ -157,7 +258,7 @@ export function LibraryV2({
 
   const requestExit = () => {
     if (busy) return;
-    if (navigationGuard) navigationGuard({ from: activeTab, kind: "exit" }, onBack);
+    if (navigationGuard) navigationGuard({ from: shownTab, kind: "exit" }, onBack);
     else onBack();
   };
 
@@ -167,6 +268,14 @@ export function LibraryV2({
   const leaveSubview = () => {
     if (!subview || busy || subview.busy) return;
     subview.onBack();
+  };
+
+  // Choosing a row shows its section; the list keeps the section mounted
+  // underneath, so returning to the list loses nothing and needs no guard.
+  const chooseTab = (id: LibraryTabIdV2) => {
+    if (id !== selected?.id) commitTab(id, false, true);
+    else if (!sectionShown) setSectionShown(true);
+    else leaveSubview();
   };
 
   const handleTabKeyDown = (
@@ -193,13 +302,20 @@ export function LibraryV2({
   if (!selected) return null;
 
   return (
-    <main className="v2-library" data-testid="library-v2">
+    <main className="v2-library" data-testid="library-v2" data-view={sectionShown ? "section" : "list"}>
       <UiV2IconSprite />
-      {/* In the shell the header splits into the crumb row (right column) and
-          the section column (left); below 768px it stacks as before. */}
+      {/* The header's two parts are grid items of the surface: the crumb row
+          over the section, and the list of sections beside it on wide
+          screens or in its place on narrow ones. */}
       <header className="v2-library-header">
         <div className="v2-library-heading-row">
-          <nav className="v2-library-crumb" aria-label="Studio location" data-subview={subview ? "true" : undefined}>
+          {/* The page's name: the narrow list's title, for assistive technology elsewhere. */}
+          <h1 className="v2-library-list-title">Settings</h1>
+          {subview ? null : (
+            <UiV2IconButton ref={listBackRef} className="v2-library-list-back" disabled={busy} icon="arrow-left"
+              label="Back to Settings" onClick={() => setSectionShown(false)} />
+          )}
+          <nav className="v2-library-crumb" aria-label="Settings location" data-subview={subview ? "true" : undefined}>
             {subview ? (
               <>
                 <button
@@ -224,14 +340,21 @@ export function LibraryV2({
               {subview.backLabel}
             </UiV2Button>
           ) : (
-            <UiV2Button disabled={busy} icon="arrow-left" onClick={requestExit}>Back to chat</UiV2Button>
+            // One exit at every width: the arrow and its words, or a close
+            // control where a section shows alone on a narrow screen (CSS).
+            <button className="v2-button v2-focusable v2-library-exit" data-tone="ghost" data-tooltip="Back to chat"
+              data-tooltip-side="left" disabled={busy} type="button" onClick={requestExit}>
+              <UiV2Icon className="v2-library-exit-arrow" name="arrow-left" />
+              <UiV2Icon className="v2-library-exit-close" name="close" />
+              <span className="v2-library-exit-label">Back to chat</span>
+            </button>
           )}
         </div>
-        <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Studio sections">
-          <p className="v2-library-column-title" aria-hidden="true">Studio</p>
+        <div ref={tabListRef} className="v2-library-tabs-scroll" role="tablist" aria-label="Settings sections">
+          <p className="v2-library-column-title" aria-hidden="true">Settings</p>
           <div className="v2-library-tabs" role="presentation">
             {groups.map((group, groupIndex) => (
-              <div className="v2-library-tabs-group" key={group.label ?? "defaults"} role="presentation">
+              <div className="v2-library-tabs-group" key={group.label ?? `group-${groupIndex}`} role="presentation">
                 {group.label ? <p className="v2-library-column-label" aria-hidden="true">{group.label}</p>
                   : groupIndex > 0 ? <span className="v2-library-tabs-divider" aria-hidden="true" /> : null}
                 {group.tabs.map((tab) => (
@@ -248,12 +371,13 @@ export function LibraryV2({
                       role="tab"
                       tabIndex={tab.id === selected.id ? 0 : -1}
                       type="button"
-                      onClick={() => (tab.id === selected.id ? leaveSubview() : commitTab(tab.id))}
+                      onClick={() => chooseTab(tab.id)}
                       onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
                     >
                       <UiV2Icon name={tabIcons[tab.id]} />
-                      <span>{tab.label}</span>
+                      <span className="v2-library-tab-label">{tab.label}</span>
                       {tab.attention ? <span aria-hidden="true" className="v2-library-tab-signal" data-signal="attention" /> : null}
+                      <UiV2Icon className="v2-library-tab-chevron" name="chevron-right" />
                     </button>
                     {/* A description, not a name suffix, keeps the section name stable for navigation. */}
                     {tab.attention ? <span hidden id={`v2-library-tab-${tab.id}-attention`}>Needs attention</span> : null}
@@ -264,7 +388,9 @@ export function LibraryV2({
           </div>
         </div>
       </header>
+      {notice ? <div className="v2-library-notice">{notice}</div> : null}
       <section
+        ref={panelRef}
         aria-labelledby={`v2-library-tab-${selected.id}`}
         className="v2-library-panel"
         data-artifact-viewer={selected.id === "artifacts" && Boolean(subview) || undefined}
@@ -290,7 +416,8 @@ export function SectionHeading({
 }: Readonly<{
   action?: ReactNode;
   children: ReactNode;
-  description: string;
+  /** Absent when the section's own content opens with its explanation. */
+  description?: string;
   meta?: ReactNode;
   search?: ReactNode;
 }>) {
@@ -299,7 +426,7 @@ export function SectionHeading({
       <div>
         <h2>{children}</h2>
         {meta}
-        <p>{description}</p>
+        {description ? <p>{description}</p> : null}
       </div>
       {action || search ? (
         <div className="v2-resource-heading-action">

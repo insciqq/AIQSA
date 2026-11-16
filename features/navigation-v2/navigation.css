@@ -1,10 +1,11 @@
-/* Shell grid (PRD §4.1): rail | list | content. Collapse and the Library
-   section hide only the list column; the rail stays. */
+/* Shell grid: list | content, with no icon rail at any width (operator
+   decision 2026-11-16). Collapse and the library section give the list a
+   zero track. */
 .v2-workspace-shell {
   display: grid;
   min-width: 0;
   min-height: 100dvh;
-  grid-template-columns: 3.5rem var(--v2-sidebar-width) minmax(0, 1fr);
+  grid-template-columns: var(--v2-sidebar-width) minmax(0, 1fr);
   color: var(--v2-color-text);
   background: var(--v2-color-canvas);
   transition: grid-template-columns var(--v2-motion-base);
@@ -12,21 +13,17 @@
 
 .v2-workspace-shell[data-sidebar-collapsed="true"],
 .v2-workspace-shell[data-shell-section="library"] {
-  grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
 /* Explicit placement: a fixed-position drawer or scrim must not shift the
    content column into the list's (zero-width) track. */
-.v2-workspace-shell > .v2-rail {
+.v2-workspace-shell > .v2-navigation {
   grid-column: 1;
 }
 
-.v2-workspace-shell > .v2-navigation {
-  grid-column: 2;
-}
-
 .v2-workspace-shell > .v2-workspace-content {
-  grid-column: 3;
+  grid-column: 2;
 }
 
 .v2-workspace-content {
@@ -95,8 +92,8 @@
   padding: 0.875rem 0.75rem 0.5rem;
 }
 
-/* Column head: "Chats" + the hide-list control on desktop/compact; the mobile
-   drawer shows the wordmark and a close cross instead (PRD §4.2 / §4.8). */
+/* Column head at every width: the wordmark and the hide-list control, a
+   panel icon beside the content and a close cross on a drawer. */
 .v2-navigation-brand {
   display: flex;
   min-height: 2rem;
@@ -105,14 +102,9 @@
   gap: 0.5rem;
 }
 
-.v2-navigation-column-title {
-  color: var(--v2-color-text);
-  font-size: 0.8125rem;
-  font-weight: 500;
-}
-
 .v2-navigation-wordmark {
-  display: none;
+  display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 0.5625rem;
   color: var(--v2-color-text);
@@ -654,12 +646,59 @@
   width: 15rem;
 }
 
-/* Drawer footer (mobile only): the rail destinations and the account entry. */
+/* Column footer under a hairline: in the chat list one row (the account
+   entry, Announcements, Settings); in Control Center the way back to the
+   chats above the account entry. */
 .v2-navigation-footer {
   display: grid;
   gap: 0.125rem;
-  padding: 0.625rem 0.75rem max(0.75rem, env(safe-area-inset-bottom));
+  padding: 0.5rem 0.75rem max(0.5rem, env(safe-area-inset-bottom));
   border-top: 1px solid var(--v2-color-border);
+}
+
+/* The account entry takes the row and truncates its name; the account
+   menu spans the whole row, so it keeps a readable width at 260px. */
+.v2-navigation-footer-bar {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.v2-navigation-footer-bar > .v2-navigation-account {
+  position: static;
+  min-width: 0;
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+/* The menu opens upward, so a downward chevron would point away from it;
+   the name keeps the room instead. */
+.v2-navigation-footer-bar .v2-navigation-account-trigger > .v2-icon {
+  display: none;
+}
+
+.v2-navigation-footer-bar > .v2-icon-button {
+  flex: 0 0 auto;
+}
+
+.v2-navigation-footer-bar > .v2-icon-button > .v2-icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+/* The last control sits at the column's clipped edge: its tooltip aligns
+   to the control's right edge instead of centring past it. */
+.v2-navigation-footer-bar > [data-tooltip]:last-child::after {
+  right: 0;
+  left: auto;
+  transform: translate(0, 0.125rem);
+}
+
+.v2-navigation-footer-bar > [data-tooltip]:last-child:hover::after,
+.v2-navigation-footer-bar > [data-tooltip]:last-child:focus-visible::after {
+  transform: translate(0, 0);
 }
 
 .v2-navigation-destination {
@@ -688,7 +727,7 @@
 }
 
 /* The single account entry: avatar initial, account label, and an upward
-   menu with Settings, Control Center, and Sign out (UX audit F11). */
+   menu with who is signed in, Control Center, and Sign out (UX audit F11). */
 .v2-navigation-account {
   position: relative;
   margin-top: 0.25rem;
@@ -747,7 +786,7 @@
 .v2-sidebar-floats {
   position: fixed;
   top: env(safe-area-inset-top);
-  left: calc(3.5rem + max(0.75rem, env(safe-area-inset-left)));
+  left: max(0.75rem, env(safe-area-inset-left));
   z-index: 25;
   display: flex;
   height: var(--v2-header-height);
@@ -777,15 +816,6 @@
 .v2-workspace-shell[data-sidebar-collapsed="true"] .v2-sidebar-floats {
   opacity: 1;
   pointer-events: auto;
-}
-
-/* The Library section has no chat list to reveal: no floats beside the rail
-   (the extra attribute outranks the compact-collapsed rule below). */
-@media (min-width: 768px) {
-  .v2-workspace-shell[data-shell-section="library"][data-sidebar-composition] .v2-sidebar-floats {
-    opacity: 0;
-    pointer-events: none;
-  }
 }
 
 .v2-navigation-scrim {
@@ -833,36 +863,43 @@
   z-index: 90;
 }
 
+/* Below 1024px the list is an overlay drawer: the hide-list control shows a
+   close cross. */
+@media (max-width: 1023px) {
+  .v2-navigation-close > .v2-icon:first-child {
+    display: none;
+  }
+
+  .v2-navigation-close > .v2-icon:last-child {
+    display: block;
+  }
+}
+
+/* 768–1023px: the same overlay drawer as on a phone, with a scrim over the
+   content, which keeps the whole width. Closed, the shell is collapsed, so
+   the base rules hide the list and show the floating controls. */
 @media (min-width: 768px) and (max-width: 1023px) {
-  .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) {
-    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
+  .v2-workspace-shell {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
 
-  /* Expanded compact list is a drawer beside the rail with a scrim. */
-  .v2-workspace-shell[data-sidebar-compact-expanded="true"] {
-    grid-template-columns: 3.5rem 0 minmax(0, 1fr);
-  }
-
-  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation {
+  .v2-navigation {
     position: fixed;
     top: 0;
     bottom: 0;
-    left: 3.5rem;
-    z-index: 30;
+    left: 0;
+    width: min(var(--v2-mobile-sidebar-width), calc(100vw - 3rem));
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+  }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation {
     box-shadow: var(--v2-shadow-overlay);
   }
 
-  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation-scrim {
-    position: fixed;
-    z-index: 29;
-    inset: 0 0 0 3.5rem;
-    display: block;
-    border: 0;
-    background: var(--v2-color-scrim);
-    opacity: 1;
-    pointer-events: auto;
-  }
-
+  /* Closed by the stylesheet alone, not only by the collapsed state the
+     script sets: the server-rendered page has no such state yet, and the
+     drawer would show over the content until the page hydrates. */
   .v2-workspace-shell:not([data-sidebar-compact-expanded="true"]) .v2-navigation {
     pointer-events: none;
     visibility: hidden;
@@ -874,6 +911,17 @@
     opacity: 1;
     pointer-events: auto;
   }
+
+  .v2-workspace-shell[data-sidebar-compact-expanded="true"] .v2-navigation-scrim {
+    position: fixed;
+    z-index: 29;
+    inset: 0;
+    display: block;
+    border: 0;
+    background: var(--v2-color-scrim);
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 @media (max-width: 767px) {
@@ -881,35 +929,6 @@
   .v2-workspace-shell[data-sidebar-collapsed="true"],
   .v2-workspace-shell[data-shell-section="library"] {
     display: block;
-  }
-
-  /* No rail below 768px; the drawer footer carries its destinations. */
-  .v2-workspace-shell > .v2-rail {
-    display: none;
-  }
-
-  .v2-navigation-wordmark {
-    display: inline-flex;
-  }
-
-  .v2-navigation-column-title {
-    display: none;
-  }
-
-  .v2-navigation-close > .v2-icon:first-child {
-    display: none;
-  }
-
-  .v2-navigation-close > .v2-icon:last-child {
-    display: block;
-  }
-
-  /* The Library section still offers the drawer through the menu island. */
-  .v2-workspace-shell[data-shell-section="library"][data-mobile-sidebar="true"] .v2-navigation {
-    pointer-events: auto;
-    visibility: visible;
-    opacity: 1;
-    transform: translateX(0);
   }
 
   /* Islands (PRD §4.8): the menu island and, on the blank chat, "+". */
@@ -934,7 +953,7 @@
 
   /* "New chat" is the right-hand island (ChatGPT/LibreChat placement); with
      an open chat it sits left of the "⋯" island. Temporary chats hand the
-     right edge to their indicator, and the Library has no chat to start. */
+     right edge to their indicator. */
   .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
     position: fixed;
     top: max(0.625rem, env(safe-area-inset-top));
@@ -957,8 +976,7 @@
     backdrop-filter: none;
   }
 
-  .v2-workspace-shell:has(.v2-live-temporary) .v2-sidebar-floats > .v2-icon-button + .v2-icon-button,
-  .v2-workspace-shell[data-shell-section="library"] .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
+  .v2-workspace-shell:has(.v2-live-temporary) .v2-sidebar-floats > .v2-icon-button + .v2-icon-button {
     display: none;
   }
 
@@ -1063,89 +1081,14 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Icon rail (PRD §4.1): 56px, the mark on top, destinations, account.    */
-/* ---------------------------------------------------------------------- */
-.v2-rail {
-  position: relative;
-  z-index: 31;
-  display: flex;
-  width: 3.5rem;
-  min-height: 100dvh;
-  max-height: 100dvh;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.75rem 0 max(0.75rem, env(safe-area-inset-bottom));
-  border-right: 1px solid var(--v2-color-pane-divider);
-  color: var(--v2-color-text2);
-  background: var(--v2-color-rail);
+/* The avatar entry sits at the right end of a page header (the pair
+   page, features/connect/ConnectShell.tsx); its menu opens below it. */
+.v2-navigation-account[data-variant="avatar"] {
+  flex: none;
+  margin-top: 0;
 }
 
-.v2-rail-button.v2-rail-brand {
-  display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
-  place-items: center;
-  margin-bottom: 0.5rem;
-  color: var(--v2-color-text);
-}
-
-.v2-rail-button.v2-rail-brand > .v2-icon {
-  width: 1.375rem;
-  height: 1.375rem;
-  stroke-width: 2;
-}
-
-.v2-rail-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25rem;
-}
-
-.v2-rail-bottom {
-  margin-top: auto;
-}
-
-.v2-rail-button {
-  display: grid;
-  width: 2.5rem;
-  height: 2.5rem;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 0.625rem;
-  color: var(--v2-color-text2);
-  background: transparent;
-  text-decoration: none;
-  cursor: pointer;
-  transition:
-    color var(--v2-motion-fast),
-    background-color var(--v2-motion-fast);
-}
-
-.v2-rail-button > .v2-icon {
-  width: 1.125rem;
-  height: 1.125rem;
-}
-
-.v2-rail-button:hover {
-  color: var(--v2-color-text);
-  background: var(--v2-color-hover);
-}
-
-.v2-rail-button[aria-current="page"] {
-  color: var(--v2-color-text);
-  background: var(--v2-color-active);
-}
-
-/* The rail's account entry is the avatar only; its menu opens upward. */
-.v2-rail .v2-navigation-account {
-  margin-top: 0.25rem;
-}
-
-.v2-rail .v2-navigation-account-trigger {
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-trigger {
   width: 2.5rem;
   min-height: 2.5rem;
   justify-content: center;
@@ -1153,16 +1096,17 @@ html[data-motion="off"] .v2-sidebar-floats {
   border-radius: 0.625rem;
 }
 
-.v2-rail .v2-navigation-account-avatar {
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-avatar {
   width: 1.75rem;
   height: 1.75rem;
   font-size: 0.625rem;
 }
 
-.v2-rail .v2-navigation-account-menu {
-  right: auto;
-  bottom: 0;
-  left: calc(100% + 0.5rem);
+.v2-navigation-account[data-variant="avatar"] .v2-navigation-account-menu {
+  top: calc(100% + 0.375rem);
+  right: 0;
+  bottom: auto;
+  left: auto;
   width: 13rem;
 }
 
@@ -1192,30 +1136,6 @@ html[data-motion="off"] .v2-sidebar-floats {
   white-space: nowrap;
 }
 
-/* Drawer footer destinations in one row (UX audit 2026-09-02 #15). */
-.v2-navigation-destinations {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 0.25rem;
-  margin-bottom: 0.25rem;
-}
-
-.v2-navigation-destinations > .v2-navigation-destination {
-  min-height: 3.25rem;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.25rem;
-  padding: 0.375rem 0.25rem;
-  font-size: 0.6875rem;
-  font-weight: 500;
-  text-align: center;
-}
-
-.v2-navigation-destinations > .v2-navigation-destination > .v2-icon {
-  width: 1.125rem;
-  height: 1.125rem;
-}
-
 /* Touch (C2): list rows and the mobile islands keep 44px targets. */
 @media (hover: none), (pointer: coarse) {
   .v2-chat-row,
@@ -1225,40 +1145,11 @@ html[data-motion="off"] .v2-sidebar-floats {
   }
 }
 
-/* Touch: the rail's destinations, mark and account avatar are 44px targets
-   (6px either side inside the 56px rail). */
+/* Touch: the header's account avatar is a 44px target. */
 @media (hover: none), (pointer: coarse) {
-  .v2-rail-button,
-  .v2-rail-button.v2-rail-brand {
-    width: 2.75rem;
-    height: 2.75rem;
-  }
-
-  .v2-rail .v2-navigation-account-trigger {
+  .v2-navigation-account[data-variant="avatar"] .v2-navigation-account-trigger {
     width: 2.75rem;
     min-height: 2.75rem;
-  }
-}
-
-/* A short touch screen (a phone on its side) keeps every 44px rail target
-   on screen: the targets sit edge to edge instead of 4px apart. */
-@media (max-height: 26rem) and ((hover: none) or (pointer: coarse)) {
-  .v2-rail {
-    gap: 0;
-    padding-top: 0.5rem;
-    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
-  }
-
-  .v2-rail-group {
-    gap: 0;
-  }
-
-  .v2-rail-button.v2-rail-brand {
-    margin-bottom: 0.25rem;
-  }
-
-  .v2-rail .v2-navigation-account {
-    margin-top: 0;
   }
 }
 
@@ -1274,9 +1165,7 @@ html[data-motion="off"] .v2-sidebar-floats {
     right: calc(max(0.75rem, env(safe-area-inset-right)) + 2.875rem);
   }
 }
-.v2-rail-button:disabled,
-.v2-rail-button[aria-disabled="true"],
-.v2-navigation-destination:disabled,
+
 .v2-chat-row:disabled,
 .v2-new-chat-main[aria-disabled="true"] {
   opacity: 0.5;

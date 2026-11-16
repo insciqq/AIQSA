@@ -728,7 +728,7 @@ export function createPublishAssistantHandler(deps: AssistantHandlerDeps) {
     if (Object.keys(body ?? {}).some((key) => key !== "scope" && key !== "groupId" && key !== "expectedVersion")) {
       return errorJson("assistant_publication_invalid", 400);
     }
-    // Studio publishes the current definition; a publication the user
+    // Settings publishes the current definition; a publication the user
     // confirmed in an answer's card names the version it proposed.
     const expectedVersion = body?.expectedVersion;
     if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || Number(expectedVersion) < 1)) {

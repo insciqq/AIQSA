@@ -42,9 +42,8 @@ function authenticator(secret: string) {
 }
 
 async function openAccountSettings(page: Page) {
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("button", { name: "Account", exact: true }).click();
+  await runAccountMenuAction(page, "Account");
+  const settings = page.getByTestId("library-v2");
   return settings;
 }
 

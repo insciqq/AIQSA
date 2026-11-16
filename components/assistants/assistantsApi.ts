@@ -302,8 +302,8 @@ function decodeFeaturedOrder(value: unknown): AdminAssistantFeaturedResponse["fe
 }
 
 /**
- * Administrators only: the Studio Sharing sheet's Featured control. The app
- * shell may not depend on the Control Center client, so Studio keeps this
+ * Administrators only: the Sharing sheet's Featured control in Settings. The app
+ * shell may not depend on the Control Center client, so Settings keeps this
  * small call of its own. Null removes the Assistant from Featured.
  */
 export function setAssistantFeaturedOrder(

@@ -88,7 +88,7 @@ function forget(taskId: string): void {
  * `curl` request; it lives only in page memory (this component's state and
  * the short handover above), so it is never stored, written into the chat or
  * sent anywhere, and leaves with Hide, an unmount or a reload. Used by the
- * answer's automation card and Studio.
+ * answer's automation card and Settings.
  */
 export function WebhookTokenReveal({ issued, onIssued, taskId, url }: Readonly<{
   taskId: string;

@@ -157,7 +157,7 @@ describe("sub-agent prompts", () => {
   it("give a sub-agent its role in place of the AIQSA self-description, stable across turns", () => {
     const sub = systemPromptFor(model, { environment, selfService: SUBAGENT_ROLE_SECTION, tools: ["load_skill"], workspace: true }).stable;
     expect(sub).toContain(SUBAGENT_ROLE_SECTION);
-    expect(sub).not.toContain("Besides chats, the user keeps their own resources in Studio");
+    expect(sub).not.toContain("Besides chats, the user keeps their own resources in Settings");
     expect(SUBAGENT_ROLE_SECTION).toContain(WORKSPACE_WEBSITE_ACTION_SAFETY);
   });
 

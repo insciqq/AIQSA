@@ -251,14 +251,14 @@ test("v2 answer outputs expose only Sources and direct user outputs", async ({ p
 
   const answer = page.locator('article[data-role="assistant"]').first();
   await expect(answer).toContainText("Research assistant");
-  // Sources live in the actions row: a chip that expands the list in place.
+  // Sources live in the actions row: a chip that opens the Sources sheet above the page.
   await expect(page.getByTestId("answer-sources")).toHaveCount(0);
   const toggle = answer.getByRole("toolbar", { name: "Answer actions" })
     .getByTestId("answer-sources-toggle");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  const outputs = answer.getByTestId("answer-sources");
+  const outputs = page.getByRole("dialog", { name: "Sources" });
+  await expect(outputs).toBeVisible();
   await expect(outputs.getByRole("link", { name: "Cross-language retrieval evaluation" }))
     .toBeVisible();
   await expect(outputs).not.toContainText("Knowledge");

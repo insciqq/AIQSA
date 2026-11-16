@@ -114,12 +114,12 @@ describe("Assistant picker v2", () => {
     anchor.remove();
   });
 
-  it("keeps Tab inside, closes on Escape and on an outside press, and browses Studio", async () => {
+  it("keeps Tab inside, closes on Escape and on an outside press, and browses Settings", async () => {
     const { anchor, props } = renderPicker();
     const dialog = screen.getByRole("dialog", { name: "Choose an Assistant" });
     await waitFor(() => expect(within(dialog).getByRole("searchbox")).toHaveFocus());
 
-    const browse = within(dialog).getByRole("button", { name: "Browse all in Studio" });
+    const browse = within(dialog).getByRole("button", { name: "Browse all in Settings" });
     browse.focus();
     fireEvent.keyDown(browse, { key: "Tab" });
     expect(within(dialog).getByRole("searchbox")).toHaveFocus();

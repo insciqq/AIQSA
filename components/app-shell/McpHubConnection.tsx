@@ -54,7 +54,7 @@ export function McpHubConnection({ expanded = false }: Readonly<{ expanded?: boo
 
   if (!expanded) return (
     <div className="v2-settings-footnote">
-      <UiV2Button tone="ghost" onClick={() => useSettingsDestinationStore.getState().openSettings("connected_apps")}>
+      <UiV2Button tone="ghost" onClick={() => useSettingsDestinationStore.getState().openSettings("apps")}>
         Connect Claude Code or Codex
       </UiV2Button>
     </div>

@@ -37,7 +37,7 @@ export type WorkspaceSecretMutation =
       value: Readonly<{ action: "preserve" }> | Readonly<{ action: "replace"; content: WorkspaceSecretValue }> }>
   | Readonly<{ action: "delete"; id: string; expectedVersionId: string }>;
 
-/** The owner asks for one saved secret's current value (Studio › Secrets, operator decision 2026-10-27). */
+/** The owner asks for one saved secret's current value (Settings › Secrets, operator decision 2026-10-27). */
 export type WorkspaceSecretRevealRequest = Readonly<{ action: "reveal"; id: string }>;
 
 /**

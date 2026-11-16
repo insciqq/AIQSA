@@ -1,13 +1,35 @@
 import type { AttachmentPreviewKind } from "@/lib/contracts/uploads";
 import type { ReactNode } from "react";
 
-export type LibraryTabIdV2 = "assistants" | "instructions" | "skills" | "subagents" | "memory" | "files" | "artifacts" | "mcp" | "secrets" | "scheduled" |
-  "defaults";
+/**
+ * A section of the Settings surface. The ids keep their `library` names
+ * (`?library=<id>` addresses, stored preferences); only the words changed.
+ */
+export type LibraryTabIdV2 = "general" | "account" | "data" |
+  "assistants" | "instructions" | "skills" | "subagents" | "scheduled" | "defaults" |
+  "memory" | "files" | "artifacts" |
+  "mcp" | "secrets" | "proxies" |
+  "computers" | "telegram" | "apps";
 
 export type StudioNavigationV2 = Readonly<{
   tab: LibraryTabIdV2;
   busy: boolean;
+  /**
+   * Where a section is not beside the list of sections (narrow and short
+   * screens), true while the section shows instead of the list. Wide
+   * layouts ignore it.
+   */
+  sectionShown: boolean;
+  /**
+   * Opens Settings from outside it: a named section shows that section, and
+   * no name (the gear) opens the last visited section beside the list, or
+   * the list itself where they do not fit side by side.
+   */
   open(tab?: LibraryTabIdV2, afterSelect?: () => void): void;
+  /** Changes the section from inside Settings; the list or section stays as it was shown. */
+  select(tab: LibraryTabIdV2, afterSelect?: () => void): void;
+  /** Shows the selected section (true) or the list of sections (false) where they do not fit side by side. */
+  showSection(shown: boolean): void;
   exit(proceed?: () => void): void;
   registerGuard(guard: ((proceed: () => void) => void) | null, busy: boolean): void;
 }>;
@@ -17,7 +39,7 @@ export type LibraryNavigationIntentV2 =
   | Readonly<{ from: LibraryTabIdV2; kind: "tab"; to: LibraryTabIdV2 }>;
 
 /**
- * The selected Library tab is presentation state. Dirty/busy decisions remain
+ * The selected Settings section is presentation state. Dirty/busy decisions remain
  * with the focused resource owner, which may call `proceed` after its own
  * confirmation or mutation settles.
  */
@@ -36,7 +58,7 @@ export type LibraryTabV2 = Readonly<{
 
 /**
  * A resource sub-view open inside the selected section (an Assistant's
- * editor, an artifact). The Library shows it in the crumb and replaces
+ * editor, an artifact, archived chats). Settings shows it in the crumb and replaces
  * "Back to chat" with the sub-view's own Back control; a `key` change moves
  * focus to that control unless the resource owns its editor/row focus.
  */

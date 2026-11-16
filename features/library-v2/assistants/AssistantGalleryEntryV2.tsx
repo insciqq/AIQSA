@@ -30,14 +30,14 @@ export function AssistantGalleryEntryV2({ view }: AssistantsTabPropsV2) {
 
 /**
  * The detail sheet. A starter chip chooses the Assistant for a new chat
- * through the gallery's Start chat, which leaves Studio, and then sends the
+ * through the gallery's Start chat, which leaves Settings, and then sends the
  * starter from that chat's composer.
  */
 export function AssistantDetailSheetEntryV2({
   composer,
   view
 }: Pick<AssistantsTabPropsV2, "composer"> & Readonly<{ view: AssistantLibraryView }>) {
-  // The latest composer this tab rendered: Studio unmounts it right after the chat opens.
+  // The latest composer this tab rendered: Settings unmounts it right after the chat opens.
   const sendStarter = useEventCallback((prompt: string) => composer.assistant.sendStarter(prompt));
   const detail = view.detail;
   if (!detail) return null;

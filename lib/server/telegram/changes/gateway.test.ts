@@ -30,7 +30,7 @@ const ok = () => new Response(null, { status: 204 });
 const refused = (error: string, status: number, extra: Record<string, unknown> = {}) => () => Response.json({ error, ...extra }, { status });
 
 describe("a change button's request", () => {
-  it("is the web card's request to the same Studio route, built for the button's user", async () => {
+  it("is the web card's request to the same Settings route, built for the button's user", async () => {
     const cases: ReadonlyArray<readonly [TelegramChangeOperation, Omit<Call, "params"> & { params?: readonly string[] }]> = [
       [{ kind: "secret_delete", secretId: "s-1", versionId: "v-1" },
         { body: { action: "delete", expectedVersionId: "v-1", id: "s-1" }, method: "POST", path: "/api/me/workspace/secrets", route: "secrets" }],

@@ -14,7 +14,7 @@ import { AssistantEditorPageV2, assistantEditorTitle } from "./editor/AssistantE
 import { NewAssistantSheetV2 } from "./editor/NewAssistantSheetV2";
 
 /**
- * The Studio crumb and Back control while the editor page is open. The key
+ * The Settings crumb and Back control while the editor page is open. The key
  * stays the same across Create, so creating keeps focus where it is.
  */
 export function assistantEditorSubviewV2(

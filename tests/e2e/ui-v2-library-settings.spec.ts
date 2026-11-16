@@ -234,7 +234,7 @@ for (const theme of ["dark", "light"] as const) {
       else await expect(disclosure).toBeHidden();
       await expect(settings.getByRole("switch")).toHaveCount(4);
       await expect(settings.getByRole("button", { name: "Pause" })).toHaveCount(0);
-      await expect(settings.getByRole("button", { name: "Open in Library" })).toHaveCount(0);
+      await expect(settings.getByRole("button", { name: /^Open in (?:Library|Settings)$/u })).toHaveCount(0);
 
       await settings.getByRole("button", { name: "Forget everything…" }).click();
       let confirmation = page.getByRole("alertdialog", { name: "Forget everything?" });
@@ -334,13 +334,20 @@ for (const variant of [
   }
 }
 
-test("Settings has one modal layer, a three-value theme registry, and Account discard ownership", async ({ page }) => {
+test("Settings is a page without a modal layer, has a three-value theme registry, and owns Account discard", async ({ page }) => {
   await page.goto("/ui-v2-fixture?fixture=settings&state=dirty");
-  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
-  await page.getByRole("button", { name: "General" }).click();
-  const confirmation = page.getByRole("alertdialog", { name: "Unsaved account changes" });
+  const settings = page.getByTestId("library-v2");
+  await expect(settings.getByTestId("settings-account-panel")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await settings.getByRole("tab", { name: "General", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Unsaved account changes" });
   await expect(confirmation).toBeVisible();
-  await confirmation.getByRole("button", { name: "Discard changes" }).click();
+  // The confirmation isolates the page beneath it, where Account is still the selected section.
+  await expect(settings.getByRole("tab", { name: "Account", exact: true, includeHidden: true }))
+    .toHaveAttribute("aria-selected", "true");
+  await confirmation.getByRole("button", { name: "Confirm discard changes" }).click();
+  await expect(confirmation).toHaveCount(0);
+  await expect(settings.getByRole("tab", { name: "General", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("radio")).toHaveCount(3);
   await expect(page.getByRole("radio", { name: /System theme/ })).toBeVisible();
   await expect(page.getByRole("radio", { name: /Light theme/ })).toBeVisible();

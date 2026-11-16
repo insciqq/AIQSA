@@ -31,7 +31,7 @@ const COPY: Readonly<Record<string, readonly [PersonalMcpField | null, string]>>
   mcp_connection_forbidden: ["url", "AIQSA is not allowed to connect to this address."],
   mcp_draft_changed: [null, "This connection changed meanwhile. Try again."],
   mcp_draft_test_failed: [null, "AIQSA could not connect to this server with these details. Check the URL and authorization."],
-  mcp_enabled_server_limit_reached: [null, `At most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers can be on at once, including Studio's MCP servers. Turn one off first.`],
+  mcp_enabled_server_limit_reached: [null, `At most ${MCP_RUN_PLAN_LIMITS.maxEnabledServers} MCP servers can be on at once, including the installation's MCP servers. Turn one off first.`],
   mcp_encryption_unavailable: [null, "Credential storage is unavailable right now. Ask the administrator to check it."],
   mcp_internal_address_forbidden: ["url", "This address belongs to AIQSA's own services, so it cannot be used."],
   mcp_local_network_disabled: ["url", "The administrator turned off connections to the local network. Use a public address or ask the administrator."],

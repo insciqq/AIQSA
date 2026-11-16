@@ -83,13 +83,15 @@ async function resetTelegramControl(request: APIRequestContext): Promise<void> {
   }
 }
 
-/** Settings → Connections → Telegram, freshly loaded: the block reads the link state when it opens. */
+/**
+ * Settings › Telegram, freshly loaded: the block reads the link state when it opens. The section is
+ * offered while the bot is on for the user or the user has a link.
+ */
 async function openTelegramSettings(page: Page): Promise<Locator> {
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
-  await runAccountMenuAction(page, "Settings");
-  const settings = page.getByTestId("settings-v2");
-  await settings.getByRole("navigation", { name: "Settings sections" }).getByRole("button", { name: "Connections", exact: true }).click();
+  await runAccountMenuAction(page, "Telegram");
+  const settings = page.getByTestId("library-v2");
   const section = settings.getByTestId("settings-telegram");
   await expect(section.getByTestId("settings-telegram-state")).not.toHaveText(/^Loading Telegram/u);
   return section;

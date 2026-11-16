@@ -61,7 +61,7 @@ function hasLink(status: TelegramUserStatus): boolean {
 }
 
 /**
- * Settings → Connections → Telegram (PRD O-04, D-04, D-05, D-23): connect
+ * Settings → Telegram (PRD O-04, D-04, D-05, D-23): connect
  * through a one-time `t.me` link, see the connected account, disconnect, or
  * reconnect after the bot changed. While the link step is open the block asks
  * the server every 3 s whether Telegram confirmed it, for at most 10 minutes

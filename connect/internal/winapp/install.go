@@ -212,7 +212,7 @@ func (in *Installer) forgetDevice(ctx context.Context) string {
 	if err == nil {
 		revokeCtx, cancel := context.WithTimeout(ctx, RevokeTimeout)
 		if err := in.Revoke(revokeCtx, creds); err != nil {
-			notice = fmt.Sprintf("AIQSA at %s could not be reached, so this computer is still listed there. Remove it in AIQSA → AIQSA Connect.", Host(creds.Origin))
+			notice = fmt.Sprintf("AIQSA at %s could not be reached, so this computer is still listed there. Remove it in AIQSA → Settings › Computers.", Host(creds.Origin))
 		}
 		cancel()
 	}

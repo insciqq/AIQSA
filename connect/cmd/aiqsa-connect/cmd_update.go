@@ -49,7 +49,7 @@ func runUpdate(inv *invocation) int {
 		return 2
 	}
 	if version == "dev" {
-		fmt.Fprintln(inv.stderr, "aiqsa-connect update: this is a development build; reinstall with the install command shown in AIQSA → AIQSA Connect.")
+		fmt.Fprintln(inv.stderr, "aiqsa-connect update: this is a development build; reinstall with the install command shown in AIQSA → Settings › Computers.")
 		return 1
 	}
 	paths, err := config.ResolvePaths()
@@ -96,7 +96,7 @@ func updateFailure(err error) string {
 		if runtime.GOOS == "windows" {
 			return fmt.Sprintf("%v; download AIQSA Connect again from your AIQSA page and open it to reinstall", err)
 		}
-		return fmt.Sprintf("%v; reinstall aiqsa-connect into a directory you own with the install command shown in AIQSA → AIQSA Connect", err)
+		return fmt.Sprintf("%v; reinstall aiqsa-connect into a directory you own with the install command shown in AIQSA → Settings › Computers", err)
 	}
 	return err.Error()
 }

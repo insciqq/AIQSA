@@ -146,7 +146,7 @@ async function deliveryState(occurrenceId: string): Promise<Readonly<{ code: str
   return row && { code: row.lastFailureCode, state: row.state };
 }
 
-/** Studio › Scheduled › Edit for `title` in `page`, the editor dialog once open. */
+/** Settings › Automations › Edit for `title` in `page`, the editor dialog once open. */
 async function openEditor(page: Page, title: string) {
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 60_000 });

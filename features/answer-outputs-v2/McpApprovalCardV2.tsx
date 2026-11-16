@@ -39,8 +39,8 @@ function stateText(card: McpApprovalCard, live: boolean, continuable: boolean): 
     case "allowed_automatically": return "The automatic check allowed this call as part of your request.";
     case "allowed_once": return `Allowed once: only this exact call may run, once.${waiting}`;
     case "allowed_server":
-      return !card.guardReason ? `Tools of ${card.serverName} now run without asking. You can revoke this in Studio › MCP servers.${waiting}`
-        : `Standing consent saved for ${card.serverName}. Automatic checks still apply when configured. You can revoke consent in Studio › MCP servers.${waiting}`;
+      return !card.guardReason ? `Tools of ${card.serverName} now run without asking. You can revoke this in Settings › MCP servers.${waiting}`
+        : `Standing consent saved for ${card.serverName}. Automatic checks still apply when configured. You can revoke consent in Settings › MCP servers.${waiting}`;
     case "denied": return "Nothing was sent.";
     case "pending":
       return !card.canDecide ? "Only the person who sent this message can allow this tool. Nothing was sent."

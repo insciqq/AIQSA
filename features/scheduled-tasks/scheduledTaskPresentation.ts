@@ -140,7 +140,7 @@ export function scheduledTaskPauseCopy(reasonCode: string, task?: Pick<Scheduled
     case "workspace_unavailable":
       return { reason: "Workspace can no longer be used for it", hint: "Edit to turn Workspace off or choose a model with tool support." };
     case "workspace_secret_limit":
-      return { reason: "your saved Workspace secrets exceed the limit", hint: "Remove some in Settings or turn Workspace off, then resume." };
+      return { reason: "your saved Workspace secrets exceed the limit", hint: "Remove some in Settings › Secrets or turn Workspace off, then resume." };
     case "source_unavailable":
       return {
         reason: `${SCHEDULED_TASK_INCOMPLETE_PAUSE_THRESHOLD} runs in a row could not reach a source it uses`,
@@ -282,7 +282,7 @@ export function scheduledTaskLastRunLine(task: ScheduledTask, now: Date = new Da
 
 export type ScheduledTaskResultNotice = Readonly<{
   kind: "error" | "success";
-  /** Where the notice's action leads: the answer in the task's chat, or the task's runs in Studio › Scheduled. */
+  /** Where the notice's action leads: the answer in the task's chat, or the task's runs in Settings › Automations. */
   open: "chat" | "scheduled";
   text: string;
 }>;

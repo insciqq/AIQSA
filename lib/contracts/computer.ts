@@ -217,7 +217,7 @@ export function isComputerExitCode(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= CONNECT_MIN_EXIT_CODE && (value as number) <= CONNECT_MAX_EXIT_CODE;
 }
 
-// Browser API: the owner's computers for the composer's picker and the `/connect` page.
+// Browser API: the owner's computers for the composer's picker and Settings › Computers.
 
 /** What the device reported in `device_info` while it is connected. */
 export const connectComputerInfoSchema = z.strictObject({

@@ -739,13 +739,17 @@ test("long provider models keep navigation fixed and wheel scrolling on the docu
       await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBe(0);
     };
     const expectNavigation = async () => {
-      for (const [id, visible] of [["admin-rail", viewport.width >= 768], ["admin-section-column", viewport.width >= 1024]] as const) {
-        const navigation = page.getByTestId(id);
-        if (!visible) { await expect(navigation).toBeHidden(); continue; }
-        await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBe(0);
-        await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().bottom))).toBe(viewport.height);
-      }
-      if (viewport.width >= 768) await expect(page.getByTestId("admin-rail").getByRole("button").last()).toBeInViewport();
+      // No rail: from 1024px the section column stays pinned to the viewport
+      // with its footer (Chats and the account entry) on screen; below that
+      // the column is a closed drawer.
+      await expect(page.getByTestId("admin-rail")).toHaveCount(0);
+      const navigation = page.getByTestId("admin-section-column");
+      if (viewport.width < 1024) { await expect(navigation).toBeHidden(); return; }
+      await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().top))).toBe(0);
+      await expect.poll(() => navigation.evaluate((element) => Math.round(element.getBoundingClientRect().bottom))).toBe(viewport.height);
+      const footer = page.getByTestId("admin-section-footer");
+      await expect(footer.getByRole("link", { name: "Chats" })).toBeInViewport();
+      await expect(footer.getByRole("button", { name: "Account menu" })).toBeInViewport();
     };
     await expectDocumentScroll();
     await expectNavigation();
