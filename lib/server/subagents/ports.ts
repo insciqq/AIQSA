@@ -456,7 +456,12 @@ export interface BrowserAgentIdentity {
   release(input: BrowserAgentReleaseInput): Promise<void>;
 }
 
-export type SubagentTypeEntry = Readonly<{ description: string; name: string }>;
+export type SubagentTypeEntry = Readonly<{
+  description: string;
+  name: string;
+  /** Its tool groups leave the Workspace out (`subagentGroupsHaveWorkspace`), so it is briefed for a report; absent, it has it. */
+  workspace?: false;
+}>;
 
 export type SubagentTypeResolution =
   | Readonly<{ kind: "found"; type: SubagentTypeSnapshot }>
@@ -471,7 +476,7 @@ export type SubagentTypeResolution =
  * Owner: `20261029205104652-subagent-profiles`.
  */
 export interface SubagentTypeResolver {
-  /** Name and description of each of the user's custom sub-agents, in a stable order. */
+  /** Name and description of each of the user's custom sub-agents, and whether it lacks the Workspace, in a stable order. */
   catalog(input: Readonly<{ userId: string }>): Promise<readonly SubagentTypeEntry[]>;
   /**
    * The current revision of one of the user's custom sub-agents: by `name` for

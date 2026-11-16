@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { normalizeSubagentName } from "../../contracts/subagents";
 import { prismaSubagentDefinitionStore, type SubagentDefinitionRecord, type SubagentDefinitionStore } from "./definitionStore";
 import type { SubagentTypeEntry, SubagentTypeLookup, SubagentTypeResolution, SubagentTypeResolver, SubagentTypeSnapshot } from "./ports";
+import { subagentGroupsHaveWorkspace } from "./typeCatalog";
 
 /**
  * The production `SubagentTypeResolver` (`ports.ts`) over the user's own
@@ -29,7 +30,8 @@ export function subagentTypeSnapshot(record: SubagentDefinitionRecord): Subagent
 export function createSubagentTypeResolver(db: Db, store: SubagentDefinitionStore = prismaSubagentDefinitionStore): SubagentTypeResolver {
   return {
     async catalog({ userId }): Promise<readonly SubagentTypeEntry[]> {
-      return (await store.list(db, userId)).map((record) => ({ description: record.description, name: record.name }));
+      return (await store.list(db, userId)).map((record) => ({ description: record.description, name: record.name,
+        ...(subagentGroupsHaveWorkspace(record.toolGroups) ? {} : { workspace: false as const }) }));
     },
 
     async resolve(input: SubagentTypeLookup): Promise<SubagentTypeResolution> {

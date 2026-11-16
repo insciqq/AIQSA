@@ -293,8 +293,11 @@ export type RunPreparationDeps = Readonly<{
    * sub-agents (`freezeSubagentModels`).
    */
   subagentModels?(userId: string): Promise<SubagentModelCatalogSource>;
-  /** The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`). */
-  subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string }> | null>;
+  /**
+   * The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`): `workspace: false` when its
+   * tool groups leave the Workspace out, so the main agent's list marks it.
+   */
+  subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string; workspace?: false }> | null>;
   /** The proxies the user may use now (`createProxyRunPlanner`); null without any, so such a run has no field. */
   proxies?: Readonly<{ planForRun(userId: string): Promise<import("../../contracts/proxies").ProxyRunPlan | null> }>;
   /** AIQSA Connect's switch and the user's own computers (`computerAdmission.ts`); absent, a message that names one is refused. */

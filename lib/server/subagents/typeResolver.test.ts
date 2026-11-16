@@ -29,6 +29,17 @@ describe("custom sub-agent type resolver", () => {
     expect(await resolver.catalog({ userId: "user-c" })).toEqual([]);
   });
 
+  it("marks a type whose tool groups leave the Workspace out, and only such a type", async () => {
+    const memory = new MemorySubagentDefinitionStore();
+    for (const [name, tools] of [["any", null], ["files", ["workspace", "web_search"]], ["judge", []], ["searcher", ["web_search"]]] as const) {
+      await memory.store.create({} as never, "user-a", draft(name, { tools }));
+    }
+    expect(await createSubagentTypeResolver({} as never, memory.store).catalog({ userId: "user-a" })).toEqual([
+      { description: "Use any for long work.", name: "any" }, { description: "Use files for long work.", name: "files" },
+      { description: "Use judge for long work.", name: "judge", workspace: false }, { description: "Use searcher for long work.", name: "searcher", workspace: false }
+    ]);
+  });
+
   it("resolves the current revision as a snapshot by name or id, and builds no model binding", async () => {
     const { browser, resolver } = await setup();
     const byName = await resolver.resolve({ name: " Browser ", userId: "user-a" });
@@ -132,6 +143,30 @@ describe("custom sub-agent catalog in run context", () => {
     ]);
   });
 
+  it("marks a type and a default without the Workspace, says once what the mark means, and names no Workspace path", () => {
+    const searcher = { description: "Searches the web.", name: "searcher", workspace: false } as const;
+    const text = renderSubagentTypeCatalog([ENTRY, searcher])!;
+    const meaning = "A sub-agent marked workspace=\"none\" has no Workspace, so it cannot read or write files: brief it to put its results in its report.";
+    expect(text).toContain(`<subagent name="browser">Long research.</subagent>\n<subagent name="searcher" workspace="none">Searches the web.</subagent>`);
+    expect(text.split(meaning)).toHaveLength(2);
+    // Above the list, below what a call with no type starts.
+    expect(text.indexOf(meaning)).toBeGreaterThan(text.indexOf("A call with no type starts"));
+    expect(text.indexOf(meaning)).toBeLessThan(text.indexOf("<subagent "));
+    expect(text).not.toMatch(/\/workspace/u);
+    // The default's line carries the same mark, and it alone brings the meaning.
+    const marked = renderSubagentTypeCatalog([ENTRY], { ...DEFAULT, workspace: false })!;
+    expect(marked).toContain("The user's default sub-agent is \"gemini-helper\", marked workspace=\"none\": a call with no type starts it");
+    expect(marked).toContain(meaning);
+    expect(renderSubagentTypeCatalog([], { ...DEFAULT, workspace: false })).toContain(meaning);
+    // Nothing marked, nothing said: an unmarked list keeps its text (pinned above).
+    for (const plain of [renderSubagentTypeCatalog([ENTRY], DEFAULT)!, renderSubagentTypeCatalog([ENTRY], { unreadable: true, version: 1 })!]) {
+      expect(plain).not.toContain("workspace=\"none\"");
+    }
+    // A marked type past the list's cut is not listed, so the meaning is not said for it.
+    const many = Array.from({ length: SUBAGENT_TYPE_CATALOG_LIMITS.types }, (_unused, index) => ({ description: "d", name: `type-${String(index).padStart(2, "0")}` }));
+    expect(renderSubagentTypeCatalog([...many, searcher])).not.toContain(meaning);
+  });
+
   it("says a default that could not be read refuses, instead of claiming the built-in", () => {
     const text = renderSubagentTypeCatalog([ENTRY], { unreadable: true, version: 1 })!;
     expect(text).toContain("The user's default sub-agent could not be read for this answer, so a call with no type is refused");
@@ -155,5 +190,16 @@ describe("the default sub-agent as admission freezes it", () => {
     for (const malformed of [{ definitionId: 1, name: "x", version: 1 }, { name: "x", version: 1 }, { definitionId: "d", name: "x", version: 2 }, "def-1", []]) {
       expect(decodeFrozenSubagentDefault(malformed)).toEqual({ unreadable: true, version: 1 });
     }
+  });
+
+  it("freezes a default without the Workspace with its mark, within version 1, and reads values frozen before the mark as they were", async () => {
+    const marked = await freezeSubagentDefault(async () => ({ definitionId: "def-1", name: "searcher", workspace: false }));
+    expect(marked).toEqual({ definitionId: "def-1", name: "searcher", version: 1, workspace: false });
+    expect(decodeFrozenSubagentDefault(JSON.parse(JSON.stringify(marked)))).toEqual(marked);
+    // A value frozen before the mark existed has none, and still runs its default; a mark of any other value says nothing.
+    const older = { definitionId: "def-1", name: "searcher", version: 1 };
+    expect(decodeFrozenSubagentDefault(older)).toEqual(older);
+    expect(decodeFrozenSubagentDefault({ ...older, workspace: "none" })).toEqual(older);
+    expect(decodeFrozenSubagentDefault({ ...older, workspace: true })).toEqual(older);
   });
 });
