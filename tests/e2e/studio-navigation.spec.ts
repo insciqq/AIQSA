@@ -267,7 +267,7 @@ async function textBounds(locator: Locator): Promise<Readonly<{ left: number; ri
 
 /** A classic scrollbar takes width from the rows; an overlay one does not. */
 async function scrollbarTakesWidth(locator: Locator): Promise<boolean> {
-  return locator.evaluate((element) => {
+  return locator.evaluate((element: HTMLElement) => {
     const style = getComputedStyle(element);
     return element.offsetWidth - element.clientWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth) > 0.5;
   });

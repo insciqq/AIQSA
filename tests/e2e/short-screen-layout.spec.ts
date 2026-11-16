@@ -205,7 +205,7 @@ async function expectListThenSection(page: Page, size: Size, section: "Assistant
   expectInside(arrowBox, viewportBox(size), "the arrow on screen");
   expect(arrowBox.x + arrowBox.width, "the arrow left of the title").toBeLessThanOrEqual((await boxOf(title, "Settings title")).x + 0.5);
   await expect(library.locator(".v2-library-heading-row button:visible"), "nothing at the header row's right").toHaveCount(0);
-  const classicScrollbar = await list.evaluate((element) => element.offsetWidth - element.clientWidth > 0.5);
+  const classicScrollbar = await list.evaluate((element: HTMLElement) => element.offsetWidth - element.clientWidth > 0.5);
   if (!classicScrollbar) {
     const arrowIcon = await boxOf(exit.locator(".v2-library-exit-arrow"), "arrow icon");
     const rowIcon = await boxOf(list.getByRole("tab").first().locator(".v2-icon").first(), "first section icon");
