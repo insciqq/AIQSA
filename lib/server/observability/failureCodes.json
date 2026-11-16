@@ -133,6 +133,8 @@
   "deep_research_unavailable",
   "discord_api_error",
   "discord_api_origin_invalid",
+  "discord_artifact_publish_failed",
+  "discord_artifact_publish_timeout",
   "discord_assistant_missing",
   "discord_assistant_unavailable",
   "discord_attachment_download_failed",
