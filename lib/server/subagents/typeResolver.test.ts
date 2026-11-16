@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { SubagentDefinitionDraft } from "@/lib/contracts/subagentDefinitions";
 import { MemorySubagentDefinitionStore } from "@/tests/support/subagentDefinitionStore";
@@ -116,6 +117,19 @@ describe("custom sub-agent catalog in run context", () => {
     expect(text).toContain("The user's default sub-agent is \"gemini-helper\"");
     expect(text).not.toContain("<subagent ");
     expect(renderSubagentTypeCatalog([], null)).toBeNull();
+  });
+
+  it("renders a list of types that all have the Workspace byte for byte as it did before any type was marked", () => {
+    // The texts of 2026-11-16 before the mark: a change here is a deliberate rewording, never a side effect.
+    const sha = (text: string | null) => createHash("sha256").update(text ?? "").digest("hex");
+    const entries = [{ description: "Compares shop offers.\nSecond line.", name: "analyst" }, ENTRY];
+    expect([renderSubagentTypeCatalog(entries), renderSubagentTypeCatalog(entries, DEFAULT), renderSubagentTypeCatalog([], DEFAULT),
+      renderSubagentTypeCatalog(entries, { unreadable: true, version: 1 })].map(sha)).toEqual([
+      "c0505d8f592c4c176d2822f8a9ecad30e69b3a1ff9d28e012b18b5b0eb05a1d0",
+      "d03f49e5034ae028b4380f998fdf68238489824ede62fe183b12446ae4df1c13",
+      "bf94736e7c83773bdabbee7ba414d9156f7c626f350dbea4db76201e0809b3ef",
+      "0e4e4f5a5766ca85ac1c707d4301d5d770eeff6892ae7d309c86ba84f1d9f56f"
+    ]);
   });
 
   it("says a default that could not be read refuses, instead of claiming the built-in", () => {

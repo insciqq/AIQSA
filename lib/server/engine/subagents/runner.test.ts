@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { memoryToolObservations } from "@/tests/support/toolObservations";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +36,9 @@ import { createAgentUnknownEffects, type AgentUnknownEffects } from "../unknownE
 import type { SubagentModelRoute } from "./modelRoutes";
 import { subagentRequestShape } from "./runSubagents";
 import { workspacePromptContract } from "../../workspace/promptContract";
+import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
+import { WORKSPACE_INBOX_INDEX_PATH, WORKSPACE_PROJECT_DIRECTORY } from "../../../domain/workspace";
+import { WORKSPACE_CHECKPOINT_GUIDANCE } from "../../tools/checkpointOutputs";
 import { COMPUTER_TURN_GUIDANCE_PREFIX } from "../../tools/computerBinding";
 import {
   WORKSPACE_TURN_GUIDANCE_PREFIX,
@@ -100,8 +104,8 @@ const binding: SubagentBinding = { effortSource: "parent", modelId: "fake-qsa", 
 
 function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentChildHost; earlier?: TranscriptItem[]; fences?: AgentUnknownEffects;
   followups?: () => { id: string; text: string }[]; handoff?: EngineTool["execute"]; mailbox?: SubagentHost["mailbox"]; messaging?: SubagentMessaging;
-  modelRetry?: SubagentHost["modelRetry"];
-  recordSearchEvidence?: SubagentHost["recordSearchEvidence"]; request?: ProviderRunRequest;
+  modelRetry?: SubagentHost["modelRetry"]; now?: () => number;
+  recordSearchEvidence?: SubagentHost["recordSearchEvidence"]; request?: ProviderRunRequest; secrets?: RunSecretSource;
   toolTimeLeft?: () => boolean; tools?: EngineTool[]; turnToolCalls?: number; workspaceImageView?: true }> = {}) {
   const { adapter, requests } = scriptedAdapter(steps);
   const appended: Array<{ from: number; items: readonly TranscriptItem[]; thread: unknown }> = [];
@@ -148,7 +152,7 @@ function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentCh
     maxToolRounds: null,
     ...(options.messaging ? { messaging: options.messaging } : {}),
     ...(options.modelRetry ? { modelRetry: options.modelRetry } : {}),
-    now: Date.now,
+    now: options.now ?? Date.now,
     onWorkspaceLifecycle: vi.fn(async () => undefined),
     recordDetachedCompaction: vi.fn(async () => true),
     recordSearchEvidence: options.recordSearchEvidence ?? vi.fn(async () => undefined),
@@ -159,6 +163,7 @@ function setup(steps: readonly Step[], options: Readonly<{ children?: SubagentCh
       ...(options.workspaceImageView ? { workspaceImageView: options.workspaceImageView } : {}) } })),
     runContextItems: [{ id: "ctx-0", kind: "user", runContext: true, text: "Skills index: research" }],
     saveResult: vi.fn(async () => ({ unsavedReason: "test" })),
+    ...(options.secrets ? { secrets: options.secrets } : {}),
     setTurnState: vi.fn(async () => true),
     settleTurn: vi.fn(async (input) => { settled.push(input); return true; }),
     settleUsage: vi.fn(async () => undefined),
@@ -760,6 +765,53 @@ describe("sub-agent runner", () => {
       const ctx = setup([{ text: "Outcome: done\nOk." }]);
       await ctx.runner.wait(await ctx.runner.start(ctx.input({ workspaceRefused: "workspace_unavailable" })));
       expect(userTexts(ctx.requests[0]!).at(-1)).not.toContain("The Workspace is not available");
+    });
+  });
+
+  describe("a sub-agent's texts in a chat with a Workspace", () => {
+    // The admitted request as admission builds it with a Workspace (`runPreparation.ts`): the real contract and checkpoint guidance in
+    // its system text, also recorded as appended (`prompt.workspaceGuidance`), the turn's paths as its turn guidance, and the run's other
+    // admitted guidance after them.
+    const plan = { normalized: { inboxIndexPath: WORKSPACE_INBOX_INDEX_PATH, internetEnabled: true, messageManifestPath: "/workspace/inbox/manifest.json",
+      outputDirectory: "/workspace/output/run-1", projectDirectory: WORKSPACE_PROJECT_DIRECTORY }, toolDefinitions: [] } as never;
+    const contract = workspacePromptContract({ currentAttachmentCount: 0, fileContext: "", hasEarlierExports: false, hasIndexedFiles: false,
+      searchEnabled: false, workspace: plan });
+    const otherGuidance = "Connected MCP tools: Jira.";
+    const inWorkspace = { ...request, prompt: { ...request.prompt,
+      system: [contract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, contract.turn, otherGuidance].join("\n\n"),
+      turnGuidance: [contract.turn], workspaceGuidance: [contract.stable, WORKSPACE_CHECKPOINT_GUIDANCE] }, workspaceCheckpoints: true,
+      workspace: { enabled: true, outputDirectory: "/workspace/output/run-1" } } as unknown as ProviderRunRequest;
+    const secrets = { list: async () => [{ byteSize: 32, description: "", envNames: ["GITHUB_TOKEN"], kind: "env", name: "github", valueId: "value-1" }],
+      read: vi.fn() } as unknown as RunSecretSource;
+    const readSecret = engineTool("read_secret", "session", vi.fn());
+    const parentAgent = { name: "research", runId: "run", threadId: "parent-thread", toolState: { calls: 0 }, turnId: "parent-turn" };
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    /** The system text of a sub-agent's first request in that chat, on a fixed day. */
+    const systemOf = async (input: Partial<SubagentTurnInput> = {}, children?: SubagentChildHost) => {
+      const ctx = setup([{ text: "Outcome: done\nDone." }], { ...(children ? { children } : {}), now: () => Date.parse("2026-11-16T09:00:00Z"),
+        request: inWorkspace, secrets, tools: [readSecret] });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input(input)));
+      return ctx.requests[0]!.prompt.system ?? "";
+    };
+    const typed = (toolGroups: readonly SubagentToolGroup[] | null) => ({ definitionId: "d", description: "d", instructions: "", name: "custom",
+      providerModelId: null, reasoningEffort: null, revisionId: "r", toolGroups });
+
+    it("keeps every role's whole system text byte for byte as it was before the sub-agent's own tools decided it", async () => {
+      const plain = await systemOf();
+      expect(plain).toContain(SUBAGENT_ROLE_SECTION);
+      expect(plain).toContain("# Workspace");
+      expect(plain).toContain(contract.stable);
+      expect(plain).toContain(WORKSPACE_CHECKPOINT_GUIDANCE);
+      expect(plain).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
+      // The texts of 2026-11-16 before that change: a change here is a deliberate rewording, never a side effect.
+      expect([sha(plain), sha(await systemOf({}, childHost())), sha(await systemOf({ parentAgent }))]).toEqual([
+        "1586329ed9471d2c111534ba9758f1998e06bb931100441247f64c436a56bb09",
+        "5d0fed6b1da34fb27576c579404b49b61a51619d6d6927a34fc170de9ff1694e",
+        "5157b543d7465f77652fd66d1aafd0b79e71b8152d1dd65712d5c9c5b92861e1"
+      ]);
+      // A custom sub-agent with every tool, or whose groups name the Workspace (here with every other tool the run offers), reads the same.
+      expect(await systemOf({ type: typed(null) })).toBe(plain);
+      expect(await systemOf({ type: typed(["mcp", "secrets", "skills", "workspace"]) })).toBe(plain);
     });
   });
 
