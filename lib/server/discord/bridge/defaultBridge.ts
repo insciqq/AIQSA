@@ -2,6 +2,7 @@ import type { RequestAuthResolver } from "../../auth/requestAuth";
 import { connectorRequestAuth } from "../../connectors/requestAuth";
 import { lazyConnectorLoader, lazyConnectorRunGateway } from "../../connectors/runGateway";
 import { prisma } from "../../prisma";
+import { createDiscordArtifactPublisher } from "../artifacts";
 import { discordControlHooks } from "../control/hooks";
 import { isDiscordBotActive } from "../control/state";
 import type { DiscordDefaults } from "../defaultDiscord";
@@ -100,8 +101,26 @@ export function startDiscordBridge(discord: DiscordBridgeDefaults): DiscordBridg
     rest: discord.rest,
     uploads
   });
+  // An answer's artifacts are published as the service account, rechecked as its in-process requests are (`../artifacts.ts`).
+  const artifactLinks = {
+    publish: createDiscordArtifactPublisher({
+      allowed: async (userId) => {
+        const control = await discord.control();
+        if (!isDiscordBotActive(control) || control.serviceUserId !== userId) return false;
+        const user = await prisma.user.findUnique({ select: { kind: true }, where: { id: userId } });
+        return user?.kind === "service";
+      },
+      load: lazyConnectorLoader(async () => {
+        const [{ defaultArtifactService }, { getAuthConfig }] = await Promise.all([
+          import("../../artifacts/defaultArtifacts"), import("../../auth/config")
+        ]);
+        return { appBaseUrl: () => getAuthConfig().appBaseUrl, service: defaultArtifactService() };
+      })
+    })
+  };
   const bridge = createDiscordBridge({
     answerFiles: createDiscordAnswerFiles({ read: defaultTelegramFileReader() }),
+    artifactLinks,
     attachments,
     control: discord.control,
     conversations: discord.conversations,

@@ -11,6 +11,7 @@ import { followConnectorRunEvents } from "../../connectors/runObserver";
 import { RUN_STREAM_IDLE_MS } from "../../connectors/sse";
 import { logEvent, runInBackground } from "../../observability";
 import { discordChannelInfo, discordChannelKind, type DiscordChannelInfo } from "../access";
+import { DISCORD_NO_ANSWER_ARTIFACTS, publishDiscordAnswerArtifacts, type DiscordArtifactPublisher } from "../artifacts";
 import { DISCORD_DISABLED_CODE, DISCORD_NOT_ADDRESSED_CODE, DISCORD_RATE_LIMITED_CODE, DISCORD_REQUEST_INVALID_CODE } from "../codes";
 import { isDiscordBotActive, type DiscordActiveControl, type DiscordEffectiveControl } from "../control/state";
 import {
@@ -114,6 +115,8 @@ export type DiscordBridgeDeps = Readonly<{
   gateway: ConnectorRunGateway;
   facts: DiscordRunFacts;
   shares: DiscordShareLinks;
+  /** Publishes the artifacts an answer made, within `timeoutMs` (`lib/server/discord/artifacts.ts`); absent, none is linked. */
+  artifactLinks?: Readonly<{ publish: DiscordArtifactPublisher; timeoutMs?: number }>;
   /** Intake's lanes: a run in a thread this bridge opened holds the thread's slot, so its follow-ups run at once. */
   lanes?: Pick<DiscordLanes, "hold">;
   /** Uploads for a long history's `discord-history.md`; null cuts it instead. */
@@ -854,12 +857,20 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     let outcome: "complete" | "cancelled" | "error";
     let redactions = status.redactions();
     if (answer?.status === "complete") {
-      const files = await answerFiles({ answer, chatId: answer.chatId, runId, test: question.ids.test, userId }).catch((error: unknown) => {
-        logDiscordBridgeFailure({ code: "discord_delivery_failed", error, runId, stage: "settle" });
-        return { files: [], note: null };
-      });
+      // The answer's artifacts publish beside its files, bounded, and never fail it (answer first).
+      const [files, artifacts] = await Promise.all([
+        answerFiles({ answer, chatId: answer.chatId, runId, test: question.ids.test, userId }).catch((error: unknown) => {
+          logDiscordBridgeFailure({ code: "discord_delivery_failed", error, runId, stage: "settle" });
+          return { files: [], note: null };
+        }),
+        deps.artifactLinks
+          ? publishDiscordAnswerArtifacts({
+            publish: deps.artifactLinks.publish, runId, summary: answer.artifactSummary, timeoutMs: deps.artifactLinks.timeoutMs, userId
+          })
+          : Promise.resolve(DISCORD_NO_ANSWER_ARTIFACTS)
+      ]);
       const composed = await composeDiscordAnswer({
-        answer, files,
+        answer, artifacts, files,
         share: input.shareable
           ? () => deps.shares.create({ assistantMessageId: answer.assistantMessageId, chatId: answer.chatId, userId }).catch((error: unknown) => {
             logDiscordBridgeFailure({ code: "discord_share_failed", error, runId });

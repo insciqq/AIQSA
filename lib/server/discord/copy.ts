@@ -107,6 +107,11 @@ export function discordQuestionFallbackThreadName(authorName: string): string {
   return `Question from ${authorName}`.slice(0, 80);
 }
 
+/** The line under an answer whose artifacts (some or all) could not be linked (operator decision 2026-11-16). */
+export function discordArtifactsOnlyInAiqsaText(count: number): string {
+  return count === 1 ? "1 artifact is only in AIQSA" : `${count} artifacts are only in AIQSA`;
+}
+
 /**
  * The visible reason of a refusal code that people in Discord see, or `null`
  * for codes that stay silent there (the kill switch, unknown delivery) or
