@@ -5,8 +5,9 @@ import { discordSnowflakeTime } from "../intake";
  * Discord messages as the run context reads them (PRD D-16): who wrote them
  * (server nickname, else global name, else username, with the Discord id),
  * when, their text with mentions written as names, the text of their embeds
- * (another service's cards are embeds), and their attachments by name. A
- * message the gateway sent and one read through REST decode alike.
+ * (another service's cards are embeds), their attachments by name, and a
+ * voice message's audio (`voice.ts` transcribes the question's). A message
+ * the gateway sent and one read through REST decode alike.
  */
 
 /** DEFAULT, REPLY, and the two application-command result types another bot's posts use; every other type is a system message. */
@@ -24,6 +25,8 @@ export type DiscordContextAttachment = Readonly<{
   /** Signed CDN addresses; never logged. */
   url: string | null;
   proxyUrl: string | null;
+  /** A voice message's length as Discord states it (`duration_secs`); null for other files. */
+  durationSecs: number | null;
 }>;
 
 export type DiscordContextMessage = Readonly<{
@@ -39,6 +42,11 @@ export type DiscordContextMessage = Readonly<{
   /** The text with user, role and channel mentions written as names, embeds' text after it. */
   text: string;
   attachments: readonly DiscordContextAttachment[];
+  /**
+   * A voice message's audio, one of `attachments`: Discord flags the message `IS_VOICE_MESSAGE` and gives it one
+   * `audio/ogg` attachment with its length, and no text. Null for every other message.
+   */
+  voice: DiscordContextAttachment | null;
   /** The message this one replies to. */
   referenceId: string | null;
   referenceChannelId: string | null;
@@ -106,6 +114,8 @@ function attachments(value: unknown): DiscordContextAttachment[] {
       ? attachment.filename.replace(/[\u0000-\u001f\u007f]/gu, "").slice(0, FILENAME_MAX) : "file";
     return [{
       contentType: typeof attachment.content_type === "string" ? attachment.content_type.slice(0, 200) : null,
+      durationSecs: typeof attachment.duration_secs === "number" && Number.isFinite(attachment.duration_secs) && attachment.duration_secs >= 0
+        ? attachment.duration_secs : null,
       filename,
       id,
       proxyUrl: typeof attachment.proxy_url === "string" ? attachment.proxy_url : null,
@@ -113,6 +123,15 @@ function attachments(value: unknown): DiscordContextAttachment[] {
       url: typeof attachment.url === "string" ? attachment.url : null
     }];
   });
+}
+
+/** Discord's `IS_VOICE_MESSAGE` message flag. */
+export const DISCORD_VOICE_MESSAGE_FLAG = 1 << 13;
+
+/** The audio of a voice message: the flag, and its attachment that states a length (else its only one). */
+function voiceAttachment(flags: unknown, list: readonly DiscordContextAttachment[]): DiscordContextAttachment | null {
+  if (typeof flags !== "number" || !Number.isSafeInteger(flags) || (flags & DISCORD_VOICE_MESSAGE_FLAG) === 0) return null;
+  return list.find((attachment) => attachment.durationSecs !== null) ?? (list.length === 1 ? list[0]! : null);
 }
 
 /** Mentions written as names: `@name`, the bot's role as the bot, other roles as `@role`, channels as `#channel`, custom emoji as `:name:`. */
@@ -145,8 +164,9 @@ export function decodeDiscordContextMessage(value: unknown, names: DiscordMentio
   const content = typeof payload.content === "string" ? payload.content : "";
   const embeds = embedText(payload.embeds);
   const text = [discordMentionText(content, payload.mentions, names).trim(), embeds].filter(Boolean).join("\n");
+  const files = attachments(payload.attachments);
   return {
-    attachments: attachments(payload.attachments),
+    attachments: files,
     authorId,
     authorName: discordDisplayName(author, payload.member),
     bot: author.bot === true || snowflake(payload.webhook_id) !== null,
@@ -159,7 +179,8 @@ export function decodeDiscordContextMessage(value: unknown, names: DiscordMentio
     referenceId: snowflake(reference?.message_id),
     referencedAuthorId: snowflake(record(record(payload.referenced_message)?.author)?.id),
     text,
-    type: typeof payload.type === "number" && Number.isSafeInteger(payload.type) ? payload.type : -1
+    type: typeof payload.type === "number" && Number.isSafeInteger(payload.type) ? payload.type : -1,
+    voice: voiceAttachment(payload.flags, files)
   };
 }
 

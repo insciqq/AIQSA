@@ -180,15 +180,37 @@ async function expectListThenSection(page: Page, size: Size, section: "Assistant
   expect(Math.abs(panelBox.x - libraryBox.x), "no section column before the section").toBeLessThanOrEqual(1);
   expect(Math.abs(panelBox.width - libraryBox.width), "the section takes the whole width").toBeLessThanOrEqual(1);
   await expect(sectionList(library), "the list yields to the section").toBeHidden();
+  // A section keeps Back to chat as a 44px close control at the end of its crumb row.
+  const exit = library.getByRole("button", { exact: true, name: "Back to chat" });
+  const closeBox = await boxOf(exit, "Back to chat close control");
+  expect(Math.abs(closeBox.width - 44), "close control width").toBeLessThanOrEqual(1);
+  expect(Math.abs(closeBox.height - 44), "close control height").toBeLessThanOrEqual(1);
+  expect(Math.abs(size.width - 8 - (closeBox.x + closeBox.width)), "the close control at the right end").toBeLessThanOrEqual(1);
 
   await library.getByRole("button", { exact: true, name: "Back to Settings" }).tap();
   await expect(library).toHaveAttribute("data-view", "list");
-  await expect(library.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
+  const title = library.getByRole("heading", { level: 1, name: "Settings" });
+  await expect(title).toBeVisible();
   await expect(library.locator('[role="tabpanel"]'), "the section yields to the list").toBeHidden();
   const list = library.getByRole("tablist", { name: "Settings sections" });
   const listBox = await boxOf(list, "Settings sections");
   const rowBox = await boxOf(library.locator(".v2-library-heading-row"), "Settings header row");
   expect(listBox.y, "the list starts under the header row").toBeGreaterThanOrEqual(rowBox.y + rowBox.height - 0.5);
+  // The list: Back to chat is a 44px back arrow left of the title, its icon on
+  // the section icons' edge, and nothing sits at the right.
+  const arrowBox = await boxOf(exit, "Back to chat arrow");
+  expect(Math.abs(arrowBox.width - 44), "arrow width").toBeLessThanOrEqual(1);
+  expect(Math.abs(arrowBox.height - 44), "arrow height").toBeLessThanOrEqual(1);
+  expectInside(arrowBox, rowBox, "the arrow in the header row");
+  expectInside(arrowBox, viewportBox(size), "the arrow on screen");
+  expect(arrowBox.x + arrowBox.width, "the arrow left of the title").toBeLessThanOrEqual((await boxOf(title, "Settings title")).x + 0.5);
+  await expect(library.locator(".v2-library-heading-row button:visible"), "nothing at the header row's right").toHaveCount(0);
+  const classicScrollbar = await list.evaluate((element: HTMLElement) => element.offsetWidth - element.clientWidth > 0.5);
+  if (!classicScrollbar) {
+    const arrowIcon = await boxOf(exit.locator(".v2-library-exit-arrow"), "arrow icon");
+    const rowIcon = await boxOf(list.getByRole("tab").first().locator(".v2-icon").first(), "first section icon");
+    expect(Math.abs(arrowIcon.x - rowIcon.x), "the arrow's icon on the section icons' edge").toBeLessThanOrEqual(1);
+  }
 
   const last = list.getByRole("tab").last();
   const lastName = (await last.textContent())?.trim() ?? "last section";
@@ -232,6 +254,8 @@ async function expectEditorKeepsItsOwnBack(page: Page, size: Size): Promise<void
     const editor = library.getByTestId("assistant-editor");
     await expect(editor.getByLabel("Name Required", { exact: true })).toHaveValue(assistant.name, { timeout: 30_000 });
     await expect(backToSettings, "the editor's own Back replaces Back to Settings").toHaveCount(0);
+    // Where a section shows alone, the close control yields to the sub-view's own Back too.
+    await expect(library.getByRole("button", { exact: true, name: "Back to chat" })).toBeHidden();
     const back = library.getByRole("button", { exact: true, name: "Back to Assistants" });
     const backBox = await boxOf(back, "Back to Assistants");
     expectInside(backBox, await boxOf(library.locator(".v2-library-heading-row"), "Settings crumb row"), "Back to Assistants in the crumb row");
@@ -396,12 +420,19 @@ test("desktop keeps the Settings section column and Back to chat · desktop 1440
   expect(Math.abs(tablist.width - 260), "the column is 260px wide").toBeLessThanOrEqual(1);
   expect(Math.abs(panel.x - (tablist.x + tablist.width)), "the section follows the column").toBeLessThanOrEqual(1);
   expect(Math.abs(panel.x + panel.width - 1440), "the section reaches the right edge").toBeLessThanOrEqual(1);
-  // The header row over the section holds the crumb and the one Back to chat.
+  // The header row over the section holds only the crumb; the one Back to chat
+  // is the column's first row, beside the header row and above the sections,
+  // with the section rows' 12px fill edges.
   const row = await boxOf(library.locator(".v2-library-heading-row"), "Settings header row");
   expect(Math.abs(row.x - panel.x), "the header row sits over the section").toBeLessThanOrEqual(1);
   const exit = library.getByRole("button", { exact: true, name: "Back to chat" });
   await expect(exit).toHaveCount(1);
-  expectInside(await boxOf(exit, "Back to chat"), row, "Back to chat in the header row");
+  const exitBox = await boxOf(exit, "Back to chat");
+  expect(Math.abs(exitBox.x - 12), "Back to chat fill starts 12px in").toBeLessThanOrEqual(1);
+  expect(Math.abs(exitBox.x + exitBox.width - 247), "Back to chat fill ends at 247px").toBeLessThanOrEqual(1);
+  expect(exitBox.y + exitBox.height, "Back to chat sits in the header row's band").toBeLessThanOrEqual(row.y + row.height + 0.5);
+  expect(exitBox.y + exitBox.height, "Back to chat above the first section").toBeLessThanOrEqual(tablist.y + 0.5);
+  await expect(library.locator(".v2-library-heading-row button:visible"), "nothing at the header row's end").toHaveCount(0);
   await expect(library.getByRole("navigation", { name: "Settings location" })).toHaveText("Assistants");
   await exit.click();
   await expect(library).toBeHidden();

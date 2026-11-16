@@ -1200,6 +1200,10 @@ describe("run preparation", () => {
       expect(split.turn).toEqual(request.prompt.turnGuidance);
       expect(split.turn.some((part) => part.includes(`This turn's output directory: /workspace/output/`))).toBe(true);
       expect(split.chat).not.toMatch(/This turn's output directory:|\/workspace\/output\/|Bounded file references|earlier completed exports/u);
+      // So are the Workspace's own stable parts, which stay in the system text: a sub-agent turn without the Workspace leaves them out.
+      expect(request.prompt.workspaceGuidance).toEqual([expect.stringMatching(/^A Workspace is available in this chat/u), WORKSPACE_CHECKPOINT_GUIDANCE]);
+      expect(split.chat).toContain(request.prompt.workspaceGuidance!.join("\n\n"));
+      expect(splitTurnGuidance(split.chat, request.prompt.workspaceGuidance).chat).not.toMatch(/\/workspace|checkpoint_outputs|Workspace is available/u);
       chatGuidance.push(split.chat);
     }
     expect(chatGuidance[1]).toBe(chatGuidance[0]);
@@ -1297,6 +1301,11 @@ describe("run preparation", () => {
       }, sendInput(successBody({ workspace: { enabled: true }, provider: "openai", modelId: "gpt-fixture",
         ...(mode === "nonvisual" ? { content: imageContent } : {}) }))));
       expect(prepared.normalizedRequest.prompt.system?.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode !== "empty");
+      // A sub-agent turn without the Workspace reads what a chat without one does: the guidance stays where image generation
+      // makes it the chat's text, never where only the Workspace did.
+      const { prompt } = prepared.normalizedRequest;
+      const withoutWorkspace = splitTurnGuidance(splitTurnGuidance(prompt.system ?? "", prompt.turnGuidance).chat, prompt.workspaceGuidance).chat;
+      expect(withoutWorkspace.includes(IMAGE_EDITING_GUIDANCE)).toBe(mode === "image-plan");
       expect(prepared.normalizedRequest.prompt.system).not.toContain("image attachments are present in your model input");
       expect(prepared.normalizedRequest.prompt.system).toContain("There is no direct Workspace file viewer");
       expect(prepared.normalizedRequest.prompt.system?.includes("Inspect the authorized file index")).toBe(hasImage);
@@ -1440,6 +1449,14 @@ describe("run preparation", () => {
       .replace("workspace_exec_old", "workspace_exec_current")
       .replace(before.workspaceAdmissionPlan!.normalized.outputDirectory, plan.normalized.outputDirectory)
       .replace("Internet inside the workspace: enabled (public destinations only).", "Internet inside the workspace: disabled."));
+    // What admission recorded as appended changed with it: the turn's parts and the Workspace's own are found where they now stand.
+    const retriedPrompt = retried.normalizedRequest.prompt;
+    const split = splitTurnGuidance(admittedRunGuidance(retriedPrompt), retriedPrompt.turnGuidance);
+    expect(split.turn).toEqual(retriedPrompt.turnGuidance);
+    expect(split.turn.join("\n")).toContain(plan.normalized.outputDirectory);
+    expect(split.chat).not.toContain(plan.normalized.outputDirectory);
+    expect(retriedPrompt.workspaceGuidance?.join("\n")).toContain("workspace_exec_current");
+    expect(split.chat).toContain(retriedPrompt.workspaceGuidance!.join("\n\n"));
     expect(retried.providerRequest.prompt).toEqual(retried.normalizedRequest.prompt);
     expect(retried.providerRequest.tools?.map(tool => tool.name)).toContain("workspace_exec_current");
     expect(retried.providerRequest.tools?.map(tool => tool.name)).not.toContain("workspace_exec_old");
@@ -5173,7 +5190,7 @@ describe("a Discord turn under its connector rules", () => {
     expect(telegram.normalizedRequest.memorySearch).toEqual(memorySnapshot);
   });
 
-  it("refuses the Workspace, asked for by the message or stored on the chat", async () => {
+  it("admits the Workspace as a web chat does, asked for by the message or stored on the chat (operator decision 2026-11-16)", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const workspace = contractWorkspace();
     const deps = { ...harness.deps, workspace };
@@ -5181,11 +5198,15 @@ describe("a Discord turn under its connector rules", () => {
       sendInput(successBody({ workspace: { enabled: true } }), excluded),
       sendInput(successBody(), { ...excluded, workspaceEnabled: true })
     ]) {
-      await expect(prepareRun(deps, as("discord", input))).resolves.toMatchObject({ code: DISCORD_RUN_REFUSALS.workspace, ok: false, status: 409 });
+      const prepared = preparedFrom(await prepareRun(deps, as("discord", input)));
+      expect(prepared.workspaceAdmissionPlan).toMatchObject({ sessionId: "ws-contract" });
     }
-    expect(workspace.prepare).not.toHaveBeenCalled();
-    const off = preparedFrom(await prepareRun(deps, as("discord", sendInput(successBody({ workspace: { enabled: false } }), excluded))));
+    expect(workspace.prepare).toHaveBeenCalledTimes(2);
+    // An installation that does not offer it: the turn runs without it, its reason only labelling the record.
+    const off = preparedFrom(await prepareRun(deps, as("discord",
+      sendInput(successBody({ workspace: { enabled: false, reason: "installation_disabled" } }), excluded))));
     expect(off.workspaceAdmissionPlan).toBeUndefined();
+    expect(workspace.prepare).toHaveBeenCalledTimes(2);
   });
 
   it("offers no automation tools, which a Telegram turn keeps", async () => {

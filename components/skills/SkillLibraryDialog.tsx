@@ -26,6 +26,7 @@ import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuar
 import { useDialogFocus } from "@/components/app-shell/useDialogFocus";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import {
   SKILL_DESCRIPTION_MAX_LENGTH,
   SKILL_INSTRUCTIONS_MAX_BYTES,
@@ -199,6 +200,12 @@ function SkillLibraryContent({ mode, onSelectionChange, onDirtyChange, exitGuard
   const removeActionText = assistantSelection ? "Deselect" : "Unpin";
   const removeActionAria = assistantSelection ? "Deselect" : "Stop always using";
   const detailOpen = detailLoading || Boolean(detail) || Boolean(editor);
+  // In Settings, Escape takes this pane's one step back: the delete
+  // confirmation cancels, then the detail or editor closes as its Back does,
+  // asking first about unsaved changes. The picker dialog has its own Escape.
+  useSettingsEscapeStep(mode === "section" && detailOpen, () => requestDiscard(closeDetail), busy);
+  useSettingsEscapeStep(mode === "section" && detailOpen && confirmDelete, () => setConfirmDelete(false), busy);
+  useSettingsEscapeStep(mode === "section" && Boolean(detail && filePreview), () => setFilePreview(null));
 
   function closeDetail(): void {
     detailRequest.current += 1;

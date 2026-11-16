@@ -6,9 +6,11 @@ import { parseSpreadsheetDocument } from "../lib/server/parsing/spreadsheet";
 import { zipEntries } from "../lib/server/parsing/spreadsheetArchive.testFixtures";
 import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
+import { decodeSubagentDefinitionDraft } from "../lib/contracts/subagentDefinitions";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
   SCENARIO_R_PHRASES, SCENARIO_S_PROMPTS, SCENARIO_V_FILE_QUERY_PATTERN, oracleQ, oracleR, oracleS, oracleV, parseTestProxy, researchMetrics,
+  SCENARIO_W_ANSWER_YEAR, SCENARIO_W_DRAFT, SCENARIO_W_WORKSPACE_TOOL_PATTERN, oracleW,
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
@@ -50,7 +52,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(24);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(25);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("U");
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
@@ -246,6 +248,44 @@ describe("a sub-agent's children (O)", () => {
     expect(oracleV({ ...held, workspaceBindings: 1 }).failed).toEqual(["workspace_bound"]);
     expect(oracleV({ ...held, sessionStarted: true }).failed).toEqual(["workspace_session_started"]);
     expect(oracleV({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
+  });
+
+  it("W runs only when named, with Search, creates a type with only web search, names no file and fails each acceptance line by name", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("W");
+    expect(selectedSubagentScenarios("w")).toEqual(["W"]);
+    expect(() => subagentHarnessOptions({}, ["W"], "m")).toThrow("browser_scenarios_deepseek_key_required");
+    expect(() => subagentHarnessOptions({ AIQSA_SUBAGENTS_HOSTED_SEARCH: "1" }, ["W"], "m")).not.toThrow();
+    // The draft is one the definition route accepts as it stands, with no Workspace among its tools.
+    expect(decodeSubagentDefinitionDraft(JSON.parse(JSON.stringify(SCENARIO_W_DRAFT)))).toEqual({ draft: { ...SCENARIO_W_DRAFT, tools: ["web_search"] },
+      ok: true });
+    const prompt = SUBAGENT_PROMPTS.W();
+    expect(prompt).toContain(`type: "${SUBAGENT_NAMES.ownType}"`);
+    expect(prompt).toContain("ровно одного веб-поиска");
+    expect(prompt).not.toMatch(/workspace|файл|запиш|запис/iu);
+    // The Workspace tools as a run names them, and no other tool.
+    const workspaceTool = new RegExp(SCENARIO_W_WORKSPACE_TOOL_PATTERN, "u");
+    for (const name of [namespacedWorkspaceToolName("sandbox_shell"), namespacedWorkspaceToolName("sandbox_fs_write"), "apply_patch", "browser_handoff",
+      "checkpoint_outputs", "view_workspace_image"]) expect(workspaceTool.test(name)).toBe(true);
+    for (const name of ["find_tools", "search_selected_engines", "fetch_url", "read_tool_result", "update_plan"]) expect(workspaceTool.test(name)).toBe(false);
+    expect(SCENARIO_W_ANSWER_YEAR).toMatch(/^\d{4}$/u);
+    const held = { briefsNamingWorkspace: 0, fileToolSearches: 0, mainCalls: 1, reportHasAnswer: true, searches: 1, settled: true, terminal: "complete",
+      turns: { blocked: 0, done: 1, partial: 0, total: 1 }, typeThreads: 1, workspaceAdmitted: true, workspaceCalls: 0, workspaceGuidanceRecorded: true };
+    expect(oracleW(held)).toEqual({ counts: { blockedTurns: 0, briefsNamingWorkspace: 0, doneTurns: 1, fileToolSearches: 0, mainCalls: 1, partialTurns: 0,
+      reportHasAnswer: 1, searches: 1, turns: 1, typeThreads: 1, workspaceAdmitted: 1, workspaceCalls: 0, workspaceGuidanceRecorded: 1 }, failed: [] });
+    // Searches are recorded, never judged.
+    expect(oracleW({ ...held, searches: 4 }).failed).toEqual([]);
+    expect(oracleW({ ...held, terminal: "error" }).failed).toEqual(["run_not_complete"]);
+    expect(oracleW({ ...held, workspaceAdmitted: false }).failed).toEqual(["workspace_not_admitted"]);
+    expect(oracleW({ ...held, workspaceGuidanceRecorded: false }).failed).toEqual(["workspace_guidance_not_recorded"]);
+    expect(oracleW({ ...held, mainCalls: 0 }).failed).toEqual(["type_not_started"]);
+    expect(oracleW({ ...held, typeThreads: 0 }).failed).toEqual(["type_not_started"]);
+    expect(oracleW({ ...held, briefsNamingWorkspace: 1 }).failed).toEqual(["brief_names_workspace"]);
+    // The failure this pair fixes: briefed to write a file it had no tool for, it looked for one and ended `partial`.
+    expect(oracleW({ ...held, briefsNamingWorkspace: 1, fileToolSearches: 1, reportHasAnswer: false, turns: { blocked: 0, done: 0, partial: 1, total: 1 } }).failed)
+      .toEqual(["brief_names_workspace", "subagent_turn_not_done", "report_without_answer", "file_tool_searched"]);
+    expect(oracleW({ ...held, turns: { blocked: 0, done: 0, partial: 0, total: 0 } }).failed).toEqual(["subagent_turn_not_done"]);
+    expect(oracleW({ ...held, workspaceCalls: 1 }).failed).toEqual(["workspace_tool_called"]);
+    expect(oracleW({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
   });
 
   it("V's file-tool pattern matches a query for a way to write a file, in English or Russian, and not an ordinary search", () => {

@@ -179,6 +179,18 @@ describe("the default custom sub-agent on PostgreSQL", () => {
     expect(await readSubagentDefault(prisma, userId)).toEqual({ definitionId: first.id, name: "renamed" });
   });
 
+  it("reads whether the default's current tool groups leave the Workspace out, following its edits", async () => {
+    const userId = await owner();
+    const searcher = await created(userId, { name: "searcher", tools: ["web_search"] });
+    await move(userId, searcher.id);
+    expect(await readSubagentDefault(prisma, userId)).toEqual({ definitionId: searcher.id, name: "searcher", workspace: false });
+    expect(await createSubagentTypeResolver(prisma).catalog({ userId }))
+      .toEqual([{ description: "Synthetic long browsing.", name: "searcher", workspace: false }]);
+    await prisma.$transaction((tx) => reviseSubagentDefinitionInTransaction(tx, userId, searcher.id, 1, draft({ name: "searcher", tools: null })));
+    expect(await readSubagentDefault(prisma, userId)).toEqual({ definitionId: searcher.id, name: "searcher" });
+    expect(await createSubagentTypeResolver(prisma).catalog({ userId })).toEqual([{ description: "Synthetic long browsing.", name: "searcher" }]);
+  });
+
   it("lets one of two racing moves from one reading through", async () => {
     const userId = await owner();
     const first = await created(userId);

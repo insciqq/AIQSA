@@ -60,9 +60,10 @@ const flag = (value: boolean) => value ? 1 : 0;
  * main agent and a foreground one hands back, a message claiming the user's
  * word authorizes nothing, a ping-pong stops at its bound, and Stop reaches a
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
- * next, with the Workspace off for the installation.
+ * next, with the Workspace off for the installation. W: a custom sub-agent
+ * with only web search, started in a chat with a Workspace.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -80,7 +81,8 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
-  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}, V: { search: true }
+  D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}, V: { search: true },
+  W: { search: true }
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -146,7 +148,7 @@ export function subagentHarnessOptions(env: Readonly<Record<string, string | und
   if (text !== null && !OPENROUTER_MODEL_PATTERN.test(text)) fail("text_model_invalid");
   if (text !== null && !env.OPENROUTER_API_KEY?.trim()) fail("openrouter_key_required");
   // Production Search (T's acceptance option) brings its own sources, and `researchEvalOptions` asks for the DeepSeek key only when
-  // that source is selected; without it Q, R, T and V search on the DeepSeek client route, or on codex-lb's hosted route alone
+  // that source is selected; without it Q, R, T, V and W search on the DeepSeek client route, or on codex-lb's hosted route alone
   // when AIQSA_SUBAGENTS_HOSTED_SEARCH=1 and no DeepSeek key is given.
   const productionSearch = env.AIQSA_SUBAGENTS_T_SEARCH?.trim() === "production";
   const hostedOnly = env.AIQSA_SUBAGENTS_HOSTED_SEARCH === "1";
@@ -202,6 +204,8 @@ export const SUBAGENT_NAMES = Object.freeze({
   reader: "q-reader",
   racer: "u-sleeper",
   handOver: { helper: "v-helper", lead: "v-lead" },
+  /** W's custom sub-agent, created for the run and deleted after it: its name is its type's. */
+  ownType: "w-searcher",
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -576,6 +580,16 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     `Скажи ${SUBAGENT_NAMES.handOver.lead}, чтобы первую часть он нашёл сам, а вторую поручил одному своему помощнику ` +
       `с именем ${SUBAGENT_NAMES.handOver.helper} (не в фоне), дождался его ответа и собрал обе части вместе. Каждому из них хватит ровно одного ` +
       "веб-поиска: не больше одного поиска на агента, страницы не открывать, ответ взять из результатов поиска.",
+    "Когда получишь его отчёт, ответь мне двумя короткими строками: лицензия и год."
+  ].join("\n\n"),
+  // The chat has a Workspace and nothing in the message names files or the Workspace: whether the brief asks the type, which has only
+  // web search, for a file is the main agent's own doing under the product's prompt and list. One search, because models fan out otherwise.
+  W: () => [
+    `Поручи небольшой поиск в интернете ровно одному суб-агенту: моему собственному суб-агенту ${SUBAGENT_NAMES.ownType} ` +
+      `(передай type: "${SUBAGENT_NAMES.ownType}"), не в фоне, и дождись его отчёта. Сам не ищи.`,
+    "Вопрос из двух частей про встраиваемую базу данных SQLite: 1) под какой лицензией распространяется исходный код SQLite; " +
+      "2) в каком году вышла первая версия SQLite.",
+    "Ему хватит ровно одного веб-поиска: не больше одного поиска, ответ взять из результатов поиска.",
     "Когда получишь его отчёт, ответь мне двумя короткими строками: лицензия и год."
   ].join("\n\n"),
   P: Object.freeze({
@@ -1610,6 +1624,75 @@ export function oracleV(input: VEvidence): OracleVerdict {
     fileToolSearches: input.fileToolSearches, helperThreads: input.helperThreads, mainCalls: input.mainCalls, partialTurns: input.turns.partial,
     searches: input.searches, sessionStarted: flag(input.sessionStarted), subagentCalls: input.subagentCalls, turns: input.turns.total,
     workspaceBindings: input.workspaceBindings }, failed };
+}
+
+/**
+ * W's custom sub-agent as `POST /api/me/subagents` takes it (`SubagentDefinitionDraft`): only web search, as after "make a sub-agent that
+ * only searches the web", on the caller's model.
+ */
+export const SCENARIO_W_DRAFT = Object.freeze({
+  description: "Ищет в интернете и отвечает по результатам поиска.",
+  effort: null,
+  instructions: "Ищи в интернете и отвечай по результатам поиска, коротко и по делу.",
+  modelId: null,
+  name: SUBAGENT_NAMES.ownType,
+  tools: ["web_search"] as const
+});
+
+/** The year W's question asks for, matched inside SQL in the type's report: its text never leaves the database. */
+export const SCENARIO_W_ANSWER_YEAR = "2000";
+
+/** Workspace tools as a run names them (its namespaced MCP tools and the engine's own), as a regular expression SQL matches (`~`). */
+export const SCENARIO_W_WORKSPACE_TOOL_PATTERN = "^(mcp_workspace_|(apply_patch|browser_handoff|checkpoint_outputs|view_workspace_image)$)";
+
+/** W's counts and facts, all from read-only SQL over the chat: no brief, query, report or answer leaves it. */
+export type WEvidence = Readonly<{
+  /** `call_subagent` calls, by any agent, whose arguments name `/workspace`. */
+  briefsNamingWorkspace: number;
+  /** `find_tools` calls by sub-agents whose arguments match `SCENARIO_V_FILE_QUERY_PATTERN`. */
+  fileToolSearches: number;
+  /** `call_subagent` calls by the main agent. */
+  mainCalls: number;
+  /** A turn of the type's thread holds the asked year in its report. */
+  reportHasAnswer: boolean;
+  /** Search calls that returned, by every agent: recorded so a fan-out shows, never an oracle. */
+  searches: number;
+  settled: boolean;
+  /** The main run's status. */
+  terminal: string;
+  /** Threads started as the custom type (by its name, which outlives its definition). */
+  typeThreads: number;
+  /** The type's turns; `done` counts state and outcome both `done`. */
+  turns: Readonly<{ blocked: number; done: number; partial: number; total: number }>;
+  /** The main run was admitted with the Workspace. */
+  workspaceAdmitted: boolean;
+  /** Calls of Workspace tools (`SCENARIO_W_WORKSPACE_TOOL_PATTERN`) by the type's threads, refused ones included. */
+  workspaceCalls: number;
+  /** The main run's admission recorded what it appended for the Workspace (`prompt.workspaceGuidance`): the stand runs this change. */
+  workspaceGuidanceRecorded: boolean;
+}>;
+
+/**
+ * W's verdict: in a chat with a Workspace, a custom sub-agent with only web search is briefed for a report and reports. The main run was
+ * admitted with the Workspace and recorded its guidance, the main agent started the type, no brief names `/workspace`, every turn of the
+ * type ended done with outcome done and its report holds the answer, it searched for no file tool and called no Workspace tool.
+ */
+export function oracleW(input: WEvidence): OracleVerdict {
+  const failed: string[] = [];
+  if (input.terminal !== "complete") failed.push("run_not_complete");
+  if (!input.workspaceAdmitted) failed.push("workspace_not_admitted");
+  if (!input.workspaceGuidanceRecorded) failed.push("workspace_guidance_not_recorded");
+  if (input.mainCalls === 0 || input.typeThreads === 0) failed.push("type_not_started");
+  if (input.briefsNamingWorkspace > 0) failed.push("brief_names_workspace");
+  if (input.turns.total === 0 || input.turns.done < input.turns.total) failed.push("subagent_turn_not_done");
+  if (!input.reportHasAnswer) failed.push("report_without_answer");
+  if (input.fileToolSearches > 0) failed.push("file_tool_searched");
+  if (input.workspaceCalls > 0) failed.push("workspace_tool_called");
+  if (!input.settled) failed.push("callbacks_owed");
+  return { counts: { blockedTurns: input.turns.blocked, briefsNamingWorkspace: input.briefsNamingWorkspace, doneTurns: input.turns.done,
+    fileToolSearches: input.fileToolSearches, mainCalls: input.mainCalls, partialTurns: input.turns.partial, reportHasAnswer: flag(input.reportHasAnswer),
+    searches: input.searches, turns: input.turns.total, typeThreads: input.typeThreads, workspaceAdmitted: flag(input.workspaceAdmitted),
+    workspaceCalls: input.workspaceCalls, workspaceGuidanceRecorded: flag(input.workspaceGuidanceRecorded) }, failed };
 }
 
 export const SCENARIO_S_NAME = "ru-test";

@@ -293,8 +293,11 @@ export type RunPreparationDeps = Readonly<{
    * sub-agents (`freezeSubagentModels`).
    */
   subagentModels?(userId: string): Promise<SubagentModelCatalogSource>;
-  /** The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`). */
-  subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string }> | null>;
+  /**
+   * The user's current default custom sub-agent, frozen with those models (`freezeSubagentDefault`): `workspace: false` when its
+   * tool groups leave the Workspace out, so the main agent's list marks it.
+   */
+  subagentDefault?(userId: string): Promise<Readonly<{ definitionId: string; name: string; workspace?: false }> | null>;
   /** The proxies the user may use now (`createProxyRunPlanner`); null without any, so such a run has no field. */
   proxies?: Readonly<{ planForRun(userId: string): Promise<import("../../contracts/proxies").ProxyRunPlan | null> }>;
   /** AIQSA Connect's switch and the user's own computers (`computerAdmission.ts`); absent, a message that names one is refused. */
@@ -764,12 +767,17 @@ export async function preparePdfRetry(
     };
     const newSegments = segments(plan);
     let system = request.prompt.system ?? "";
+    // The parts admission recorded as appended change with it, so each is still found where it stands (`splitTurnGuidance`).
+    let { turnGuidance, workspaceGuidance } = request.prompt;
     // Replace only the server-owned segments; the accepted user/Assistant
     // instructions, file references and unrelated tool authority stay frozen.
     for (const [index, oldSegment] of segments(prior).entries()) {
       const at = system.indexOf(oldSegment);
       if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
       system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
+      const replaced = (parts: readonly string[] | undefined) => parts?.map(part => part.split(oldSegment).join(newSegments[index]));
+      turnGuidance = replaced(turnGuidance);
+      workspaceGuidance = replaced(workspaceGuidance);
     }
     // The retry keeps the run's accepted tool limits, on or off, never the installation's current ones; only the
     // Workspace allowance comes from this admission, and it raises only a limit that is on.
@@ -777,7 +785,7 @@ export async function preparePdfRetry(
     const toolBudgets = { ...request.toolBudgets,
       maxToolCalls: workspaceToolLimit(accepted.maxToolCalls, plan.normalized.maxToolCalls),
       maxToolRounds: workspaceToolLimit(accepted.maxToolRounds, plan.normalized.maxToolRounds) };
-    const prompt = { ...request.prompt, system };
+    const prompt = { ...request.prompt, system, ...(turnGuidance ? { turnGuidance } : {}), ...(workspaceGuidance ? { workspaceGuidance } : {}) };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
     const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
@@ -1130,10 +1138,9 @@ export async function prepareRun(
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
   }
-  // A connector's turn under its rules (only Discord's narrow them): no Workspace, so no browser or handoff either.
+  // A connector's turn under its rules (only Discord's narrow them); its Workspace is a web chat's (operator decisions 2026-11-16).
   const connectorTurn = input.origin === "wake_up" ? undefined : input.origin;
   const connector = connectorTurnRules(connectorTurn);
-  if (connector && !connector.workspace && workspaceEnabled) return failure(DISCORD_RUN_REFUSALS.workspace, 409);
   // A chat runs with its bound Assistant; the request may only bind an
   // unbound chat or repeat the binding.
   const assistantSource = chatAssistantSource(body, chat);
@@ -1789,7 +1796,9 @@ export async function prepareRun(
     const contract = workspacePromptContract({ workspace: workspaceAdmissionPlan,
       currentAttachmentCount: attachments.length, hasIndexedFiles: hasWorkspaceIndexedFiles,
       hasEarlierExports: facts.hasEarlierExports, searchEnabled: admissionPlan.searches.length > 0, fileContext });
-    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null };
+    // Also recorded as appended (`prompt.workspaceGuidance`), so a sub-agent turn without the Workspace leaves it out.
+    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null,
+      workspaceGuidance: [contract.stable] };
     workspaceTurnContract = contract.turn;
   }
 
@@ -1804,7 +1813,8 @@ export async function prepareRun(
     prompt = { ...prompt, system: [prompt.system, part].filter(Boolean).join("\n\n") };
   };
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
-  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n") };
+  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n"),
+    workspaceGuidance: [...prompt.workspaceGuidance ?? [], WORKSPACE_CHECKPOINT_GUIDANCE] };
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
   // A chat model with verified vision looks at Workspace images itself (operator decision 2026-10-26), frozen with the
@@ -1822,7 +1832,10 @@ export async function prepareRun(
     appendTurnGuidance(workspaceMissingContentNotice(attachments, workspaceAdmissionPlan.normalized.inboxIndexPath));
   }
   if (imagePlan || workspaceEnabled && imageReferences.length > 0) {
-    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n") };
+    // Without image generation only the Workspace makes this the chat's text (a chat without one carries it as the turn's), so
+    // it is recorded with the Workspace's parts and a sub-agent turn without the Workspace leaves it out.
+    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n"),
+      ...(imagePlan ? {} : { workspaceGuidance: [...prompt.workspaceGuidance ?? [], IMAGE_EDITING_GUIDANCE] }) };
   } else if (imageReferences.length > 0) appendTurnGuidance(IMAGE_EDITING_GUIDANCE);
   if (imageUnavailableGuidance) {
     prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };

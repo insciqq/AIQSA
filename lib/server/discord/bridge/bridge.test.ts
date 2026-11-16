@@ -189,9 +189,11 @@ describe("Discord bridge: a mention becomes a run and its answer", () => {
     expect(thread).toMatchObject({ parent_id: h.fake.channels.text, type: FAKE_DISCORD_CHANNEL_TYPES.publicThread, name: "what is the release status?" });
     const [run] = h.runs.runs;
     expect(run!.body).toEqual(discordSendBody({
-      admissionId: `dc-${question.id}`, blocks: [{ text: sentText(run!.body), type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1"
+      admissionId: `dc-${question.id}`, blocks: [{ text: sentText(run!.body), type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1",
+      workspaceOffered: true
     }));
-    expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: false, reason: "connector" } });
+    // The installation offers the Workspace, so the turn asks for it as a web chat does (operator decision 2026-11-16).
+    expect(run!.body).toMatchObject({ personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, timeZone: "UTC", workspace: { enabled: true } });
     expect(sentText(run!.body)).toContain(`Discord thread "what is the release status?" in #agent-test, server "Example server".`);
     // The question line links the asking message (a merge request tool cites it).
     expect(sentText(run!.body)).toContain(
@@ -994,7 +996,8 @@ describe("Discord bridge: review fixes", () => {
     expect(await h.replies.claimSend(question.id, new Date(h.now() - 60_000))).toBe(true);
     // The claimer reached the send handler, which made the chat and its run, then the process died.
     await h.runs.gateway.send({
-      body: discordSendBody({ admissionId: `dc-${question.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1" }),
+      body: discordSendBody({ admissionId: `dc-${question.id}`, blocks: [{ text: "x", type: "text" }], expectedActiveLeafId: null, newChatAssistantId: "assistant_1",
+        workspaceOffered: true }),
       chatId: planned, userId: "svc_1"
     });
     await h.bridge.recover(new Date(h.now()));
@@ -1181,7 +1184,7 @@ describe("Discord bridge: review fixes", () => {
     // The newer question's run commits before its journal row names it.
     await h.runs.gateway.send({
       body: discordSendBody({ admissionId: `dc-${newer.id}`, blocks: [{ text: "different question", type: "text" }],
-        expectedActiveLeafId: baseline.assistantMessageId, newChatAssistantId: null }),
+        expectedActiveLeafId: baseline.assistantMessageId, newChatAssistantId: null, workspaceOffered: true }),
       chatId: baseline.chatId, userId: "svc_1"
     });
     await h.bridge.recover(new Date(h.now()));
@@ -1208,7 +1211,7 @@ describe("Discord bridge: review fixes", () => {
     // The merged send went out; the process died before recording its run.
     await h.runs.gateway.send({
       body: discordSendBody({ admissionId: `dc-${first.id}`, blocks: [{ text: "first part\nsecond part", type: "text" }],
-        expectedActiveLeafId: null, newChatAssistantId: "assistant_1" }),
+        expectedActiveLeafId: null, newChatAssistantId: "assistant_1", workspaceOffered: true }),
       chatId, userId: "svc_1"
     });
     h.advance(121_000);

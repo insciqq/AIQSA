@@ -29,7 +29,7 @@ import { FakeSubagentCallbackSink, FakeSubagentRunner, endedSubagentResult } fro
 import { createSubagentDefinitionService } from "./definitionService";
 import { readSubagentDefault } from "./definitionStore";
 import type { SubagentBinding, SubagentCallbackSink, WorkspaceDetachInput, WorkspaceDetachResult } from "./ports";
-import { freezeSubagentDefault } from "./typeCatalog";
+import { decodeFrozenSubagentDefault, freezeSubagentDefault } from "./typeCatalog";
 import { createSubagentTypeResolver } from "./typeResolver";
 
 /**
@@ -211,6 +211,14 @@ describe("sub-agents across slices on PostgreSQL", () => {
     expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId: f.userId } })).toMatchObject({ defaultProviderModelId: providerTemplateIds.fakeModel,
       defaultSubagentDefinitionId: null });
     expect(await prisma.subagentThread.findUniqueOrThrow({ where: { id: thread.id } })).toMatchObject({ definitionId: null, typeName: "helper" });
+    // A default whose tools leave the Workspace out is frozen with its mark, which an accepted run decodes as it was frozen.
+    const searcher = await service.create(f.userId, { description: "Synthetic.", effort: null, instructions: "Synthetic.", modelId: null, name: "searcher",
+      tools: ["web_search"] });
+    if (!searcher.ok) throw new Error(`create refused: ${searcher.refusal.code}`);
+    expect(await service.setDefault(f.userId, searcher.value.id, null)).toEqual({ ok: true, value: searcher.value.id });
+    const marked = await freezeSubagentDefault(() => readSubagentDefault(prisma, f.userId));
+    expect(marked).toEqual({ definitionId: searcher.value.id, name: "searcher", version: 1, workspace: false });
+    expect(decodeFrozenSubagentDefault(JSON.parse(JSON.stringify(marked)))).toEqual(marked);
   }));
 
   it("runs one active run per thread, each attached to the chat's one Workspace under its own binding", async () => fixture(async (f) => {

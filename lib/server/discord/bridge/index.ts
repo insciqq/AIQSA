@@ -9,8 +9,10 @@ import type { ConnectorRunStreamEvent } from "../../connectors/runEvents";
 import type { ConnectorRunAnswer, ConnectorRunGateway } from "../../connectors/runGateway";
 import { followConnectorRunEvents } from "../../connectors/runObserver";
 import { RUN_STREAM_IDLE_MS } from "../../connectors/sse";
+import { connectorWorkspaceRequest } from "../../connectors/turn";
 import { logEvent, runInBackground } from "../../observability";
 import { discordChannelInfo, discordChannelKind, type DiscordChannelInfo } from "../access";
+import { DISCORD_NO_ANSWER_ARTIFACTS, publishDiscordAnswerArtifacts, type DiscordArtifactPublisher } from "../artifacts";
 import { DISCORD_DISABLED_CODE, DISCORD_NOT_ADDRESSED_CODE, DISCORD_RATE_LIMITED_CODE, DISCORD_REQUEST_INVALID_CODE } from "../codes";
 import { isDiscordBotActive, type DiscordActiveControl, type DiscordEffectiveControl } from "../control/state";
 import {
@@ -44,6 +46,7 @@ import {
 } from "./status";
 import { discordCallNameMatch, discordContextTrigger, discordTrigger, type DiscordTrigger } from "./triggers";
 import type { DiscordUploads } from "./uploads";
+import type { DiscordVoiceHook } from "../voice";
 
 /**
  * Discord messages become runs of the installation's service account, one
@@ -61,8 +64,9 @@ import type { DiscordUploads } from "./uploads";
  *   in place, the conversation keyed by the channel.
  * - The context is read from Discord at the question (`context.ts`), admitted
  *   through the shared run gateway as a new Assistant chat excluded from
- *   Memory, without Workspace, or as the conversation's next turn on its
- *   expected leaf.
+ *   Memory, or as the conversation's next turn on its expected leaf; each turn
+ *   has the Workspace whenever the installation offers it, so each thread has
+ *   its chat's own (operator decision 2026-11-16).
  * - While a run of the conversation goes on, a question joins it as a
  *   follow-up; one the run no longer takes waits for it and becomes the next
  *   turn. Conversations run side by side; one conversation stays in order.
@@ -114,12 +118,16 @@ export type DiscordBridgeDeps = Readonly<{
   gateway: ConnectorRunGateway;
   facts: DiscordRunFacts;
   shares: DiscordShareLinks;
+  /** Publishes the artifacts an answer made, within `timeoutMs` (`lib/server/discord/artifacts.ts`); absent, none is linked. */
+  artifactLinks?: Readonly<{ publish: DiscordArtifactPublisher; timeoutMs?: number }>;
   /** Intake's lanes: a run in a thread this bridge opened holds the thread's slot, so its follow-ups run at once. */
   lanes?: Pick<DiscordLanes, "hold">;
   /** Uploads for a long history's `discord-history.md`; null cuts it instead. */
   uploads?: DiscordUploads | null;
   attachments?: DiscordAttachmentHook;
   answerFiles?: DiscordAnswerFilesHook;
+  /** Transcribes a question's and its Reply target's voice messages (`../voice.ts`); absent names them as files. */
+  voice?: DiscordVoiceHook;
   publish?: (event: DiscordRunEvent, context: DiscordRunEventContext) => Promise<void>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -224,13 +232,19 @@ export function discordThreadName(text: string, author: string): Readonly<{ name
   return { name: name.trim() || discordQuestionFallbackThreadName(author), redactions: redacted.count };
 }
 
-/** The send body of a Discord turn (PRD D-17): the Assistant's rows govern, Memory excluded, no Workspace, UTC. */
+/**
+ * The send body of a Discord turn (PRD D-17): the Assistant's rows govern, Memory excluded, UTC, and the Workspace as a
+ * web chat asks for it, whenever the installation offers it (operator decision 2026-11-16). An Assistant's model must
+ * call tools, so only the installation decides; its reason names that in `run_accepted`.
+ */
 export function discordSendBody(input: Readonly<{
   admissionId: string;
   blocks: readonly ContentBlock[];
   expectedActiveLeafId: string | null;
   /** A new chat with this Assistant; null for the conversation's next turn. */
   newChatAssistantId: string | null;
+  /** Whether the installation offers the Workspace now (`ConnectorRunGateway.workspaceOffered`). */
+  workspaceOffered: boolean;
 }>): Record<string, unknown> {
   return {
     admissionId: input.admissionId,
@@ -240,8 +254,7 @@ export function discordSendBody(input: Readonly<{
       ? { assistantId: input.newChatAssistantId, personalDraft: { folderId: null, memoryMode: "EXCLUDED" } }
       : {}),
     timeZone: "UTC",
-    // The connector's rules leave out the Workspace (`lib/server/connectors/turn.ts`); the reason only names that in `run_accepted`.
-    workspace: { enabled: false, reason: "connector" }
+    workspace: connectorWorkspaceRequest(input.workspaceOffered, true)
   };
 }
 
@@ -578,6 +591,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     const id = question.ids.questionMessageId;
     const conversation = placement.conversation;
     const unrecorded = { kind: "refused", refusal: { code: "discord_journal_failed", status: 500 } } as const;
+    // Read once, before anything is claimed, so every attempt of this send asks for the Workspace alike.
+    const workspaceOffered = await deps.gateway.workspaceOffered();
     let leaf: string | null = null;
     if (conversation) {
       const chat = await deps.gateway.chat(input.userId, conversation.chatId);
@@ -602,7 +617,8 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     for (let attempt = 0; ; attempt += 1) {
       const response = await deps.gateway.send({
         body: discordSendBody({
-          admissionId: `dc-${id}`, blocks: input.blocks, expectedActiveLeafId: expected, newChatAssistantId: conversation ? null : input.assistantId
+          admissionId: `dc-${id}`, blocks: input.blocks, expectedActiveLeafId: expected, newChatAssistantId: conversation ? null : input.assistantId,
+          workspaceOffered
         }),
         chatId, userId: input.userId
       });
@@ -703,9 +719,12 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
         attachments: probe.hook, conversationId: placement.conversation?.id ?? null, facts: deps.facts,
         header: await header(placement, trigger, message.guildId), merge: joinable(context), mergeWindowMs: timing.mergeWindowMs,
         names: mentionNames(control), rest,
-        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId
+        scope: placement.scope, trigger, uploads: deps.uploads ?? null, userId: serviceUserId, guildId: message.guildId,
+        voice: deps.voice
       });
-      if (!turn.ok) return refuse(question, { code: turn.code, failureKind: "context", text: DISCORD_COPY.contextUnavailable }, { status });
+      if (!turn.ok) {
+        return refuse(question, { code: turn.code, failureKind: "context", text: "text" in turn ? turn.text : DISCORD_COPY.contextUnavailable }, { status });
+      }
       // Files of its own, its Reply target's or in its history, or a history file: a text follow-up would lose them.
       const carriesFiles = probe.seen() || turn.blocks.length > 1;
       const admitted = await admit(question, placement, {
@@ -854,12 +873,20 @@ export function createDiscordBridge(deps: DiscordBridgeDeps): DiscordBridge {
     let outcome: "complete" | "cancelled" | "error";
     let redactions = status.redactions();
     if (answer?.status === "complete") {
-      const files = await answerFiles({ answer, chatId: answer.chatId, runId, test: question.ids.test, userId }).catch((error: unknown) => {
-        logDiscordBridgeFailure({ code: "discord_delivery_failed", error, runId, stage: "settle" });
-        return { files: [], note: null };
-      });
+      // The answer's artifacts publish beside its files, bounded, and never fail it (answer first).
+      const [files, artifacts] = await Promise.all([
+        answerFiles({ answer, chatId: answer.chatId, runId, test: question.ids.test, userId }).catch((error: unknown) => {
+          logDiscordBridgeFailure({ code: "discord_delivery_failed", error, runId, stage: "settle" });
+          return { files: [], note: null };
+        }),
+        deps.artifactLinks
+          ? publishDiscordAnswerArtifacts({
+            publish: deps.artifactLinks.publish, runId, summary: answer.artifactSummary, timeoutMs: deps.artifactLinks.timeoutMs, userId
+          })
+          : Promise.resolve(DISCORD_NO_ANSWER_ARTIFACTS)
+      ]);
       const composed = await composeDiscordAnswer({
-        answer, files,
+        answer, artifacts, files,
         share: input.shareable
           ? () => deps.shares.create({ assistantMessageId: answer.assistantMessageId, chatId: answer.chatId, userId }).catch((error: unknown) => {
             logDiscordBridgeFailure({ code: "discord_share_failed", error, runId });

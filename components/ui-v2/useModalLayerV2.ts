@@ -224,9 +224,9 @@ export function useModalLayerV2({
     const closeFromPage = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
       if (layerStack.at(-1) !== layer || !escapeFellOutOfDialogs(event.target, dialogRef.current)) return;
-      if (closeBlockedRef.current) return;
+      // A blocked layer still owns the key, so it never reaches the page behind (Settings leaves on Escape).
       event.preventDefault();
-      onCloseRef.current();
+      if (!closeBlockedRef.current) onCloseRef.current();
     };
     document.addEventListener("keydown", closeFromPage);
     return () => {
@@ -241,9 +241,10 @@ export function useModalLayerV2({
     const owner = event.target instanceof Element ? event.target.closest("[role='dialog']") : null;
     if (owner && owner !== dialogRef.current) return;
     if (event.key === "Escape") {
-      if (closeBlocked || event.nativeEvent.isComposing) return;
+      if (event.nativeEvent.isComposing) return;
+      // Blocked or not, the dialog owns the key; the page behind never sees it.
       event.preventDefault();
-      onClose();
+      if (!closeBlocked) onClose();
       return;
     }
     if (event.key !== "Tab" || !dialogRef.current) return;

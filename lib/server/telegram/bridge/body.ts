@@ -1,12 +1,12 @@
 import type { ChatDefaultMcpMode, ChatDefaultSkillsMode } from "../../../contracts/chatDefaults";
 import type { CatalogWireModel, CatalogWireSearchStrategy } from "../../../contracts/catalog";
-import type { WorkspaceNotRequestedReason } from "../../../contracts/workspace";
 import { reconcileModelSearchPlan } from "../../../domain/catalogMatrix";
 import type { ContentBlock } from "../../../domain/content";
 import type { SearchPlan } from "../../../domain/search";
 import {
   assistantRunControlIssue, materializeAssistantRunParams, runControlsFromSavedValues
 } from "../../assistants/runControlMaterialization";
+import { connectorWorkspaceRequest } from "../../connectors/turn";
 
 /**
  * The send body of a Telegram message, built explicitly from the user's
@@ -157,7 +157,7 @@ export function buildTelegramSendBody(input: Readonly<{
     return {
       ...common,
       ...(target.kind === "new" && target.assistantId ? { assistantId: target.assistantId } : {}),
-      workspace: telegramWorkspaceRequest(input.workspaceOffered, true)
+      workspace: connectorWorkspaceRequest(input.workspaceOffered, true)
     };
   }
   const model = input.model;
@@ -173,20 +173,6 @@ export function buildTelegramSendBody(input: Readonly<{
     ...(controls ? { controlDefaults: controls.controlDefaults, params: controls.params } : {}),
     // Like the composer, a model without tool calling asks for no tools and has no Workspace.
     ...(toolCalling ? {} : { tools: "none" }),
-    workspace: telegramWorkspaceRequest(input.workspaceOffered, toolCalling)
+    workspace: connectorWorkspaceRequest(input.workspaceOffered, toolCalling)
   };
-}
-
-/**
- * The Workspace intent a Telegram turn sends: always, as the web composer asks
- * for it (operator decisions 2026-10-20 and 2026-11-16), except on an
- * installation that does not offer it now or with a model that calls no tools,
- * which name why for the content-free `run_accepted` record.
- */
-export function telegramWorkspaceRequest(
-  offered: boolean, toolCalling: boolean
-): Readonly<{ enabled: true }> | Readonly<{ enabled: false; reason: WorkspaceNotRequestedReason }> {
-  if (!offered) return { enabled: false, reason: "installation_disabled" };
-  if (!toolCalling) return { enabled: false, reason: "model_no_tools" };
-  return { enabled: true };
 }

@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 import { loadSkillVersions, restoreSkillVersion, SkillRequestError } from "@/components/app-shell/skillLibraryStore";
 import { UiV2Button, UiV2Chip } from "@/components/ui-v2";
+import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import type { SkillVersionSummary, SkillVersionsResponse } from "@/lib/contracts/skillVersions";
 
 const COLLAPSED_COUNT = 5;
@@ -67,6 +68,8 @@ export function SkillVersionsSection({ skill, published, disabled = false, onCha
   const load = loaded?.key === key ? loaded : null;
   const confirm = confirmation?.key === key ? confirmation.version : null;
   const setConfirm = (version: SkillVersionSummary | null) => setConfirmation(version ? { key, version } : null);
+  // In Settings, Escape cancels an open restore confirmation, as Cancel does.
+  useSettingsEscapeStep(confirm !== null, () => setConfirm(null), restoring);
 
   async function loadOlder(): Promise<void> {
     if (loadingOlder || load?.state !== "ready" || load.nextBefore === null) return;

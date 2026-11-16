@@ -68,6 +68,14 @@ export function discordThreadLimitText(perHour: number, retryInMinutes: number):
   return `This thread has reached its limit of ${perHour} questions per hour. Try again in ${Math.max(1, retryInMinutes)} min.`;
 }
 
+/** Why an answer that needed the thread's Workspace got none (`bridge/refusals.ts`), never "Something went wrong". */
+export const DISCORD_WORKSPACE_COPY = Object.freeze({
+  busy: "This thread's Workspace is busy right now. Ask again in a minute.",
+  full: "This thread's Workspace has no room for these files. Send smaller files or ask in a new thread.",
+  unavailable: "The Workspace that runs code is unavailable right now. Ask again later.",
+  failed: "The Workspace could not finish this answer. Ask again."
+});
+
 export function discordFilesOnlyInAiqsaText(count: number): string {
   return count === 1 ? "1 file is only in AIQSA" : `${count} files are only in AIQSA`;
 }
@@ -107,6 +115,11 @@ export function discordQuestionFallbackThreadName(authorName: string): string {
   return `Question from ${authorName}`.slice(0, 80);
 }
 
+/** The line under an answer whose artifacts (some or all) could not be linked (operator decision 2026-11-16). */
+export function discordArtifactsOnlyInAiqsaText(count: number): string {
+  return count === 1 ? "1 artifact is only in AIQSA" : `${count} artifacts are only in AIQSA`;
+}
+
 /**
  * The visible reason of a refusal code that people in Discord see, or `null`
  * for codes that stay silent there (the kill switch, unknown delivery) or
@@ -136,4 +149,36 @@ export function discordReasonText(code: DiscordReasonCode): string | null {
       return DISCORD_COPY.stopped;
     default: return null;
   }
+}
+
+/** Voice messages (`voice.ts`): why one stayed without its text, as the run reads it and as the bot's refusal says it. */
+export const DISCORD_VOICE_COPY = Object.freeze({
+  unavailable: {
+    line: "speech to text is not set up or unavailable",
+    reply: "I can't transcribe voice messages: speech to text is not set up on this AIQSA. Ask your AIQSA administrator, or write your question."
+  },
+  too_long: {
+    line: "longer than 10 minutes",
+    reply: "This voice message is longer than 10 minutes, too long to transcribe. Send a shorter one or write your question."
+  },
+  rate_limited: { line: "too many voice messages from this author", reply: "You've sent too many voice messages." },
+  usage_limit: { line: "usage limit reached", reply: "AIQSA usage limit reached. Ask your AIQSA administrator." },
+  unreadable: { line: "the audio could not be downloaded", reply: "I couldn't download this voice message. Send it again." },
+  no_speech: { line: "no speech recognised", reply: "I couldn't hear any speech in this voice message." },
+  failed: { line: "transcription failed", reply: "I couldn't transcribe this voice message. Try again, or write your question." }
+} as const);
+
+/** The run's line before a voice message's transcript. */
+export function discordVoiceTranscriptLabel(author: string): string {
+  return `[Transcript of a voice message from ${author}]`;
+}
+
+/** The run's line for a voice message that stayed without its text. */
+export function discordVoiceUntranscribedText(author: string, reason: string): string {
+  return `[A voice message from ${author} could not be transcribed: ${reason}]`;
+}
+
+/** The bot's refusal of a question that is only a voice message too many: when to try again. */
+export function discordVoiceRateLimitedText(retryInMinutes: number): string {
+  return `${DISCORD_VOICE_COPY.rate_limited.reply} Try again in ${Math.max(1, retryInMinutes)} min.`;
 }

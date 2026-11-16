@@ -1,5 +1,9 @@
 import type { ConnectorRunAnswer } from "../../connectors/runGateway";
-import { DISCORD_COPY, discordFailureStatus } from "../copy";
+import {
+  discordArtifactButtonUrl, discordArtifactLabel, discordArtifactLine, DISCORD_ARTIFACT_BUTTONS_PER_ROW, DISCORD_ARTIFACT_LINES_MAX_CHARS,
+  DISCORD_ARTIFACT_LINKS_MAX, DISCORD_NO_ANSWER_ARTIFACTS, type DiscordAnswerArtifacts
+} from "../artifacts";
+import { discordArtifactsOnlyInAiqsaText, DISCORD_COPY, discordFailureStatus } from "../copy";
 import { discordInlineText, DISCORD_MESSAGE_MAX_CHARS, renderDiscordAnswer } from "../render";
 import type { DiscordLinkButton } from "../rest";
 import type { DiscordUploadFile } from "../transport";
@@ -12,6 +16,10 @@ import type { DiscordFinalMessage } from "./status";
  * button to a read-only share of the chat at that answer (or the link as a
  * line, where the installation has no https address). Answer files and their
  * "only in AIQSA" line come from the files hook (`lib/server/discord/files.ts`).
+ * The artifacts the answer made follow as "Open <title>" link buttons to their
+ * public links, in rows of five under Open in AIQSA's own row (lines on a
+ * plain-http installation), and those that could not be linked as one
+ * "only in AIQSA" line (`lib/server/discord/artifacts.ts`).
  */
 
 export type DiscordAnswerFiles = Readonly<{
@@ -47,14 +55,18 @@ export async function composeDiscordAnswer(input: Readonly<{
   answer: Pick<ConnectorRunAnswer, "text" | "artifactSummary">;
   share: DiscordShareLink;
   files: DiscordAnswerFiles;
+  /** The answer's published artifacts (`publishDiscordAnswerArtifacts`); none by default. */
+  artifacts?: DiscordAnswerArtifacts;
 }>): Promise<DiscordComposedAnswer> {
   const note = input.files.note ? discordInlineText(input.files.note, 200) : null;
   const fallback = input.files.files.length > 0 && input.files.fallbackNote ? discordInlineText(input.files.fallbackNote, 200) : null;
-  const reserve = Math.max(note?.content ? note.content.length + 2 : 0, fallback?.content ? fallback.content.length + 2 : 0);
+  const artifacts = artifactParts(input.artifacts ?? DISCORD_NO_ANSWER_ARTIFACTS);
+  const reserve = Math.max(note?.content ? note.content.length + 2 : 0, fallback?.content ? fallback.content.length + 2 : 0) +
+    (artifacts.text ? artifacts.text.length + 2 : 0);
   const rendered = renderDiscordAnswer({
     citations: input.answer.artifactSummary?.citations ?? [], markdown: input.answer.text, maxChars: DISCORD_MESSAGE_MAX_CHARS, reserve
   });
-  const redactions = rendered.redactions + (note?.redactions ?? 0);
+  const redactions = rendered.redactions + (note?.redactions ?? 0) + artifacts.redactions;
   let content = rendered.content;
   let buttons: (readonly DiscordLinkButton[])[] | undefined;
   let shared = false;
@@ -72,6 +84,8 @@ export async function composeDiscordAnswer(input: Readonly<{
       }
     }
   }
+  if (artifacts.rows.length > 0) buttons = [...(buttons ?? []), ...artifacts.rows];
+  if (artifacts.text) content = content ? `${content}\n\n${artifacts.text}` : artifacts.text;
   // Discord may refuse the files (no Attach Files permission, a file it will not take): the answer then goes alone.
   const withoutFiles = fallback?.content ? (content ? `${content}\n\n${fallback.content}` : fallback.content) : undefined;
   if (note?.content) content = content ? `${content}\n\n${note.content}` : note.content;
@@ -81,4 +95,45 @@ export async function composeDiscordAnswer(input: Readonly<{
     ...(buttons ? { buttons } : {}), content, ...(input.files.files.length > 0 ? { files: input.files.files } : {}), redactions,
     shared, truncated: rendered.truncated, ...(withoutFiles !== undefined ? { withoutFiles } : {})
   };
+}
+
+/**
+ * The artifacts' buttons in rows of five (at most `DISCORD_ARTIFACT_LINKS_MAX`, so they fit under Open in AIQSA's row
+ * within Discord's five rows), and the text under the answer: a line per link that cannot be a button (a plain-http
+ * installation) within `DISCORD_ARTIFACT_LINES_MAX_CHARS`, then how many artifacts stay only in AIQSA.
+ */
+function artifactParts(artifacts: DiscordAnswerArtifacts): Readonly<{
+  rows: (readonly DiscordLinkButton[])[]; text: string; redactions: number;
+}> {
+  const buttons: DiscordLinkButton[] = [];
+  const lines: string[] = [];
+  let lineChars = 0;
+  let redactions = 0;
+  let onlyInAiqsa = artifacts.onlyInAiqsa;
+  for (const link of artifacts.links) {
+    if (discordArtifactButtonUrl(link.url)) {
+      if (buttons.length >= DISCORD_ARTIFACT_LINKS_MAX) {
+        onlyInAiqsa += 1;
+        continue;
+      }
+      const label = discordArtifactLabel(link.title);
+      buttons.push({ label: label.label, url: link.url });
+      redactions += label.redactions;
+      continue;
+    }
+    const line = discordArtifactLine(link.title, link.url);
+    if (lineChars + line.content.length + 1 > DISCORD_ARTIFACT_LINES_MAX_CHARS) {
+      onlyInAiqsa += 1;
+      continue;
+    }
+    lines.push(line.content);
+    lineChars += line.content.length + 1;
+    redactions += line.redactions;
+  }
+  if (onlyInAiqsa > 0) lines.push(discordArtifactsOnlyInAiqsaText(onlyInAiqsa));
+  const rows: (readonly DiscordLinkButton[])[] = [];
+  for (let start = 0; start < buttons.length; start += DISCORD_ARTIFACT_BUTTONS_PER_ROW) {
+    rows.push(buttons.slice(start, start + DISCORD_ARTIFACT_BUTTONS_PER_ROW));
+  }
+  return { redactions, rows, text: lines.join("\n") };
 }

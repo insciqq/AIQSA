@@ -360,7 +360,7 @@ describe("browser_handoff in a native run", () => {
     expect(run.space.order).toEqual(["settle"]);
   });
 
-  it("answers a stable unavailable code in an unattended run and points a Telegram turn to the web chat", async () => {
+  it("answers a stable unavailable code in an unattended run or a Discord turn and points a Telegram turn to the web chat", async () => {
     const scheduled = start({ scheduled: true });
     await events(scheduled.response);
     expect(handoffResult(scheduled.model.requests)).toMatchObject({ error: "browser_handoff_unavailable" });
@@ -371,5 +371,12 @@ describe("browser_handoff in a native run", () => {
     expect(result).toMatchObject({ error: "browser_handoff_unavailable" });
     expect(String(result.chatUrl)).toContain(`/c/${telegram.chatId}`);
     expect(telegram.space.guest.started()).toBe(0);
+    // A Discord turn has the Workspace (operator decision 2026-11-16): its agent says what blocked it, with no chat to go to.
+    const discord = start({ connectorTurn: "discord" });
+    await events(discord.response);
+    const refused = handoffResult(discord.model.requests);
+    expect(refused).toMatchObject({ error: "browser_handoff_unavailable", message: expect.stringContaining("Discord thread") });
+    expect(refused).not.toHaveProperty("chatUrl");
+    expect(discord.space.guest.started()).toBe(0);
   });
 });

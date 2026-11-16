@@ -230,9 +230,13 @@
   height: 1.75rem;
 }
 
+/* Row fills share the 12px edge of New chat and the filter, so titles and
+   group labels start at 20px (operator review 2026-11-16, after
+   chatgpt.com). The right keeps 0.5rem: the stable scrollbar gutter adds
+   room there. */
 .v2-navigation-scroll {
   min-height: 0;
-  padding: 0 0.5rem 0.75rem;
+  padding: 0 0.5rem 0.75rem 0.75rem;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

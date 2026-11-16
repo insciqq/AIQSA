@@ -82,6 +82,10 @@ import {
 } from "./codex-agent-retirement-adoption";
 import { DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION, dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql } from "./drop-memory-lexical-projection-adoption";
 import {
+  DROP_TELEGRAM_LINK_RETIRED_SETTINGS_MIGRATION, dropTelegramLinkRetiredSettingsFixtureSql,
+  dropTelegramLinkRetiredSettingsProofSql
+} from "./drop-telegram-link-retired-settings-adoption";
+import {
   DROP_PROJECTS_KNOWLEDGE_MIGRATION, dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql,
   dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql
 } from "./drop-projects-knowledge-adoption";
@@ -7967,9 +7971,11 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, SEARCH_ON_FOR_EVERYONE_MIGRATION,
     searchOnForEveryoneWithoutApiFixtureSql, searchOnForEveryoneWithoutApiProofSql, searchOnForEveryoneWithoutApiProofSql);
   // The Codex Agent's storage goes, including rows earlier releases left; the
-  // values its old approval cards and Telegram buttons name stay.
+  // values its old approval cards and Telegram buttons name stay. Its proof
+  // ends before the later release that drops the link's retired switches.
   runForwardAdoptionProof(shadowDatabase, migrations, CODEX_AGENT_RETIREMENT_MIGRATION,
-    codexAgentRetirementFixtureSql, codexAgentRetirementProofSql, codexAgentRetirementProofSql);
+    codexAgentRetirementFixtureSql, codexAgentRetirementProofSql, codexAgentRetirementProofSql,
+    DROP_TELEGRAM_LINK_RETIRED_SETTINGS_MIGRATION);
   // Retirement step two: the projection tables, their types and routines go.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION,
     dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql,
@@ -8062,6 +8068,11 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_4_CARBON_HYDROGEN_PRICES_MIGRATION,
     gemini4CarbonHydrogenPricesFixtureSql, gemini4CarbonHydrogenPricesProofSql, gemini4CarbonHydrogenPricesProofSql);
+  // The link's retired Workspace and Codex Agent switches go; every other
+  // column stays, and the previous release's named link queries keep working.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_TELEGRAM_LINK_RETIRED_SETTINGS_MIGRATION,
+    dropTelegramLinkRetiredSettingsFixtureSql, dropTelegramLinkRetiredSettingsProofSql,
+    dropTelegramLinkRetiredSettingsProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

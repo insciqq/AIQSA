@@ -109,11 +109,20 @@ describe("a handoff of one agent", () => {
     expect((busy.content[0] as unknown as { value: { error: string } }).value.error).toBe("browser_handoff_busy");
   });
 
-  it("is unavailable for every agent of a Telegram turn or an unattended run", async () => {
-    for (const mode of [{ chatUrl: "https://aiqsa.test/c/1", kind: "telegram" as const }, { kind: "unattended" as const }]) {
+  it("is unavailable for every agent of a Telegram or Discord turn or an unattended run", async () => {
+    for (const mode of [{ chatUrl: "https://aiqsa.test/c/1", kind: "telegram" as const }, { kind: "discord" as const },
+      { kind: "unattended" as const }]) {
       const result = await executeBrowserHandoff(call, mode, new AbortController().signal);
       expect((result.content[0] as unknown as { value: { error: string } }).value.error).toBe("browser_handoff_unavailable");
     }
+  });
+
+  it("tells a Discord turn's agent to say what blocked it, never to send the member to a chat or to name scheduled tasks", async () => {
+    const result = await executeBrowserHandoff(call, { kind: "discord" }, new AbortController().signal);
+    const value = (result.content[0] as unknown as { value: Record<string, unknown> }).value;
+    expect(value).toEqual({ error: "browser_handoff_unavailable", message: expect.stringContaining("Discord thread") });
+    expect(String(value.message)).toContain("say plainly what the site needed");
+    expect(String(value.message)).not.toMatch(/\bchat with you\b|scheduled|webhook|\/c\//u);
   });
 });
 

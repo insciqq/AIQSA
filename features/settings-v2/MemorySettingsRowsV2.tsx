@@ -171,10 +171,11 @@ export function MemorySettingsRowsV2({
     window.requestAnimationFrame(() => resetTriggerRef.current?.focus());
   };
   const handleResetKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key === "Escape" && !resetBusy) {
+    if (event.key === "Escape") {
+      // While the reset runs the confirmation keeps the key instead of letting it leave Settings.
       event.preventDefault();
       event.stopPropagation();
-      closeReset();
+      if (!resetBusy) closeReset();
       return;
     }
     if (event.key !== "Tab") return;
@@ -246,6 +247,7 @@ export function MemorySettingsRowsV2({
       {resetOpen ? (
         <section
           aria-label={t("settings.resetTitle")}
+          aria-modal="true"
           className="v2-memory-reset-confirm"
           data-testid="reset-memory-confirmation"
           role="alertdialog"

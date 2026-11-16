@@ -24,8 +24,12 @@ import { transcriptionUsageEvent } from "./usage";
 export const DICTATION_RATE_LIMIT = 20;
 export const DICTATION_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1_000;
 
-export function dictationRateLimitKey(userId: string): string {
-  return `dictation:transcribe:user:${userId}`;
+/**
+ * The window's key: the user's own, or, for an account that transcribes for several people (the Discord service
+ * account, for each Discord author), that person's within the account.
+ */
+export function dictationRateLimitKey(userId: string, subject?: string): string {
+  return subject === undefined ? `dictation:transcribe:user:${userId}` : `dictation:transcribe:user:${userId}:for:${subject}`;
 }
 
 /** Whether the bytes carry the container signature of the declared type. */
@@ -70,6 +74,8 @@ export type TranscribeUserAudioInput = Readonly<{
   signal?: AbortSignal;
   /** The authenticated user the dictation and its usage row belong to. */
   userId: string;
+  /** Whom the per-user window counts when the account stands for several people (a Discord author); absent: the user. */
+  rateLimitSubject?: string;
 }>;
 
 function defaultAdapter(binding: SpeechToTextConnectionBinding, modelId: string): AudioTranscriptionAdapter {
@@ -120,7 +126,7 @@ export async function transcribeUserAudio(deps: TranscribeUserAudioDeps, input: 
 
   let limited: Awaited<ReturnType<LoginRateLimiter["check"]>>;
   try {
-    limited = await deps.rateLimiter.check(dictationRateLimitKey(input.userId), { maxAttempts: DICTATION_RATE_LIMIT });
+    limited = await deps.rateLimiter.check(dictationRateLimitKey(input.userId, input.rateLimitSubject), { maxAttempts: DICTATION_RATE_LIMIT });
   } catch {
     return { refusal: "dictation_unavailable" };
   }

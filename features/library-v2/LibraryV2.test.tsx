@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { memoryConsumerItemFixture } from "@/tests/support/memoryFixtures";
-import { useState, type ComponentProps } from "react";
+import { useState, type ComponentProps, type ReactNode } from "react";
 import {
   FilesPanelV2,
   LibraryV2,
@@ -10,6 +10,7 @@ import {
   settingsSectionsV2
 } from "./LibraryV2";
 import type { LibraryNavigationGuardV2, LibraryTabV2, MemoryOverviewV2 } from "./contracts";
+import { useSettingsEscapeStep } from "./settingsEscape";
 
 function memoryOverview(
   overrides: Partial<MemoryOverviewV2> = {}
@@ -102,6 +103,12 @@ describe("LibraryV2", () => {
     expect(screen.getByRole("tablist", { name: "Settings sections" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("General");
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+    // The column has no title of its own: Back to chat opens it, before the sections.
+    expect(screen.getAllByText("Settings", { exact: true })).toHaveLength(1);
+    const exit = screen.getByRole("button", { name: "Back to chat" });
+    expect(exit).toHaveAttribute("aria-keyshortcuts", "Escape");
+    expect(exit.compareDocumentPosition(screen.getByRole("tablist")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("tablist")).not.toContainElement(exit);
     expect(screen.getByRole("status")).toHaveTextContent("A setting could not be saved.");
     expect(document.body.textContent).not.toMatch(/Studio/u);
   });
@@ -364,11 +371,18 @@ describe("Settings list and section where they take turns", () => {
 
   it("opens a named section directly, and its sub-view keeps its own Back to the section", () => {
     const leave = vi.fn();
-    const { rerender } = render(<NarrowSettings initialShown />);
+    const guard = vi.fn<LibraryNavigationGuardV2>();
+    const { rerender } = render(<NarrowSettings initialShown navigationGuard={guard} />);
     expect(view()).toBe("section");
-    rerender(<NarrowSettings initialShown subview={{ backLabel: "Back to Skills", key: "skill-1", label: "Checklist", onBack: leave }} />);
+    rerender(<NarrowSettings initialShown navigationGuard={guard}
+      subview={{ backLabel: "Back to Skills", key: "skill-1", label: "Checklist", onBack: leave }} />);
     expect(screen.queryByRole("button", { name: "Back to Settings" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Back to chat" })).toBeNull();
+    // One Back to chat stays in the DOM: wide screens show it beside the
+    // sub-view, narrow ones hide it behind the sub-view's own Back (CSS).
+    expect(screen.getAllByRole("button", { name: "Back to chat" })).toHaveLength(1);
+    expect(screen.getByTestId("library-v2")).toHaveAttribute("data-subview", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(guard).toHaveBeenCalledWith({ from: "general", kind: "exit" }, expect.any(Function));
     fireEvent.click(screen.getByRole("button", { name: "Back to Skills" }));
     expect(leave).toHaveBeenCalledOnce();
   });
@@ -404,7 +418,7 @@ describe("Library sub-views", () => {
     expect(input).toHaveFocus();
   });
 
-  it("shows the sub-view in the crumb, swaps Back to chat for its Back control, and focuses it", () => {
+  it("shows the sub-view in the crumb with its Back control first, keeps one guarded Back to chat, and focuses Back", () => {
     const onBack = vi.fn();
     const exit = vi.fn();
     const tabs = [
@@ -423,7 +437,14 @@ describe("Library sub-views", () => {
     expect(screen.getByRole("navigation", { name: "Settings location" })).toHaveTextContent("Skills / Review checklist");
     const back = screen.getByRole("button", { name: "Back to Skills" });
     expect(back).toHaveFocus();
-    expect(screen.queryByRole("button", { name: "Back to chat" })).not.toBeInTheDocument();
+    // Keyboard order on a wide screen: the crumb's buttons, Back to chat, then the sections.
+    const leave = screen.getByRole("button", { name: "Back to chat" });
+    expect(screen.getAllByRole("button", { name: "Back to chat" })).toHaveLength(1);
+    expect(leave).toBeEnabled();
+    expect(leave).not.toHaveAttribute("aria-keyshortcuts");
+    expect(back.compareDocumentPosition(leave) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(leave.compareDocumentPosition(screen.getByRole("tab", { name: "Assistants" })) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
     fireEvent.click(back);
     expect(exit).toHaveBeenCalledOnce();
     expect(onBack).not.toHaveBeenCalled();
@@ -488,6 +509,150 @@ describe("Library sub-views", () => {
     expect(guard).not.toHaveBeenCalled();
     expect(onBack).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledTimes(2);
+  });
+});
+
+/** An inline confirmation or pane that takes Escape's one step while it is open. */
+function EscapeStep({ blocked = false, label, onEscape }: Readonly<{ blocked?: boolean; label: string; onEscape(): void }>) {
+  useSettingsEscapeStep(true, onEscape, blocked);
+  return <button type="button">{label}</button>;
+}
+
+describe("Escape in Settings", () => {
+  const escapeTabs = (content: ReactNode = <p>General content</p>): LibraryTabV2[] => [
+    { id: "general", label: "General", content },
+    { id: "skills", label: "Skills", content: <p>Skills content</p> }
+  ];
+  const escape = (target: Element = document.activeElement ?? document.body, init: KeyboardEventInit = {}) =>
+    fireEvent.keyDown(target, { key: "Escape", ...init });
+
+  it("returns to the chat through the same guard as Back to chat, from a row, the section or a button", () => {
+    let release: (() => void) | undefined;
+    const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => { release = proceed; });
+    const onBack = vi.fn();
+    render(<LibraryV2 navigationGuard={guard} onBack={onBack} tabs={escapeTabs(<button type="button">Action</button>)} />);
+    const row = screen.getByRole("tab", { name: "General" });
+    expect(escape(row)).toBe(false);
+    expect(guard).toHaveBeenCalledWith({ from: "general", kind: "exit" }, onBack);
+    expect(onBack).not.toHaveBeenCalled();
+    act(() => release?.());
+    expect(onBack).toHaveBeenCalledOnce();
+    escape(screen.getByRole("tabpanel"));
+    escape(screen.getByRole("button", { name: "Action" }));
+    escape(document.body);
+    expect(guard).toHaveBeenCalledTimes(4);
+  });
+
+  it("never leaves from a field, a combobox, a contenteditable, a handled key, composition or while busy", () => {
+    const onBack = vi.fn();
+    const { rerender } = render(<LibraryV2 onBack={onBack} tabs={escapeTabs(<>
+      <input aria-label="Secret name" />
+      <input aria-label="Search" type="search" />
+      <textarea aria-label="Instructions" />
+      <select aria-label="Theme"><option>Light</option></select>
+      <div aria-label="Editor" contentEditable role="textbox" suppressContentEditableWarning tabIndex={0}>Text</div>
+      <button aria-controls="model-options" aria-expanded="false" aria-label="Model" role="combobox" type="button" />
+      <button type="button" onKeyDown={(event) => { if (event.key === "Escape") event.preventDefault(); }}>Owner</button>
+    </>)} />);
+    for (const name of ["Secret name", "Search", "Instructions", "Editor"]) escape(screen.getByRole(name === "Search" ? "searchbox" : "textbox", { name }));
+    escape(screen.getByRole("combobox", { name: "Theme" }));
+    escape(screen.getByRole("combobox", { name: "Model" }));
+    escape(screen.getByRole("button", { name: "Owner" }));
+    escape(screen.getByRole("tab", { name: "General" }), { isComposing: true });
+    fireEvent.keyDown(screen.getByRole("tab", { name: "General" }), { key: "Enter" });
+    expect(onBack).not.toHaveBeenCalled();
+    rerender(<LibraryV2 busy onBack={onBack} tabs={escapeTabs()} />);
+    escape(screen.getByRole("tab", { name: "General" }));
+    expect(onBack).not.toHaveBeenCalled();
+  });
+
+  it("yields to an open modal dialog or alert dialog and to focus outside Settings", () => {
+    const onBack = vi.fn();
+    const { rerender } = render(<>
+      <button type="button">Outside</button>
+      <LibraryV2 onBack={onBack} tabs={escapeTabs(<div aria-modal="true" role="dialog"><button type="button">Close</button></div>)} />
+    </>);
+    escape(screen.getByRole("button", { name: "Close" }));
+    escape(screen.getByRole("tab", { name: "General" }));
+    rerender(<>
+      <button type="button">Outside</button>
+      <LibraryV2 onBack={onBack} tabs={escapeTabs(<section role="alertdialog"><button type="button">Keep</button></section>)} />
+    </>);
+    escape(screen.getByRole("tab", { name: "General" }));
+    rerender(<>
+      <button type="button">Outside</button>
+      <LibraryV2 onBack={onBack} tabs={escapeTabs()} />
+    </>);
+    escape(screen.getByRole("button", { name: "Outside" }));
+    expect(onBack).not.toHaveBeenCalled();
+    escape(screen.getByRole("tab", { name: "General" }));
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it("takes a sub-view's Back first, without the leave guard, and nothing while the sub-view is busy", () => {
+    const guard = vi.fn<LibraryNavigationGuardV2>((_intent, proceed) => proceed());
+    const onBack = vi.fn();
+    const leave = vi.fn();
+    const subview = { backLabel: "Back to Skills", key: "detail", label: "Checklist", onBack: leave };
+    const { rerender } = render(<LibraryV2 initialTab="skills" navigationGuard={guard} onBack={onBack} subview={subview} tabs={escapeTabs()} />);
+    escape(screen.getByRole("tab", { name: "Skills" }));
+    expect(leave).toHaveBeenCalledOnce();
+    expect(guard).not.toHaveBeenCalled();
+    rerender(<LibraryV2 initialTab="skills" navigationGuard={guard} onBack={onBack} subview={{ ...subview, busy: true }} tabs={escapeTabs()} />);
+    escape(screen.getByRole("tab", { name: "Skills" }));
+    expect(leave).toHaveBeenCalledOnce();
+    rerender(<LibraryV2 initialTab="skills" navigationGuard={guard} onBack={onBack} subview={null} tabs={escapeTabs()} />);
+    escape(screen.getByRole("tab", { name: "Skills" }));
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
+  it("answers the innermost open step first, consumes the key while a step is blocked, then leaves", () => {
+    const onBack = vi.fn();
+    const closePane = vi.fn();
+    const cancel = vi.fn();
+    const steps = (confirmation: "blocked" | "open" | null, pane: boolean) => escapeTabs(<>
+      {pane ? <EscapeStep label="Pane" onEscape={closePane} /> : null}
+      {confirmation ? <EscapeStep blocked={confirmation === "blocked"} label="Confirmation" onEscape={cancel} /> : null}
+    </>);
+    const { rerender } = render(<LibraryV2 onBack={onBack} tabs={steps(null, true)} />);
+    rerender(<LibraryV2 onBack={onBack} tabs={steps("blocked", true)} />);
+    expect(escape(screen.getByRole("tab", { name: "General" }))).toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(closePane).not.toHaveBeenCalled();
+    rerender(<LibraryV2 onBack={onBack} tabs={steps("open", true)} />);
+    escape(screen.getByRole("button", { name: "Pane" }));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(closePane).not.toHaveBeenCalled();
+    rerender(<LibraryV2 onBack={onBack} tabs={steps(null, true)} />);
+    escape(screen.getByRole("tab", { name: "General" }));
+    expect(closePane).toHaveBeenCalledOnce();
+    rerender(<LibraryV2 onBack={onBack} tabs={steps(null, false)} />);
+    escape(screen.getByRole("tab", { name: "General" }));
+    expect(onBack).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a Memory Forget confirmation before leaving, and the step does nothing outside Settings", () => {
+    const item = memoryConsumerItemFixture({ statement: "I prefer short answers." });
+    const onBack = vi.fn();
+    const onCancelRow = vi.fn();
+    const panel = <MemoryPanelV2 {...memoryPanelProps({ activeRef: item.memoryRef, items: [item], onCancelRow, rowMode: "forget" })} />;
+    const { unmount } = render(<LibraryV2 onBack={onBack} tabs={[{ id: "memory", label: "Memory", content: panel }]} />);
+    escape(screen.getByRole("button", { name: "Forget" }));
+    expect(onCancelRow).toHaveBeenCalledOnce();
+    expect(onBack).not.toHaveBeenCalled();
+    unmount();
+    render(panel);
+    escape(screen.getByRole("button", { name: "Forget" }));
+    expect(onCancelRow).toHaveBeenCalledOnce();
+  });
+
+  it("stops listening when Settings closes", () => {
+    const onBack = vi.fn();
+    const { unmount } = render(<LibraryV2 onBack={onBack} tabs={escapeTabs()} />);
+    unmount();
+    escape(document.body);
+    expect(onBack).not.toHaveBeenCalled();
   });
 });
 

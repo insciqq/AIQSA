@@ -62,6 +62,35 @@ function firstEnabledItem(menu: HTMLElement | null): HTMLElement | null {
   return menu?.querySelector<HTMLElement>("[role='menuitem']:not(:disabled)") ?? null;
 }
 
+/** Frames a just-opened menu keeps offering focus to its first item, after the two it waits. */
+const OPENING_FOCUS_ATTEMPTS = 12;
+
+/**
+ * Moves focus to the menu's first enabled item once the menu can take it; returns the cancel. It waits two frames:
+ * Shift+F10 finishes its native key sequence after the portal commits, and focus moved earlier is handed back to the
+ * tree row. A menu not yet rendered visible at that frame ignores `focus()` silently (measured under load: two quick
+ * frames, and the item stayed unfocused for good), so the attempt repeats for a bounded number of frames until the
+ * item holds focus. It stops as soon as focus is anywhere inside the menu, so it never takes it back from the user.
+ */
+function focusFirstItemWhenReady(menuRef: RefObject<HTMLElement | null>): () => void {
+  let attemptsLeft = OPENING_FOCUS_ATTEMPTS;
+  const attempt = () => {
+    const menu = menuRef.current;
+    if (menu?.contains(document.activeElement)) return;
+    const item = firstEnabledItem(menu);
+    item?.focus();
+    if (item && document.activeElement === item) return;
+    if (attemptsLeft > 0) {
+      attemptsLeft -= 1;
+      frame = window.requestAnimationFrame(attempt);
+    }
+  };
+  let frame = window.requestAnimationFrame(() => {
+    frame = window.requestAnimationFrame(attempt);
+  });
+  return () => window.cancelAnimationFrame(frame);
+}
+
 /**
  * One row-action surface across the shell. On phones and short touch screens
  * it becomes a modal, scrim-backed sheet that scrolls to its last item;
@@ -164,18 +193,11 @@ function AnchoredMenuPopover({
 
   useLayoutEffect(() => {
     updatePlacement();
-    // Shift+F10 finishes its native key sequence after this portal commits.
-    // Move focus after the keyboard-generated context-menu sequence settles
-    // so the browser cannot hand it back to the tree row afterward.
-    let focusFrame = window.requestAnimationFrame(() => {
-      focusFrame = window.requestAnimationFrame(() => {
-        firstEnabledItem(menuRef.current)?.focus();
-      });
-    });
+    const cancelFocus = focusFirstItemWhenReady(menuRef);
     window.addEventListener("resize", updatePlacement);
     window.addEventListener("scroll", updatePlacement, true);
     return () => {
-      window.cancelAnimationFrame(focusFrame);
+      cancelFocus();
       window.removeEventListener("resize", updatePlacement);
       window.removeEventListener("scroll", updatePlacement, true);
     };
@@ -205,12 +227,7 @@ function MobileMenuSheet({
 
   useLayoutEffect(() => {
     if (!portalReady) return;
-    let focusFrame = window.requestAnimationFrame(() => {
-      focusFrame = window.requestAnimationFrame(() => {
-        firstEnabledItem(menuRef.current)?.focus();
-      });
-    });
-    return () => window.cancelAnimationFrame(focusFrame);
+    return focusFirstItemWhenReady(menuRef);
   }, [menuRef, portalReady]);
 
   if (!portalReady) return null;

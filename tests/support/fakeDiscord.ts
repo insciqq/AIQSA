@@ -46,7 +46,11 @@ export type FakeDiscordChannel = {
 };
 export type FakeDiscordAttachment = {
   id: string; filename: string; size: number; content_type: string; url: string; proxy_url: string;
+  /** A voice message's audio only. */
+  duration_secs?: number; waveform?: string;
 };
+/** Discord's `IS_VOICE_MESSAGE` message flag. */
+export const FAKE_DISCORD_VOICE_MESSAGE_FLAG = 1 << 13;
 export type FakeDiscordMessage = {
   id: string; channel_id: string; guild_id?: string; author: FakeDiscordUser; content: string; timestamp: string;
   edited_timestamp: string | null; type: number; mentions: FakeDiscordUser[]; mention_roles: string[];
@@ -289,14 +293,15 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
     return found;
   }
 
-  function attach(channelId: string, input: Readonly<{ filename: string; data: Buffer; contentType: string }>): FakeDiscordAttachment {
+  function attach(channelId: string, input: Readonly<{ filename: string; data: Buffer; contentType: string; durationSecs?: number }>): FakeDiscordAttachment {
     const attachmentId = id();
     const signature = randomBytes(16).toString("hex");
     files.set(attachmentId, { bytes: input.data, contentType: input.contentType, filename: input.filename, signature });
     const path = `/attachments/${channelId}/${attachmentId}/${encodeURIComponent(input.filename)}?ex=${(Math.floor(clock / 1000) + 86_400).toString(16)}&is=${Math.floor(clock / 1000).toString(16)}&hm=${signature}&`;
     return {
       id: attachmentId, filename: input.filename, size: input.data.length, content_type: input.contentType,
-      url: `${CDN_ORIGIN}${path}`, proxy_url: `${MEDIA_ORIGIN}${path}`
+      url: `${CDN_ORIGIN}${path}`, proxy_url: `${MEDIA_ORIGIN}${path}`,
+      ...(input.durationSecs !== undefined ? { duration_secs: input.durationSecs, waveform: Buffer.alloc(32, 128).toString("base64") } : {})
     };
   }
 
@@ -832,8 +837,8 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
 
   function postMessage(input: Readonly<{
     channelId: string; authorId: string; content: string; mentions?: readonly string[]; mentionRoles?: readonly string[];
-    replyTo?: string; type?: number; webhookId?: string;
-    attachments?: readonly Readonly<{ filename: string; data: Buffer; contentType: string }>[];
+    replyTo?: string; type?: number; webhookId?: string; flags?: number;
+    attachments?: readonly Readonly<{ filename: string; data: Buffer; contentType: string; durationSecs?: number }>[];
   }>): FakeDiscordMessage {
     const target = channel(input.channelId);
     const author = users.get(input.authorId);
@@ -844,7 +849,7 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
       content: input.content, timestamp: timestamp(), edited_timestamp: null, type: input.type ?? (referenced ? 19 : 0),
       mentions: (input.mentions ?? []).map((userId) => users.get(userId)!).filter(Boolean),
       mention_roles: [...(input.mentionRoles ?? [])], mention_everyone: false,
-      attachments: (input.attachments ?? []).map((attachment) => attach(target.id, attachment)), components: [], flags: 0,
+      attachments: (input.attachments ?? []).map((attachment) => attach(target.id, attachment)), components: [], flags: input.flags ?? 0,
       ...(referenced ? { message_reference: { message_id: referenced.id, channel_id: target.id, ...(target.guild_id ? { guild_id: target.guild_id } : {}) }, referenced_message: referenced } : {}),
       ...(input.webhookId ? { webhook_id: input.webhookId } : {})
     };
@@ -854,9 +859,23 @@ export function createFakeDiscord(options: FakeDiscordOptions = {}) {
     return message;
   }
 
+  /**
+   * A voice message as Discord's clients send one: the `IS_VOICE_MESSAGE` flag, no text, and one `audio/ogg` attachment
+   * named `voice-message.ogg` with its length and waveform. It may be a Reply.
+   */
+  function postVoiceMessage(input: Readonly<{
+    channelId: string; authorId: string; data: Buffer; durationSecs: number; replyTo?: string;
+  }>): FakeDiscordMessage {
+    return postMessage({
+      attachments: [{ contentType: "audio/ogg", data: input.data, durationSecs: input.durationSecs, filename: "voice-message.ogg" }],
+      authorId: input.authorId, channelId: input.channelId, content: "", flags: FAKE_DISCORD_VOICE_MESSAGE_FLAG,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {})
+    });
+  }
+
   return {
     token, application, bot, botRoleId, guild, channels: defaults,
-    addChannel, addUser, postMessage,
+    addChannel, addUser, postMessage, postVoiceMessage,
     /** A forum post: a thread whose starter message has the thread's id. */
     createForumPost(input: Readonly<{ forumId: string; authorId: string; name: string; content: string }>): Readonly<{ threadId: string; message: FakeDiscordMessage }> {
       const threadId = id();

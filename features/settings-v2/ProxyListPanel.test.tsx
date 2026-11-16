@@ -296,6 +296,18 @@ describe("ProxyListPanel", () => {
       expect(writes()).toHaveLength(0);
     });
 
+    it("keeps Escape inside the confirmation while the deletion runs", async () => {
+      await renderList(listed([proxy]));
+      fireEvent.click(screen.getByRole("button", { name: "Delete Almaty" }));
+      vi.mocked(fetch).mockImplementationOnce(() => new Promise(() => undefined));
+      fireEvent.click(screen.getByRole("button", { name: "Delete proxy" }));
+      const group = screen.getByRole("group", { name: "Delete Almaty" });
+      await waitFor(() => expect(within(group).getByRole("button", { name: "Keep proxy" })).toBeDisabled());
+      // Locked: the key neither cancels nor reaches Settings behind it.
+      expect(fireEvent.keyDown(group, { key: "Escape" })).toBe(false);
+      expect(screen.getByRole("group", { name: "Delete Almaty" })).toBeInTheDocument();
+    });
+
     it("sends the version it showed and leaves focus on Add", async () => {
       await renderList(listed([proxy]));
       fireEvent.click(screen.getByRole("button", { name: "Delete Almaty" }));

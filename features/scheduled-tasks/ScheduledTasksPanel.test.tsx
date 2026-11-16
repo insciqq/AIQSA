@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskListResponse, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
 import type { ScheduledTaskMemoryAvailability, ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
 import {
   createScheduledTask,
@@ -473,6 +474,23 @@ describe("ScheduledTasksPanel", () => {
     fireEvent.click(within(confirm).getByRole("button", { name: "Delete automation" }));
     expect(await screen.findByTestId("scheduled-tasks-empty")).toBeInTheDocument();
     expect(remove).toHaveBeenCalledWith(task.id);
+  });
+
+  it("keeps the automation on Settings' Escape at its delete confirmation", async () => {
+    const task = scheduledTaskFixture({ chatId: "chat-1" });
+    list.mockResolvedValue(listed([task]));
+    const registry = createSettingsEscapeRegistry();
+    account += 1;
+    render(<SettingsEscapeContext.Provider value={registry}>
+      <ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory="available" onOpenChat={vi.fn()} workspace="available" />
+    </SettingsEscapeContext.Provider>);
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("group", { name: "Delete Weekday news brief" })).toBeInTheDocument();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("group", { name: "Delete Weekday news brief" })).toBeNull();
+    expect(registry.top()).toBeNull();
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it("opens a task's chat without reporting itself busy, so Settings can close over it", async () => {

@@ -42,7 +42,10 @@ export const WORKSPACE_ERROR_CODES = Object.freeze([
  * `enabled: false`), only for the content-free `run_accepted` record: it never
  * changes admission. `installation_disabled` covers any off state a successful
  * availability read reported (disabled or runner unavailable). `connector`:
- * a connector's turn (Discord) that runs without a Workspace by its rules.
+ * a connector's turn without a Workspace by its rules; none sends it since
+ * Discord turns have the Workspace too (operator decision 2026-11-16), but the
+ * API still takes it and sub-agent scenario V sends it on purpose
+ * (`scripts/smoke-subagents-paid.ts`).
  */
 export const WORKSPACE_NOT_REQUESTED_REASONS = Object.freeze([
   "connector",

@@ -8,22 +8,24 @@ export const BROWSER_HANDOFF_TOOL_NAME = "browser_handoff";
 /** The longest a handoff waits for the user (`BROWSER_LIVE_LIMITS.handoffWaitSeconds`); never past the turn's tool time. */
 export const BROWSER_HANDOFF_WAIT_MS = BROWSER_LIVE_LIMITS.handoffWaitSeconds * 1_000;
 
-/** The run's stable answer where nobody can take the browser: a Telegram turn or an unattended run. */
+/** The run's stable answer where nobody can take the browser: a Telegram or Discord turn, or an unattended run. */
 export const BROWSER_HANDOFF_UNAVAILABLE = "browser_handoff_unavailable";
 
 /**
  * Where the run's handoff goes: the live browser in the web chat, a Telegram turn (whose chat has no live
- * browser, so the user gets the web chat's address), or an unattended run (a scheduled task or a webhook),
- * where nobody can take over and the occurrence then fails visibly with a sign-in-again action. Every agent of a run
- * (the main agent and its sub-agents) gets the run's mode, so Telegram and unattended runs refuse every agent's
- * handoff; in a web chat each agent's handoff is its own pending request, labelled with `agent` (the main agent when
- * absent), and the user is given that agent's tab only.
+ * browser, so the user gets the web chat's address), a Discord turn (whose chat is the installation's service
+ * account's, which no member of the thread opens, so the agent says what blocked it and goes on without), or an
+ * unattended run (a scheduled task or a webhook), where nobody can take over and the occurrence then fails visibly
+ * with a sign-in-again action. Every agent of a run (the main agent and its sub-agents) gets the run's mode, so
+ * Telegram, Discord and unattended runs refuse every agent's handoff; in a web chat each agent's handoff is its own
+ * pending request, labelled with `agent` (the main agent when absent), and the user is given that agent's tab only.
  */
 export type BrowserHandoffMode =
   | Readonly<{ agent?: BrowserAgentRef; kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number;
     /** Read at each call: research never asks a person to take over. */
     researching?(): boolean }>
   | Readonly<{ chatUrl: string; kind: "telegram" }>
+  | Readonly<{ kind: "discord" }>
   | Readonly<{ kind: "unattended" }>;
 
 export const browserHandoffTool: RunTool = {
@@ -119,6 +121,12 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
       message: "This turn came from Telegram, where the live browser cannot be shown, so nobody can take over the browser " +
         "now. Tell the user what the site needs and to continue in this chat on the web, where they can take over the browser: " +
         `${mode.chatUrl}. Do not ask for passwords or codes in the chat.` });
+  }
+  if (mode.kind === "discord") {
+    return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
+      message: "This turn came from a Discord thread, where nobody can take over the browser. Do not try to sign in or get " +
+        "around the check yourself, and do not ask for passwords or codes in the thread. Finish with what you have and say " +
+        "plainly what the site needed that you could not do." });
   }
   if (mode.kind === "unattended") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,

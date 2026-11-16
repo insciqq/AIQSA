@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InstructionsSettingsPanel } from "./InstructionsSettingsPanel";
+import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
 import type { InstructionPreview } from "@/lib/contracts/instructionPreview";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets, requestInstructionPreview } from "./instructionPresetsApi";
 
@@ -137,6 +138,30 @@ describe("instruction preset editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Keep preset" }));
     fireEvent.click(screen.getByRole("radio", { name: "AIQSA default instructions" }));
     await waitFor(() => expect(request).toHaveBeenLastCalledWith({ action: "select", id: null, selectionVersion: 1 }));
+  });
+
+  it("answers its confirmations with the keeping choice when Settings passes Escape on", async () => {
+    const registry = createSettingsEscapeRegistry();
+    render(<SettingsEscapeContext.Provider value={registry}><InstructionsSettingsPanel /></SettingsEscapeContext.Provider>);
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Work" })).toBeEnabled());
+    expect(registry.top()).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Work" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(screen.getByRole("button", { name: "Keep preset" })).toBeInTheDocument();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByRole("button", { name: "Keep preset" })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Edit Work" })).toHaveFocus());
+    expect(registry.top()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Work" }));
+    const text = await screen.findByLabelText("System instructions");
+    fireEvent.change(text, { target: { value: "Unsaved" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByText("Discard your unsaved instructions?")).toBeVisible();
+    act(() => registry.top()?.onEscape());
+    expect(screen.queryByText("Discard your unsaved instructions?")).toBeNull();
+    expect(text).toHaveValue("Unsaved");
+    expect(request).toHaveBeenCalledTimes(1);
   });
 
   it("shows the list immediately and does not resubmit the active choice", async () => {

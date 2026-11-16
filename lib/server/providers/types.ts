@@ -263,6 +263,15 @@ export type NormalizedRunRequest = {
      * the record lack it.
      */
     turnGuidance?: readonly string[];
+    /**
+     * The parts appended to `system` for the run's Workspace (its prompt
+     * contract and checkpoint guidance), in order and exactly as appended.
+     * They stay in `system`: every agent with the Workspace reads them, and a
+     * sub-agent turn without it leaves them out (`subagentRequest` in
+     * `lib/server/engine/subagents/runner.ts`). Requests admitted before the
+     * record lack it.
+     */
+    workspaceGuidance?: readonly string[];
   };
   provider: string;
   /** Server-owned admission marker of an ordinary personal run (never a

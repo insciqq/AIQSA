@@ -55,6 +55,11 @@ export type ConnectorRunOperations = Readonly<{
 export type ConnectorRunGateway = ConnectorRunOperations & Readonly<{
   /** The user's own chat, any mode; the connector decides which it may continue. */
   chat(userId: string, chatId: string): Promise<ConnectorChatRecord | null>;
+  /**
+   * Whether the installation offers the Workspace now (switched on and its runner ready), the reading behind the web
+   * composer's ambient Workspace; a turn asks for it then (`connectorWorkspaceRequest`), and admission still decides.
+   */
+  workspaceOffered(): Promise<boolean>;
 }>;
 
 export const CONNECTOR_TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(["complete", "error", "cancelled"]);
@@ -88,6 +93,7 @@ export function lazyConnectorRunGateway(load: () => Promise<ConnectorRunGateway>
   const gateway = lazyConnectorLoader(load);
   return Object.freeze({
     ...lazyConnectorRunOperations(gateway),
-    chat: async (userId: string, chatId: string) => (await gateway()).chat(userId, chatId)
+    chat: async (userId: string, chatId: string) => (await gateway()).chat(userId, chatId),
+    workspaceOffered: async () => (await gateway()).workspaceOffered()
   });
 }

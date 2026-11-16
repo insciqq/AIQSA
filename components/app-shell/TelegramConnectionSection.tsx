@@ -348,11 +348,11 @@ export function TelegramConnectionSection() {
           className="v2-settings-personal-mcp-form mt-3"
           data-testid="settings-telegram-disconnect-confirm"
           onKeyDown={(event) => {
-            if (event.key === "Escape" && !disconnecting) {
-              event.preventDefault();
-              event.stopPropagation();
-              cancelDisconnect();
-            }
+            if (event.key !== "Escape") return;
+            // While disconnecting the confirmation keeps the key instead of letting it leave Settings.
+            event.preventDefault();
+            event.stopPropagation();
+            if (!disconnecting) cancelDisconnect();
           }}
           role="group"
         >

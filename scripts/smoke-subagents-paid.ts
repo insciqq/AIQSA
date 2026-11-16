@@ -182,7 +182,7 @@
  *     through Quick Setup, which checks DeepSeek's two models and its Search API. A source missing its client route is created
  *     with its live check, one on another model is re-saved with Save and check, then each source's Test runs and must show a real
  *     search with sources, or the harness stops with `research_search_<source>_<code>`. The plan becomes the organization's default and
- *     every send names it; Q, R and V then search on it too. It stays on the stand like the rest of the setup.
+ *     every send names it; Q, R, V and W then search on it too. It stays on the stand like the rest of the setup.
  *   - AIQSA_SUBAGENTS_ADMIN_PROXY_FILE: a file of mode 0600 holding exactly
  *     `{ "url": "http://host:port", "username": "...", "password": "...", "country": "RU", "hints": [".ru"] }` (http, https or socks5).
  *     Before the questions T adds it as an administrator proxy (`/api/admin/proxies`), runs its check (`.../check`) and requires `ok`;
@@ -232,6 +232,20 @@
  *   WorkspaceRunBinding and the chat has no Workspace session. `searches` counts the returned searches and is not an oracle. This needs
  *   DEEPSEEK_API_KEY for the Search source, as Q does. Paid calls: about 6-11 codex-lb requests (main agent 2-4, `v-lead` 2-4, `v-helper` 2-3)
  *   and 2 searches, in a few minutes.
+ * - W: a custom sub-agent without the Workspace, in a chat with one, only when named, one chat and one send. It reproduces a type made with
+ *   only web search (as after "make a sub-agent that only searches the web") that the main agent briefed to write a file under
+ *   `/workspace/project/`, which it had no tool for. Before anything paid the harness creates `w-searcher` (`SCENARIO_W_DRAFT`, tools
+ *   `["web_search"]`, the caller's model) through `POST /api/me/subagents` and refuses to run (`scenario_w_type_exists`) when the user
+ *   already has a type of that name; after the run, whatever happened, it deletes it through its own route and proves it gone
+ *   (`typeRemoved`; false stops the harness with `subagent_type_not_removed`). The message goes with the Workspace on the first Search
+ *   route and asks the main agent to give a two-part lookup about SQLite to that type in the foreground, with exactly one search; nothing
+ *   in it names files. Oracles, counted inside SQL: the main run completes, was admitted with the Workspace and recorded its Workspace
+ *   guidance (`workspaceGuidanceRecorded`: the stand runs this change); the main agent started the type; no `call_subagent` brief names
+ *   `/workspace`; every turn of the type ended `done` with outcome `done` and a report holding the year asked for
+ *   (`SCENARIO_W_ANSWER_YEAR`); no sub-agent's `find_tools` query names a file or a write; the type called no Workspace tool
+ *   (`SCENARIO_W_WORKSPACE_TOOL_PATTERN`). `searches` counts the returned searches and is not an oracle. This needs DEEPSEEK_API_KEY
+ *   for the Search source, as Q and V do. Paid calls: about 3-6 codex-lb requests (main agent 2-3, `w-searcher` 1-3) and 1 search, in
+ *   a few minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -287,7 +301,9 @@ import type { CatalogModel } from "../lib/contracts/catalog";
 import { PROXY_ROUTES } from "../lib/contracts/proxies";
 import { DEEP_RESEARCH_SEND_FIELD } from "../lib/contracts/research";
 import { CONTINUE_TURN_TEXT } from "../lib/contracts/runs";
-import { decodeSubagentDefinitionListResponse } from "../lib/contracts/subagentDefinitions";
+import {
+  SUBAGENT_DEFINITIONS_PATH, decodeSubagentDefinitionListResponse, decodeSubagentDefinitionResponse, subagentDefinitionPath
+} from "../lib/contracts/subagentDefinitions";
 import {
   SUBAGENT_API_PATHS, decodeSubagentChatThreads, decodeSubagentStopAllResponse, decodeSubagentStopResponse,
   decodeSubagentSummaryResponse, decodeSubagentThreadView
@@ -308,13 +324,14 @@ import {
 } from "./browser-scenarios-stand";
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
-  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, oracleV, SCENARIO_R_PHRASES, SCENARIO_V_FILE_QUERY_PATTERN, SUBAGENT_SCENARIO_NEEDS,
+  browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, oracleV, oracleW, SCENARIO_R_PHRASES, SCENARIO_V_FILE_QUERY_PATTERN, SCENARIO_W_ANSWER_YEAR, SCENARIO_W_DRAFT,
+  SCENARIO_W_WORKSPACE_TOOL_PATTERN, SUBAGENT_SCENARIO_NEEDS,
   SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_HANDOFF_QUESTION, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
   type PageReads, type RPhraseResult, type TDraftFinding, type TEvidenceRow, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
-  type SubagentScenarioId, type ToolRow, type TurnRow, type VEvidence, type WakeUpRow
+  type SubagentScenarioId, type ToolRow, type TurnRow, type VEvidence, type WakeUpRow, type WEvidence
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
 import { readConnections } from "./context-compaction-journey-support";
@@ -356,7 +373,7 @@ type Context = Readonly<{
   marginSeconds: number;
   model: CatalogModel;
   options: SubagentHarnessOptions;
-  /** The Search routes Q, R and V run on: the client route, and the hosted one when the stand's model offers it. */
+  /** The Search routes Q, R, V and W run on: the client route, and the hosted one when the stand's model offers it. */
   search: readonly SearchRoute[];
   second: CatalogModel | null;
   research: Readonly<{ options: ReturnType<typeof researchEvalOptions>; judge: ResearchEvalCall | null;
@@ -1661,6 +1678,84 @@ async function scenarioV(ctx: Context, run: Run): Promise<Outcome> {
   return { success: verdict.failed.length === 0, usage };
 }
 
+/** W's counts over the chat's runs and the type's threads and turns; briefs, queries and reports are matched inside SQL and only counts leave it. */
+async function ownTypeEvidence(db: PostgresClient, chatId: string): Promise<Omit<WEvidence, "settled" | "terminal">> {
+  const { rows } = await db.query<Omit<WEvidence, "settled" | "terminal" | "turns"> & { blocked: number; done: number; partial: number; total: number }>(
+    `WITH runs AS (SELECT "id" FROM "ModelRun" WHERE "chatId" = $1),
+      main AS (SELECT "normalizedRequest" AS "request" FROM "ModelRun" WHERE "chatId" = $1 AND "subagentTurnId" IS NULL ORDER BY "createdAt" LIMIT 1),
+      threads AS (SELECT "id" FROM "SubagentThread" WHERE "chatId" = $1 AND "typeName" = $3),
+      turns AS (SELECT "state"::text AS "state", "outcome"::text AS "outcome", "result" FROM "SubagentTurn"
+        WHERE "chatId" = $1 AND "threadId" IN (SELECT "id" FROM threads)),
+      calls AS (SELECT "toolName", "subagentThreadId", "state"::text AS "state", "arguments"::text AS "arguments" FROM "ModelRunToolCall"
+        WHERE "modelRunId" IN (SELECT "id" FROM runs))
+    SELECT (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND "subagentThreadId" IS NULL) AS "mainCalls",
+      (SELECT count(*)::int FROM threads) AS "typeThreads",
+      (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
+      (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
+      (SELECT count(*)::int FROM calls WHERE "subagentThreadId" IN (SELECT "id" FROM threads) AND "toolName" ~ $4) AS "workspaceCalls",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM turns) AS "total",
+      (SELECT count(*)::int FROM turns WHERE "state" = 'done' AND "outcome" = 'done') AS "done",
+      (SELECT count(*)::int FROM turns WHERE "outcome" = 'partial') AS "partial",
+      (SELECT count(*)::int FROM turns WHERE "outcome" = 'blocked') AS "blocked",
+      EXISTS (SELECT 1 FROM turns WHERE strpos(coalesce("result"->>'report', ''), $5) > 0) AS "reportHasAnswer",
+      coalesce((SELECT "request"->'workspace'->>'enabled' = 'true' FROM main), false) AS "workspaceAdmitted",
+      coalesce((SELECT CASE WHEN jsonb_typeof("request"->'prompt'->'workspaceGuidance') = 'array'
+        THEN jsonb_array_length("request"->'prompt'->'workspaceGuidance') > 0 ELSE false END FROM main), false) AS "workspaceGuidanceRecorded"`,
+    [chatId, SCENARIO_V_FILE_QUERY_PATTERN, SUBAGENT_NAMES.ownType, SCENARIO_W_WORKSPACE_TOOL_PATTERN, SCENARIO_W_ANSWER_YEAR]);
+  const row = rows[0] ?? fail("own_type_evidence_missing");
+  const { blocked, done, partial, total, ...counts } = row;
+  return { ...counts, turns: { blocked, done, partial, total } };
+}
+
+/** Deletes W's custom sub-agent through the user's own route and proves it gone from the list; false when it could not. */
+async function removeOwnType(api: Api, definition: Readonly<{ id: string; version: number }>): Promise<boolean> {
+  try {
+    const response = await request(api, subagentDefinitionPath(definition.id), { body: { expectedVersion: definition.version }, method: "DELETE" });
+    await discard(response);
+    if (!response.ok && response.status !== 404) return false;
+    const listed = decodeSubagentDefinitionListResponse(await json(api, SUBAGENT_DEFINITIONS_PATH));
+    return listed !== null && !listed.definitions.some((entry) => entry.id === definition.id);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * W: a custom sub-agent without the Workspace, in a chat with one. The harness creates `w-searcher` with only web search through the
+ * definition route Settings uses, sends one message with the Workspace on the first Search route asking the main agent to give it a
+ * two-part lookup in the foreground, and deletes the type again whatever happened (`typeRemoved`; `runScenario` stops the harness when
+ * it could not). A type of that name already on the stand, left by a killed run, stops W before anything paid. Every oracle is a count
+ * over the chat (`ownTypeEvidence`), read before the type goes.
+ */
+async function scenarioW(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const route = ctx.search[0] ?? fail("search_route_missing");
+  const listed = decodeSubagentDefinitionListResponse(await json(ctx.session.api, SUBAGENT_DEFINITIONS_PATH)) ?? fail("subagent_definitions_invalid");
+  if (listed.definitions.some((definition) => definition.name === SUBAGENT_NAMES.ownType)) fail("scenario_w_type_exists");
+  const created = decodeSubagentDefinitionResponse(await json(ctx.session.api, SUBAGENT_DEFINITIONS_PATH, { body: SCENARIO_W_DRAFT, method: "POST" }));
+  // Saved but unreadable: its id is unknown here, so it stays, and the harness stops on it.
+  run.line.typeRemoved = false;
+  if (!created) return fail("subagent_definition_invalid");
+  try {
+    const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario W");
+    run.chats.push(chat.id);
+    // The composer's own controls: the Workspace is on (`runControls`), the Search route this stand has.
+    const sent = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.W(), [], { search: route });
+    if (!sent.ok) {
+      Object.assign(run.line, { admissionRefusal: stableCode(sent.code), checksFailed: ["admission_refused"], wallSeconds: seconds(started) });
+      return { success: false, usage: null };
+    }
+    const terminal = await waitRun(ctx, sent.runId);
+    const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+    const verdict = oracleW({ ...await ownTypeEvidence(ctx.db, chat.id), settled, terminal: terminal.status });
+    Object.assign(run.line, { checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal, wallSeconds: seconds(started) });
+    return { success: verdict.failed.length === 0, usage };
+  } finally {
+    run.line.typeRemoved = await removeOwnType(ctx.session.api, created.definition);
+  }
+}
+
 const R_PHRASE_MS = 5 * 60_000;
 
 async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
@@ -2662,6 +2757,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "T": outcome = await scenarioT(ctx, run); break;
       case "U": outcome = await scenarioU(ctx, run); break;
       case "V": outcome = await scenarioV(ctx, run); break;
+      case "W": outcome = await scenarioW(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
@@ -2681,6 +2777,8 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
   emit(run.line);
   if (!cleaned) fail("cleanup_failed");
   if (run.line.workspaceRestored === false) fail("workspace_not_restored");
+  // W's custom sub-agent would stay in the user's list, and A expects none.
+  if (run.line.typeRemoved === false) fail("subagent_type_not_removed");
   if (run.line.adminProxyRemoved === false) fail("admin_proxy_not_removed");
   return { run: index, scenario: id, success: outcome.success, usage: outcome.usage,
     wallSeconds: typeof run.line.wallSeconds === "number" ? run.line.wallSeconds : seconds(started) };
@@ -2773,7 +2871,7 @@ async function main() {
       }
       if (blind?.model.capabilities.imageInput) fail("text_model_has_image_input");
     }
-    // Q, R and V search for real: the DeepSeek client route when its key is given, and the codex-lb hosted route with
+    // Q, R, V and W search for real: the DeepSeek client route when its key is given, and the codex-lb hosted route with
     // AIQSA_SUBAGENTS_HOSTED_SEARCH=1 (alone when there is no DeepSeek key; `subagentHarnessOptions` refuses neither).
     const search: SearchRoute[] = [];
     if (researchOptions?.search) {

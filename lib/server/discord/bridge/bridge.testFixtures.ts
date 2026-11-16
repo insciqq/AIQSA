@@ -181,6 +181,8 @@ export function createFakeDiscordRunGateway(options: Readonly<{
   autoFinish?: ((run: FakeRun) => FakeRunFinish | null) | null;
   /** Streams nothing for a settled run here (a lost stream): the bridge then follows its state. */
   silent?: boolean;
+  /** Whether the installation offers the Workspace (default: it does). */
+  workspaceOffered?: boolean;
 }> = {}) {
   const runs: FakeRun[] = [];
   const chats = new Map<string, FakeChat>();
@@ -276,6 +278,10 @@ export function createFakeDiscordRunGateway(options: Readonly<{
     async activeRun({ chatId }) {
       const run = runs.find((entry) => entry.chatId === chatId && entry.status === "streaming");
       return run ? { runId: run.runId } : null;
+    },
+
+    async workspaceOffered() {
+      return options.workspaceOffered ?? true;
     }
   });
 
