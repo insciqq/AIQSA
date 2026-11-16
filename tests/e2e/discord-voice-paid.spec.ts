@@ -11,7 +11,7 @@ import {
   waitForDiscordReply, type DiscordReplyView, type DiscordStand
 } from "./support/discordStand";
 import {
-  connectionSearchSource, openRouterConnection, PAID_SETUP_TIMEOUT_MS, PAID_TURN_TIMEOUT_MS, paidEnv, pollUntil, setupCodexLbAnswerModel,
+  openRouterConnection, PAID_SETUP_TIMEOUT_MS, PAID_TURN_TIMEOUT_MS, paidEnv, pollUntil, setupCodexLbAnswerModel,
   type PaidAnswerModel
 } from "./support/paidProviders";
 import { createPeopleFixture, type E2ESession } from "./support/people";
@@ -142,15 +142,13 @@ test.beforeAll(async ({ browser }) => {
   expect(saved.ok(), `the paid Speech to text Test passes (${saved.status()})`).toBe(true);
   expect(decodeAdminSpeechToTextResponse(await saved.json())?.assignment).toMatchObject({ available: true, connectionId, modelId: STT_MODEL });
 
-  model = await setupCodexLbAnswerModel(request, { label: "Discord voice", nativeSearch: true, preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL") });
-  const search = await connectionSearchSource(request, model.connectionId, "web_search", { protocol: "openai_responses_web_search" });
+  // No Search row: after OpenRouter Quick Setup, which turns on its family's Search source, the owner's catalog refused the
+  // codex-lb search option for this Assistant (`assistant_search_option_not_available`), and the spoken question needs no search.
+  model = await setupCodexLbAnswerModel(request, { label: "Discord voice", nativeSearch: false, preferredModel: paidEnv("AIQSA_FEATURES_CODEX_MODEL") });
   const assistant = await assistants.create(request, {
     name: "Discord voice agent",
-    rows: {
-      model: { policy: "fixed", value: { mode: "model", modelId: model.modelId } },
-      search: { policy: "fixed", value: { mode: "model_choice", optionIds: [search.strategyId] } }
-    },
-    systemPrompt: "You answer questions asked in a Discord server. Keep answers short. Do not search the web for general knowledge."
+    rows: { model: { policy: "fixed", value: { mode: "model", modelId: model.modelId } } },
+    systemPrompt: "You answer questions asked in a Discord server. Keep answers short."
   });
   await assistants.publish(request, assistant.id, "installation");
   const state = await configureDiscordByApi(request, prisma, stand.fake, {
