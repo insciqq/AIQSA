@@ -100,6 +100,49 @@ describe("UiV2ResponsiveMenu", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("keeps offering focus to its first item until the item takes it, and never takes focus back from the user", async () => {
+    vi.stubGlobal("matchMedia", matchMedia(false));
+    const frames = (count: number) => new Promise<void>((resolve) => {
+      const next = (left: number) => (left === 0 ? resolve() : window.requestAnimationFrame(() => next(left - 1)));
+      next(count);
+    });
+    // A menu not yet rendered visible ignores focus() silently: here, the first three calls on a menu item.
+    const nativeFocus = HTMLElement.prototype.focus;
+    let ignored = 3;
+    let offered = 0;
+    vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function focus(this: HTMLElement, ...options) {
+      if (this.getAttribute("role") === "menuitem") {
+        offered += 1;
+        if (ignored > 0) {
+          ignored -= 1;
+          return;
+        }
+      }
+      nativeFocus.apply(this, options);
+    });
+
+    const { unmount } = render(<ResponsiveMenuHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Open actions" }));
+    const first = screen.getByRole("menuitem", { name: "First action" });
+    await waitFor(() => expect(first).toHaveFocus());
+    expect(offered).toBe(4);
+    // Focus is in the menu: later frames offer nothing more.
+    await frames(4);
+    expect(offered).toBe(4);
+    unmount();
+
+    // The user reaches another item before the first one could take focus: it stays where they put it.
+    ignored = 0;
+    offered = 0;
+    render(<ResponsiveMenuHarness />);
+    fireEvent.click(screen.getByRole("button", { name: "Open actions" }));
+    const last = screen.getByRole("menuitem", { name: "Last action" });
+    nativeFocus.call(last);
+    await frames(6);
+    expect(last).toHaveFocus();
+    expect(offered).toBe(0);
+  });
+
   it("opts into sharing the anchor's start edge on desktop", () => {
     vi.stubGlobal("matchMedia", matchMedia(false));
     render(<ResponsiveMenuHarness align="start" />);
