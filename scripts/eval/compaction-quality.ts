@@ -62,7 +62,7 @@ import { sleepWithSignal } from "../../lib/server/providers/providerRetry";
 import { createProviderSafeFetch } from "../../lib/server/providers/providerSafeFetch";
 import type { ProviderModelCapabilities, ProviderRunRequest, ProviderRunResult } from "../../lib/server/providers/types";
 import type { RunTool } from "../../lib/server/tools/types";
-import { DEFAULT_ROOT, parseAnswerObject } from "../spikes/compaction-scale";
+import { parseAnswerObject } from "../spikes/compaction-scale";
 import { createSpikeConnection, SPIKE_PROVIDER_PROFILES, SPIKE_PROVIDERS, type SpikeProvider } from "../spikes/transcript-replay-support";
 import { APPROVAL_PENDING_TEXT } from "../../lib/server/engine/compaction/items";
 import {
@@ -94,8 +94,8 @@ export type EvalOptions = Readonly<{
   out?: string;
   paths: readonly CompactionPath[];
   provider: SpikeProvider;
-  /** Responses root (without /v1) for Codex LB. */
-  root: string;
+  /** Responses root (without /v1) for Codex LB; null until given, which only a dry run or another provider allows. */
+  root: string | null;
   scenarios: readonly ScenarioId[];
   seed: number;
   summaryEffort: string;
@@ -109,8 +109,8 @@ export type EvalOptions = Readonly<{
 
 export const EVAL_USAGE = `Usage: npx tsx scripts/eval/compaction-quality.ts [flags]
 
-Environment: CODEX_LB_API_KEY (default provider codex-lb, root https://codex-lb.example.com,
-  override with --root or CODEX_LB_ROOT); OPENAI_API_KEY, OPENROUTER_API_KEY,
+Environment: CODEX_LB_API_KEY and CODEX_LB_ROOT (or --root) for the default provider
+  codex-lb; OPENAI_API_KEY, OPENROUTER_API_KEY,
   GEMINI_API_KEY, DEEPSEEK_API_KEY for --provider. Nothing is read from .env.
 
 Flags:
@@ -131,7 +131,7 @@ Flags:
   --seed N                (default 1)
   --concurrency N         scenario runs at once (default 2)
   --timeout-ms N          per model call (default 600000)
-  --root url              Responses root for codex-lb (default ${DEFAULT_ROOT})
+  --root url              Responses root for codex-lb, without /v1 (or CODEX_LB_ROOT)
   --out file              also append the JSON lines to this file
   --dry-run               build, plan and compact with a fake model; no network`;
 
@@ -185,8 +185,9 @@ export function parseEvalArguments(argv: readonly string[], env: Readonly<Record
   const handles = values.get("handles") ?? "large";
   if (handles !== "large" && handles !== "all") invalid("--handles");
   const window = values.get("window") ?? "auto";
-  const root = (values.get("root") ?? env.CODEX_LB_ROOT ?? DEFAULT_ROOT).replace(/\/+$/u, "");
-  if (!/^https:\/\/[^/\s]+(?:\/[^?#\s]*)?$/u.test(root) || /\/v1$/u.test(root)) invalid("--root");
+  const rawRoot = values.get("root") ?? env.CODEX_LB_ROOT;
+  const root = rawRoot === undefined ? null : rawRoot.replace(/\/+$/u, "");
+  if (root !== null && (!/^https:\/\/[^/\s]+(?:\/[^?#\s]*)?$/u.test(root) || /\/v1$/u.test(root))) invalid("--root");
   return {
     concurrency: count("--concurrency", values.get("concurrency") ?? "2", 1, 6),
     dryRun,
@@ -778,7 +779,7 @@ function realModel(options: EvalOptions, provider: SpikeProvider): EvalModel | n
   const profile = SPIKE_PROVIDER_PROFILES[provider];
   const apiKey = process.env[profile.apiKeyEnv]?.trim();
   if (!apiKey) return null;
-  const baseUrl = provider === "codex-lb" ? `${options.root}/v1` : profile.defaultBaseUrl;
+  const baseUrl = provider === "codex-lb" ? (options.root ? `${options.root}/v1` : null) : profile.defaultBaseUrl;
   if (!baseUrl) return null;
   const fetchFn = createProviderSafeFetch({
     configuration: { allowPrivateNetwork: false, apiRoot: baseUrl, authenticationMode: "bearer", responseTimeoutMs: options.timeoutMs }
@@ -817,6 +818,10 @@ async function main(): Promise<number> {
     return 0;
   }
   const options = parsed;
+  if (!options.dryRun && options.provider === "codex-lb" && !options.root) {
+    process.stderr.write(`eval_argument_invalid:--root\n${EVAL_USAGE}\n`);
+    return 2;
+  }
   if (options.out) writeFileSync(options.out, "");
   const summary = await runCompactionEvaluation(options, {
     emit(line) {

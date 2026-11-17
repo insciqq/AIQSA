@@ -189,7 +189,7 @@ describe("evaluation runs", () => {
   it("parses flags with Codex LB defaults and refuses a native path where no route compacts natively", () => {
     const parsed = parseEvalArguments([], {});
     expect(parsed).toMatchObject({ dryRun: false, mode: "background", model: "gpt-6.1-sol", paths: ["native", "summary"], provider: "codex-lb",
-      root: "https://codex-lb.example.com", scenarios: [...SCENARIO_IDS], summaryMaxOutputTokens: null, tokens: 160_000, window: null });
+      root: null, scenarios: [...SCENARIO_IDS], summaryMaxOutputTokens: null, tokens: 160_000, window: null });
     expect(parseEvalArguments(["--window", "272000", "--paths", "summary", "--provider", "gemini"], {}))
       .toMatchObject({ paths: ["summary"], provider: "gemini", window: 272_000 });
     expect(() => parseEvalArguments(["--provider", "gemini"], {})).toThrow("eval_argument_invalid:--paths");

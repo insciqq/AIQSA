@@ -89,13 +89,14 @@ function configuredBound(value: string | null | undefined): StandBound {
 /**
  * Admits only an explicitly acknowledged, task-owned real-KVM stand that is
  * reachable on loopback: never the persistent `aiqsa` project, never a
+ * published installation (its base URL is not loopback), never a
  * deterministic runtime. The Workspace bounds are not demanded, only
  * recorded, so the same script measures main's defaults and later branches.
  */
 export function requireBrowserScenarioStand(mode: string | undefined, stand: BrowserScenarioStand): StandTarget {
   if (mode !== "DISPOSABLE") fail("opt_in_required");
   const project = stand.name ?? "";
-  if (!/^aiqsa-[a-z0-9][a-z0-9-]{0,62}$/u.test(project) || /prod/u.test(project)) fail("project_invalid");
+  if (!/^aiqsa-[a-z0-9][a-z0-9-]{0,62}$/u.test(project)) fail("project_invalid");
   const services = stand.services ?? {};
   const app = services.app;
   const runner = services["workspace-runner"];

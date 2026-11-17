@@ -374,7 +374,7 @@ describe("records and arguments", () => {
   it("parses defaults and rejects unsafe roots and unknown flags", () => {
     expect(parseArgs([], {})).toMatchObject({
       dryRun: false, estimator: "o200k", idleTimeoutMs: 120_000, inlineThreshold: 200_000, model: "gpt-6.1-sol", nativeInput: "head",
-      overallTimeoutMs: 600_000, paths: ["native", "summary"], repeat: 1, root: "https://codex-lb.example.com",
+      overallTimeoutMs: 600_000, paths: ["native", "summary"], repeat: 1, root: null,
       summaryEffort: "low", summaryMaxOutputTokens: 4_096, tailTokens: 20_000, tokens: 400_000
     });
     expect(parseArgs(["--paths", "native,summary,inline,trigger", "--repeat", "3", "--dry-run"], { CODEX_LB_ROOT: "https://lb.example.test/" }))

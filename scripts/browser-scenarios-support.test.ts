@@ -39,7 +39,6 @@ describe("browser scenario stand guard", () => {
   it.each([
     ["no acknowledgement", (value: BrowserScenarioStand) => value, undefined, "browser_scenarios_opt_in_required"],
     ["the persistent project", (value: BrowserScenarioStand) => ({ ...value, name: "aiqsa" }), "DISPOSABLE", "browser_scenarios_project_invalid"],
-    ["a production project", (value: BrowserScenarioStand) => ({ ...value, name: "aiqsa-prod-app" }), "DISPOSABLE", "browser_scenarios_project_invalid"],
     ["a missing deletion worker", (value: BrowserScenarioStand) => {
       delete value.services!["memory-worker"]; return value;
     }, "DISPOSABLE", "browser_scenarios_roles_missing"],

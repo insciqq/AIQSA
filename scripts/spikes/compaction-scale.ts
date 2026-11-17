@@ -27,7 +27,7 @@
  *
  * Run: CODEX_LB_API_KEY=... npx tsx scripts/spikes/compaction-scale.ts
  *   [--model gpt-6.1-sol] [--tokens 400000] [--paths native,summary[,inline,trigger]]
- *   [--repeat 1] [--root https://codex-lb.example.com] [--out results.jsonl]
+ *   --root <url> (or CODEX_LB_ROOT; not needed with --dry-run) [--repeat 1] [--out results.jsonl]
  *   [--seed 1] [--tail-tokens 20000] [--native-input head|full]
  *   [--inline-threshold N] [--effort low|medium|high|none] [--summary-effort low|default|...]
  *   [--summary-max-output 4096] [--idle-timeout-ms 120000] [--overall-timeout-ms 600000]
@@ -63,7 +63,6 @@ export type Transcript = Readonly<{
   probes: readonly PlantedProbe[];
 }>;
 
-export const DEFAULT_ROOT = "https://codex-lb.example.com";
 export const DEFAULT_MODEL = "gpt-6.1-sol";
 export const DEFAULT_TOKENS = 400_000;
 export const DEFAULT_TAIL_TOKENS = 20_000;
@@ -1089,7 +1088,8 @@ export type CliOptions = RunConfig & Readonly<{
   overallTimeoutMs: number;
   paths: readonly PathName[];
   repeat: number;
-  root: string;
+  /** Responses root (without /v1); null until given, which only a dry run allows. */
+  root: string | null;
   seed: number;
   tokens: number;
   verbose: boolean;
@@ -1122,9 +1122,10 @@ export function parseArgs(argv: readonly string[], env: Readonly<Record<string, 
   const tokens = positiveInteger("tokens", values.get("tokens") ?? String(DEFAULT_TOKENS), 1_000);
   const paths = (values.get("paths") ?? "native,summary").split(",").map((path) => path.trim());
   for (const path of paths) if (!PATH_NAMES.includes(path as PathName)) throw new Error("invalid_paths");
-  const root = (values.get("root") ?? env.CODEX_LB_ROOT ?? DEFAULT_ROOT).replace(/\/+$/u, "");
-  if (!/^https:\/\/[^/]+(?:\/[^?#]*)?$/u.test(root) && !/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/u.test(root)) throw new Error("invalid_root");
-  if (/\/v1$/u.test(root)) throw new Error("root_must_not_include_v1");
+  const rawRoot = values.get("root") ?? env.CODEX_LB_ROOT;
+  const root = rawRoot === undefined ? null : rawRoot.replace(/\/+$/u, "");
+  if (root !== null && !/^https:\/\/[^/]+(?:\/[^?#]*)?$/u.test(root) && !/^http:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/u.test(root)) throw new Error("invalid_root");
+  if (root !== null && /\/v1$/u.test(root)) throw new Error("root_must_not_include_v1");
   const nativeInput = values.get("native-input") ?? "head";
   if (nativeInput !== "head" && nativeInput !== "full") throw new Error("invalid_native_input");
   const effort = values.get("effort");
@@ -1209,6 +1210,10 @@ async function main(): Promise<number> {
     emit({ code: "missing_api_key", event: "error" });
     return 2;
   }
+  if (!options.dryRun && !options.root) {
+    emit({ code: "missing_root", event: "error" });
+    return 2;
+  }
   const o200k = await loadO200k();
   if (options.estimator === "o200k" && !o200k) {
     emit({ code: "o200k_unavailable", event: "error" });
@@ -1223,7 +1228,7 @@ async function main(): Promise<number> {
     idleTimeoutMs: options.idleTimeoutMs,
     now: () => performance.now(),
     overallTimeoutMs: options.overallTimeoutMs,
-    root: options.root
+    root: options.root!
   };
   for (let repeat = 1; repeat <= options.repeat; repeat += 1) {
     for (const path of options.paths) {
