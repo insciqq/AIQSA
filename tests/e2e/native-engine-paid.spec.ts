@@ -52,7 +52,7 @@
  * windows: it proves the shape of a request after a compaction, which the
  * window does not change, and not how compaction behaves at real sizes. At
  * 64k the engine compacted in the background on codex-lb; at 32k it could not
- * (commit 0b653d03b).
+ * (commit 911939267).
  *
  * Oracles are the browser's own run stream (event kinds, counts, times and
  * text lengths recorded by a content-free probe), the persisted runs,

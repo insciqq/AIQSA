@@ -206,7 +206,7 @@ test("keeps auth forms keyboard-safe and mobile-friendly without exposing recove
   await expect(validationAlert).toContainText("credentials_required");
   await expectAssociatedValidation(email, validationAlert);
   // The login password carries no help text since the Signal login pass
-  // (5c63549a); the validation alert is its only description.
+  // (e2daebc7); the validation alert is its only description.
   await expectAssociatedValidation(password, validationAlert);
   await expect(validationAlert).toBeInViewport();
 
