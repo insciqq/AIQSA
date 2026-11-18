@@ -657,8 +657,8 @@ test("image checks retain editing and retry unconfirmed generation", async ({ pa
           imageFailure: { category: "invalid_parameter", parameter: "resolution" } } } }) } };
   });
   const first = connection.models[0]!;
-  connection.checkRun = { id: "synthetic-image-check", credentialId: connection.defaultCredentialId!, current: null, done: 6,
-    failed: [first.id], finishedAt: now, inFlight: [], reason: "requested", startedAt: now, state: "completed", total: 6,
+  connection.checkRun = { id: "synthetic-image-check", credentialId: connection.defaultCredentialId!, current: null, done: presets.length,
+    failed: [first.id], finishedAt: now, inFlight: [], reason: "requested", startedAt: now, state: "completed", total: presets.length,
     results: connection.models.map((model, index) => ({ providerModelId: model.id, state: index ? "saved" : "partial",
       checks: connection.activeChecks[index]!.evidence!.capabilitySetup!.checks })) };
   let retries = 0;
@@ -681,7 +681,8 @@ test("image checks retain editing and retry unconfirmed generation", async ({ pa
   await signInWithLocalToken(page);
   await page.goto(`/admin?section=providers&resource=${connection.id}`);
   const models = page.getByTestId("provider-models");
-  await expect(models).toContainText("Image models · 6");
+  // Every OpenRouter image preset is listed, however many the catalog holds.
+  await expect(models).toContainText(`Image models · ${presets.length}`);
   const row = page.getByTestId(`provider-model-${first.id}`);
   await expect(row.getByTestId("model-chip-imageEditing")).toHaveAttribute("data-chip-tone", "ok");
   const generation = row.getByTestId("model-chip-imageGeneration");
@@ -1268,10 +1269,8 @@ test("administrator discovers and configures a Custom compatible provider throug
       authenticationMode: "bearer",
       capabilities: expect.objectContaining({
         defaultReasoningEffort: "medium",
-        defaultReasoningMode: "standard",
         reasoning: true,
-        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
-        reasoningModes: ["standard", "pro"]
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]
       }),
       confirmPaidRequest: true,
       connectionDisplayName: `Fixture Compatible ${width}`,
@@ -1284,6 +1283,9 @@ test("administrator discovers and configures a Custom compatible provider throug
       responseTimeoutSeconds: 300,
       secret: `e2e-custom-write-only-key-${width}`
     });
+    // The compatible profile names no reasoning mode the administrator did not configure (2026-11-07).
+    expect(body.capabilities).not.toHaveProperty("reasoningModes");
+    expect(body.capabilities).not.toHaveProperty("defaultReasoningMode");
   }
 });
 

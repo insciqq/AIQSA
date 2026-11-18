@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 12;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 13;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -74,6 +74,11 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "anthropic:claude-haiku-5-5"
     }),
     Object.freeze({
+      candidateId: "p13-a8",
+      recommended: false,
+      templateKey: "anthropic:claude-fable-5-2"
+    }),
+    Object.freeze({
       candidateId: "p7-a3",
       recommended: false,
       templateKey: "anthropic:claude-fable-5-1"
@@ -116,6 +121,11 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "gemini:gemini-3.8-flash"
     }),
     Object.freeze({
+      candidateId: "p13-g9",
+      recommended: false,
+      templateKey: "gemini:gemini-4-neon"
+    }),
+    Object.freeze({
       candidateId: "p12-g7",
       recommended: false,
       templateKey: "gemini:gemini-4-carbon"
@@ -156,8 +166,18 @@ const candidateDefinitions: Readonly<Record<
   ]),
   openai: Object.freeze([
     Object.freeze({
-      candidateId: "p10-o8",
+      candidateId: "p13-o9",
       recommended: true,
+      templateKey: "openai:gpt-6.2-sol"
+    }),
+    Object.freeze({
+      candidateId: "p13-o10",
+      recommended: false,
+      templateKey: "openai:gpt-6.2-astra"
+    }),
+    Object.freeze({
+      candidateId: "p10-o8",
+      recommended: false,
       templateKey: "openai:gpt-6.1-sol"
     }),
     Object.freeze({
@@ -217,6 +237,16 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "openrouter:anthropic/claude-haiku-5.5"
     }),
     Object.freeze({
+      candidateId: "p13-r20",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6.2-sol"
+    }),
+    Object.freeze({
+      candidateId: "p13-r21",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6.2-astra"
+    }),
+    Object.freeze({
       candidateId: "p10-r14",
       recommended: false,
       templateKey: "openrouter:openai/gpt-6.1-sol"
@@ -225,6 +255,11 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p10-r15",
       recommended: false,
       templateKey: "openrouter:openai/gpt-6.1-sol-pro"
+    }),
+    Object.freeze({
+      candidateId: "p13-r23",
+      recommended: false,
+      templateKey: "openrouter:google/gemini-4-neon"
     }),
     Object.freeze({
       candidateId: "p12-r18",
@@ -275,6 +310,11 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p11-r17",
       recommended: false,
       templateKey: "openrouter:deepseek/deepseek-v4.1-flash-1017"
+    }),
+    Object.freeze({
+      candidateId: "p13-r22",
+      recommended: false,
+      templateKey: "openrouter:anthropic/claude-fable-5.2"
     }),
     Object.freeze({
       candidateId: "p7-r4",

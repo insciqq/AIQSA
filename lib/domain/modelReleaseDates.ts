@@ -1,10 +1,13 @@
 // Release dates of code-owned model templates: OpenRouter's `created` date of the
-// same model (https://openrouter.ai/api/v1/models), checked 2026-10-15 and for Gemini 4
-// Carbon, Hydrogen and Nano Banana 2.1 on 2026-11-13. They only
+// same model (https://openrouter.ai/api/v1/models), checked 2026-10-15, for Gemini 4
+// Carbon, Hydrogen and Nano Banana 2.1 on 2026-11-13 and for GPT-6.2 Astra and Sol,
+// Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19. They only
 // order the administrator's model list; nothing else reads them. Templates without
 // a published date (embeddings, rerankers, Jev, image-only OpenAI models, fake)
 // stay absent and sort by when the row was added.
 const openai: Record<string, string> = {
+  "gpt-6.2-astra": "2026-11-17",
+  "gpt-6.2-sol": "2026-11-17",
   "gpt-6.1-sol": "2026-09-29",
   "gpt-6-sol": "2026-09-22",
   "gpt-6-luna": "2026-09-22",
@@ -15,6 +18,7 @@ const openai: Record<string, string> = {
   "gpt-5.5": "2026-04-24"
 };
 const anthropic: Record<string, string> = {
+  "claude-fable-5-2": "2026-11-09",
   "claude-haiku-5-5": "2026-10-07",
   "claude-sonnet-5-5": "2026-09-28",
   "claude-opus-5-5": "2026-09-22",
@@ -24,6 +28,7 @@ const anthropic: Record<string, string> = {
   "claude-opus-4-8": "2026-05-27"
 };
 const gemini: Record<string, string> = {
+  "gemini-4-neon": "2026-11-18",
   "gemini-4-hydrogen": "2026-11-12",
   "gemini-4-carbon": "2026-11-10",
   "gemini-4-argon": "2026-10-13",
@@ -46,6 +51,9 @@ const deepseek: Record<string, string> = {
   "deepseek-v4-flash-vision-exp": "2026-08-21"
 };
 const openrouter: Record<string, string> = {
+  "google/gemini-4-neon": "2026-11-18",
+  "openai/gpt-6.2-astra": "2026-11-17",
+  "openai/gpt-6.2-sol": "2026-11-17",
   "google/gemini-4-hydrogen": "2026-11-12",
   "google/gemini-4-carbon": "2026-11-10",
   "google/gemini-4-argon": "2026-10-13",
@@ -59,6 +67,7 @@ const openrouter: Record<string, string> = {
   "openai/gpt-6-luna-pro": "2026-09-22",
   "anthropic/claude-opus-5.5": "2026-09-22",
   "openai/gpt-6-astra": "2026-09-04",
+  "anthropic/claude-fable-5.2": "2026-11-09",
   "anthropic/claude-fable-5.1": "2026-09-01",
   "anthropic/claude-opus-5": "2026-07-24",
   "anthropic/claude-opus-4.8": "2026-05-27",

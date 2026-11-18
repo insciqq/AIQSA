@@ -1,8 +1,9 @@
 /**
- * Opt-in, paid, bounded checks of the October 2026 model refresh on a
- * DISPOSABLE stand: Quick Setup turns on GPT-6.1 Sol, Gemini 4 Argon and
- * Claude Sonnet/Haiku 5.5 with the new defaults, never the legacy models, and
- * each new model answers through its real adapter. Never a default lane: it
+ * Opt-in, paid, bounded checks of the latest model refresh (Quick Setup policy
+ * v13, November 2026) on a DISPOSABLE stand: Quick Setup turns on GPT-6.2 Sol
+ * and Astra, Gemini 4 Neon and, through OpenRouter, Claude Fable 5.2 with the
+ * current defaults, never the legacy models, and each new model answers through
+ * its real adapter. Never a default lane: it
  * runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE; each case also needs its
  * key (OPENAI_API_KEY, CODEX_LB_API_KEY + CODEX_LB_BASE_URL, GEMINI_API_KEY,
  * OPENROUTER_API_KEY) and is skipped without it.
@@ -121,12 +122,11 @@ async function report(testInfo: TestInfo, name: string, summary: Record<string, 
 
 const OPENAI_LEGACY = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const GEMINI_LEGACY = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview"];
-const OPENROUTER_NEW = ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-5.5", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro",
-  "google/gemini-4-argon"];
+const OPENROUTER_NEW = ["openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "anthropic/claude-fable-5.2", "google/gemini-4-neon"];
 
 test.beforeEach(async ({ request }) => { await authenticateWithLocalToken(request); });
 
-test("OpenAI Quick Setup chooses GPT-6.1 Sol, turns on no legacy model, and GPT-6.1 Sol answers", async ({ request }, testInfo) => {
+test("OpenAI Quick Setup chooses GPT-6.2 Sol, turns on GPT-6.2 Astra and no legacy model, and both answer", async ({ request }, testInfo) => {
   const secret = paidEnv("OPENAI_API_KEY");
   test.skip(!secret, "paid: OPENAI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -135,33 +135,41 @@ test("OpenAI Quick Setup chooses GPT-6.1 Sol, turns on no legacy model, and GPT-
     const { candidateNames, connection, result } = await quickSetup(request, "openai", secret!);
     const models = upstreamIds(connection);
     Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models,
-      sol61Check: checkStatus(connection, "gpt-6.1-sol") });
+      sol62Check: checkStatus(connection, "gpt-6.2-sol"), astra62Check: checkStatus(connection, "gpt-6.2-astra") });
     expect(candidateNames).not.toContain("GPT-5.6 Terra");
-    expect(result.model?.displayName).toBe("GPT-6.1 Sol");
-    expect(models).toContain("gpt-6.1-sol");
+    expect(result.model?.displayName).toBe("GPT-6.2 Sol");
+    expect(models).toEqual(expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]));
     expect(models.filter((id) => OPENAI_LEGACY.includes(id))).toEqual([]);
-    expect(checkStatus(connection, "gpt-6.1-sol")).toBe("available");
-    await answerTurn(request, await answerModel(request, connection, "gpt-6.1-sol"), summary, "sol61Turn");
+    expect(checkStatus(connection, "gpt-6.2-sol")).toBe("available");
+    expect(checkStatus(connection, "gpt-6.2-astra")).toBe("available");
+    // Each turn is independent, so one model's failure still shows the other's.
+    const failures: unknown[] = [];
+    for (const [upstream, key] of [["gpt-6.2-sol", "sol62Turn"], ["gpt-6.2-astra", "astra62Turn"]] as const) {
+      await answerTurn(request, await answerModel(request, connection, upstream), summary, key).catch((error: unknown) => { failures.push(error); });
+    }
+    if (failures.length) throw failures[0];
   } finally {
     await report(testInfo, "model_refresh_openai_paid_summary", summary);
   }
 });
 
-test("codex-lb serves GPT-6.1 Sol through custom setup", async ({ request }, testInfo) => {
+test("codex-lb serves GPT-6.2 Sol and Astra through custom setup", async ({ request }, testInfo) => {
   test.skip(!paidEnv("CODEX_LB_API_KEY") || !paidEnv("CODEX_LB_BASE_URL"), "paid: CODEX_LB_API_KEY and CODEX_LB_BASE_URL are not set");
   test.setTimeout(1_200_000);
   const summary: Record<string, unknown> = {};
   try {
-    const model = await setupCodexLbAnswerModel(request, { label: "Model refresh codex-lb", nativeSearch: false, preferredModel: "gpt-6.1-sol" });
-    summary.model = model.upstreamModelId;
-    expect(model.upstreamModelId).toBe("gpt-6.1-sol");
-    await answerTurn(request, model, summary, "codexTurn");
+    for (const upstream of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+      const model = await setupCodexLbAnswerModel(request, { label: "Model refresh codex-lb", nativeSearch: false, preferredModel: upstream });
+      summary[`${upstream}Model`] = model.upstreamModelId;
+      expect(model.upstreamModelId).toBe(upstream);
+      await answerTurn(request, model, summary, `${upstream}Turn`);
+    }
   } finally {
     await report(testInfo, "model_refresh_codex_lb_paid_summary", summary);
   }
 });
 
-test("Gemini Quick Setup keeps 3.8 Flash as the default, turns on Google Search, checks Gemini 4 Argon, and Argon answers", async ({ request }, testInfo) => {
+test("Gemini Quick Setup keeps 3.8 Flash as the default, turns on Google Search, checks Gemini 4 Neon, and Neon answers", async ({ request }, testInfo) => {
   const secret = paidEnv("GEMINI_API_KEY");
   test.skip(!secret, "paid: GEMINI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -170,19 +178,19 @@ test("Gemini Quick Setup keeps 3.8 Flash as the default, turns on Google Search,
     const { candidateNames, connection, result } = await quickSetup(request, "gemini", secret!);
     const models = upstreamIds(connection);
     Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models,
-      argonCheck: checkStatus(connection, "gemini-4-argon"), ...await setupDiagnostics(request, connection, result) });
+      neonCheck: checkStatus(connection, "gemini-4-neon"), ...await setupDiagnostics(request, connection, result) });
     expect(result.model?.displayName).toBe("Gemini 3.8 Flash");
-    expect(models).toContain("gemini-4-argon");
+    expect(models).toContain("gemini-4-neon");
     expect(models.filter((id) => GEMINI_LEGACY.includes(id))).toEqual([]);
-    expect(checkStatus(connection, "gemini-4-argon")).toBe("available");
+    expect(checkStatus(connection, "gemini-4-neon")).toBe("available");
     expect(summary.bootstrapSearch, "Quick Setup turns on the connection's Google Search").toBe("ready");
-    await answerTurn(request, await answerModel(request, connection, "gemini-4-argon"), summary, "argonTurn");
+    await answerTurn(request, await answerModel(request, connection, "gemini-4-neon"), summary, "neonTurn");
   } finally {
     await report(testInfo, "model_refresh_gemini_paid_summary", summary);
   }
 });
 
-test("Gemini 4 Argon answers with the connection's Google Search source", async ({ request }, testInfo) => {
+test("Gemini 4 Neon answers with the connection's Google Search source", async ({ request }, testInfo) => {
   const secret = paidEnv("GEMINI_API_KEY");
   test.skip(!secret, "paid: GEMINI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -191,18 +199,18 @@ test("Gemini 4 Argon answers with the connection's Google Search source", async 
     const existing = readConnections(await (await request.get("/api/admin/providers")).json())
       ?.find((candidate) => candidate.family === "gemini" && candidate.enabled && !candidate.checkRunning);
     const connection = existing ?? (await quickSetup(request, "gemini", secret!)).connection;
-    const argon = await answerModel(request, connection, "gemini-4-argon");
+    const neon = await answerModel(request, connection, "gemini-4-neon");
     const source = await connectionSearchSource(request, connection.id, "gemini_google_search");
-    const chatId = await newExcludedChat(request, "Model refresh Argon search");
+    const chatId = await newExcludedChat(request, "Model refresh Neon search");
     try {
       const run = await completedPaidTurn(request, prisma, {
-        chatId, model: argon, searchMode: "model_choice", searchOptionIds: [source.strategyId], text: ONE_SEARCH_PROMPT
+        chatId, model: neon, searchMode: "model_choice", searchOptionIds: [source.strategyId], text: ONE_SEARCH_PROMPT
       });
       const rows = await prisma.usageEvent.findMany({ where: { modelRunId: run.id } });
-      summary.argonSearch = { status: run.status, sourceStrategy: source.strategyId, rows: rows.map((row) => ({
+      summary.neonSearch = { status: run.status, sourceStrategy: source.strategyId, rows: rows.map((row) => ({
         operationCount: row.operationCount, purpose: row.purpose, webSearchCount: row.webSearchCount })) };
       // The hosted route counts searches on the answer row, the source's client route on its web_search row.
-      expect(rows.some((row) => (row.webSearchCount ?? 0) > 0), "Argon's answer used Google Search").toBe(true);
+      expect(rows.some((row) => (row.webSearchCount ?? 0) > 0), "Neon's answer used Google Search").toBe(true);
     } finally {
       await deletePaidChat(request, chatId);
     }
@@ -211,7 +219,7 @@ test("Gemini 4 Argon answers with the connection's Google Search source", async 
   }
 });
 
-test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, drops Opus 5, and Claude 5.5 answers", async ({ request }, testInfo) => {
+test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, drops Opus 5, and each new model answers", async ({ request }, testInfo) => {
   const secret = paidEnv("OPENROUTER_API_KEY");
   test.skip(!secret, "paid: OPENROUTER_API_KEY is not set");
   test.setTimeout(2_400_000);
@@ -225,10 +233,10 @@ test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, dro
     expect(result.model?.displayName).toBe("Claude Opus 5.5");
     expect(models).not.toContain("anthropic/claude-opus-5");
     expect(checks).toEqual(Object.fromEntries(OPENROUTER_NEW.map((id) => [id, "available"])));
-    // Each Claude turn is independent; Opus 5.5 predates this change and separates a new-template defect from a route one.
+    // Each turn is independent; Opus 5.5 predates this change and separates a new-template defect from a route one.
     const failures: unknown[] = [];
-    for (const [upstream, key] of [["anthropic/claude-sonnet-5.5", "sonnet55Turn"], ["anthropic/claude-haiku-5.5", "haiku55Turn"],
-      ["anthropic/claude-opus-5.5", "opus55Turn"]] as const) {
+    for (const [upstream, key] of [["anthropic/claude-fable-5.2", "fable52Turn"], ["openai/gpt-6.2-sol", "sol62Turn"],
+      ["openai/gpt-6.2-astra", "astra62Turn"], ["google/gemini-4-neon", "neonTurn"], ["anthropic/claude-opus-5.5", "opus55Turn"]] as const) {
       await answerTurn(request, await answerModel(request, connection, upstream), summary, key).catch((error: unknown) => { failures.push(error); });
     }
     if (failures.length) throw failures[0];

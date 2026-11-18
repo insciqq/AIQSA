@@ -140,6 +140,10 @@ const deepSeekResponsesParams = defaultDeepSeekResponsesParams();
 const geminiInteractionsParams = defaultGeminiInteractionsParams();
 const openRouterParams = defaultOpenRouterParams();
 
+// The API rejects reasoning effort `none` on these models
+// (https://developers.openai.com/api/docs/models, GPT-6.2 checked 2026-11-19).
+const openAIReasoningRequiredModels = new Set(["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
+
 function openAIReasoningModel(modelId: string, displayName: string): ProviderModelTemplate {
   return {
     provider: "openai",
@@ -176,7 +180,7 @@ function openAIReasoningModel(modelId: string, displayName: string): ProviderMod
       },
       reasoningEffort: {
         defaultValue: "medium",
-        options: modelId === "gpt-6-astra" || modelId === "gpt-6.1-sol"
+        options: openAIReasoningRequiredModels.has(modelId)
           ? ["low", "medium", "high", "xhigh", "max"]
           : ["none", "low", "medium", "high", "xhigh", "max"],
         supported: true
@@ -253,9 +257,10 @@ function anthropicClaude5Model(modelId: string, displayName: string): ProviderMo
 }
 
 // Thinking levels each model accepts (https://ai.google.dev/gemini-api/docs/thinking, checked
-// 2026-11-13): Gemini rejects `minimal` on Gemini 4 and 3.8 Flash, and only Hydrogen has `xhigh`.
+// 2026-11-13, Neon 2026-11-19): Gemini rejects `minimal` on Gemini 4 and 3.8 Flash, and only
+// Hydrogen and Neon have `xhigh`.
 function geminiThinkingLevels(input: Readonly<{ modelId: string; pro?: boolean }>): string[] {
-  if (input.modelId === "gemini-4-hydrogen") return ["low", "medium", "high", "xhigh"];
+  if (input.modelId === "gemini-4-hydrogen" || input.modelId === "gemini-4-neon") return ["low", "medium", "high", "xhigh"];
   return input.pro || ["gemini-3.8-flash", "gemini-4-argon", "gemini-4-carbon"].includes(input.modelId)
     ? ["low", "medium", "high"]
     : ["minimal", "low", "medium", "high"];
@@ -488,6 +493,8 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       }
     })
   },
+  openAIReasoningModel("gpt-6.2-astra", "GPT-6.2 Astra"),
+  openAIReasoningModel("gpt-6.2-sol", "GPT-6.2 Sol"),
   openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"),
   openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"),
   openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"),
@@ -495,6 +502,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openAIReasoningModel("gpt-5.6-sol", "GPT-5.6 Sol"),
   openAIReasoningModel("gpt-5.6-terra", "GPT-5.6 Terra"),
   openAIReasoningModel("gpt-5.6-luna", "GPT-5.6 Luna"),
+  anthropicClaude5Model("claude-fable-5-2", "Claude Fable 5.2"),
   anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"),
   anthropicClaude5Model("claude-opus-5-5", "Claude Opus 5.5"),
   anthropicClaude5Model("claude-sonnet-5-5", "Claude Sonnet 5.5"),
@@ -541,6 +549,12 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
       }
     })
   },
+  // Google defaults Neon to high thinking; the catalog keeps medium like the other Gemini 4 models.
+  geminiModel({
+    displayName: "Gemini 4 Neon",
+    effort: "medium",
+    modelId: "gemini-4-neon"
+  }),
   geminiModel({
     displayName: "Gemini 4 Carbon",
     effort: "medium",
@@ -619,10 +633,15 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openRouterModel(anthropicClaude5Model("claude-sonnet-5-5", "Claude Sonnet 5.5"), "anthropic/claude-sonnet-5.5"),
   openRouterModel(anthropicClaude5Model("claude-haiku-5-5", "Claude Haiku 5.5"), "anthropic/claude-haiku-5.5"),
   openRouterModel(anthropicClaude5Model("claude-opus-5", "Claude Opus 5"), "anthropic/claude-opus-5"),
+  openRouterModel(anthropicClaude5Model("claude-fable-5-2", "Claude Fable 5.2"), "anthropic/claude-fable-5.2"),
   openRouterModel(anthropicClaude5Model("claude-fable-5-1", "Claude Fable 5.1"), "anthropic/claude-fable-5.1"),
   openRouterModel(
     geminiModel({ displayName: "Gemini 3.8 Flash", effort: "medium", modelId: "gemini-3.8-flash" }),
     "google/gemini-3.8-flash"
+  ),
+  openRouterModel(
+    geminiModel({ displayName: "Gemini 4 Neon", effort: "medium", modelId: "gemini-4-neon" }),
+    "google/gemini-4-neon"
   ),
   openRouterModel(
     geminiModel({ displayName: "Gemini 4 Carbon", effort: "medium", modelId: "gemini-4-carbon" }),
@@ -636,6 +655,8 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
     geminiModel({ displayName: "Gemini 4 Hydrogen", effort: "medium", modelId: "gemini-4-hydrogen" }),
     "google/gemini-4-hydrogen"
   ),
+  openRouterModel(openAIReasoningModel("gpt-6.2-astra", "GPT-6.2 Astra"), "openai/gpt-6.2-astra", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6.2-sol", "GPT-6.2 Sol"), "openai/gpt-6.2-sol", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra"),
   openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"), "openai/gpt-6.1-sol", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol Pro"), "openai/gpt-6.1-sol-pro", { temperature: false }),

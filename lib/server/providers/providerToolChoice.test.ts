@@ -45,7 +45,7 @@ describe("provider wire tool choice", () => {
       .toEqual({ requirementMode: "native", wireToolChoice: "required" });
   });
 
-  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"])(
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1"])(
     "uses automatic choice for catalog restriction %s in native and gateway requests", (modelId) => {
       for (const enabled of [true, false]) {
         expect(resolveProviderToolChoice({ adapterKind: "anthropic_messages", modelId,

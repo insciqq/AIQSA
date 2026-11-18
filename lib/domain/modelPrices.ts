@@ -1,7 +1,8 @@
 import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import type { ModelTokenPricing } from "./usage";
 
-// Base token tariffs checked 2026-10-15. Runtime never refreshes saved prices.
+// Base token tariffs checked 2026-10-15, GPT-6.2, Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19.
+// Runtime never refreshes saved prices.
 // https://developers.openai.com/api/docs/pricing
 // https://platform.claude.com/docs/en/about-claude/pricing
 // https://ai.google.dev/gemini-api/docs/pricing
@@ -9,6 +10,9 @@ import type { ModelTokenPricing } from "./usage";
 // https://openrouter.ai/api/v1/models
 type Tariff = readonly [input: number, read: number | null, write: number | null, output: number | null];
 const openai: Record<string, Tariff> = {
+  // Short-context card (input up to 272K tokens); the long-context card is not modeled.
+  "gpt-6.2-astra": [8, 0.4, 10, 40],
+  "gpt-6.2-sol": [2, 0.1, 2.5, 10],
   "gpt-6-astra": [10, 1, 12.5, 50],
   "gpt-6.1-sol": [2, 0.1, 2.5, 10],
   "gpt-6-sol": [2, 0.2, 2.5, 10],
@@ -20,6 +24,7 @@ const openai: Record<string, Tariff> = {
 };
 const anthropic: Record<string, Tariff> = {
   // The adapter never requests a one-hour lifetime; ephemeral defaults to five minutes.
+  "claude-fable-5-2": [8, 0.2, 10, 40],
   "claude-fable-5-1": [10, 0.25, 12.5, 50],
   "claude-opus-5-5": [4, 0.2, 5, 20],
   "claude-sonnet-5-5": [2, 0.2, 2.5, 10],
@@ -32,7 +37,8 @@ const anthropic: Record<string, Tariff> = {
 const gemini: Record<string, Tariff> = {
   // List prices after the introductory windows (Argon and Carbon from 2026-12-01, 3.6/3.8 Flash
   // from 2027-01-01); estimates overstate the cost until then instead of needing a later migration.
-  // Carbon and Hydrogen checked 2026-11-13; Hydrogen announces no price change.
+  // Carbon and Hydrogen checked 2026-11-13, Neon 2026-11-19; Hydrogen and Neon announce no price change.
+  "gemini-4-neon": [3, 0.15, null, 15],
   "gemini-4-carbon": [4, 0.2, null, 20],
   "gemini-4-argon": [4, 0.2, null, 20],
   "gemini-4-hydrogen": [1.5, 0.075, null, 7.5],
@@ -49,6 +55,8 @@ const deepseek: Record<string, Tariff> = {
   "deepseek-v4-pro": [1.32, 0.044, null, 3.96]
 };
 const openrouter: Record<string, Tariff> = {
+  "openai/gpt-6.2-astra": openai["gpt-6.2-astra"],
+  "openai/gpt-6.2-sol": openai["gpt-6.2-sol"],
   "openai/gpt-6-astra": openai["gpt-6-astra"],
   "openai/gpt-6.1-sol": openai["gpt-6.1-sol"],
   "openai/gpt-6.1-sol-pro": openai["gpt-6.1-sol"],
@@ -56,12 +64,14 @@ const openrouter: Record<string, Tariff> = {
   "openai/gpt-6-sol-pro": openai["gpt-6-sol"],
   "openai/gpt-6-luna": openai["gpt-6-luna"],
   "openai/gpt-6-luna-pro": openai["gpt-6-luna"],
+  "anthropic/claude-fable-5.2": anthropic["claude-fable-5-2"],
   "anthropic/claude-fable-5.1": anthropic["claude-fable-5-1"],
   "anthropic/claude-opus-5.5": anthropic["claude-opus-5-5"],
   "anthropic/claude-sonnet-5.5": anthropic["claude-sonnet-5-5"],
   "anthropic/claude-haiku-5.5": anthropic["claude-haiku-5-5"],
   "anthropic/claude-opus-5": anthropic["claude-opus-5"],
   "anthropic/claude-opus-4.8": anthropic["claude-opus-4-8"],
+  "google/gemini-4-neon": gemini["gemini-4-neon"],
   "google/gemini-4-carbon": gemini["gemini-4-carbon"],
   "google/gemini-4-argon": gemini["gemini-4-argon"],
   "google/gemini-4-hydrogen": gemini["gemini-4-hydrogen"],

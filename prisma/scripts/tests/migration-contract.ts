@@ -65,6 +65,9 @@ import { MODEL_REFRESH_PRICES_MIGRATION, modelRefreshPricesFixtureSql, modelRefr
 import { DEEPSEEK_FLASH_1017_MIGRATION, deepSeekFlash1017FixtureSql, deepSeekFlash1017ProofSql } from "./deepseek-flash-1017-adoption";
 import { GEMINI_4_CARBON_HYDROGEN_PRICES_MIGRATION, gemini4CarbonHydrogenPricesFixtureSql, gemini4CarbonHydrogenPricesProofSql } from "./gemini-4-carbon-hydrogen-prices-adoption";
 import {
+  GPT_6_2_FABLE_5_2_GEMINI_4_NEON_PRICES_MIGRATION, gpt62Fable52Gemini4NeonPricesFixtureSql, gpt62Fable52Gemini4NeonPricesProofSql
+} from "./gpt-6-2-fable-5-2-gemini-4-neon-prices-adoption";
+import {
   TELEMETRY_DURATION_BUCKETS_MIGRATION, telemetryDurationBucketsFixtureSql, telemetryDurationBucketsProofSql
 } from "./telemetry-duration-buckets-adoption";
 import { MODEL_RUN_ENGINE_MIGRATION, modelRunEngineFixtureSql, modelRunEngineProofSql } from "./model-run-engine-adoption";
@@ -8068,6 +8071,8 @@ function main(
      END $$;`);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_4_CARBON_HYDROGEN_PRICES_MIGRATION,
     gemini4CarbonHydrogenPricesFixtureSql, gemini4CarbonHydrogenPricesProofSql, gemini4CarbonHydrogenPricesProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, GPT_6_2_FABLE_5_2_GEMINI_4_NEON_PRICES_MIGRATION,
+    gpt62Fable52Gemini4NeonPricesFixtureSql, gpt62Fable52Gemini4NeonPricesProofSql, gpt62Fable52Gemini4NeonPricesProofSql);
   // The link's retired Workspace and Codex Agent switches go; every other
   // column stays, and the previous release's named link queries keep working.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_TELEGRAM_LINK_RETIRED_SETTINGS_MIGRATION,

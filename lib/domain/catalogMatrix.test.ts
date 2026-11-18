@@ -241,7 +241,7 @@ describe("catalog capability matrix", () => {
       supportsReasoningMode: true,
       supportsStreaming: true
     };
-    for (const upstreamModelId of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]) {
+    for (const upstreamModelId of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]) {
       const controls = resolveProviderModelParameterControls({ ...codexLb, upstreamModelId });
       expect(controls.reasoningEffort.supported).toBe(true);
       expect(controls.reasoningMode).toBeUndefined();
@@ -259,6 +259,7 @@ describe("catalog capability matrix", () => {
       ({ provider }) => provider === "anthropic"
     ).filter(({ modelId }) => modelId !== "claude-opus-4-8");
     expect(claudeModels.map(({ modelId }) => modelId)).toEqual([
+      "claude-fable-5-2",
       "claude-fable-5-1",
       "claude-opus-5-5",
       "claude-sonnet-5-5",
@@ -284,6 +285,7 @@ describe("catalog capability matrix", () => {
 
     const geminiModels = defaultProviderModels.filter(({ provider }) => provider === "gemini");
     expect(geminiModels.map(({ modelId }) => modelId)).toEqual([
+      "gemini-4-neon",
       "gemini-4-carbon",
       "gemini-4-argon",
       "gemini-4-hydrogen",
@@ -315,7 +317,7 @@ describe("catalog capability matrix", () => {
   });
 
   it.each(["openai/gpt-6-sol", "openai/gpt-6-sol-pro", "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
-    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro"])(
+    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol"])(
     "keeps %s on the OpenRouter contract without unsupported temperature or native modes", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       const catalog = buildCatalogModel(model, defaultSearchStrategies);
@@ -332,8 +334,9 @@ describe("catalog capability matrix", () => {
     }
   );
 
-  it.each(["gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro"])(
-    "offers GPT-6.1 Sol only the reasoning efforts the API accepts for %s", (modelId) => {
+  it.each(["gpt-6.1-sol", "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro",
+    "gpt-6.2-astra", "gpt-6.2-sol", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol"])(
+    "offers only the reasoning efforts the API accepts, never none, for %s", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       expect(model.parameterControls.reasoningEffort).toEqual({
         defaultValue: "medium", options: ["low", "medium", "high", "xhigh", "max"], supported: true
@@ -343,8 +346,8 @@ describe("catalog capability matrix", () => {
   );
 
   it.each([
-    ["claude-sonnet-5-5", false], ["claude-haiku-5-5", undefined],
-    ["anthropic/claude-sonnet-5.5", false], ["anthropic/claude-haiku-5.5", undefined]
+    ["claude-sonnet-5-5", false], ["claude-haiku-5-5", undefined], ["claude-fable-5-2", false],
+    ["anthropic/claude-sonnet-5.5", false], ["anthropic/claude-haiku-5.5", undefined], ["anthropic/claude-fable-5.2", false]
   ] as const)("declares forced tool choice for %s as the API documents it", (modelId, forced) => {
     const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
     expect(model.capabilities.nativeForcedToolChoice).toBe(forced);
@@ -578,8 +581,8 @@ describe("catalog capability matrix", () => {
     }
   );
 
-  it.each(["gemini-4-hydrogen", "google/gemini-4-hydrogen"])(
-    "offers Gemini 4 Hydrogen its xhigh level, never minimal, and keeps medium by default for %s", (modelId) => {
+  it.each(["gemini-4-hydrogen", "google/gemini-4-hydrogen", "gemini-4-neon", "google/gemini-4-neon"])(
+    "offers its xhigh level, never minimal, and keeps medium by default for %s", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       expect(model.parameterControls.reasoningEffort).toEqual({
         defaultValue: "medium", options: ["low", "medium", "high", "xhigh"], supported: true

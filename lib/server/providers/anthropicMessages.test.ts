@@ -91,7 +91,7 @@ describe("Anthropic context-length rejection", () => {
 });
 
 describe("Anthropic required wire compatibility", () => {
-  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"])(
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-1"])(
     "preserves adaptive thinking and logical required obligation for %s", (modelId) => {
       const original = request({ modelId, toolChoice: "required", forcedToolName: mcpTool.name, tools: [mcpTool] });
       const body = buildAnthropicMessagesRequest(original);

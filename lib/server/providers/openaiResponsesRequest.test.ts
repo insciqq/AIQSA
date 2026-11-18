@@ -278,7 +278,7 @@ describe("OpenAI Responses request builder", () => {
     });
   });
 
-  it.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"])("serializes %s Pro mode, max effort, and the current prompt-cache contract", (modelId) => {
+  it.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"])("serializes %s Pro mode, max effort, and the current prompt-cache contract", (modelId) => {
     const runRequest = request({
       modelId,
       params: {
@@ -318,7 +318,7 @@ describe("OpenAI Responses request builder", () => {
     }
   });
 
-  it.each(["gpt-6.1-sol", "gpt-6.2-terra"])("treats the GPT-6 point release %s like GPT-6: 30-minute cache options and no temperature", (modelId) => {
+  it.each(["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"])("treats the GPT-6 point release %s like GPT-6: 30-minute cache options and no temperature", (modelId) => {
     for (const effort of ["low", "medium", "max"] as const) {
       const body = buildOpenAIResponsesRequest(request({ modelId, params: {
         reasoning: { effort, mode: "standard" }, temperature: 0.3

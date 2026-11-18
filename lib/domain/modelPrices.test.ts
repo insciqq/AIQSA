@@ -42,6 +42,23 @@ describe("catalog token tariffs", () => {
     expect(tariff("openrouter:google/gemini-4-hydrogen")).toEqual([1.5, 0.075, null, 7.5, null]);
   });
 
+  it("prices GPT-6.2 Astra and Sol, Claude Fable 5.2 and Gemini 4 Neon directly and through OpenRouter", () => {
+    const tariff = (key: string) => {
+      const { inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion,
+        cacheWriteInputTokenPriceUsdPerMillion, outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand } = catalogModelTokenPricing(key);
+      return [inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion, cacheWriteInputTokenPriceUsdPerMillion,
+        outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand];
+    };
+    expect(tariff("openai:gpt-6.2-astra")).toEqual([8, 0.4, 10, 40, 10]);
+    expect(tariff("openai:gpt-6.2-sol")).toEqual([2, 0.1, 2.5, 10, 10]);
+    expect(tariff("anthropic:claude-fable-5-2")).toEqual([8, 0.2, 10, 40, 10]);
+    expect(tariff("gemini:gemini-4-neon")).toEqual([3, 0.15, null, 15, 14]);
+    expect(tariff("openrouter:openai/gpt-6.2-astra")).toEqual([8, 0.4, 10, 40, null]);
+    expect(tariff("openrouter:openai/gpt-6.2-sol")).toEqual([2, 0.1, 2.5, 10, null]);
+    expect(tariff("openrouter:anthropic/claude-fable-5.2")).toEqual([8, 0.2, 10, 40, null]);
+    expect(tariff("openrouter:google/gemini-4-neon")).toEqual([3, 0.15, null, 15, null]);
+  });
+
   it("carries OpenRouter's published default DeepSeek tariffs and keeps codex-lb out of the key space", () => {
     expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4-pro-0813")).toEqual({ inputTokenPriceUsdPerMillion: 0.66,
       cachedInputTokenPriceUsdPerMillion: 0.022, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 1.98,

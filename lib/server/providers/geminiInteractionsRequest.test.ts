@@ -562,7 +562,9 @@ describe("Gemini Interactions thinking level admission", () => {
     ["gemini-3.6-flash", "minimal"],
     ["gemini-3.1-pro-preview", "low"],
     ["gemini-4-carbon", "high"],
-    ["gemini-4-hydrogen", "xhigh"]
+    ["gemini-4-hydrogen", "xhigh"],
+    ["gemini-4-neon", "xhigh"],
+    ["gemini-4-neon", "medium"]
   ])("sends the supported %s level %s unchanged", (modelId, effort) => {
     expect(buildGeminiInteractionsRequest(withEffort(modelId, effort)).generation_config.thinking_level)
       .toBe(effort);
@@ -570,6 +572,7 @@ describe("Gemini Interactions thinking level admission", () => {
 
   it.each([
     ["gemini-4-hydrogen", "minimal"],
+    ["gemini-4-neon", "minimal"],
     ["gemini-4-carbon", "minimal"],
     ["gemini-4-carbon", "xhigh"],
     ["gemini-4-argon", "xhigh"],

@@ -489,7 +489,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 12 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 13 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -505,7 +505,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-legacy-choice",
-        selectedModel: { candidateId: "p2-o1", policyVersion: 12 }
+        selectedModel: { candidateId: "p2-o1", policyVersion: 13 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -997,7 +997,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 12 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 13 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -1007,6 +1007,8 @@ describe("provider Quick setup service", () => {
     const value = fixture();
     const snapshot = await value.service.getSnapshot(actor);
     expect(snapshot.providers.find(({ provider }) => provider === "openai")?.candidateModels).toEqual([
+      { displayName: "GPT-6.2 Sol" },
+      { displayName: "GPT-6.2 Astra" },
       { displayName: "GPT-6.1 Sol" },
       { displayName: "GPT-6 Sol" },
       { displayName: "GPT-6 Luna" },
@@ -1016,6 +1018,7 @@ describe("provider Quick setup service", () => {
       { displayName: "Claude Opus 5.5" },
       { displayName: "Claude Sonnet 5.5" },
       { displayName: "Claude Haiku 5.5" },
+      { displayName: "Claude Fable 5.2" },
       { displayName: "Claude Fable 5.1" }
     ]);
     expect(JSON.stringify(snapshot)).not.toContain("quickSetupAssigned");

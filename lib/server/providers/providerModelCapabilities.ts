@@ -42,7 +42,7 @@ export function defaultConfiguredReasoningEffort(
   return controls.supported ? controls.defaultValue : "none";
 }
 
-// `xhigh` exists only on Gemini 4 Hydrogen; each model's template narrows the list.
+// `xhigh` exists only on Gemini 4 Hydrogen and Neon; each model's template narrows the list.
 export const GEMINI_THINKING_LEVELS: readonly string[] = ["minimal", "low", "medium", "high", "xhigh"];
 
 /** Gemini thinking levels that the exact deployment's configured reasoning
