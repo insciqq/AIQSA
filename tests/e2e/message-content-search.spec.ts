@@ -196,6 +196,47 @@ test("a word inside an old message finds its chat and opens it at that message",
   }
 });
 
+test("a found message opens in another tab on the version of the chat that holds it", async ({ context, page }, testInfo) => {
+  test.setTimeout(120_000);
+  await signInWithLocalToken(page);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  const seeded = await seedChat(page);
+  const tabs: Page[] = [];
+  try {
+    await page.goto("/");
+    await expect(page.getByTestId("app-shell")).toBeVisible();
+
+    const sidebar = await search(page, seeded.branchNeedle);
+    const branchResult = sidebar.getByRole("group", { name: "In messages" }).getByRole("treeitem", { name: seeded.title });
+    await expect(branchResult).toBeVisible({ timeout: 15_000 });
+    await expect(branchResult).toHaveAttribute("href", `/c/${seeded.chatId}?message=${seeded.branchQuestionId}`);
+    const [branchTab] = await Promise.all([context.waitForEvent("page"), branchResult.click({ button: "middle" })]);
+    tabs.push(branchTab);
+    // The other tab switches to the newest leaf below the match, as a click does.
+    await expect.poll(() => activeLeaf(page, seeded.chatId), { timeout: 30_000 }).toBe(seeded.branchAnswerId);
+    await expect(turn(branchTab, seeded.branchQuestionId)).toBeInViewport({ timeout: 30_000 });
+    await expect(turn(branchTab, seeded.branchAnswerId)).toBeVisible();
+    await branchTab.screenshot({ path: testInfo.outputPath("message-search-tab-branch-desktop.png") });
+    // Nothing opened here: the list keeps its query.
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(sidebar.getByRole("searchbox", { name: "Filter chats" })).toHaveValue(seeded.branchNeedle);
+
+    // About 300 messages back, with a modified click.
+    const oldResult = (await search(page, seeded.oldNeedle))
+      .getByRole("group", { name: "In messages" })
+      .getByRole("treeitem", { name: seeded.title });
+    await expect(oldResult).toBeVisible({ timeout: 15_000 });
+    const [oldTab] = await Promise.all([context.waitForEvent("page"), oldResult.click({ modifiers: ["ControlOrMeta"] })]);
+    tabs.push(oldTab);
+    await expect(turn(oldTab, seeded.oldMatchId)).toBeInViewport({ timeout: 30_000 });
+    await oldTab.screenshot({ path: testInfo.outputPath("message-search-tab-old-desktop.png") });
+    expect(new URL(page.url()).pathname).toBe("/");
+  } finally {
+    for (const tab of tabs) await tab.close();
+    await deleteOwnedChatPermanently(page.request, seeded.chatId);
+  }
+});
+
 test("a message search that times out never holds back the title results", async ({ page }, testInfo) => {
   test.setTimeout(90_000);
   await signInWithLocalToken(page);

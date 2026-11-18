@@ -5,7 +5,9 @@ import { isActiveSubagentState } from "@/lib/contracts/subagents";
 import type { SubagentChatThreads, SubagentThreadSummary } from "@/lib/contracts/subagentViews";
 import { subagentStatePresentation, subagentTreeRows } from "@/features/subagents-v2/subagentPresentation";
 import type { SubagentThreadTarget } from "@/features/subagents-v2/subagentStore";
+import { subagentThreadHref } from "@/features/subagents-v2/subagentThreadAddress";
 import type { KeyboardEvent } from "react";
+import { treeRowLinkKeyDown, treeRowLinkProps } from "./treeRowLink";
 
 /**
  * A chat's sub-agents as the chat list shows them (operator decision
@@ -38,7 +40,7 @@ export function subagentGroupId(chatId: string, scope: string): string {
  * folder; the tree moves focus for every other key.
  */
 export function subagentDisclosureKeyDown(
-  event: KeyboardEvent<HTMLButtonElement>,
+  event: KeyboardEvent<HTMLElement>,
   expanded: boolean,
   toggle: () => void
 ): void {
@@ -85,6 +87,7 @@ export function SubagentDisclosureV2({
 }
 
 function SubagentRowV2({
+  chatId,
   depth,
   disabled,
   level,
@@ -92,6 +95,7 @@ function SubagentRowV2({
   selected,
   thread
 }: Readonly<{
+  chatId: string;
   depth: number;
   disabled?: boolean;
   level: number;
@@ -102,7 +106,7 @@ function SubagentRowV2({
   const state = subagentStatePresentation(thread.state, thread.outcome, thread.reason, thread.parent?.name ?? null);
   return (
     <div className="v2-subagent-row-wrap" data-depth={depth || undefined} data-navigation-subagent-id={thread.id} data-v2-tree-row="true">
-      <button
+      <a
         aria-current={selected ? "page" : undefined}
         // One name, "<name>, <state>": the icon alone never carries the state.
         aria-label={`${thread.name}, ${state.label}`}
@@ -113,18 +117,17 @@ function SubagentRowV2({
         data-state={thread.state}
         data-tone={state.tone}
         data-v2-tree-item="true"
-        disabled={disabled}
         role="treeitem"
         tabIndex={-1}
         title={thread.type ? `${thread.name} (${thread.type})` : thread.name}
-        type="button"
-        onClick={() => onOpen(thread)}
+        {...treeRowLinkProps(subagentThreadHref({ chatId, threadId: thread.id }), disabled, () => onOpen(thread))}
+        onKeyDown={treeRowLinkKeyDown}
       >
         <span aria-hidden="true" className="v2-subagent-state">
           {state.icon ? <UiV2Icon name={state.icon} /> : <span className="v2-subagent-dot" />}
         </span>
         <span className="v2-chat-title">{thread.name}</span>
-      </button>
+      </a>
     </div>
   );
 }
@@ -166,6 +169,7 @@ export function SubagentRowsV2({
     <div aria-label={`Sub-agents of ${title}`} className="v2-subagent-rows" id={id} role="group">
       {visible.map(({ depth, thread }) => (
         <SubagentRowV2
+          chatId={chat.chatId}
           depth={depth}
           disabled={disabled}
           key={thread.id}

@@ -185,6 +185,7 @@ import {
   openPersonalChatMessage,
   revealPersonalChatDeepLinkMessage,
   usePersonalChatDeepLink,
+  type PersonalChatDeepLinkReveal,
   type PersonalChatDeepLinkTarget
 } from "./usePersonalChatDeepLink";
 import { useWorkspaceBootstrapController } from "./useWorkspaceBootstrapController";
@@ -247,6 +248,9 @@ const CHAT_ROUTE_UNAVAILABLE_COPY = {
   assistant: "This Assistant isn't available to you.",
   chat: "That chat is unavailable."
 } as const;
+
+const MESSAGE_VERSION_UNAVAILABLE_NOTICE =
+  "This message is in another version of the chat, which could not be opened. Try again once the current answer finishes.";
 
 /**
  * Why the composer cannot send. A chat Assistant that blocks sending comes
@@ -839,22 +843,6 @@ export function PowerAppShellV2({
   const anchorPersonalChatMessage = useEventCallback((chatId: string, messageId: string) => {
     setPersonalReadingAnchor({ chatId, messageId });
   });
-  const openPersonalChatMessageEvent = useEventCallback(async (
-    chatId: string,
-    messageId: string
-  ): Promise<boolean> => {
-    const opened = await openPersonalChatMessage({
-      activateChat: activatePersonalChatDeepLink,
-      chatId,
-      messageId,
-      onAnchor: anchorPersonalChatMessage,
-      revealMessage: revealPersonalChatMessage
-    });
-    if (!opened) {
-      setSettingsNotice({ kind: "error", text: "This file's source message is no longer available." });
-    }
-    return opened;
-  });
   const anchorSearchMatch = useEventCallback((chatId: string, messageId: string) => {
     pendingSearchHighlightRef.current = { chatId, messageId };
     setSearchRevealedMessage({ chatId, messageId });
@@ -869,16 +857,10 @@ export function PowerAppShellV2({
   });
   const showUnavailableDeepLink = useEventCallback((target: PersonalChatDeepLinkTarget) => {
     // An unavailable Memory source simply opens the chat; only a plain
-    // message link explains that its message is gone.
+    // message link explains that its message is gone or in a version of the
+    // chat that could not be shown.
     if (target === "message") setNotice({ kind: "error", text: "This message is no longer available." });
-  });
-  usePersonalChatDeepLink({
-    activeChatId,
-    detailLoading: activeChatDetailLoading,
-    onAnchor: anchorPersonalChatMessage,
-    onUnavailable: showUnavailableDeepLink,
-    ready: workspaceReady,
-    revealMessage: revealPersonalChatMessage
+    else if (target === "message_version") setNotice({ kind: "error", text: MESSAGE_VERSION_UNAVAILABLE_NOTICE });
   });
   // A local draft chat is addressable only while its first send is under
   // way and after the server admitted it: a failed or stopped first send
@@ -1216,6 +1198,49 @@ export function PowerAppShellV2({
       resumeRuns: false
     }));
   });
+  // A linked message (a found message opened in another tab, a Memory or
+  // file source) is shown in the version of the chat that holds it, as
+  // choosing a found message in the list does. The chat is already open.
+  const revealLinkedMessage = useEventCallback(async (
+    chatId: string,
+    messageId: string
+  ): Promise<PersonalChatDeepLinkReveal> => {
+    const outcome = await openMessageSearchMatch({
+      activateChat: async () => true,
+      chatId,
+      isCurrent: (candidate) => useWorkspaceStore.getState().activeChatId === candidate,
+      loadBranchGraph: loadSearchMatchBranchGraph,
+      messageId,
+      onAnchor: () => undefined,
+      revealMessage: revealPersonalChatMessage,
+      showBranch: showSearchMatchBranch
+    });
+    return outcome === "opened" || (outcome === "branch_unavailable" ? "version_unavailable" : false);
+  });
+  const openPersonalChatMessageEvent = useEventCallback(async (
+    chatId: string,
+    messageId: string
+  ): Promise<boolean> => {
+    const opened = await openPersonalChatMessage({
+      activateChat: activatePersonalChatDeepLink,
+      chatId,
+      messageId,
+      onAnchor: anchorPersonalChatMessage,
+      revealMessage: async (chatId, messageId) => await revealLinkedMessage(chatId, messageId) === true
+    });
+    if (!opened) {
+      setSettingsNotice({ kind: "error", text: "This file's source message is no longer available." });
+    }
+    return opened;
+  });
+  usePersonalChatDeepLink({
+    activeChatId,
+    detailLoading: activeChatDetailLoading,
+    onAnchor: anchorPersonalChatMessage,
+    onUnavailable: showUnavailableDeepLink,
+    ready: workspaceReady,
+    revealMessage: revealLinkedMessage
+  });
   const openSearchMatchEvent = useEventCallback((chatId: string, messageId: string): void => {
     // Opening the chat is one history entry, like choosing it in the list.
     navigateChatRoute(() => {
@@ -1232,10 +1257,7 @@ export function PowerAppShellV2({
         if (outcome === "message_unavailable") {
           setNotice({ kind: "error", text: "This message is no longer available." });
         } else if (outcome === "branch_unavailable") {
-          setNotice({
-            kind: "error",
-            text: "This message is in another version of the chat, which could not be opened. Try again once the current answer finishes."
-          });
+          setNotice({ kind: "error", text: MESSAGE_VERSION_UNAVAILABLE_NOTICE });
         } else if (outcome === "chat_unavailable") {
           setNotice({ kind: "error", text: "This chat is no longer available." });
         }

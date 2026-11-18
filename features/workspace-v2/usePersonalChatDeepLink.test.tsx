@@ -56,6 +56,15 @@ describe("usePersonalChatDeepLink", () => {
     expect(window.location.search).toBe("");
   });
 
+  it("tells a message whose version of the chat could not be shown from a gone one", async () => {
+    window.history.replaceState(null, "", "/c/chat-1?message=elsewhere&keep=yes");
+    const { props } = renderDeepLink({ revealMessage: vi.fn(async () => "version_unavailable" as const) });
+    await waitFor(() => expect(props.onUnavailable).toHaveBeenCalledOnce());
+    expect(props.onUnavailable).toHaveBeenCalledWith("message_version");
+    expect(props.onAnchor).not.toHaveBeenCalled();
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/c/chat-1?keep=yes");
+  });
+
   it("ignores a reveal that settles after the chat changed", async () => {
     window.history.replaceState(null, "", "/c/chat-1?message=message-1");
     let finish!: (revealed: boolean) => void;

@@ -536,6 +536,41 @@ describe("Navigation v2", () => {
     }
   });
 
+  it("links each chat and found message to its address and opens it in place only on a plain click", () => {
+    const onOpenMessageMatch = vi.fn();
+    const onSelectChat = vi.fn();
+    const { props, view } = sidebar({ onOpenMessageMatch, onSelectChat });
+    const row = screen.getByRole("treeitem", { name: "Selected brief" });
+    expect(row).toHaveAttribute("href", "/c/yesterday");
+    // Dragging a row moves its chat to a folder, never the link.
+    expect(row).toHaveAttribute("draggable", "false");
+    for (const init of [{ button: 1 }, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      expect(fireEvent.click(row, init)).toBe(true);
+    }
+    expect(onSelectChat).not.toHaveBeenCalled();
+    expect(fireEvent.click(row)).toBe(false);
+    expect(onSelectChat).toHaveBeenCalledExactlyOnceWith(chats[1]);
+    // Space opens a row as Enter, the link's own key, does.
+    fireEvent.keyDown(row, { key: " " });
+    expect(onSelectChat).toHaveBeenCalledTimes(2);
+
+    // A busy list keeps the address for another tab and blocks only the open in place.
+    view.rerender(<NavigationSidebar {...props} navigationBusy />);
+    const busy = screen.getByRole("treeitem", { name: "Selected brief" });
+    expect(busy).toHaveAttribute("aria-disabled", "true");
+    expect(busy).toHaveAttribute("href", "/c/yesterday");
+    expect(fireEvent.click(busy)).toBe(false);
+    expect(onSelectChat).toHaveBeenCalledTimes(2);
+
+    view.rerender(<NavigationSidebar {...props} messageMatches={[messageMatch]} searchQuery="budget" />);
+    const match = within(screen.getByRole("group", { name: "In messages" })).getByRole("treeitem", { name: "Planning" });
+    expect(match).toHaveAttribute("href", "/c/found?message=message-7");
+    expect(fireEvent.click(match, { button: 1 })).toBe(true);
+    expect(onOpenMessageMatch).not.toHaveBeenCalled();
+    expect(fireEvent.click(match)).toBe(false);
+    expect(onOpenMessageMatch).toHaveBeenCalledExactlyOnceWith(messageMatch);
+  });
+
   it("creates a root folder from the Folders header, not from the New-chat mode menu", () => {
     const onCreateFolder = vi.fn(async () => undefined);
     sidebar({ onCreateFolder });

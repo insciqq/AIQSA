@@ -89,6 +89,16 @@ describe("sub-agents in the chat list", () => {
     expect(within(group).queryByRole("button", { name: /Actions/u })).toBeNull();
   });
 
+  it("links a sub-agent row to its thread's address and opens it in place only on a plain click", () => {
+    const { props } = renderSidebar({ subagents: subagentsProp({ a: subagentChat("a", [subagentThread("thread-researcher")]) }) });
+    const row = screen.getByRole("treeitem", { name: "researcher, Running" });
+    expect(row).toHaveAttribute("href", "/c/a?agent=thread-researcher");
+    expect(fireEvent.click(row, { ctrlKey: true })).toBe(true);
+    expect(props.onOpenSubagent).not.toHaveBeenCalled();
+    fireEvent.keyDown(row, { key: " " });
+    expect(props.onOpenSubagent).toHaveBeenCalledExactlyOnceWith(props.chats[0], "thread-researcher");
+  });
+
   it("collapses an idle chat's sub-agents behind a disclosure that names them", () => {
     const onToggle = vi.fn();
     renderSidebar({ subagents: subagentsProp({ a: subagentChat("a", [subagentThread("thread-done", "done")]) }, { onToggle }) });

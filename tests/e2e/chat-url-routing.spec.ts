@@ -243,6 +243,70 @@ test("New chat opens a fresh chat in another tab on a middle or modified click",
   }
 });
 
+test("a chat row opens its chat in another tab on a middle or modified click and in place otherwise", async ({ page, context, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  await useAppearance(page, context, baseURL!, "light");
+  await signInWithLocalToken(page);
+  const suffix = randomUUID().slice(0, 8);
+  const alphaTitle = `Routing row alpha ${suffix}`;
+  const betaTitle = `Routing row beta ${suffix}`;
+  const alpha = await createChat(page, alphaTitle);
+  const beta = await createChat(page, betaTitle);
+  const header = page.getByTestId("header-title");
+  const tabs: Page[] = [];
+  try {
+    await page.goto(`/c/${alpha}`);
+    await expect(header).toHaveText(alphaTitle);
+    const navigation = page.getByRole("complementary", { name: "Chat navigation" });
+    const betaRow = navigation.getByRole("treeitem", { name: betaTitle, exact: true });
+    const alphaRow = navigation.getByRole("treeitem", { name: alphaTitle, exact: true });
+    await expect(betaRow).toHaveAttribute("href", `/c/${beta}`);
+    await betaRow.hover();
+    await page.screenshot({ path: testInfo.outputPath("chat-row-link-light-1440.png") });
+
+    for (const open of [() => betaRow.click({ button: "middle" }), () => betaRow.click({ modifiers: ["ControlOrMeta"] })]) {
+      const [tab] = await Promise.all([context.waitForEvent("page"), open()]);
+      tabs.push(tab);
+      await expect(tab).toHaveURL(exactPath(`/c/${beta}`));
+      await expect(tab.getByTestId("header-title")).toHaveText(betaTitle, { timeout: 30_000 });
+      await expect(page).toHaveURL(exactPath(`/c/${alpha}`));
+      await expect(header).toHaveText(alphaTitle);
+    }
+
+    // The keyboard opens a row in place: Space as on a button, Enter as on a link.
+    await betaRow.focus();
+    await page.keyboard.press("Space");
+    await expect(page).toHaveURL(exactPath(`/c/${beta}`));
+    await expect(header).toHaveText(betaTitle);
+    await alphaRow.focus();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(exactPath(`/c/${alpha}`));
+    await expect(header).toHaveText(alphaTitle);
+    await page.goBack();
+    await expect(page).toHaveURL(exactPath(`/c/${beta}`));
+
+    // A plain click and a tap stay in place at the drawer widths too.
+    for (const [size, target, title] of [
+      [{ width: 900, height: 1180 }, alpha, alphaTitle],
+      [phone, beta, betaTitle]
+    ] as const) {
+      await page.setViewportSize(size);
+      const toggle = page.getByRole("button", { name: "Open sidebar" });
+      if (!(await navigation.isVisible())) await toggle.click();
+      const row = navigation.getByRole("treeitem", { name: title, exact: true });
+      await expect(row).toBeVisible();
+      await expectNoHorizontalOverflow(page);
+      await page.screenshot({ path: testInfo.outputPath(`chat-row-link-light-${size.width}.png`) });
+      await row.click();
+      await expect(page).toHaveURL(exactPath(`/c/${target}`));
+      await expect(header).toHaveText(title);
+    }
+  } finally {
+    for (const tab of tabs) await tab.close();
+    await deleteChats(page, [alpha, beta]);
+  }
+});
+
 test("a guarded Settings draft keeps the address on the shown chat until it is discarded", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   await useAppearance(page, context, baseURL!, "light");

@@ -3,7 +3,7 @@
 import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
 import { ChatDragDropProvider, ChatRootDropTarget, useChatDraggable, useChatFolderDrop } from "./chatDragDrop";
 import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
-import { NEW_CHAT_PATH } from "@/lib/domain/chatRoute";
+import { NEW_CHAT_PATH, chatRouteHref, formatChatRoutePath } from "@/lib/domain/chatRoute";
 import { openingFocusTarget } from "@/lib/browser/openingFocus";
 
 import {
@@ -34,6 +34,7 @@ import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { chatTitleForDisplay } from "@/components/app-shell/shellFormatting";
 import { NameFieldFormV2, type NameSaveOutcome } from "./NameFieldFormV2";
+import { treeRowLinkKeyDown, treeRowLinkProps } from "./treeRowLink";
 import {
   SubagentDisclosureV2,
   SubagentRowsV2,
@@ -318,11 +319,10 @@ function ChatRow({
       data-subagents={subagentChat ? "" : undefined}
       data-v2-tree-row="true"
     >
-      <button
+      <a
         aria-current={current ? "page" : undefined}
         aria-describedby={unread ? unreadId : undefined}
         aria-expanded={subagentChat ? subagentsExpanded : undefined}
-        disabled={disabled}
         aria-label={displayTitle}
         aria-level={level}
         aria-selected={current}
@@ -332,9 +332,11 @@ function ChatRow({
         role="treeitem"
         tabIndex={-1}
         title={displayTitle}
-        type="button"
-        onClick={() => onSelect(chat)}
-        onKeyDown={subagentChat ? (event) => subagentDisclosureKeyDown(event, subagentsExpanded, toggleSubagents) : undefined}
+        {...treeRowLinkProps(formatChatRoutePath({ chatId: chat.id }), disabled, () => onSelect(chat))}
+        onKeyDown={(event) => {
+          if (subagentChat) subagentDisclosureKeyDown(event, subagentsExpanded, toggleSubagents);
+          treeRowLinkKeyDown(event);
+        }}
       >
         {chat.assistant ? (
           // The Assistant's avatar marks the chat; its name stays out so the title leads.
@@ -347,7 +349,7 @@ function ChatRow({
         ) : <span aria-hidden="true" />}
         <span className="v2-chat-title">{displayTitle}</span>
         {unread ? <span className="v2-chat-unread" aria-hidden="true" /> : null}
-      </button>
+      </a>
       {/* A description, not a name suffix, keeps the row name the chat title. */}
       {unread ? <span hidden id={unreadId}>New automation result</span> : null}
       {subagentChat ? (
@@ -460,18 +462,21 @@ function MessageMatchRow({
   const dateId = useId();
   return (
     <div className="v2-message-match-wrap" data-navigation-match-id={match.messageId} data-v2-tree-row="true">
-      <button
+      <a
         aria-describedby={`${descriptionId} ${dateId}`}
         aria-label={displayTitle}
         aria-level={1}
         aria-selected={false}
         className="v2-message-match v2-focusable"
         data-v2-tree-item="true"
-        disabled={disabled}
         role="treeitem"
         tabIndex={-1}
-        type="button"
-        onClick={() => onOpen(match)}
+        {...treeRowLinkProps(
+          chatRouteHref({ chatId: match.chatId }, new URLSearchParams({ message: match.messageId })),
+          disabled,
+          () => onOpen(match)
+        )}
+        onKeyDown={treeRowLinkKeyDown}
       >
         <span className="v2-message-match-head">
           <span className="v2-chat-title">{displayTitle}</span>
@@ -490,7 +495,7 @@ function MessageMatchRow({
             </>
           ) : null}
         </span>
-      </button>
+      </a>
     </div>
   );
 }

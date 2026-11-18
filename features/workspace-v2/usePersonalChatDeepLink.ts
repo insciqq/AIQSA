@@ -49,14 +49,18 @@ export async function openPersonalChatMessage(input: Readonly<{
   }
 }
 
-/** Which deep link could not be opened: the one-shot Memory source marker or
- * an addressed chat message. */
-export type PersonalChatDeepLinkTarget = "memory_source" | "message";
+/** Which deep link could not be opened: the one-shot Memory source marker,
+ * an addressed chat message, or the version of the chat that holds it. */
+export type PersonalChatDeepLinkTarget = "memory_source" | "message" | "message_version";
+
+/** A linked message is shown, gone, or held by a version of the chat that could not be shown. */
+export type PersonalChatDeepLinkReveal = boolean | "version_unavailable";
 
 /**
  * Anchors `/c/<chat>?message=<id>` once the route owner has opened that
  * personal chat and loaded its thread, and consumes the one-shot
- * `?memorySource=unavailable` marker. A message that cannot be revealed is
+ * `?memorySource=unavailable` marker. `revealMessage` shows the version of
+ * the chat that holds the message. A message that cannot be revealed is
  * dropped from the address; the caller chooses the privacy-neutral response.
  */
 export function usePersonalChatDeepLink({
@@ -72,7 +76,7 @@ export function usePersonalChatDeepLink({
   onAnchor(chatId: string, messageId: string): void;
   onUnavailable(target: PersonalChatDeepLinkTarget): void;
   ready: boolean;
-  revealMessage(chatId: string, messageId: string): Promise<boolean>;
+  revealMessage(chatId: string, messageId: string): Promise<PersonalChatDeepLinkReveal>;
 }>): void {
   const handledRef = useRef<string | null>(null);
 
@@ -97,7 +101,7 @@ export function usePersonalChatDeepLink({
     const key = `${chatId}\u0000${rawMessageId}`;
     if (handledRef.current === key) return;
     handledRef.current = key;
-    const dropMessage = () => {
+    const dropMessage = (target: PersonalChatDeepLinkTarget = "message") => {
       const currentUrl = new URL(window.location.href);
       if (
         parseChatRoutePath(currentUrl.pathname)?.chatId === chatId &&
@@ -106,7 +110,7 @@ export function usePersonalChatDeepLink({
         currentUrl.searchParams.delete("message");
         replaceCurrentUrl(currentUrl);
       }
-      onUnavailable("message");
+      onUnavailable(target);
     };
     const messageId = boundedRouteId(rawMessageId);
     if (!messageId) {
@@ -115,8 +119,8 @@ export function usePersonalChatDeepLink({
     }
     void revealMessage(chatId, messageId).catch(() => false).then((revealed) => {
       if (handledRef.current !== key) return;
-      if (revealed) onAnchor(chatId, messageId);
-      else dropMessage();
+      if (revealed === true) onAnchor(chatId, messageId);
+      else dropMessage(revealed === "version_unavailable" ? "message_version" : "message");
     });
   }, [activeChatId, detailLoading, onAnchor, onUnavailable, ready, revealMessage]);
 }
