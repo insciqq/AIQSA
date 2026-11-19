@@ -144,15 +144,50 @@ describe("fetch_url proxy selection in one answer", () => {
     expect(reader.fetchProxyPage).not.toHaveBeenCalled();
   });
 
-  it.each(PROXY_BLOCKED_HTTP_STATUSES)("names proxies before the browser step after HTTP %i, without rotation", async (httpStatus) => {
+  it.each(PROXY_BLOCKED_HTTP_STATUSES)("names the untried proxies before the browser step after HTTP %i, without rotation", async (httpStatus) => {
     const reader = session({ browserStep: () => "user" });
     reader.fetchProxyPage.mockRejectedValue(new WebFetchError("fetch_http_status", { dispatched: true, httpStatus }));
     const result = json(await reader.execute(call(), { signal }));
     const message = String(result.message);
-    expect(message.indexOf(one.name)).toBeGreaterThan(-1);
+    expect(result.proxy).toBe(one.name);
+    expect(message).toContain(`proxy set to one of: ${JSON.stringify(two.name)}.`);
+    expect(message).not.toContain(JSON.stringify(one.name));
     expect(message.indexOf(two.name)).toBeLessThan(message.indexOf("Workspace browser"));
     await reader.execute(call("http://example.com/next"), { signal });
     expect(reader.fetchProxyPage.mock.calls.map((args) => args[1].id)).toEqual([one.id, one.id]);
+  });
+
+  it("never suggests the proxy that just answered 403: with only that one configured it suggests none", async () => {
+    const reader = session({ browserStep: () => "user", proxyPlan: toProxyRunPlan([one])!, runProxies: runProxiesFromRows([one]) });
+    reader.fetchProxyPage.mockRejectedValue(new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }));
+    const result = json(await reader.execute(call(), { signal }));
+    const message = String(result.message);
+    expect(result).toMatchObject({ error: "fetch_http_status", httpStatus: 403, proxy: one.name });
+    expect(message).not.toContain("proxy set to");
+    expect(message).not.toContain(one.name);
+    // The browser step still stands.
+    expect(message).toContain("Workspace browser");
+  });
+
+  it("leaves out an explicitly named proxy that answered 403, and every proxy when the call went through each", async () => {
+    const reader = session();
+    reader.fetchProxyPage.mockRejectedValue(new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }));
+    const named = String(json(await reader.execute(call(url, two.name), { signal })).message);
+    expect(named).toContain(`proxy set to one of: ${JSON.stringify(one.name)}.`);
+    expect(named).not.toContain(JSON.stringify(two.name));
+    // A direct read suggests every proxy: none of them was tried.
+    reader.fetchPage.mockRejectedValue(new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }));
+    const direct = String(json(await reader.execute(call(url, "direct"), { signal })).message);
+    expect(direct).toContain(`proxy set to one of: ${JSON.stringify(one.name)}, ${JSON.stringify(two.name)}.`);
+    // One proxy failed to connect and the next answered 403: neither is suggested.
+    const rotated = session();
+    rotated.fetchProxyPage.mockImplementation(async (_url, connection) => {
+      if (connection.id === one.id) throw new WebFetchError("proxy_connect_failed", { dispatched: true });
+      throw new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 });
+    });
+    const both = json(await rotated.execute(call(), { signal }));
+    expect(both).toMatchObject({ error: "fetch_http_status", proxy: two.name });
+    expect(String(both.message)).not.toContain("proxy set to");
   });
 
   it("separates cached and concurrent reads by the actual proxy; explicit and implicit same-proxy reads coalesce", async () => {

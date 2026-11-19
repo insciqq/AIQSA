@@ -482,7 +482,9 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
       const routes = await proxySession.routes(url, explicit);
       let dispatched = false;
       let lastProxy: FetchUrlProxyIdentity | undefined;
-      const failureOptions = () => ({ browserStep: deps.browserStep?.(), pdfMaxBytes, proxiesToTry: proxySession.suggestions(url),
+      // Every proxy this call went through or failed on, redirects included, by id: its refusal never suggests one again.
+      const tried = new Set<string>();
+      const failureOptions = () => ({ browserStep: deps.browserStep?.(), pdfMaxBytes, proxiesToTry: proxySession.suggestions(url, tried),
         researching, researchRefusal: researchRefusal() });
       while (true) {
         input.signal.throwIfAborted();
@@ -490,11 +492,13 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
         const route = routes.next();
         if (route.kind === "failed") {
           const proxy = lastProxy ?? route.proxy;
+          if (route.proxy) tried.add(route.proxy.id);
           proxySession.observe({ outcome: "failed", code: route.code });
           return failed(call, { ...route, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
         }
         const connection = route.kind === "proxy" ? route.connection : undefined;
         const proxy = connection ? { id: connection.id, name: connection.name } : undefined;
+        if (proxy) tried.add(proxy.id);
         const checkRedirects = !connection && !explicit && deps.proxyPlan?.entries.some((entry) => entry.active);
         // An explicit direct read must never satisfy an automatic read whose redirects need proxy selection.
         // Recovery seeds only concrete routes, so an automatic short link checks its redirects again.
@@ -522,9 +526,11 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
               if (next.kind === "direct") return null;
               if (next.kind === "failed") {
                 actualProxy ??= next.proxy;
+                if (next.proxy) tried.add(next.proxy.id);
                 throw new WebFetchError(next.code, { dispatched: true });
               }
               actualProxy = { id: next.connection.id, name: next.connection.name };
+              tried.add(next.connection.id);
               proxySession.observe({ outcome: "started" });
               try {
                 return await (deps.fetchProxyPage ?? fetchThroughProxy)(target, next.connection, options);
@@ -555,6 +561,8 @@ export function createFetchUrlSession(deps: FetchUrlSessionDeps): FetchUrlSessio
           if (checkRedirects && value.proxy) remember(fetchUrlCacheKey(url, value.proxy), value);
           return read(call, value, shared);
         }
+        // A read shared with another agent's call went through its proxy too.
+        if (outcome.proxy) tried.add(outcome.proxy.id);
         dispatched ||= outcome.dispatched && !shared;
         if (researchRefusal()) return failed(call, { ...outcome, dispatched, ...(proxy ? { proxy } : {}) }, url, failureOptions());
         if (proxy && isFetchUrlProxyFailure(outcome.code)) {
