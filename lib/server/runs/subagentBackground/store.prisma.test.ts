@@ -32,6 +32,8 @@ import { createSubagentViews } from "./views";
 import { createSubagentUserMessageHandler } from "./userMessageHandler";
 import type { AuthConfig } from "../../auth/config";
 import { loadChatExportSource, chatExportChatSelect } from "../../chats/exportChat";
+import { createPrismaChatRepository } from "../../chats/prismaRepository";
+import { loadChatPrintGeneratedImages } from "../../chats/printChat";
 import { readGuardAuthority } from "../../mcp/guardAuthority";
 import { runFollowupsAllowCompletion, runFollowupSelect } from "../prismaRepositoryFollowups";
 import { verifiedFollowups } from "../followupProvenance";
@@ -621,6 +623,24 @@ describe("background sub-agent runs on PostgreSQL", () => {
       await prisma.usageEvent.create({ data: { chatId: f.chatId, imageGeneration: true, imageToolCallId: image.id, modelId: "fake-image",
         modelRunId: admitted.runId, provider: "fake", providerModelId: providerTemplateIds.fakeModel, purpose: "image_generation",
         userId: f.userId } });
+      // Its image joins the main agent's answer, as `lib/server/images/service.ts` publishes it, and that answer lists it.
+      const drawnId = randomUUID();
+      await prisma.attachment.create({ data: { byteSize: 100, chatId: f.chatId, fileName: "image.png", id: drawnId, imageToolCallId: image.id,
+        kind: "image", messageId: f.main.assistantMessageId, metadata: { image: { attachmentId: drawnId, byteSize: 100, fileName: "image.png",
+          height: 8, mimeType: "image/png", sourceAttachmentIds: [], width: 8 } }, mimeType: "image/png", origin: "IMAGE_OUTPUT",
+        producerModelRunId: admitted.runId, status: "ready", storageKey: `generated-images/${drawnId}`, userId: f.userId } });
+      try {
+        const printed = await loadChatPrintGeneratedImages(prisma, f.chatId, [f.main.assistantMessageId]);
+        expect(printed.get(f.main.assistantMessageId)).toEqual([{ attachmentId: drawnId, height: 8, width: 8 }]);
+        const chats = createPrismaChatRepository(prisma);
+        const detail = await chats.getChat({ chatId: f.chatId, userId: f.userId });
+        expect(detail?.messages.find((message) => message.id === f.main.assistantMessageId)?.artifactSummary?.generatedImages
+          ?.map((entry) => entry.attachmentId)).toEqual([drawnId]);
+        expect(await chats.getChat({ chatId: f.chatId, userId: f.otherId })).toBeNull();
+      } finally {
+        // Its producer reference restricts deleting the run, as the deleting paths release it first (`messages/prismaRepository.ts`).
+        await prisma.attachment.delete({ where: { id: drawnId } });
+      }
       await store.settle({ chatId: f.chatId, result: endedSubagentResult("artist"), turnId: admitted.turnId, userId: f.userId });
       await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
     }));

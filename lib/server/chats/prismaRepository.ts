@@ -4,7 +4,7 @@ import { projectMessageFollowups } from "../runs/runFollowups";
 import { runProviderWait } from "../runs/providerWaits";
 import { loadChatUsageTotals } from "./usageTotals";
 import { chatTitleMetadataSelect, chatTitlePending } from "./titleMetadata";
-import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
+import { answerGeneratedImages, BACKGROUND_SUBAGENT_IMAGES_SELECT, type AnswerImageRun } from "./answerImages";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, type ContextCompactionStatus } from "../../contracts/contextCompaction";
 import { decodeThreadGeneratedArtifact } from "../../contracts/chats";
 import { decodeChatComputerBinding } from "../../contracts/computer";
@@ -242,6 +242,7 @@ const assistantRunDetailSelect = {
     select: {
       byteSize: true,
       checksum: true,
+      createdAt: true,
       fileName: true,
       id: true,
       mimeType: true,
@@ -258,7 +259,8 @@ const hydratedMessageSelect = {
     orderBy: {
       createdAt: "desc"
     },
-    select: assistantRunDetailSelect,
+    // Its background sub-agents' images join this answer; a branch copy shows its images as content blocks instead.
+    select: { ...assistantRunDetailSelect, ...BACKGROUND_SUBAGENT_IMAGES_SELECT },
     take: 1
   },
   branchSourceModelRun: {
@@ -392,7 +394,7 @@ type HydratedMessagePath = Readonly<{
  * deleted.
  */
 type CurrentScheduledTasks = ReadonlyMap<string, ScheduledTask>;
-type ArtifactSummaryRun = {
+type ArtifactSummaryRun = Pick<AnswerImageRun, "assistantMessageId" | "subagentTurnsStarted"> & {
   mcpToolApprovals?: readonly McpApprovalCardRow[];
   normalizedRequest?: unknown;
   answerCompletedAt?: Date | null;
@@ -414,6 +416,8 @@ type ArtifactSummaryRun = {
     byteSize: number;
     /** Private identity for deduplication; never projected. */
     checksum?: string | null;
+    /** Orders its images among those its background sub-agents drew (`answerGeneratedImages`). */
+    createdAt?: Date;
     fileName: string;
     id: string;
     mimeType: string;
@@ -1603,10 +1607,7 @@ export function summarizeMessageRunArtifacts(
     ...(grounding ? [citations] : [])
   ], THREAD_SEARCH_SOURCE_MAX_ITEMS);
   const sources = sourceList.sources;
-  const generatedImages = (run.workspaceProducedAttachments ?? []).flatMap((attachment) => {
-    const image = attachment.origin === "IMAGE_OUTPUT" && isRecord(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
-    return image && image.attachmentId === attachment.id ? [image] : [];
-  });
+  const generatedImages = answerGeneratedImages(run);
   const produced = run.workspaceProducedAttachments ?? [];
   // Final exports name paths below the run's output directory, which a checkpoint names
   // "output/<path>". A checkpoint the export delivers unchanged (same path, checksum and

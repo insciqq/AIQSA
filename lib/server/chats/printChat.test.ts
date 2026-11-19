@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BACKGROUND_SUBAGENT_IMAGES_SELECT } from "./answerImages";
 import { loadAuthorizedChatPrintDocument, loadChatPrintGeneratedImages } from "./printChat";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 1, 12, minute));
@@ -28,10 +29,10 @@ const generatedImage = (id: string) => ({
 
 /** Answers' latest runs with their image outputs; one mismatched and one non-image metadata. */
 const runRows = [{
-  assistantModelRuns: [{ workspaceProducedAttachments: [
-    { id: "gen-1", metadata: { image: generatedImage("gen-1") } },
-    { id: "gen-2", metadata: { image: generatedImage("someone-else") } },
-    { id: "gen-3", metadata: {} }
+  assistantModelRuns: [{ assistantMessageId: "db-a2", workspaceProducedAttachments: [
+    { createdAt: at(2), id: "gen-1", metadata: { image: generatedImage("gen-1") }, origin: "IMAGE_OUTPUT" },
+    { createdAt: at(2), id: "gen-2", metadata: { image: generatedImage("someone-else") }, origin: "IMAGE_OUTPUT" },
+    { createdAt: at(2), id: "gen-3", metadata: {}, origin: "IMAGE_OUTPUT" }
   ] }],
   id: "db-a2"
 }];
@@ -105,10 +106,21 @@ describe("generated images of printed answers", () => {
       select: expect.objectContaining({
         assistantModelRuns: expect.objectContaining({
           orderBy: { createdAt: "desc" },
-          select: { workspaceProducedAttachments: expect.objectContaining({ where: { origin: "IMAGE_OUTPUT" } }) },
+          select: expect.objectContaining({ ...BACKGROUND_SUBAGENT_IMAGES_SELECT,
+            workspaceProducedAttachments: expect.objectContaining({ where: { origin: "IMAGE_OUTPUT" } }) }),
           take: 1
         })
       })
     }));
+  });
+
+  it("prints a background sub-agent's image with its answer, in the order the images were made", async () => {
+    const image = (id: string, minute: number, messageId = "db-a2") => ({ createdAt: at(minute), id, messageId,
+      metadata: { image: generatedImage(id) }, origin: "IMAGE_OUTPUT" });
+    const findMany = vi.fn(async () => [{ id: "db-a2", assistantModelRuns: [{ assistantMessageId: "db-a2",
+      subagentTurnsStarted: [{ executionRun: { subagentTurnsStarted: [], workspaceProducedAttachments: [image("bg-1", 3), image("bg-other", 4, "db-other")] } }],
+      workspaceProducedAttachments: [image("own-1", 2), image("own-2", 5)] }] }]);
+    const images = await loadChatPrintGeneratedImages({ message: { findMany } } as never, "db-chat", ["db-a2"]);
+    expect(images.get("db-a2")?.map((entry) => entry.attachmentId)).toEqual(["own-1", "bg-1", "own-2"]);
   });
 });

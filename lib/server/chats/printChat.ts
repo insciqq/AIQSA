@@ -1,23 +1,20 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { decodeThreadGeneratedImage } from "../../contracts/imageGeneration";
 import { chatExportActiveBranch } from "../../domain/chatExportDocument";
 import {
   chatPrintDocument,
   type ChatPrintDocument,
   type ChatPrintGeneratedImage
 } from "../../domain/chatPrintDocument";
+import { answerGeneratedImages, BACKGROUND_SUBAGENT_IMAGES_SELECT } from "./answerImages";
 import { findReadableExportChat, loadChatExportSource, routeChatId } from "./exportChat";
 
 type GeneratedImageReadClient = Pick<Prisma.TransactionClient, "message">;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * Generated images of the given answers, as the thread shows them: the image
- * outputs of each answer's latest own run (a branch copy carries its images
- * as content blocks instead). One query regardless of the branch length.
+ * outputs of each answer's latest own run and of its background sub-agents
+ * (`answerGeneratedImages`; a branch copy carries its images as content
+ * blocks instead). The same queries regardless of the branch length.
  */
 export async function loadChatPrintGeneratedImages(
   db: GeneratedImageReadClient,
@@ -30,11 +27,13 @@ export async function loadChatPrintGeneratedImages(
       assistantModelRuns: {
         orderBy: { createdAt: "desc" },
         select: {
+          assistantMessageId: true,
           workspaceProducedAttachments: {
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-            select: { id: true, metadata: true },
+            select: { createdAt: true, id: true, metadata: true, origin: true },
             where: { origin: "IMAGE_OUTPUT" }
-          }
+          },
+          ...BACKGROUND_SUBAGENT_IMAGES_SELECT
         },
         take: 1
       },
@@ -42,12 +41,8 @@ export async function loadChatPrintGeneratedImages(
     },
     where: { chatId, id: { in: [...answerIds] } }
   });
-  return new Map(rows.map((row) => [row.id, (row.assistantModelRuns[0]?.workspaceProducedAttachments ?? []).flatMap((attachment) => {
-    const image = isRecord(attachment.metadata) ? decodeThreadGeneratedImage(attachment.metadata.image) : null;
-    return image && image.attachmentId === attachment.id
-      ? [{ attachmentId: image.attachmentId, height: image.height, width: image.width }]
-      : [];
-  })]));
+  return new Map(rows.map((row) => [row.id, (row.assistantModelRuns[0] ? answerGeneratedImages(row.assistantModelRuns[0]) : [])
+    .map((image) => ({ attachmentId: image.attachmentId, height: image.height, width: image.width }))]));
 }
 
 /**

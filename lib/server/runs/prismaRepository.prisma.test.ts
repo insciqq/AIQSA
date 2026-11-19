@@ -1042,7 +1042,7 @@ describe("Prisma-backed run repository", () => {
         await prisma.subagentTurn.update({ data: { endedAt: new Date(), reasonCode: "restart", state: "interrupted" }, where: { id: admitted.turnId } });
         await prisma.modelRun.updateMany({ data: { status: "cancelled" }, where: { id: { in: [main.runId, admitted.runId] } } });
       } finally {
-        await prisma.chat.deleteMany({ where: { id: chat.id } });
+        // The chat and its runs go with the user (`withRunUser`), as in the epoch test above: the chat's Memory jobs restrict its own deletion.
         await deleteMcpFixture(fixture.server.id);
       }
     });
