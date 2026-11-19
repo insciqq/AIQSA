@@ -257,7 +257,7 @@ describe("image edit preflight", () => {
     const binding = vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot }));
     const usage = vi.fn();
     const prisma = { providerRunBinding: { findFirst: binding }, attachment: { findFirst: vi.fn(async () => null), findMany },
-      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", status: "streaming" })) },
+      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", id: "run", status: "streaming", subagentTurn: null })) },
       modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "tool" })), count: vi.fn(async () => 0) },
       providerModel: { findFirst: vi.fn(async () => ({ id: "model" })) },
       providerCredentialVersion: { findFirst: vi.fn(async () => ({ id: "key" })) }, usageEvent: { create: usage } };
@@ -315,11 +315,13 @@ describe("image edit preflight", () => {
 
   it("counts the answer's image budget over every agent of the run, its sub-agents included", async () => {
     // Integrator decision 2026-10-30: the cap is per answer, shared by the main agent and its sub-agents, so the count names
-    // the run and the tool only, never a sub-agent thread.
+    // the run and the tool only, never a sub-agent thread, and takes in the background sub-agents' own runs under it.
     const h = await editHarness();
     await h.service.execute(h.call, h.context, undefined, { beforeDispatch: h.beforeDispatch }).catch(() => undefined);
-    expect(h.prisma.modelRunToolCall.count).toHaveBeenCalledWith({ where: { modelRunId: "run", startedAt: { not: null },
-      toolName: "generate_image" } });
+    expect(h.prisma.modelRunToolCall.count).toHaveBeenCalledWith({ where: { OR: [{ modelRunId: "run" },
+      { modelRun: { subagentTurn: { is: { mode: "background", OR: [{ parentRunId: { in: ["run"] } },
+        { parentRun: { subagentTurn: { is: { parentRunId: { in: ["run"] } } } } }] } } } }],
+    startedAt: { not: null }, toolName: "generate_image" } });
   });
 
   it("marks every failure before the dispatch claim as not sent, and none at or after it", async () => {
@@ -329,7 +331,7 @@ describe("image edit preflight", () => {
     expect(imageNotSentFailure(unbound)).toEqual({ code: "image_binding_unavailable",
       message: "The image tool could not run this call. Tell the user the image was not created. Nothing was sent to the image provider." });
     const inactive = await editHarness();
-    inactive.prisma.modelRun.findFirst.mockResolvedValue({ assistantMessageId: "assistant", status: "completed" });
+    inactive.prisma.modelRun.findFirst.mockResolvedValue({ assistantMessageId: "assistant", id: "run", status: "completed", subagentTurn: null });
     expect(imageNotSentFailure(await inactive.service.execute(inactive.call, inactive.context).catch((error: unknown) => error)))
       .toMatchObject({ code: "image_run_inactive" });
     const claimed = await editHarness();
@@ -437,7 +439,7 @@ describe("paid image usage write", () => {
     const storageBoundary = new Error("fixture_storage_boundary");
     const prisma = { providerRunBinding: { findFirst: vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot })) },
       attachment: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
-      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", status: "streaming" })) },
+      modelRun: { findFirst: vi.fn(async () => ({ assistantMessageId: "assistant", id: "run", status: "streaming", subagentTurn: null })) },
       modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "tool" })), count: vi.fn(async () => 0) },
       providerModel: { findFirst: vi.fn(async () => ({ id: "model" })), findUnique: vi.fn(async () => null) },
       providerCredentialVersion: { findFirst: vi.fn(async () => ({ id: "key", credentialId: "image-key", secretEnvelope: "envelope" })) },
@@ -527,6 +529,66 @@ describe("paid image usage write", () => {
   });
 });
 
+
+describe("an image a background sub-agent draws", () => {
+  beforeEach(() => { access.value = personal; });
+
+  type Run = Readonly<{ assistantMessageId: string | null; id: string; status: string; subagentTurn: unknown }>;
+  const mainRun: Run = { assistantMessageId: "main-answer", id: "run-main", status: "complete", subagentTurn: null };
+  const backgroundRun = (parentRunId = "run-main"): Run => ({ assistantMessageId: null, id: "run-bg", status: "streaming",
+    subagentTurn: { mode: "background", parentRun: { subagentTurn: null }, parentRunId } });
+
+  /** The whole path, publication included, of a call made in the background run `run-bg`. */
+  async function backgroundHarness(runs: readonly Run[]) {
+    const image = await sharp({ create: { width: 8, height: 8, channels: 3, background: "blue" } }).jpeg().toBuffer();
+    let claimToken: unknown = null;
+    const attachment = { create: vi.fn(async (_input: { data: Record<string, unknown> }) => ({})) };
+    const tx = { attachment, attachmentDeletionJob: { delete: vi.fn(async () => ({})) },
+      $queryRaw: vi.fn(async (query: readonly string[]) => query.join("?").includes("AttachmentDeletionJob") ? [{ claimToken }] : [{ id: "run-bg" }]) };
+    const binding = vi.fn(async () => ({ executionSnapshot: mixedToolsImagePlan.snapshot }));
+    const usage = vi.fn(async (_input: { data: Record<string, unknown> }) => ({ id: "usage" }));
+    const count = vi.fn(async () => 0);
+    const prisma = { $transaction: vi.fn(async (work: (client: typeof tx) => Promise<unknown>) => work(tx)),
+      providerRunBinding: { findFirst: binding },
+      attachment: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
+      attachmentDeletionJob: { create: vi.fn(async ({ data }: { data: { claimToken: unknown } }) => { claimToken = data.claimToken; return {}; }),
+        updateMany: vi.fn(async () => ({ count: 0 })) },
+      // Runs as the database finds them by the query's own scope.
+      modelRun: { findFirst: vi.fn(async ({ where }: { where: { id: string; subagentTurnId?: null } }) =>
+        runs.find((run) => run.id === where.id && (where.subagentTurnId !== null || run.subagentTurn === null)) ?? null) },
+      modelRunToolCall: { findFirst: vi.fn(async () => ({ id: "tool" })), count },
+      providerModel: { findFirst: vi.fn(async () => ({ id: "model" })), findUnique: vi.fn(async () => null) },
+      providerCredentialVersion: { findFirst: vi.fn(async () => ({ id: "key", credentialId: "image-key", secretEnvelope: "envelope" })) },
+      usageEvent: { create: usage, findUnique: vi.fn(async () => null) } };
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ data: [{ b64_json: image.toString("base64") }],
+      usage: { input_tokens: 3, output_tokens: 11, total_tokens: 14, cost: 0.04 } }));
+    const service = createPrismaImageGenerationService(prisma as unknown as PrismaClient,
+      { putObject: vi.fn(async () => undefined) } as unknown as StorageAdapter, { fetchFn, encryptionKey: () => Buffer.alloc(32) });
+    const call = { id: "call", name: "generate_image", arguments: { prompt: "PRIVATE prompt", image_ids: [] } };
+    const context = { runId: "run-bg", userId: USER, persistedToolCallId: "tool", request: { chatId: "chat", imagePlan: mixedToolsImagePlan } };
+    return { attachment, binding, count, fetchFn, usage,
+      execute: () => service.execute(call, context, undefined, { beforeDispatch: async () => undefined }) };
+  }
+
+  it("draws under its own run's copy of the parent's binding and shows on the main agent's answer, within that answer's budget", async () => {
+    const h = await backgroundHarness([mainRun, backgroundRun()]);
+    expect(await h.execute()).toMatchObject({ status: "complete", content: [{ value: { displayed_in_chat: true } }] });
+    expect(h.binding).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ bindingKey: "image", modelRunId: "run-bg" }) }));
+    expect(h.usage.mock.calls[0]![0].data).toMatchObject({ imageToolCallId: "tool", modelRunId: "run-bg" });
+    expect(h.attachment.create.mock.calls[0]![0].data).toMatchObject({ imageToolCallId: "tool", messageId: "main-answer",
+      producerModelRunId: "run-bg" });
+    expect(h.count).toHaveBeenCalledWith({ where: expect.objectContaining({ OR: [{ modelRunId: "run-main" },
+      { modelRun: { subagentTurn: { is: expect.objectContaining({ mode: "background" }) } } }] }) });
+  });
+
+  it("refuses, unsent, a run whose turn leads to no main-agent run of this chat", async () => {
+    const h = await backgroundHarness([mainRun, backgroundRun("run-elsewhere")]);
+    expect(imageNotSentFailure(await h.execute().catch((error: unknown) => error))).toMatchObject({ code: "image_run_inactive" });
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(h.usage).not.toHaveBeenCalled();
+    expect(h.attachment.create).not.toHaveBeenCalled();
+  });
+});
 
 describe("reading a requested earlier chat image", () => {
   beforeEach(() => { access.value = personal; });

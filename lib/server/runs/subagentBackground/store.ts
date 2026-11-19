@@ -74,7 +74,36 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
  * interactive MCP write reaches the guard through the parent's
  * `McpRunBinding` rows), and they outlive it, because deleting the parent
  * deletes the turn and its run and the deleting paths stop the run first.
+ * What its own `find_tools` loads is bound there too, on the main-agent run
+ * behind its turn (`runBindingOwner`), where its registry reads the rows.
+ *
+ * Except the provider bindings of `analyze_image` and `generate_image`
+ * (`CALL_PROVIDER_BINDING_KEYS`, decision 2026-11-20): their attempt and
+ * usage rows sit on the run that made the call, and the schema holds each to a
+ * binding of that same run (`VisionAnalysisAttempt_binding_fkey`, the
+ * `image_usage_guard` trigger). Admission copies the parent's rows of those
+ * keys, as it copies its Workspace binding, so the run analyzes and draws under
+ * exactly what the parent's admission accepted; without them every such call
+ * of a background sub-agent failed (production, 2026-11-20).
  */
+
+/** The parent's provider bindings a background run takes as its own (header). */
+const CALL_PROVIDER_BINDING_KEYS = ["image", "vision_analysis"];
+
+/**
+ * Copies a parent run's `CALL_PROVIDER_BINDING_KEYS` rows, unchanged, onto a background run its admission just created.
+ * A parent without one (no image model, an unavailable Vision role) leaves the run without it, so its call fails as the
+ * parent's would. A child of a background sub-agent copies that sub-agent's copies.
+ */
+export async function copyCallProviderBindings(tx: Pick<Prisma.TransactionClient, "providerRunBinding">,
+  input: Readonly<{ fromRunId: string; toRunId: string }>): Promise<void> {
+  const rows = await tx.providerRunBinding.findMany({ orderBy: { bindingKey: "asc" }, select: { bindingKey: true, connectionId: true,
+    credentialId: true, credentialSource: true, credentialVersionId: true, executionSnapshot: true, providerModelId: true, role: true },
+  where: { bindingKey: { in: CALL_PROVIDER_BINDING_KEYS }, modelRunId: input.fromRunId } });
+  if (rows.length === 0) return;
+  await tx.providerRunBinding.createMany({ data: rows.map((row) => ({ ...row, executionSnapshot: json(row.executionSnapshot),
+    modelRunId: input.toRunId })) });
+}
 
 const ACTIVE_TURN_STATES: SubagentTurnState[] = ["running", "waiting"];
 /** What a main-agent run takes from sub-agents among its own follow-ups, within one bound (`callbacksPerRun`). */
@@ -483,6 +512,7 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
             provider: input.binding.provider, status: "streaming", subagentThreadId: input.threadId, subagentTurnId: turn.id,
             userId: input.userId, userMessageId: parent.userMessageId
           }, select: { id: true } });
+          await copyCallProviderBindings(tx, { fromRunId: parentRunId, toRunId: run.id });
           // Its Workspace binding is the parent's admitted one with its own output folder and browser sign-in sequence,
           // so it attaches to the chat's shared session; a parent without a Workspace leaves it without one.
           const parentWorkspace = await tx.workspaceRunBinding.findUnique({ select: { modelRunId: true },

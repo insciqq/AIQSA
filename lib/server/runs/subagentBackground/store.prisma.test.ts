@@ -32,6 +32,8 @@ import { createSubagentViews } from "./views";
 import { createSubagentUserMessageHandler } from "./userMessageHandler";
 import type { AuthConfig } from "../../auth/config";
 import { loadChatExportSource, chatExportChatSelect } from "../../chats/exportChat";
+import { createPrismaChatRepository } from "../../chats/prismaRepository";
+import { loadChatPrintGeneratedImages } from "../../chats/printChat";
 import { readGuardAuthority } from "../../mcp/guardAuthority";
 import { runFollowupsAllowCompletion, runFollowupSelect } from "../prismaRepositoryFollowups";
 import { verifiedFollowups } from "../followupProvenance";
@@ -594,6 +596,54 @@ describe("background sub-agent runs on PostgreSQL", () => {
       where: { chatId: f.chatId, mode: "foreground" } });
     await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
   }));
+
+  it("takes the parent's image and Vision bindings as its own, so their attempt and usage rows stand on the background run", async () =>
+    fixture(async (f) => {
+      // Live model, no credential: the shape an administrator's detached key leaves, enough for the keys and the image guard.
+      await prisma.providerRunBinding.createMany({ data: (["image", "vision_analysis"] as const).map((role) => ({ bindingKey: role,
+        connectionId: providerTemplateIds.fakeConnection, credentialSource: "default" as const, executionSnapshot: { role },
+        modelRunId: f.main.runId, providerModelId: providerTemplateIds.fakeModel, role })) });
+      const thread = await f.thread("artist");
+      const admitted = await store.admit(admission(f, thread));
+      if (admitted.kind !== "admitted") throw new Error("not admitted");
+      const bindings = (runId: string) => prisma.providerRunBinding.findMany({ orderBy: { bindingKey: "asc" }, select: { bindingKey: true,
+        connectionId: true, credentialId: true, credentialSource: true, credentialVersionId: true, executionSnapshot: true, providerModelId: true,
+        role: true }, where: { modelRunId: runId } });
+      const parent = await bindings(f.main.runId);
+      expect(parent.map((row) => row.bindingKey)).toContain("answer");
+      // Only the per-call bindings: the answer's and Search's stay the parent's, by reference.
+      expect(await bindings(admitted.runId)).toEqual(parent.filter((row) => row.bindingKey === "image" || row.bindingKey === "vision_analysis"));
+      const call = (toolName: string, ordinal: number) => prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: admitted.runId,
+        ordinal, providerCallId: `bg-${toolName}`, roundIndex: 1, startedAt: new Date(), state: "running", subagentThreadId: thread.threadId,
+        subagentTurnId: admitted.turnId, toolName } });
+      const [vision, image] = [await call("analyze_image", 0), await call("generate_image", 1)];
+      // `VisionAnalysisAttempt_binding_fkey` and the `image_usage_guard` trigger hold each to a binding of the call's own run.
+      await prisma.visionAnalysisAttempt.create({ data: { images: [{ ordinal: 1 }], modelRunId: admitted.runId,
+        providerBindingKey: "vision_analysis", requestHash: "a".repeat(64), toolCallId: vision.id } });
+      await prisma.usageEvent.create({ data: { chatId: f.chatId, imageGeneration: true, imageToolCallId: image.id, modelId: "fake-image",
+        modelRunId: admitted.runId, provider: "fake", providerModelId: providerTemplateIds.fakeModel, purpose: "image_generation",
+        userId: f.userId } });
+      // Its image joins the main agent's answer, as `lib/server/images/service.ts` publishes it, and that answer lists it.
+      const drawnId = randomUUID();
+      await prisma.attachment.create({ data: { byteSize: 100, chatId: f.chatId, fileName: "image.png", id: drawnId, imageToolCallId: image.id,
+        kind: "image", messageId: f.main.assistantMessageId, metadata: { image: { attachmentId: drawnId, byteSize: 100, fileName: "image.png",
+          height: 8, mimeType: "image/png", sourceAttachmentIds: [], width: 8 } }, mimeType: "image/png", origin: "IMAGE_OUTPUT",
+        producerModelRunId: admitted.runId, status: "ready", storageKey: `generated-images/${drawnId}`, userId: f.userId } });
+      try {
+        const printed = await loadChatPrintGeneratedImages(prisma, f.chatId, [f.main.assistantMessageId]);
+        expect(printed.get(f.main.assistantMessageId)).toEqual([{ attachmentId: drawnId, height: 8, width: 8 }]);
+        const chats = createPrismaChatRepository(prisma);
+        const detail = await chats.getChat({ chatId: f.chatId, userId: f.userId });
+        expect(detail?.messages.find((message) => message.id === f.main.assistantMessageId)?.artifactSummary?.generatedImages
+          ?.map((entry) => entry.attachmentId)).toEqual([drawnId]);
+        expect(await chats.getChat({ chatId: f.chatId, userId: f.otherId })).toBeNull();
+      } finally {
+        // Its producer reference restricts deleting the run, as the deleting paths release it first (`messages/prismaRepository.ts`).
+        await prisma.attachment.delete({ where: { id: drawnId } });
+      }
+      await store.settle({ chatId: f.chatId, result: endedSubagentResult("artist"), turnId: admitted.turnId, userId: f.userId });
+      await repository.cancelRun({ payload: cancelPayload, runId: f.main.runId, userId: f.userId });
+    }));
 
   it("never runs a turn whose admission had not committed when Stop all came", async () => fixture(async (f) => {
     const thread = await f.thread("early");

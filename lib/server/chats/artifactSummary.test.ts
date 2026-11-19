@@ -497,6 +497,20 @@ describe("summarizeMessageRunArtifacts", () => {
     })) as unknown);
     expect(page?.messages[0]?.artifactSummary?.generatedFiles).toEqual(saved?.generatedFiles);
   });
+
+  it("lists the images its background sub-agents drew with the answer's own, in the order they were made, and no file for them", () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 10, 20, 12, minute));
+    const image = (id: string, minute: number, messageId = "answer-1") => ({ byteSize: 100, createdAt: at(minute), fileName: "image.png", id,
+      messageId, metadata: { image: { attachmentId: id, byteSize: 100, fileName: "image.png", height: 8, mimeType: "image/png",
+        sourceAttachmentIds: [], width: 8 } }, mimeType: "image/png", origin: "IMAGE_OUTPUT", workspaceCheckpointFile: null,
+      workspaceRunOutput: null });
+    const summary = summarizeMessageRunArtifacts({ assistantMessageId: "answer-1", events: [], searchRuns: [],
+      subagentTurnsStarted: [{ executionRun: { workspaceProducedAttachments: [image("drawn", 2)],
+        subagentTurnsStarted: [{ executionRun: { workspaceProducedAttachments: [image("drawn-by-child", 4)] } }] } }],
+      workspaceProducedAttachments: [image("own-first", 1), image("own-later", 3)] });
+    expect(summary?.generatedImages?.map((entry) => entry.attachmentId)).toEqual(["own-first", "drawn", "own-later", "drawn-by-child"]);
+    expect(summary?.generatedFiles).toBeUndefined();
+  });
 });
 
 describe("summarizeMessageRunToolActivity", () => {

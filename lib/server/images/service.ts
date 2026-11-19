@@ -6,6 +6,7 @@ import { createImageGenerationAdapter, ImageGenerationError, validateImageRefere
 import { decryptProviderCredentialSecret } from "../providers/credentialSecrets";
 import { getSecretEncryptionKey } from "../secrets/envelope";
 import { resolveChatAccess } from "../chats/access";
+import { runBindingOwner, turnsOfMainRuns } from "../subagents/nesting";
 import { IMAGE_GENERATION_CALLS_PER_ANSWER, IMAGE_GENERATION_TOOL_NAME } from "../tools/imageGeneration";
 import type { ModelToolCall, ToolExecutionContext, ToolExecutionResult } from "../tools/types";
 import { isStoredObjectMissingError, isStoredObjectTooLargeError, type StorageAdapter } from "../uploads/storage";
@@ -246,15 +247,21 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
         stage = "run";
         const existing = await service.restore(call, context);
         if (existing) return existing;
-        const run = await prisma.modelRun.findFirst({ where: { id: runId, userId, chatId: request.chatId },
-          select: { assistantMessageId: true, status: true } });
-        if (!run?.assistantMessageId || !["streaming", "in_progress"].includes(run.status)) throw new ImageToolError("image_run_inactive");
+        const run = await prisma.modelRun.findFirst({ where: { id: runId, userId, chatId: request.chatId }, select: { status: true } });
+        // A background sub-agent's own run answers nothing: its image joins the answer of the main-agent run behind its
+        // turn, where a foreground sub-agent's lands too, and counts toward that answer's budget.
+        const answer = run && ["streaming", "in_progress"].includes(run.status)
+          ? await runBindingOwner(prisma, { chatId: request.chatId, runId, userId }) : null;
+        const messageId = answer?.assistantMessageId;
+        if (!answer || !messageId) throw new ImageToolError("image_run_inactive");
         const access = await resolveChatAccess(prisma, { chatId: request.chatId, userId });
         if (!access) throw new ImageToolError("image_access_revoked");
         const tool = await prisma.modelRunToolCall.findFirst({ where: { id: toolCallId, modelRunId: runId,
           state: execution?.beforeDispatch ? "pending" : "running", toolName: call.name } });
         if (!tool) throw new ImageToolError("image_tool_not_claimed");
-        if (await prisma.modelRunToolCall.count({ where: { modelRunId: runId, toolName: call.name, startedAt: { not: null } } }) > IMAGE_GENERATION_CALLS_PER_ANSWER) {
+        if (await prisma.modelRunToolCall.count({ where: { OR: [{ modelRunId: answer.runId },
+          { modelRun: { subagentTurn: { is: { mode: "background", ...turnsOfMainRuns([answer.runId]) } } } }],
+        startedAt: { not: null }, toolName: call.name } }) > IMAGE_GENERATION_CALLS_PER_ANSWER) {
           throw new ImageInputError("image_tool_budget_exhausted");
         }
         stage = "references";
@@ -380,7 +387,7 @@ export function createPrismaImageGenerationService(prisma: PrismaClient, storage
             if (!await resolveChatAccess(tx, { chatId: request.chatId, userId })) throw new ImageToolError("image_access_revoked");
             await tx.attachment.create({ data: {
               id: attachmentId, imageToolCallId: toolCallId, producerModelRunId: runId, chatId: request.chatId,
-              messageId: run.assistantMessageId, origin: "IMAGE_OUTPUT", status: "ready", kind: "image",
+              messageId, origin: "IMAGE_OUTPUT", status: "ready", kind: "image",
               fileName: image.fileName, mimeType: image.mimeType, byteSize: image.byteSize, storageKey, checksum: hash(generated.bytes),
               userId,
               metadata: { image, providerModelId: plan.authority.providerModelId, modelId: model.upstreamModelId, parameters } as Prisma.InputJsonValue

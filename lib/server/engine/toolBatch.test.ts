@@ -14,6 +14,7 @@ import {
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
   TOOL_BATCH_LIMITS,
+  TOOL_BINDING_UNAVAILABLE_OUTPUT,
   TOOL_CALL_LIMIT_OUTPUT,
   ToolBatchInactiveError,
   TOOL_TIME_EXHAUSTED_OUTPUT,
@@ -143,6 +144,30 @@ describe("native tool batch", () => {
     expect(outcome.results.map((item) => item.output)).toEqual([AUTO_TOOL_NOT_LOADED_OUTPUT("mcp_jira_get_issue", "select:mcp_jira_get_issue"),
       UNKNOWN_TOOL_CALL_MESSAGE]);
     expect(outcome).toMatchObject({ correctable: 2, executed: 0 });
+  });
+
+  it("sends nothing for a tool whose connection the answer lost, and tells the model its one next step instead of a repeat", async () => {
+    const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const lost = () => {
+      const { rows, store } = fakeStore();
+      return { batch: deps({ mcp_tracker_get_card: tool("mcp_tracker_get_card", "none", execute, { links: () => null }) }, store), rows, store };
+    };
+    const calls = [{ arguments: { id: 1 }, id: "c1", name: "mcp_tracker_get_card" }];
+    const auto = lost();
+    const registry: ToolRegistry = { ...auto.batch.registry, mcpLoadCall: (name, id) => name === "mcp_tracker_get_card"
+      ? { arguments: { query: `select:${name}` }, id, name: "find_tools" } : undefined };
+    const underAuto = await runToolBatch({ ...auto.batch, registry }, { calls: 0 }, { calls, round: 1 });
+    expect(underAuto.results[0]).toMatchObject({ outcome: "error", output: TOOL_BINDING_UNAVAILABLE_OUTPUT("select:mcp_tracker_get_card") });
+    expect(underAuto.results[0]!.output).toContain("Call find_tools with query \"select:mcp_tracker_get_card\" once");
+    expect(JSON.stringify([...auto.rows.values()][0]!.result)).toContain("tool_binding_unavailable");
+    // Without Auto, find_tools cannot load it again: the model goes on without it.
+    const loadAll = lost();
+    const withoutAuto = await runToolBatch(loadAll.batch, { calls: 0 }, { calls, round: 1 });
+    expect(withoutAuto.results[0]!.output).toBe(TOOL_BINDING_UNAVAILABLE_OUTPUT());
+    expect(withoutAuto.results[0]!.output).not.toContain("find_tools");
+    expect(execute).not.toHaveBeenCalled();
+    expect(auto.store.begin).not.toHaveBeenCalled();
+    expect(loadAll.store.begin).not.toHaveBeenCalled();
   });
 
   it("ends at the approval point: a gated call is not sent and gets a waiting result", async () => {
