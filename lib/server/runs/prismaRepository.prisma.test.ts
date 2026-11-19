@@ -29,6 +29,7 @@ import {
 } from "./runRepositoryContract";
 import { USAGE_MESSAGE_ADMISSION_RETENTION_MS } from "../usageLimits/repository";
 import { createToolCallStore } from "../engine/toolCallStore";
+import { createPrismaSubagentBackgroundStore } from "./subagentBackground/store";
 import { completeNativeRun, type NativeRunCompletion } from "../../../tests/support/nativeRunCompletion";
 
 const TEST_MCP_KEY = Buffer.alloc(32, 0x61);
@@ -989,6 +990,59 @@ describe("Prisma-backed run repository", () => {
           }
         });
       } finally {
+        await deleteMcpFixture(fixture.server.id);
+      }
+    });
+  });
+
+  it("binds what a background sub-agent's discovery loads on the main-agent run behind its turn, once", async () => {
+    await withRunUser(async ({ userId }) => {
+      const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel,
+        title: "MCP Auto discovery in the background", userId } });
+      const fixture = await createReadyMcpBinding(userId);
+      try {
+        const repository = createPrismaRunRepository(prisma);
+        const namespacedName = namespacedMcpToolName(fixture.server.namespace, "echo");
+        const runInput = createRunInput({ chatId: chat.id, question: "Have a helper echo a value", userId });
+        runInput.normalizedRequest.mcpDiscovery = { catalog: { servers: [{ description: fixture.server.description,
+          namespace: fixture.server.namespace, revisionId: fixture.revision.id, serverId: fixture.server.id,
+          serverName: fixture.server.displayName, tools: [{ description: "Echo", namespacedName, originalName: "echo" }] }], version: 1 },
+        epochs: [], version: 2 };
+        const main = await repository.createRun(runInput);
+        await prisma.modelRun.update({ data: { status: "streaming" }, where: { id: main.runId } });
+        const parentCall = await prisma.modelRunToolCall.create({ data: { arguments: { message: "Echo it", name: "helper" },
+          modelRunId: main.runId, ordinal: 0, providerCallId: "call-helper", roundIndex: 1, state: "running", toolName: "call_subagent" } });
+        const thread = await prisma.subagentThread.create({ data: { anchorRunId: main.runId, chatId: chat.id, name: "helper", userId } });
+        const admitted = await createPrismaSubagentBackgroundStore(prisma).admit({ binding: { effortSource: "parent", modelId: "fake-qsa",
+          modelSource: "parent", provider: "fake", providerModelId: providerTemplateIds.fakeModel, reasoningEffort: null }, chatId: chat.id,
+        definitionRevisionId: null, parentRunId: main.runId, parentToolCallId: parentCall.id, runId: randomUUID(), threadId: thread.id,
+        turnId: randomUUID(), userId });
+        if (admitted.kind !== "admitted") throw new Error("not admitted");
+        const findTools = (runId: string, providerCallId: string, extra: Record<string, string> = {}) => prisma.modelRunToolCall.create({ data: {
+          arguments: { goal: "echo a value" }, modelRunId: runId, ordinal: 0, providerCallId, roundIndex: 0, startedAt: new Date(),
+          state: "running", toolName: "find_tools", ...extra } });
+        const snapshot = { servers: [{ fingerprint: fixture.binding.fingerprint, revisionId: fixture.revision.id, serverId: fixture.server.id,
+          serverName: fixture.server.displayName }], tools: [{ definitionHash: "a".repeat(64), description: "Echo", inputSchema: { type: "object" },
+          name: "echo", namespacedName, originalName: "echo", serverId: fixture.server.id, serverName: fixture.server.displayName }],
+        version: 1 as const };
+        const append = (runId: string, modelRunToolCallId: string) => repository.appendMcpDiscoveryEpoch!({ bindings: [fixture.binding],
+          goal: "echo a value", modelRunToolCallId, roundIndex: 0, runId, snapshot, toolIds: [namespacedName], userId });
+        const background = await findTools(admitted.runId, "bg-find-tools", { subagentThreadId: thread.id, subagentTurnId: admitted.turnId });
+        expect(await append(admitted.runId, background.id)).toMatchObject({ discovery: { epochs: [{ modelRunToolCallId: background.id }] } });
+        // The rows are the main agent's, where the background registry and its saved results read them; the epoch is the caller's.
+        const rows = (runId: string) => prisma.mcpRunBinding.count({ where: { modelRunId: runId } });
+        expect([await rows(main.runId), await rows(admitted.runId)]).toEqual([1, 0]);
+        const requests = await prisma.modelRun.findMany({ select: { id: true, normalizedRequest: true }, where: { id: { in: [main.runId, admitted.runId] } } });
+        expect(requests.find((run) => run.id === admitted.runId)?.normalizedRequest).toMatchObject({ mcpDiscovery: { epochs: [{ epoch: 1 }] } });
+        expect(requests.find((run) => run.id === main.runId)?.normalizedRequest).toMatchObject({ mcpDiscovery: { epochs: [] } });
+        // The main agent loading the same server afterwards finds it bound and binds it no second time.
+        const own = await findTools(main.runId, "main-find-tools");
+        expect(await append(main.runId, own.id)).not.toBeNull();
+        expect(await rows(main.runId)).toBe(1);
+        await prisma.subagentTurn.update({ data: { endedAt: new Date(), reasonCode: "restart", state: "interrupted" }, where: { id: admitted.turnId } });
+        await prisma.modelRun.updateMany({ data: { status: "cancelled" }, where: { id: { in: [main.runId, admitted.runId] } } });
+      } finally {
+        await prisma.chat.deleteMany({ where: { id: chat.id } });
         await deleteMcpFixture(fixture.server.id);
       }
     });

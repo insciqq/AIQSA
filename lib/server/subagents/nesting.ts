@@ -41,6 +41,30 @@ export function turnMainRunId(parentRunId: string, parentRun: Readonly<{ subagen
   return parentRun.subagentTurn?.parentRunId ?? parentRunId;
 }
 
+/** The main-agent run that owns a run's bindings, and the answer it writes. */
+export type RunBindingOwner = Readonly<{ assistantMessageId: string | null; runId: string }>;
+
+/**
+ * The run whose bindings a run uses, and whose answer shows what it makes: a main-agent run itself, or for a background
+ * sub-agent's own run the main-agent run behind its turn (`turnMainRunId`). Such a run answers nothing and holds no MCP
+ * binding rows of its own: its calls use that run's (`lib/server/runs/subagentBackground/store.ts`). Null when the run is
+ * not this user's in this chat, or its turn leads to no main-agent run of theirs there; the keys already tie a turn to its
+ * parent's user and chat, so this only refuses what no admission makes.
+ */
+export async function runBindingOwner(db: Pick<Prisma.TransactionClient, "modelRun">,
+  scope: Readonly<{ chatId: string; runId: string; userId: string }>): Promise<RunBindingOwner | null> {
+  const run = await db.modelRun.findFirst({ select: { assistantMessageId: true, id: true,
+    subagentTurn: { select: { mode: true, parentRunId: true, parentRun: { select: { subagentTurn: { select: { parentRunId: true } } } } } } },
+  where: { chatId: scope.chatId, id: scope.runId, userId: scope.userId } });
+  if (!run) return null;
+  const turn = run.subagentTurn;
+  if (!turn) return { assistantMessageId: run.assistantMessageId, runId: run.id };
+  if (turn.mode !== "background") return null;
+  const owner = await db.modelRun.findFirst({ select: { assistantMessageId: true, id: true },
+    where: { chatId: scope.chatId, id: turnMainRunId(turn.parentRunId, turn.parentRun), subagentTurnId: null, userId: scope.userId } });
+  return owner ? { assistantMessageId: owner.assistantMessageId, runId: owner.id } : null;
+}
+
 /**
  * Why an agent may not run a turn of this thread, under the chat's admission lock; null when it may. A name is one
  * thread on a branch, so another agent's thread is refused rather than taken over, and a thread stays with the agent that

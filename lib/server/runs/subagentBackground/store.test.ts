@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { createPrismaSubagentBackgroundStore } from "./store";
+import { copyCallProviderBindings, createPrismaSubagentBackgroundStore } from "./store";
 
 const scope = { chatId: "chat-1", userId: "user-1" };
 
@@ -114,5 +114,38 @@ describe("what a chat owes the main agent", () => {
     await store.owedCallbacks(scope);
     expect(client.$queryRaw).not.toHaveBeenCalled();
     expect($transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("the provider bindings a background run takes from its parent", () => {
+  type Binding = Readonly<{ bindingKey: string; connectionId: string | null; credentialId: string | null; credentialSource: string;
+    credentialVersionId: string | null; executionSnapshot: unknown; modelRunId: string; providerModelId: string | null; role: string }>;
+  const row = (modelRunId: string, bindingKey: string, role = bindingKey): Binding => ({ bindingKey, connectionId: "connection-1",
+    credentialId: "credential-1", credentialSource: "default", credentialVersionId: "version-1", executionSnapshot: { model: bindingKey },
+    modelRunId, providerModelId: `model-${bindingKey}`, role });
+
+  /** A parent's rows as the database filters them by run and key. */
+  function tx(rows: readonly Binding[]) {
+    const findMany = vi.fn(async ({ where }: { where: { bindingKey: { in: string[] }; modelRunId: string } }) => rows
+      .filter((binding) => binding.modelRunId === where.modelRunId && where.bindingKey.in.includes(binding.bindingKey))
+      .map(({ modelRunId: _run, ...binding }) => binding));
+    const createMany = vi.fn(async (_input: { data: readonly Binding[] }) => ({ count: 0 }));
+    return { client: { providerRunBinding: { createMany, findMany } } as unknown as Parameters<typeof copyCallProviderBindings>[0],
+      createMany, findMany };
+  }
+
+  it("copies its parent's image and Vision bindings unchanged, so their attempt and usage rows have a binding of their own run", async () => {
+    const { client, createMany } = tx([row("run-main", "answer"), row("run-main", "vision_analysis"), row("run-main", "image"),
+      row("run-main", "search:web", "search"), row("run-other", "image")]);
+    await copyCallProviderBindings(client, { fromRunId: "run-main", toRunId: "run-bg" });
+    expect(createMany).toHaveBeenCalledOnce();
+    expect(createMany.mock.calls[0]![0].data).toEqual([row("run-bg", "vision_analysis"), row("run-bg", "image")]);
+  });
+
+  it("copies nothing a parent was not admitted with: its calls then fail as the parent's would", async () => {
+    const { client, createMany, findMany } = tx([row("run-main", "answer"), row("run-other", "vision_analysis")]);
+    await copyCallProviderBindings(client, { fromRunId: "run-main", toRunId: "run-bg" });
+    expect(findMany).toHaveBeenCalledOnce();
+    expect(createMany).not.toHaveBeenCalled();
   });
 });

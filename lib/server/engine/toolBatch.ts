@@ -112,6 +112,16 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
   `Not run: ${name} is in this chat's tool index but is not loaded in this answer. Call find_tools with query "${query}", ` +
   "then call the tool again.";
 
+/**
+ * A call of a tool whose connection this answer lost (`EngineTool.links`): the same call fails the same way, so the model
+ * reads its one next step instead of sending it again, as background sub-agents kept doing (production audit 2026-11-20).
+ * Under Auto, `query` loads the tool from the chat's index once more.
+ */
+export const TOOL_BINDING_UNAVAILABLE_OUTPUT = (query?: unknown) =>
+  "Not sent: this tool's connection is no longer available to this answer, and calling it again fails the same way. " +
+  (typeof query === "string" ? `Call find_tools with query "${query}" once; if the tool still fails after that, go on without it ` +
+    "and tell the user it could not be reached." : "Go on without it and tell the user it could not be reached.");
+
 export const TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
   `Not run: this answer's tool call limit (${limit}) is reached. Answer with what you have and say what you could not check.`;
 
@@ -474,7 +484,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
       refund();
-      const message = "This tool's connection is no longer available to this answer, so nothing was sent.";
+      const message = TOOL_BINDING_UNAVAILABLE_OUTPUT(deps.registry.mcpLoadCall?.(call.name, call.id)?.arguments.query);
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
       const row = await deps.store.refuse({ ...record, result, toolName: call.name });
       if (!row) throw new ToolBatchInactiveError();

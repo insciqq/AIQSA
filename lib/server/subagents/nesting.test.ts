@@ -5,6 +5,7 @@ import {
   MAIN_AGENT_AUTHOR,
   childAdmissionRefusal,
   mailboxWriter,
+  runBindingOwner,
   turnAnswerMessageId,
   turnMainRunId,
   turnsOfMainRuns
@@ -82,5 +83,55 @@ describe("what a sub-agent may start", () => {
       .toBe(SUBAGENT_ERROR_CODES.notOwnChild);
     expect(await childAdmissionRefusal(client, { chatId: "chat", thread: { parentThreadId: null }, userId: "user" })).toBeNull();
     expect(await childAdmissionRefusal(client, { chatId: "chat", thread: null, userId: "user" })).toBeNull();
+  });
+});
+
+describe("the run that owns a run's bindings", () => {
+  type Row = Readonly<{ assistantMessageId: string | null; chatId: string; id: string; subagentTurn: unknown; userId: string }>;
+  const main: Row = { assistantMessageId: "answer-main", chatId: "chat", id: "run-main", subagentTurn: null, userId: "user" };
+  const background: Row = { assistantMessageId: null, chatId: "chat", id: "run-bg", userId: "user",
+    subagentTurn: { mode: "background", parentRun: { subagentTurn: null }, parentRunId: "run-main" } };
+  // A background child of that background sub-agent: its call sits on the sub-agent's own run.
+  const child: Row = { assistantMessageId: null, chatId: "chat", id: "run-child", userId: "user",
+    subagentTurn: { mode: "background", parentRun: { subagentTurn: { parentRunId: "run-main" } }, parentRunId: "run-bg" } };
+
+  /** Runs found by the query's own scope, as the database filters them. */
+  function db(rows: readonly Row[]) {
+    const findFirst = vi.fn(async ({ where }: { where: { chatId: string; id: string; subagentTurnId?: null; userId: string } }) =>
+      rows.find((row) => row.id === where.id && row.chatId === where.chatId && row.userId === where.userId &&
+        (where.subagentTurnId !== null || row.subagentTurn === null)) ?? null);
+    return { client: { modelRun: { findFirst } } as unknown as Parameters<typeof runBindingOwner>[0], findFirst };
+  }
+
+  it("is a main-agent run itself, with its own answer", async () => {
+    const { client, findFirst } = db([main]);
+    expect(await runBindingOwner(client, { chatId: "chat", runId: "run-main", userId: "user" }))
+      .toEqual({ assistantMessageId: "answer-main", runId: "run-main" });
+    expect(findFirst).toHaveBeenCalledOnce();
+  });
+
+  it("is the main-agent run behind a background sub-agent's turn, however deep, never the run it answers nothing in", async () => {
+    const { client, findFirst } = db([main, background, child]);
+    for (const runId of ["run-bg", "run-child"]) {
+      expect(await runBindingOwner(client, { chatId: "chat", runId, userId: "user" })).toEqual({ assistantMessageId: "answer-main", runId: "run-main" });
+    }
+    // Only a main-agent run of the same user's chat owns bindings.
+    expect(findFirst).toHaveBeenCalledWith({ select: { assistantMessageId: true, id: true },
+      where: { chatId: "chat", id: "run-main", subagentTurnId: null, userId: "user" } });
+  });
+
+  it("is none for a run outside the user's chat, or one whose turn leads to no main-agent run of theirs there", async () => {
+    const { client } = db([main, background]);
+    expect(await runBindingOwner(client, { chatId: "chat", runId: "run-bg", userId: "intruder" })).toBeNull();
+    expect(await runBindingOwner(client, { chatId: "other-chat", runId: "run-bg", userId: "user" })).toBeNull();
+    // The owner it names is not a main-agent run of this chat and user (another chat's run, or a sub-agent's own).
+    const stray = db([{ ...background, subagentTurn: { mode: "background", parentRun: { subagentTurn: null }, parentRunId: "run-elsewhere" } },
+      { ...main, chatId: "other-chat", id: "run-elsewhere" }]);
+    expect(await runBindingOwner(stray.client, { chatId: "chat", runId: "run-bg", userId: "user" })).toBeNull();
+    const nested = db([{ ...background, subagentTurn: { mode: "background", parentRun: { subagentTurn: null }, parentRunId: "run-child" } }, child]);
+    expect(await runBindingOwner(nested.client, { chatId: "chat", runId: "run-bg", userId: "user" })).toBeNull();
+    // A foreground turn never has a run of its own.
+    const foreground = db([{ ...background, subagentTurn: { mode: "foreground", parentRun: { subagentTurn: null }, parentRunId: "run-main" } }, main]);
+    expect(await runBindingOwner(foreground.client, { chatId: "chat", runId: "run-bg", userId: "user" })).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ import {
   mergeMcpRunPlanSnapshots
 } from "../mcp/discovery";
 import { decodeMcpDiscoveryState, decodeMcpDiscoveryUnavailable } from "../mcp/discoveryState";
+import { runBindingOwner } from "../subagents/nesting";
 import type {
   McpDiscoveryState,
   McpRunPlanBinding,
@@ -66,10 +67,11 @@ export function createPrismaMcpDiscoveryOperations(
   return {
     appendMcpDiscoveryEpoch: async (input) => client.$transaction(async (tx) => {
       const [run] = await tx.$queryRaw<Array<{
+        chatId: string;
         normalizedRequest: Prisma.JsonValue | null;
         status: string;
       }>>`
-        SELECT run."normalizedRequest", run."status"
+        SELECT run."chatId", run."normalizedRequest", run."status"
         FROM "ModelRun" AS run
         WHERE run."id" = ${input.runId}
           AND run."userId" = ${input.userId}
@@ -140,9 +142,18 @@ export function createPrismaMcpDiscoveryOperations(
       const mergedToolIds = new Set(merged.tools.map((tool) => tool.namespacedName));
       if (addedToolIds.some((toolId) => !input.toolIds.includes(toolId)) ||
         input.toolIds.some((toolId) => !mergedToolIds.has(toolId))) return null;
+      // The epoch is the calling run's, with its call; the binding rows go to the run that owns its bindings. A background
+      // sub-agent's run holds none of its own: its registry and its saved results read the main-agent run's
+      // (`runBindingOwner`), so a server only it loaded was never bound there and its tools could not be called. That run
+      // is held too, so the main agent and other sub-agents loading the same server bind it once, one after another.
+      const owner = await runBindingOwner(tx, { chatId: run.chatId, runId: input.runId, userId: input.userId });
+      if (!owner) return null;
+      if (owner.runId !== input.runId) {
+        await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${owner.runId} FOR NO KEY UPDATE`;
+      }
       const existingFingerprints = new Set((await tx.mcpRunBinding.findMany({
         select: { runtimeGenerationFingerprint: true },
-        where: { modelRunId: input.runId }
+        where: { modelRunId: owner.runId }
       })).map((binding) => binding.runtimeGenerationFingerprint));
       const newBindings: McpRunPlanBinding[] = input.bindings
         .filter((binding) => !existingFingerprints.has(binding.fingerprint))
@@ -150,7 +161,7 @@ export function createPrismaMcpDiscoveryOperations(
       await insertAcceptedMcpRunBindings(tx, {
         bindings: newBindings,
         tools: merged.tools.filter((tool) => input.toolIds.includes(tool.namespacedName)),
-        runId: input.runId,
+        runId: owner.runId,
         userId: input.userId
       });
       const nextDiscovery: McpDiscoveryState = {
