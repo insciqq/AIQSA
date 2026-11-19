@@ -16,6 +16,7 @@ import {
   usePermanentChatDeletionStore
 } from "@/components/app-shell/permanentChatDeletionStore";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
+import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
 import {
   UiV2Button,
   UiV2Icon,
@@ -259,7 +260,8 @@ export function ArchivedChatsPanelV2({
             {detail.messages.map((message) => (
               <li key={message.id}>
                 <strong>{message.role === "user" ? "You" : "Assistant"}</strong>
-                <p>{textFromThreadContent(message.content) || "No text content"}</p>
+                <p>{(message.role === "user" ? textFromThreadContent(message.content) : cleanAnswerText(textFromThreadContent(message.content))) ||
+                  "No text content"}</p>
               </li>
             ))}
           </ol>

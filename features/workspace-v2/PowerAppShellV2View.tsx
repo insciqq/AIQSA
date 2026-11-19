@@ -112,6 +112,7 @@ import { closeSubagentThread, openSubagentThread, useOpenSubagentThread } from "
 import { useAnswerReadAloud } from "@/features/read-aloud/useAnswerReadAloud";
 import { presentWorkspaceActivityV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { resolveWorkspaceOutputLink } from "@/lib/domain/workspaceLinks";
+import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
 import { SkillLibraryDialog } from "@/components/skills/SkillLibraryDialog";
 import type { SelectedSkillName } from "@/components/skills/SkillSelectionSummary";
 import {
@@ -264,8 +265,10 @@ export function BackgroundRunStatusV2({
   ) : null;
 }
 
+/** A message's text as the chat shows it: an answer saved before the server cleaned it may hold its search record or citation markers. */
 function messageText(message: ThreadMessage): string {
-  return textFromThreadContent(message.content);
+  const text = textFromThreadContent(message.content);
+  return message.role === "assistant" ? cleanAnswerText(text) : text;
 }
 
 function currentWorkspaceChat(chatId: string): WorkspaceChatSummary | null {
@@ -1419,7 +1422,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       .filter((block) => !artifact?.generatedImages?.some((image) => image.attachmentId === block.attachmentId));
     // A research that wrote a page shows its summary, the page and the report's file; the message keeps the whole text for Copy and the rest.
     const answerText = messageText(source);
-    const researchView = researchAnswerViewV2(answerText, artifact?.generatedArtifacts);
+    // The research card's offsets count in the text as saved; the view cleans each part it shows.
+    const researchView = researchAnswerViewV2(textFromThreadContent(source.content), artifact?.generatedArtifacts);
     const answerActions: ConversationMessageActionsV2 = readAloud && actions.onReadAloud && researchView.spoken.trim()
       ? { ...actions, onReadAloud: () => readAloud.toggle(source.id, researchView.spoken) } : actions;
     return (

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createAnswerStream } from "./answerStream";
+import { hostedSearchNote } from "./transcript";
 
 function harness(save = vi.fn(async () => undefined)) {
   const events: ModelRunSseEvent[] = [];
@@ -117,5 +118,46 @@ describe("native answer stream", () => {
     stream.push("New");
     stream.completeRound("New");
     expect(stream.text).toBe("New");
+  });
+
+  // Production 2026-11-20: a model repeated the server's hosted Search record, and wrote raw citation markers, into its reply.
+  it("never streams or saves the server's search record or citation markers, however the text arrives", async () => {
+    const save = vi.fn(async (_text: string) => undefined);
+    const { events, shown, stream } = harness(save as never);
+    const note = hostedSearchNote({ queries: ["berlin [weather]", "forecast \"today\""],
+      sources: [{ title: "Weather — \"Berlin\" [live]", url: "https://weather.example.com/berlin" }, { url: "https://news.example.org/a" }] });
+    const reply = `${note}\n\nIt is sunny citeturn925388search0 and warm citeturn0view0turn1search2.`;
+    stream.beginRound();
+    stream.push("Checking.");
+    stream.completeRound("Checking.");
+    stream.beginRound();
+    for (let index = 0; index < reply.length; index += 3) {
+      stream.push(reply.slice(index, index + 3));
+      expect(shown()).not.toMatch(/Record|Queries|cite|turn\d|[-]/u);
+    }
+    stream.completeRound(reply);
+    await stream.flush();
+    expect(stream.text).toBe("Checking.\n\nIt is sunny and warm.");
+    expect(shown()).toBe(stream.text);
+    expect(save.mock.calls.at(-1)![0]).toBe(stream.text);
+    // What streamed was never taken back.
+    expect(events.filter((event) => event.type === "message_reset")).toHaveLength(0);
+    expect(stream.shown(reply)).toBe("It is sunny and warm.");
+  });
+
+  it("leaves a response that is only the search record out of the answer", () => {
+    const { shown, stream } = harness();
+    stream.beginRound();
+    stream.push("Checking.");
+    stream.completeRound("Checking.");
+    const note = hostedSearchNote({ queries: [], sources: [] });
+    stream.beginRound();
+    stream.push(note);
+    stream.completeRound(note);
+    stream.beginRound();
+    stream.push("Done.");
+    stream.completeRound("Done.");
+    expect(stream.text).toBe("Checking.\n\nDone.");
+    expect(shown()).toBe(stream.text);
   });
 });

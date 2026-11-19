@@ -1,3 +1,4 @@
+import { cleanAnswerText } from "../../domain/answerTextMarkers";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { logEvent } from "../observability";
 
@@ -13,7 +14,10 @@ import { logEvent } from "../observability";
  * the next round below it (operator decision 2026-11-05). A secret value
  * the turn saved is masked in what the user sees and in what is saved
  * (`mask`, issue #52): a streamed tail that may still become one waits for
- * the next text.
+ * the next text. The server's hosted Search record and citation markers a
+ * model writes into its text never show or save (`cleanAnswerText`); a tail
+ * that may still become one waits the same way. The transcript keeps the
+ * model's own text.
  */
 export const ANSWER_SAVE_INTERVAL_MS = 400;
 const SEPARATOR = "\n\n";
@@ -47,9 +51,11 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
   let secrets: string[] = [];
 
   const masked = (value: string) => secrets.reduce((current, secret) => current.replaceAll(secret, MASKED_SECRET), value);
-  /** The masked text without a tail that may still become a secret value. */
+  /** A whole response's text as the answer shows it. */
+  const shown = (value: string) => masked(cleanAnswerText(value));
+  /** The shown text of a response still streaming, without a tail that may still become a marker or a secret value. */
   const settled = (value: string): string => {
-    const current = masked(value);
+    const current = masked(cleanAnswerText(value, { partial: true }));
     let held = 0;
     for (const secret of secrets) {
       for (let start = Math.max(0, current.length - secret.length + 1); start < current.length - held; start += 1) {
@@ -94,7 +100,7 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
   /** Replaces what the user sees with the current text; a round still streaming keeps its unsettled tail back. */
   function resend(final: boolean): void {
     ports.send({ data: { round: roundNumber }, type: "message_reset" });
-    sentRound = final ? masked(round) : settled(round);
+    sentRound = final ? shown(round) : settled(round);
     const current = join(masked(committed), sentRound);
     if (current) ports.send({ data: { delta: current }, type: "token" });
   }
@@ -115,9 +121,9 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
     get text(): string {
       return text();
     },
-    /** A text as the answer would show it, with the turn's secret values masked. */
+    /** A text as the answer would show it, without markers and with the turn's secret values masked. */
     shown(value: string): string {
-      return masked(value);
+      return shown(value);
     },
     /** A model request starts: its text follows the turn's earlier text. */
     beginRound(): void {
@@ -148,9 +154,9 @@ export function createAnswerStream(ports: AnswerStreamPorts) {
         round = finalText;
         resend(true);
       } else {
-        sendRound(masked(round));
+        sendRound(shown(round));
       }
-      committed = join(committed, round);
+      committed = join(committed, cleanAnswerText(round));
       round = "";
       sentRound = "";
       schedule();

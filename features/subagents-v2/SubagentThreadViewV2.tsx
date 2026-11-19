@@ -12,6 +12,7 @@ import { workspaceActiveLabelV2 } from "@/features/run-lifecycle-v2/workspaceAct
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { isActiveSubagentState } from "@/lib/contracts/subagents";
 import type { SubagentThreadSummary, SubagentTurnView } from "@/lib/contracts/subagentViews";
+import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
 import { formatChatRoutePath } from "@/lib/domain/chatRoute";
 import { sendSubagentMessage, SubagentApiError } from "./subagentApi";
 import { subagentMessageLabel, subagentReasonText, subagentStatePresentation } from "./subagentPresentation";
@@ -133,7 +134,7 @@ function TurnV2({ chatId, latest, parentName, turn }: Readonly<{ chatId: string;
           </>
         )}
         className="v2-subagent-reply"
-        content={turn.report ?? ""}
+        content={cleanAnswerText(turn.report ?? "")}
         hideEmptyContent={!turn.report?.trim()}
         quoteEligible={false}
         role="assistant"

@@ -1,4 +1,5 @@
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
+import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
 import type { PublicShareSnapshot } from "@/lib/domain/shareSnapshot";
 import { Lock } from "lucide-react";
 
@@ -40,8 +41,10 @@ function SnapshotNote() {
   );
 }
 
+/** An answer shared before the server cleaned answers may hold its search record or citation markers. */
 function messageText(message: PublicShareSnapshot["messages"][number]): string {
-  return message.content.blocks.map((block) => block.text).join("\n\n");
+  const text = message.content.blocks.map((block) => block.text).join("\n\n");
+  return message.role === "assistant" ? cleanAnswerText(text) : text;
 }
 
 export function PublicShareView({ snapshot, title }: PublicShareViewProps) {
