@@ -693,7 +693,8 @@ describe("native run execution", () => {
     const result = await events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine, prepared: prepared(),
       repository: repository() as unknown as RunRepository, services: {}, userId: "user" }));
     expect(result.at(-1)).toEqual({ data: { runId: "run-1", status: "cancelled" }, type: "done" });
-    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), "Partial ");
+    // What the user saw: a streamed tail of spaces waits for the next text, since a citation marker after it takes them away.
+    expect(memory.runs.saveStoppedText).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), "Partial");
     expect(memory.published()).toBeNull();
   });
 

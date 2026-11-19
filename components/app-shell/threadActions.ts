@@ -1,6 +1,7 @@
 import { chatSummaryFromApi, shellFetch } from "@/components/app-shell/shellApi";
 import { errorMessage, responseErrorMessage } from "@/components/app-shell/shellFormatting";
 import { textFromThreadContent } from "@/components/app-shell/threadContent";
+import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
 import {
   composerSessionKey,
   selectComposerSession,
@@ -78,6 +79,12 @@ function restoreFocusAfterRemoval(selector: string) {
   window.requestAnimationFrame(restore);
 }
 
+/** A message's text as the chat shows it: an answer saved before the server cleaned it may hold its search record or citation markers. */
+function shownMessageText(message: Pick<ThreadMessage, "content" | "role">): string {
+  const text = textFromThreadContent(message.content);
+  return message.role === "assistant" ? cleanAnswerText(text) : text;
+}
+
 export function createThreadActions({
   activeChat,
   activeChatId,
@@ -105,7 +112,7 @@ export function createThreadActions({
         .flatMap(
           (message) =>
             [...followupHistoryTurns(message.followups?.entries ?? []).map(turn => `${turn.role === "assistant" ? "Assistant" : "User"}:\n${turn.text}`),
-              `${message.role === "assistant" ? "Assistant" : "User"}:\n${textFromThreadContent(message.content).trim()}`]
+              `${message.role === "assistant" ? "Assistant" : "User"}:\n${shownMessageText(message).trim()}`]
         )
         .join("\n\n");
       if (!thread.trim()) throw new Error("Nothing to copy yet.");
@@ -124,7 +131,7 @@ export function createThreadActions({
   }
 
   async function copyMessage(message: ThreadMessage) {
-    const text = textFromThreadContent(message.content).trim();
+    const text = shownMessageText(message).trim();
     if (!text) {
       setNotice({
         kind: "error",

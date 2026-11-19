@@ -609,6 +609,24 @@ describe("thread actions", () => {
     ]);
   });
 
+  it("copies an answer saved before the server cleaned it as the chat shows it, and the user's words as written", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText }
+    });
+    const messages = [
+      { content: "Cite citeturn0search0 for me", id: "message-1", parentMessageId: null, role: "user" as const, status: "complete" as const },
+      { content: "It rained citeturn0search0.", id: "message-2", parentMessageId: "message-1", role: "assistant" as const, status: "complete" as const }
+    ];
+    const { actions } = createActionsForTest({ loadCompleteActiveBranch: async () => messages });
+
+    await actions.copyMessage(messages[1]!);
+    expect(writeText).toHaveBeenLastCalledWith("It rained.");
+    await actions.copyVisibleThread();
+    expect(writeText).toHaveBeenLastCalledWith("# Chat B\n\nUser:\nCite citeturn0search0 for me\n\nAssistant:\nIt rained.");
+  });
+
   it("opens the share dialog for the visible branch leaf instead of publishing", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
