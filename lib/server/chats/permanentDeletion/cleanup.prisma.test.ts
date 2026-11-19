@@ -881,6 +881,33 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   return { evidence, userId };
 }
 
+// PostgreSQL fires a table's foreign-key action triggers in trigger-name order,
+// and their names end with the trigger's OID compared as text. On the production
+// database that failed, the occurrence's chat SET NULL trigger
+// (`RI_ConstraintTrigger_a_126287`) sorted before the message cascade
+// (`RI_ConstraintTrigger_a_20067`), so its key check ran while the messages were
+// gone; a fresh database usually has the opposite order and passes regardless.
+// Recreating the message key gives its trigger a later OID of the same length,
+// which reproduces the production order before the deletion runs.
+async function fireOccurrenceChatActionBeforeMessageCascade() {
+  const occurrenceFirst = async () => {
+    const rows = await prisma.$queryRaw<Array<{ conname: string }>>`
+      SELECT c."conname" FROM pg_trigger t JOIN pg_constraint c ON c."oid" = t."tgconstraint"
+      WHERE t."tgrelid" = '"Chat"'::regclass
+        AND c."conname" IN ('Message_chatId_fkey', 'ScheduledTaskOccurrence_userId_chatId_fkey')
+        AND t."tgtype" & 8 = 8
+      ORDER BY t."tgname"`;
+    return rows[0]?.conname === "ScheduledTaskOccurrence_userId_chatId_fkey";
+  };
+  if (!await occurrenceFirst()) {
+    const [constraint] = await prisma.$queryRaw<Array<{ definition: string }>>`
+      SELECT pg_get_constraintdef("oid") AS "definition" FROM pg_constraint WHERE "conname" = 'Message_chatId_fkey'`;
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Message" DROP CONSTRAINT "Message_chatId_fkey", ` +
+      `ADD CONSTRAINT "Message_chatId_fkey" ${constraint!.definition}`);
+  }
+  expect(await occurrenceFirst()).toBe(true);
+}
+
 // A scheduled task chat whose occurrence history links its chat, prompts and
 // runs, plus an occurrence of the same task in another chat that must survive
 // untouched (production 2026-11-18: P2003 on the occurrence userMessageId key).
@@ -956,6 +983,7 @@ describe("permanent chat deletion cleanup", () => {
   });
 
   it("deletes a scheduled task chat in one attempt and keeps its occurrence history detached", async () => {
+    await fireOccurrenceChatActionBeforeMessageCascade();
     const userId = await createOwner();
     const scheduled = await createScheduledTaskChat(userId);
     const service = createPermanentChatDeletionService({
