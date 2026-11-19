@@ -40,12 +40,18 @@ function headline(result: EndedSubagentCallResult): string {
   return result.reason ? `${detail}, ${result.reason}` : detail;
 }
 
+/**
+ * Why a result with neither a handle nor a failure has no saved copy: a stop ended the turn before one was made, or its run
+ * had ended (`saveBackgroundResult`). Nothing failed, so it never names a storage fault.
+ */
+const NOT_SAVED = "not_saved";
+
 /** The ordinary tool excerpt, or a smaller callback excerpt retaining the same saved-result handle. */
 export function renderCallbackResult(result: EndedSubagentCallResult, maxCharacters: number): string {
   const { resultHandle, resultUnavailableReason, ...content } = result;
   const full = JSON.stringify(content);
   const saved = resultHandle ? { handle: resultHandle }
-    : { unsavedReason: resultUnavailableReason ?? "storage_unavailable" };
+    : { unsavedReason: resultUnavailableReason ?? NOT_SAVED };
   const excerpt = toolOutputExcerpt(full, saved);
   const output = !excerpt.truncated && resultHandle
     ? `${excerpt.output}\n[Saved result: call ${READ_TOOL_RESULT_NAME} with handle "${resultHandle}" and offset 0.]`
@@ -60,7 +66,7 @@ export function renderCallbackResult(result: EndedSubagentCallResult, maxCharact
     state: result.state,
     ...(resultHandle ? { handle: resultHandle, reader: READ_TOOL_RESULT_NAME,
       notice: "Result excerpted to fit this callback. Read the whole saved result with read_tool_result, starting at offset 0." }
-      : { notice: `The whole result could not be saved (${resultUnavailableReason ?? "storage_unavailable"}); ` +
+      : { notice: `The whole result could not be saved (${resultUnavailableReason ?? NOT_SAVED}); ` +
         "the omitted part cannot be read with read_tool_result." })
   };
   // Count JSON escaping as part of the callback's space; never shorten or discard the handle.

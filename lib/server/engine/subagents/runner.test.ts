@@ -440,6 +440,46 @@ describe("sub-agent runner", () => {
       .toContain("could not be saved (saved_results_budget_reached)");
   });
 
+  it("claims no lost copy for a background turn stop_subagent ended: nothing was saved, and nothing failed to save", async () => {
+    const ctx = setup([{ hang: true }]);
+    const handle = await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" }));
+    await vi.waitFor(() => expect(ctx.requests).toHaveLength(1));
+    const stopped = await ctx.runner.stop(handle, "stop_subagent");
+    expect(stopped).toMatchObject({ reason: "stop_subagent", state: "stopped" });
+    expect(stopped).not.toHaveProperty("resultUnavailableReason");
+    expect(stopped).not.toHaveProperty("resultHandle");
+    expect(decodeSubagentCallResult(stopped)).toEqual(stopped);
+    expect(ctx.host.saveResult).not.toHaveBeenCalled();
+    expect(ctx.begun).toEqual([]);
+    expect(ctx.settled[0]?.result).not.toHaveProperty("resultUnavailableReason");
+  });
+
+  it("settles the report row and claims no lost copy when a stop cuts the save itself", async () => {
+    const ctx = setup([{ text: "x".repeat(30_000) }]);
+    // A save that gives up only on its signal, as `saveToolResultText` does.
+    vi.mocked(ctx.host.saveResult).mockImplementation(({ signal }) => new Promise((_, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }));
+    const handle = await ctx.runner.start(ctx.input({ hostRunId: "background-run", mode: "background" }));
+    await vi.waitFor(() => expect(ctx.host.saveResult).toHaveBeenCalled());
+    const result = await ctx.runner.stop(handle, "stop_subagent");
+    expect(result).toMatchObject({ state: "done" });
+    expect(result).not.toHaveProperty("resultUnavailableReason");
+    expect(ctx.toolCalls.settle).toHaveBeenCalledWith(expect.objectContaining({ runId: "background-run", state: "complete" }));
+  });
+
+  it("claims no lost copy when the background run ended before its report row, and names a real storage failure", async () => {
+    const inactive = setup([{ text: "Outcome: done\nFinished." }]);
+    vi.mocked(inactive.toolCalls.begin).mockResolvedValue({ kind: "inactive" });
+    const quiet = await inactive.runner.wait(await inactive.runner.start(inactive.input({ hostRunId: "background-run", mode: "background" })));
+    expect(quiet).not.toHaveProperty("resultUnavailableReason");
+    expect(inactive.host.saveResult).not.toHaveBeenCalled();
+    const broken = setup([{ text: "Outcome: done\nFinished." }]);
+    vi.mocked(broken.toolCalls.begin).mockRejectedValue(new Error("database down"));
+    const failed = await broken.runner.wait(await broken.runner.start(broken.input({ hostRunId: "background-run", mode: "background" })));
+    expect(failed).toMatchObject({ resultUnavailableReason: "storage_unavailable", state: "done" });
+  });
+
   it("marks omitted files as remaining on the shared disk and preserves large approval handbacks", () => {
     const files = Array.from({ length: SUBAGENT_LIMITS.files + 1 }, (_, index) => `file-${index}.txt`);
     const handed = handedBackApproval({ arguments: { body: "x".repeat(30_000) }, id: "c", name: "mcp_jira_create_issue" }, approval)!;

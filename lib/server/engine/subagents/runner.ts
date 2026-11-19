@@ -1095,9 +1095,13 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
 
   async function saveBackgroundResult(input: SubagentTurnInput, signal: AbortSignal,
     result: EndedSubagentCallResult): Promise<EndedSubagentCallResult> {
-    if (input.mode !== "background") return result;
+    // A stop (stop_subagent, the thread's Stop, its deadline) aborts this signal before the turn ends, so no copy is attempted:
+    // the result names no handle and claims no failed save, which the model would read as a storage fault. Whoever stopped it
+    // has the result itself (`stop_subagent`'s own call is saved like any other).
+    if (input.mode !== "background" || signal.aborted) return result;
     const text = JSON.stringify(result);
-    let saved: { handle: string } | { unsavedReason: string } = { unsavedReason: "storage_unavailable" };
+    // Null: nothing failed to save (the run ended first, or a stop cut the save); only a failure names a reason.
+    let saved: { handle: string } | { unsavedReason: string } | null = null;
     try {
       // The parent's call already returned "started". Its completion needs a producer in the background run,
       // outside the thread's executed steps. Even a short result may exceed a callback's remaining reserve.
@@ -1105,15 +1109,23 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         providerCallId: `subagent-report:${input.turnId}`, roundIndex: 1, runId: input.hostRunId,
         toolName: CALL_SUBAGENT_TOOL_NAME, userId: input.userId });
       if (begun.kind === "running") {
-        saved = await host.saveResult({ outcome: "complete", signal, source: "workspace", text, toolCallId: begun.row.id });
-        const excerpt = toolOutputExcerpt(text, saved);
+        saved = await host.saveResult({ outcome: "complete", signal, source: "workspace", text, toolCallId: begun.row.id })
+          .catch((error: unknown) => {
+            // The save gives up only on its signal (`saveToolResultText`): a stop that came during it, not a storage fault.
+            if (signal.aborted) return null;
+            throw error;
+          });
+        // The row settles either way, so a stop during the save never leaves it running.
+        const excerpt = toolOutputExcerpt(text, saved ?? { unsavedReason: "subagent_stopped" });
         await host.toolCalls.settle({ callId: begun.row.id, runId: input.hostRunId, state: "complete",
           result: { handle: excerpt.handle, output: excerpt.output, truncated: excerpt.truncated } });
       }
     } catch (error) {
+      saved ??= { unsavedReason: "storage_unavailable" };
       logEvent("service_operation", { action: "degrade", code: "subagent_turn_unsettled", error, outcome: "degraded",
         run_id: input.hostRunId, stage: "write", subsystem: "database" });
     }
+    if (!saved) return result;
     return { ...result, ...("handle" in saved ? { resultHandle: saved.handle } : { resultUnavailableReason: saved.unsavedReason }) };
   }
 
