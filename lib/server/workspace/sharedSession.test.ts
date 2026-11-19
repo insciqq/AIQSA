@@ -351,6 +351,12 @@ describe("a Workspace session shared by attached runs", () => {
   it("releases one agent's browser slot in the run's guest, and nothing once the run no longer holds the Workspace", async () => {
     const f = sharedFixture();
     const agent = { kind: "subagent" as const, name: "shop", threadId: THREAD };
+    // The run worked in the guest: its environment is there, and so may be its agents' browser slots.
+    await expect(f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id: "browse", name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: "stored-browse", runId: SUBAGENT, userId: "user_1", workspace: workspaceOf(MAIN)
+    })).resolves.toMatchObject({ status: "complete" });
+    vi.mocked(f.runtime.callBoundTool).mockClear();
     await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
     expect(f.runtime.callBoundTool).toHaveBeenCalledWith(expect.objectContaining({ agent, arguments: { args: ["release"], command: "aiqsa-browser" },
       modelRunId: SUBAGENT, operation: { generation: 3, owner: `run:${MAIN}` }, originalName: "sandbox_exec", runtimeSandboxId: "runtime_1",
@@ -376,6 +382,69 @@ describe("a Workspace session shared by attached runs", () => {
     f.attached.delete(SUBAGENT);
     await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
     expect(f.runtime.callBoundTool).not.toHaveBeenCalled();
+  });
+
+  describe("a background sub-agent beside its parent (production audit: releases refused over a missing environment)", () => {
+    const agent = { kind: "subagent" as const, name: "scout", threadId: THREAD };
+    const shell = (f: ReturnType<typeof sharedFixture>, runId: string, id: string) => f.coordinator.execute({
+      call: { arguments: { command: "ls" }, id, name: namespacedWorkspaceToolName("sandbox_shell") },
+      modelRunToolCallId: `stored-${id}`, runId, userId: "user_1", workspace: workspaceOf(MAIN)
+    });
+    /** The runner as production runs it: a command of a run whose environment the guest does not hold is refused before dispatch. */
+    const guestHoldingEnvironments = (f: ReturnType<typeof sharedFixture>) => {
+      const held = new Set<string>();
+      vi.mocked(f.runtime.syncPersonalSecrets).mockImplementation(async ({ modelRunId }) => { held.add(modelRunId); });
+      vi.mocked(f.runtime.callBoundTool).mockImplementation(async ({ modelRunId, originalName }) => {
+        if (["sandbox_shell", "sandbox_exec", "sandbox_exec_start"].includes(originalName) && !held.has(modelRunId)) {
+          throw new WorkspaceRuntimeError("workspace_secret_env_missing");
+        }
+        return { content: [{ text: "ok", type: "text" as const }], status: "complete" as const };
+      });
+      return held;
+    };
+    const dispatchedFor = (f: ReturnType<typeof sharedFixture>, runId: string) =>
+      vi.mocked(f.runtime.callBoundTool).mock.calls.filter(([call]) => call.modelRunId === runId).map(([call]) => call.modelRunToolCallId);
+    const preparedRuns = (f: ReturnType<typeof sharedFixture>) => vi.mocked(f.runtime.syncPersonalSecrets).mock.calls.map(([call]) => call.modelRunId);
+
+    it("sends no browser release for a run that never used the guest, before or after its parent ended", async () => {
+      const f = sharedFixture();
+      guestHoldingEnvironments(f);
+      // The main agent works in the guest and starts a background sub-agent, which attaches at launch and only searches.
+      await expect(shell(f, MAIN, "main")).resolves.toMatchObject({ status: "complete" });
+      // A foreground helper of the sub-agent ends: its slot release names the sub-agent's run.
+      await f.coordinator.releaseBrowserAgent!({ agent: { kind: "subagent", name: "helper", threadId: "thread_child" }, runId: SUBAGENT, userId: "user_1" });
+      // The main agent's answer ends; the sub-agent keeps the VM and goes on.
+      await expect(f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" }))
+        .resolves.toMatchObject({ remainingRuns: 1, stoppedVm: false });
+      // The sub-agent's own turn ends.
+      await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+      // Nothing was sent under a run with no environment in the guest, so nothing was refused, and nothing prepared it for that.
+      expect(dispatchedFor(f, SUBAGENT)).toEqual([]);
+      expect(preparedRuns(f)).toEqual([MAIN]);
+      expect(f.runtime.ensureSession).toHaveBeenCalledOnce();
+    });
+
+    it("keeps the sub-agent's commands working after its parent ended and after the guest lost its environment", async () => {
+      const f = sharedFixture();
+      const held = guestHoldingEnvironments(f);
+      await expect(shell(f, MAIN, "main")).resolves.toMatchObject({ status: "complete" });
+      await f.coordinator.settle({ outcome: "completed", runId: MAIN, userId: "user_1" });
+      // Its first command after the parent's end prepares its own environment and runs.
+      await expect(shell(f, SUBAGENT, "first")).resolves.toMatchObject({ status: "complete" });
+      expect(dispatchedFor(f, SUBAGENT)).toEqual(["stored-first"]);
+      // Having worked there, its turn's end releases its slot, and the release is not refused.
+      await f.coordinator.releaseBrowserAgent!({ agent, runId: SUBAGENT, userId: "user_1" });
+      expect(dispatchedFor(f, SUBAGENT)).toHaveLength(2);
+      await expect(vi.mocked(f.runtime.callBoundTool).mock.results.at(-1)!.value).resolves.toMatchObject({ status: "complete" });
+      // A restarted runner reads the guest's file, which no longer holds the run: the next command puts it back and runs once.
+      held.clear();
+      await expect(shell(f, SUBAGENT, "after-restart")).resolves.toMatchObject({ status: "complete" });
+      expect(dispatchedFor(f, SUBAGENT).filter((id) => id === "stored-after-restart")).toHaveLength(2);
+      expect(preparedRuns(f)).toEqual([MAIN, SUBAGENT, SUBAGENT]);
+      await expect(shell(f, SUBAGENT, "next")).resolves.toMatchObject({ status: "complete" });
+      expect(preparedRuns(f)).toEqual([MAIN, SUBAGENT, SUBAGENT]);
+      expect(f.interrupted).not.toHaveBeenCalled();
+    });
   });
 
   it("ends one run by stopping only its own processes, and the VM and the other run go on", async () => {

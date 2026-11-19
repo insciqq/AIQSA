@@ -1453,7 +1453,8 @@ export type WorkspaceCoordinator = Readonly<{
   holdsWorkspace?(input: Readonly<{ runId: string; userId: string }>): Promise<boolean>;
   /**
    * Releases one agent's browser slot in the run's guest when its turn or run ends (`WorkspaceBrowserAgentIdentity`):
-   * a no-op without a running guest or once the run no longer holds the Workspace. Never starts a guest.
+   * only in the guest this process prepared for the run under its current operation, and a no-op otherwise or once the
+   * run no longer holds the Workspace. Never starts a guest.
    */
   releaseBrowserAgent?(input: Readonly<{ agent: WorkspaceAgent; runId: string; signal?: AbortSignal; userId: string }>): Promise<void>;
   tools(input: Readonly<{
@@ -2535,8 +2536,17 @@ export function createWorkspaceCoordinator(input: Readonly<{
       return binding !== null && runHoldsOperation(binding, runId);
     },
     async releaseBrowserAgent({ agent, runId, signal, userId }) {
+      // The release is a guest command of the run, so it goes only where this process prepared the run: the runner
+      // refuses before dispatch any command of a run whose saved environment the guest does not hold
+      // (`workspace_secret_env_missing`), and an agent of a run that never prepared there ran nothing in it, so it holds
+      // no slot. Every background sub-agent attaches at launch: without this, one that only searched would send its
+      // release at each turn's end under a run with no environment in the guest, and start a stopped VM to be refused.
+      const prepared = initialized.get(runId);
+      if (!prepared?.runtimeSandboxId) return;
       const binding = await input.repository.binding({ runId, userId }).catch(() => null);
       if (!binding?.runtimeSandboxId || !binding.operationOwner || !runHoldsOperation(binding, runId)) return;
+      if (binding.runtimeSandboxId !== prepared.runtimeSandboxId || binding.operationOwner !== prepared.operationOwner ||
+        binding.operationGeneration !== prepared.operationGeneration) return;
       // Bounded: a turn's end never waits on a slow guest, whose idle release frees the slot anyway.
       const bound = AbortSignal.timeout(WORKSPACE_BROWSER_RELEASE_WAIT_MS);
       const release = new WorkspaceBrowserAgentIdentity({ operation: ownedOperation(binding), runtime: input.runtime,
