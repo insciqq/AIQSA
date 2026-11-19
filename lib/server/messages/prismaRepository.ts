@@ -37,6 +37,20 @@ function isActiveMessageStatus(status: MessageStatus): boolean {
   return activeMessageStatuses.includes(status);
 }
 
+/**
+ * The runs deleting these messages of a chat removes: those that answer or were sent with one, and the background
+ * sub-agents' own runs under them, a child's included (`lib/server/subagents/nesting.ts`). Such a run shares its answer's
+ * user message, which stays when only the answer goes, while deleting the answer's run cascades to it through its turn:
+ * what it produced (an image on that answer, a Workspace export) must be released first, or its restricting producer
+ * reference fails the whole deletion.
+ */
+export function deletedMessageRunScope(chatId: string, messageIds: readonly string[]): Prisma.ModelRunWhereInput {
+  const answers: Prisma.ModelRunWhereInput = { chatId,
+    OR: [{ assistantMessageId: { in: [...messageIds] } }, { userMessageId: { in: [...messageIds] } }] };
+  return { chatId, OR: [answers, { subagentTurn: { is: { mode: "background", parentRun: answers } } },
+    { subagentTurn: { is: { mode: "background", parentRun: { subagentTurn: { is: { parentRun: answers } } } } } }] };
+}
+
 type LockedOwnedChat = LockedMemorySourceChat & {
   defaultProviderModelId: string | null;
   importSource: ChatImportSource | null;
@@ -708,10 +722,9 @@ export function createPrismaMessageBranchRepository(
         const nextActiveLeafMessageId = reviewPlan ? reviewPlan.leafId
           : activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
 
-        const deletedRunScope: Prisma.ModelRunWhereInput = { chatId: root.chatId,
-          OR: [{ assistantMessageId: { in: deletedMessageIds } }, { userMessageId: { in: deletedMessageIds } }] };
+        const deletedRunScope = deletedMessageRunScope(root.chatId, deletedMessageIds);
         // A background sub-agent of the subtree that started after its stop (the stop runs before this transaction):
-        // its run shares a deleted user message, so the deletion waits for it rather than cut it off mid-call.
+        // the deletion waits for it rather than cut it off mid-call.
         const activeSubagentRun = await tx.modelRun.findFirst({ select: { id: true, status: true },
           where: { ...deletedRunScope, status: { in: activeRunStatuses } } });
         if (activeSubagentRun) throw new ActiveMessageMutationConflictError(activeSubagentRun);

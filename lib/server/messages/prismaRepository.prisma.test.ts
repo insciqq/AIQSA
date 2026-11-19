@@ -1809,6 +1809,56 @@ describe("Prisma-backed message branch repository", () => {
     });
   });
 
+  it("deletes an answer whose background sub-agent drew an image, releasing the image and refusing while one still runs", async () => {
+    await withMessageBranchUser(async ({ userId }) => {
+      const repository = createPrismaMessageBranchRepository();
+      const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, memoryMode: "EXCLUDED",
+        title: "Background images", userId } });
+      const request = { prompt: { baseline: { source: "standard_chat", timeZone: "UTC", timeZoneSource: "client" } } };
+      /** An answer whose run started a background sub-agent: the sub-agent's own run shares the answer's user message. */
+      const answerWithHelper = async (text: string, parentMessageId: string | null, helperStatus: ModelRunStatus) => {
+        const { assistantMessage, userMessage } = await createSettledTurn({ chatId: chat.id, createdAt: new Date(), parentMessageId,
+          userId, userText: text });
+        const main = await prisma.modelRun.findFirstOrThrow({ where: { assistantMessageId: assistantMessage.id } });
+        const call = await prisma.modelRunToolCall.create({ data: { arguments: { message: "Draw it", name: `artist-${text}` },
+          modelRunId: main.id, ordinal: 0, providerCallId: "call-artist", roundIndex: 1, state: "complete", toolName: "call_subagent" } });
+        const thread = await prisma.subagentThread.create({ data: { anchorRunId: main.id, chatId: chat.id, name: `artist-${text}`, userId } });
+        const ended = helperStatus === "complete";
+        const turn = await prisma.subagentTurn.create({ data: { chatId: chat.id, mode: "background", modelId: "fake-qsa",
+          parentRunId: main.id, parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId,
+          ...(ended ? { endedAt: new Date(), reasonCode: "restart", state: "interrupted" as const } : { state: "running" as const }) } });
+        const helper = await prisma.modelRun.create({ data: { chatId: chat.id, engine: "native", modelId: "fake-qsa", normalizedRequest: request,
+          provider: "fake", status: helperStatus, subagentThreadId: thread.id, subagentTurnId: turn.id, userId,
+          userMessageId: userMessage.id } });
+        return { assistantMessage, helper, main, turn, userMessage };
+      };
+      const drawn = await answerWithHelper("first", null, "complete");
+      // `lib/server/images/service.ts`: the image joins the main agent's answer, produced by the sub-agent's own run.
+      const image = await prisma.modelRunToolCall.create({ data: { arguments: {}, modelRunId: drawn.helper.id, ordinal: 0,
+        providerCallId: "call-image", roundIndex: 1, startedAt: new Date(), state: "complete", toolName: "generate_image" } });
+      const imageId = randomUUID();
+      await prisma.attachment.create({ data: { byteSize: 100, chatId: chat.id, fileName: "image.png", id: imageId, imageToolCallId: image.id,
+        kind: "image", messageId: drawn.assistantMessage.id, metadata: {}, mimeType: "image/png", origin: "IMAGE_OUTPUT",
+        producerModelRunId: drawn.helper.id, status: "ready", storageKey: `generated-images/${imageId}`, userId } });
+
+      await expect(repository.deleteMessageSubtree({ messageId: drawn.assistantMessage.id, userId })).resolves.toMatchObject({
+        deletedMessageIds: [drawn.assistantMessage.id] });
+      await expect(prisma.modelRun.count({ where: { id: { in: [drawn.main.id, drawn.helper.id] } } })).resolves.toBe(0);
+      await expect(prisma.subagentTurn.count({ where: { id: drawn.turn.id } })).resolves.toBe(0);
+      await expect(prisma.message.count({ where: { id: drawn.userMessage.id } })).resolves.toBe(1);
+      // Released into orphan retention like the main agent's own images.
+      await expect(prisma.attachment.findUniqueOrThrow({ where: { id: imageId } })).resolves.toMatchObject({
+        imageToolCallId: null, messageId: null, origin: "USER_UPLOAD", producerModelRunId: null });
+
+      // A sub-agent still running under the answer holds the deletion off, as one sharing its user message does.
+      const running = await answerWithHelper("second", drawn.userMessage.id, "streaming");
+      await expect(repository.deleteMessageSubtree({ messageId: running.assistantMessage.id, userId }))
+        .rejects.toBeInstanceOf(ActiveMessageMutationConflictError);
+      await expect(prisma.modelRun.count({ where: { id: { in: [running.main.id, running.helper.id] } } })).resolves.toBe(2);
+      await prisma.attachment.deleteMany({ where: { id: imageId } });
+    });
+  });
+
   it("releases Workspace exports and checkpoint files of deleted runs without touching kept branches", async () => {
     await withMessageBranchUser(async ({ userId }) => {
       const sha = (value: string) => createHash("sha256").update(value).digest("hex");

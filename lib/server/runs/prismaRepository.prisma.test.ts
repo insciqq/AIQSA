@@ -1028,7 +1028,31 @@ describe("Prisma-backed run repository", () => {
         const append = (runId: string, modelRunToolCallId: string) => repository.appendMcpDiscoveryEpoch!({ bindings: [fixture.binding],
           goal: "echo a value", modelRunToolCallId, roundIndex: 0, runId, snapshot, toolIds: [namespacedName], userId });
         const background = await findTools(admitted.runId, "bg-find-tools", { subagentThreadId: thread.id, subagentTurnId: admitted.turnId });
-        expect(await append(admitted.runId, background.id)).toMatchObject({ discovery: { epochs: [{ modelRunToolCallId: background.id }] } });
+        // An image or computer file the main agent publishes holds its run `FOR UPDATE` and then waits for the chat, which a
+        // sub-agent's settlement may hold while it waits for the sub-agent's run. The epoch binds on the main-agent run, whose
+        // key share waits for that publisher: it must not hold its own run meanwhile.
+        let releasePublisher!: () => void;
+        const published = new Promise<void>((resolve) => { releasePublisher = resolve; });
+        let markHeld!: () => void;
+        const held = new Promise<void>((resolve) => { markHeld = resolve; });
+        const publisher = prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${main.runId} FOR UPDATE`;
+          markHeld();
+          await published;
+        }, { timeout: 20_000 });
+        await held;
+        const appending = append(admitted.runId, background.id);
+        await expect.poll(async () => {
+          const [row] = await prisma.$queryRaw<Array<{ count: number }>>`
+            SELECT count(*)::int AS count FROM pg_locks WHERE NOT granted AND locktype IN ('transactionid', 'tuple')`;
+          return row?.count ?? 0;
+        }, { interval: 25, timeout: 10_000 }).toBeGreaterThan(0);
+        await prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${admitted.runId} FOR UPDATE NOWAIT`;
+        });
+        releasePublisher();
+        await publisher;
+        expect(await appending).toMatchObject({ discovery: { epochs: [{ modelRunToolCallId: background.id }] } });
         // The rows are the main agent's, where the background registry and its saved results read them; the epoch is the caller's.
         const rows = (runId: string) => prisma.mcpRunBinding.count({ where: { modelRunId: runId } });
         expect([await rows(main.runId), await rows(admitted.runId)]).toEqual([1, 0]);
