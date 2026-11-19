@@ -1824,9 +1824,12 @@ describe("Prisma-backed message branch repository", () => {
           modelRunId: main.id, ordinal: 0, providerCallId: "call-artist", roundIndex: 1, state: "complete", toolName: "call_subagent" } });
         const thread = await prisma.subagentThread.create({ data: { anchorRunId: main.id, chatId: chat.id, name: `artist-${text}`, userId } });
         const ended = helperStatus === "complete";
+        // One clock for both ends: the database's default start may be later than this process's `new Date()`
+        // (`SubagentTurn_state_check` wants the end at or after the start).
+        const at = new Date();
         const turn = await prisma.subagentTurn.create({ data: { chatId: chat.id, mode: "background", modelId: "fake-qsa",
-          parentRunId: main.id, parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId,
-          ...(ended ? { endedAt: new Date(), reasonCode: "restart", state: "interrupted" as const } : { state: "running" as const }) } });
+          parentRunId: main.id, parentToolCallId: call.id, provider: "fake", startedAt: at, threadId: thread.id, userId,
+          ...(ended ? { endedAt: at, reasonCode: "restart", state: "interrupted" as const } : { state: "running" as const }) } });
         const helper = await prisma.modelRun.create({ data: { chatId: chat.id, engine: "native", modelId: "fake-qsa", normalizedRequest: request,
           provider: "fake", status: helperStatus, subagentThreadId: thread.id, subagentTurnId: turn.id, userId,
           userMessageId: userMessage.id } });
