@@ -112,12 +112,20 @@ function errorCode(error: unknown): string | undefined {
 const refusal = (call: ModelToolCall, code: string, message: string): ToolExecutionResult =>
   ({ callId: call.id, content: [{ type: "json", value: { error: code, message } }], name: call.name, status: "error" });
 
+/** `call_subagent`'s result: a turn that ended other than done is an error the model must read as one. */
 const resultOf = (call: ModelToolCall, result: SubagentCallResult): ToolExecutionResult => ({
   callId: call.id,
   content: [{ type: "json", value: result }],
   name: call.name,
   status: result.kind === "ended" && result.state !== "done" ? "error" : "complete"
 });
+
+/**
+ * `stop_subagent`'s result: the sub-agent is stopped, or had already ended, which is what the call asked for, so it is
+ * complete whatever state the turn ended in; the state and reason stay in the value. Only a refusal is an error.
+ */
+const stopResultOf = (call: ModelToolCall, result: SubagentCallResult): ToolExecutionResult =>
+  ({ callId: call.id, content: [{ type: "json", value: result }], name: call.name, status: "complete" });
 
 function previousBinding(turn: SubagentTurnRecord | null): SubagentPreviousBinding | null {
   return turn ? { connectionId: turn.provider, effort: turn.reasoningEffort, effortSource: turn.effortSource,
@@ -368,13 +376,13 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
   if (deps.background && !ownForeground) {
     const stopped = await deps.background.stop({ chatId: deps.chatId, ...(caller ? { parentAgent: caller } : {}), name,
       parentRunId: deps.branchRunId ?? deps.runId, parentToolCallId: execution.persistedToolCallId, userId: deps.userId });
-    return stopped.kind === "stopped" ? resultOf(call, stopped.result) : notFound();
+    return stopped.kind === "stopped" ? stopResultOf(call, stopped.result) : notFound();
   }
   if (!lookup) return notFound();
   if (lookup.active) {
     if (lookup.active.parentRunId === deps.runId && lookup.active.mode === "foreground") {
       const result = await deps.runner.stop({ turnId: lookup.active.id }, "stop_subagent");
-      if (result) return resultOf(call, result);
+      if (result) return stopResultOf(call, result);
     }
     return refusal(call, SUBAGENT_ERROR_CODES.busy, "This sub-agent is running elsewhere in this chat and cannot be stopped from here.");
   }
@@ -384,7 +392,7 @@ export async function executeStopSubagent(deps: SubagentCallDeps, execution: Eng
   let stored = await read();
   // A turn a restart left behind (its parent ended) ends as interrupted now, and that is how it ended.
   if (!stored && await deps.store.endOrphanedTurns({ chatId: deps.chatId, userId: deps.userId }) > 0) stored = await read();
-  return stored ? resultOf(call, stored) : notFound();
+  return stored ? stopResultOf(call, stored) : notFound();
 }
 
 // The live step names the sub-agent it addressed (its server name), so the status says whose work runs.

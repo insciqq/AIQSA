@@ -490,6 +490,55 @@ describe("stop_subagent", () => {
     expect(value(await executeStopSubagent(none.deps, { ...execution({ name: "nobody" }), call: { arguments: { name: "nobody" }, id: "c1",
       name: "stop_subagent" } })).error).toBe(SUBAGENT_ERROR_CODES.notFound);
   });
+
+  const stopCall = (name: string, id = "s1") => ({ ...execution({ name }, id), call: { arguments: { name }, id, name: "stop_subagent" } });
+
+  it("completes when it stops a running sub-agent, background or foreground, and when one had already ended in any state", async () => {
+    const background = new FakeSubagentBackgroundControl();
+    const ctx = setup({ background });
+    await executeCallSubagent(ctx.deps, execution({ background: true, message: "Go", name: "shop" }));
+    const stopped = await executeStopSubagent(ctx.deps, stopCall("shop"));
+    expect(stopped.status).toBe("complete");
+    expect(value(stopped)).toMatchObject({ kind: "ended", reason: "stop_subagent", state: "stopped" });
+    expect(value(stopped)).not.toHaveProperty("resultUnavailableReason");
+    // A foreground turn of this answer stops through the runner, and that is a success too.
+    const foreground = setup({ found: visible({ active: turn({ id: "turn-fg", parentRunId: "run", state: "running" }) }) });
+    vi.spyOn(foreground.deps.runner, "stop").mockResolvedValue(endedSubagentResult("shop", { outcome: undefined, reason: "stop_subagent", state: "stopped" }));
+    const fg = await executeStopSubagent(foreground.deps, stopCall("shop"));
+    expect(fg.status).toBe("complete");
+    expect(value(fg)).toMatchObject({ reason: "stop_subagent", state: "stopped" });
+    // One that ended before the stop came is stopped already: the call reports how it ended, and did what it was asked.
+    for (const ended of [endedSubagentResult("shop", { outcome: undefined, reason: "model_answer_empty", state: "failed" }),
+      endedSubagentResult("shop", { outcome: undefined, reason: "restart", state: "interrupted" })]) {
+      const done = setup({ found: visible(), result: ended });
+      const result = await executeStopSubagent(done.deps, stopCall("shop"));
+      expect(result.status).toBe("complete");
+      expect(value(result)).toMatchObject({ reason: ended.reason, state: ended.state });
+    }
+  });
+
+  it("stays an error when it refuses: an unknown name, another agent's helper, or a turn running elsewhere", async () => {
+    const none = setup({ background: new FakeSubagentBackgroundControl() });
+    const missing = await executeStopSubagent(none.deps, stopCall("nobody"));
+    expect(missing.status).toBe("error");
+    expect(value(missing).error).toBe(SUBAGENT_ERROR_CODES.notFound);
+    const notOwn = setup({ found: visible({ thread: { anchorRunId: "run", definitionId: null, id: "thread-1", name: "shop",
+      parentThreadId: "thread-other", typeName: null } }),
+    parentAgent: { name: "lead", runId: "run-lead", threadId: "thread-lead", toolState: { calls: 0 }, turnId: "turn-lead" } });
+    const refused = await executeStopSubagent(notOwn.deps, stopCall("shop"));
+    expect(refused.status).toBe("error");
+    expect(value(refused).error).toBe(SUBAGENT_ERROR_CODES.notOwnChild);
+    const elsewhere = setup({ found: visible({ active: turn({ parentRunId: "run-other", state: "running" }) }) });
+    const busy = await executeStopSubagent(elsewhere.deps, stopCall("shop"));
+    expect(busy.status).toBe("error");
+    expect(value(busy).error).toBe(SUBAGENT_ERROR_CODES.busy);
+  });
+
+  it("keeps call_subagent's rule: a turn that ended stopped or failed is an error there", async () => {
+    const ctx = setup();
+    vi.spyOn(ctx.deps.runner, "wait").mockResolvedValue(endedSubagentResult("shop", { outcome: undefined, reason: "stop_subagent", state: "stopped" }));
+    expect((await executeCallSubagent(ctx.deps, execution({ message: "Go", name: "shop" }))).status).toBe("error");
+  });
 });
 
 describe("a sub-agent's own children", () => {

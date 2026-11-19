@@ -46,9 +46,13 @@ export function createFetchUrlProxySession(deps: FetchUrlProxyDeps) {
   };
   return {
     observe,
-    suggestions(url: string): string[] {
+    /**
+     * The proxies a refusal suggests by name, leaving out every one the call already went through (`tried`, by id): a
+     * suggestion of the proxy that just answered 403 sends the model round the same route. None left: none suggested.
+     */
+    suggestions(url: string, tried: ReadonlySet<string> = new Set()): string[] {
       return proxiesToTry(entries, new URL(url).hostname).flatMap((id) => {
-        const entry = entries.find((candidate) => candidate.id === id);
+        const entry = tried.has(id) ? undefined : entries.find((candidate) => candidate.id === id);
         return entry ? [entry.name] : [];
       });
     },
