@@ -46,8 +46,8 @@ export type RunBindingOwner = Readonly<{ assistantMessageId: string | null; runI
 
 /**
  * The run whose bindings a run uses, and whose answer shows what it makes: a main-agent run itself, or for a background
- * sub-agent's own run the main-agent run behind its turn (`turnMainRunId`). Such a run answers nothing and holds no MCP
- * binding rows of its own: its calls use that run's (`lib/server/runs/subagentBackground/store.ts`). Null when the run is
+ * sub-agent's own run the main-agent run behind its turn (`turnMainRunId`). Such a run answers nothing, so what it makes
+ * shows under that run's answer (`lib/server/runs/subagentBackground/store.ts`). Null when the run is
  * not this user's in this chat, or its turn leads to no main-agent run of theirs there; the keys already tie a turn to its
  * parent's user and chat, so this only refuses what no admission makes.
  */
