@@ -74,8 +74,10 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
  * interactive MCP write reaches the guard through the parent's
  * `McpRunBinding` rows), and they outlive it, because deleting the parent
  * deletes the turn and its run and the deleting paths stop the run first.
- * What its own `find_tools` loads is bound there too, on the main-agent run
- * behind its turn (`runBindingOwner`), where its registry reads the rows.
+ * Known gap (2026-11-20): what its own `find_tools` loads is bound on its own
+ * run, where its registry does not read, so such a tool is refused as
+ * unavailable; binding it on the main-agent run needs a lock order that
+ * concurrent main and sub-agent discovery cannot deadlock on (ledger task).
  *
  * Except the provider bindings of `analyze_image` and `generate_image`
  * (`CALL_PROVIDER_BINDING_KEYS`, decision 2026-11-20): their attempt and

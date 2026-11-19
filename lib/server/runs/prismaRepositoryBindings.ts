@@ -216,7 +216,7 @@ export function serializeRunAssistantIdentity(modelRun: {
 }
 
 export async function insertAcceptedMcpRunBindings(
-  tx: Pick<Prisma.TransactionClient, "$executeRaw" | "$queryRaw" | "user" | "mcpToolAccessPolicy">,
+  tx: Pick<Prisma.TransactionClient, "$executeRaw" | "user" | "mcpToolAccessPolicy">,
   input: {
     bindings: McpRunPlanBinding[] | undefined;
     tools: readonly import("../mcp/toolAccess").McpToolIdentity[];
@@ -292,18 +292,8 @@ export async function insertAcceptedMcpRunBindings(
               )
             )
         )
-      ON CONFLICT ("modelRunId", "runtimeGenerationFingerprint") DO NOTHING
     `;
-    if (inserted === 1) continue;
-    // The run already binds this generation: a discovery of another agent of the same answer bound it first
-    // (`appendMcpDiscoveryEpoch`), and the run's unique key, not a lock, settles which. Anything else is stale.
-    const [bound] = await tx.$queryRaw<Array<{ id: string }>>`
-      SELECT "id" FROM "McpRunBinding"
-      WHERE "modelRunId" = ${input.runId}
-        AND "runtimeGenerationFingerprint" = ${binding.fingerprint}
-        AND "runtimeGenerationId" = ${binding.runtimeGenerationId}
-    `;
-    if (!bound) throw new McpRunPlanConflictError();
+    if (inserted !== 1) throw new McpRunPlanConflictError();
   }
 }
 

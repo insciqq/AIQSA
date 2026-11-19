@@ -6,10 +6,8 @@ import { McpRunPlanConflictError } from "./runRepositoryContract";
 
 type ExecuteRaw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<number>;
 
-/** `bound`: the run's row a racing insert left, which the guarded insert's no-op reads back. */
-function transaction(executeRaw: ExecuteRaw, bound: ReadonlyArray<{ id: string }> = []) {
-  return { $executeRaw: executeRaw, $queryRaw: vi.fn(async () => bound) } as unknown as
-    Pick<Prisma.TransactionClient, "$executeRaw" | "$queryRaw" | "user" | "mcpToolAccessPolicy">;
+function transaction(executeRaw: ExecuteRaw) {
+  return { $executeRaw: executeRaw } as unknown as Pick<Prisma.TransactionClient, "$executeRaw" | "user" | "mcpToolAccessPolicy">;
 }
 
 const bindings = [
@@ -111,18 +109,6 @@ describe("atomic MCP run bindings", () => {
       runId: "run-1",
       userId: "user-1"
     })).rejects.toBeInstanceOf(McpRunPlanConflictError);
-  });
-
-  it("lets the run's unique key settle two agents binding one generation: the second insert's no-op finds the first's row", async () => {
-    const executeRaw = vi.fn<ExecuteRaw>(async () => 0);
-    const tx = transaction(executeRaw, [{ id: "binding-first" }]);
-    await insertAcceptedMcpRunBindings(tx, { tools: [], bindings: [bindings[0]!], runId: "run-1", userId: "user-1" });
-    const [strings] = executeRaw.mock.calls[0]!;
-    expect((strings as readonly string[]).join("?")).toMatch(/ON CONFLICT \("modelRunId", "runtimeGenerationFingerprint"\) DO NOTHING/u);
-    // Only the same run, fingerprint and generation count as already bound.
-    const [lookup, ...values] = (tx.$queryRaw as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
-    expect((lookup as readonly string[]).join("?")).toContain('FROM "McpRunBinding"');
-    expect(values).toEqual(["run-1", "fingerprint-1", "generation-1"]);
   });
 
   it("rejects duplicate server, generation, or fingerprint identities before writing", async () => {
