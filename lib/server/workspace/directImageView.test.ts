@@ -246,14 +246,27 @@ describe("Workspace direct image view", () => {
     expect(held()).toEqual([11, 12, 13, 14]);
   });
 
-  it("counts the input's own images first and keeps the previews within the bytes and the window share", async () => {
+  it("keeps the previews' room beside the input's own images, which count first against the model's limits and window share", async () => {
     const f = captureOwner(await png(64, 48));
     const image = { byteSize: 4, dataUrl: "data:image/png;base64,AAAA", extractedText: null, fileName: "a.png", id: "a", kind: "image",
-      metadata: {}, mimeType: "image/png", status: "ready" };
+      metadata: { image: { height: 512, width: 512 } }, mimeType: "image/png", status: "ready" };
+    const conversation = Array.from({ length: 20 }, (_, index) => ({ ...image, id: `a${index}` }));
+    // A chat whose input carries 20 images still views as many images as any other.
     const withImages = createWorkspaceImageViewer({ captures: f.captures, runId: "run-1", userId: "user-1",
-      request: request({ attachments: Array.from({ length: 7 }, (_, index) => ({ ...image, id: `a${index}` })) }) });
-    await expect(withImages.execute(view("call-1"), { persistedToolCallId: "tool-1", round: 1 })).resolves.toMatchObject({ status: "complete" });
-    await expect(withImages.execute(view("call-2"), { persistedToolCallId: "tool-2", round: 1 })).resolves.toMatchObject({ status: "error" });
+      request: request({ attachments: conversation }) });
+    for (let index = 0; index < DIRECT_IMAGE_VIEW_LIMITS.requestImages; index += 1) {
+      await expect(withImages.execute(view(`call-${index}`), { persistedToolCallId: `tool-${index}`, round: 1 })).resolves
+        .toMatchObject({ status: "complete" });
+    }
+    await expect(withImages.execute(view("call-8"), { persistedToolCallId: "tool-8", round: 1 })).resolves.toMatchObject({ status: "error" });
+    // A model that declares room for 21 images takes one preview beside them.
+    const declared = createWorkspaceImageViewer({ captures: f.captures, runId: "run-1", userId: "user-1", request: request({
+      attachments: conversation, modelCapabilities: { ...request().modelCapabilities, imageInputLimits: { imageBytes: 5_000_000,
+        imageCount: 21, imagePixels: 4_000_000, payloadBytes: 50_000_000 } } }) });
+    await expect(declared.execute(view("call-9"), { persistedToolCallId: "tool-9", round: 1 })).resolves.toMatchObject({ status: "complete" });
+    await expect(declared.execute(view("call-10"), { persistedToolCallId: "tool-10", round: 1 })).resolves.toMatchObject({
+      content: [{ value: { error: "workspace_image_limit_exceeded", message: expect.stringContaining("View fewer images at once") } }],
+      status: "error" });
 
     // A small window takes a quarter of itself in previews: one preview of about 1,040 tokens fits a 4,600-token window, two do not.
     const small = createWorkspaceImageViewer({ captures: f.captures, runId: "run-1", userId: "user-1",

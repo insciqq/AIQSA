@@ -36,20 +36,25 @@ const tokensOf = (entries: readonly AllowanceSize[]) => entries.reduce((total, e
 
 /**
  * The image room of one agent's requests, shared by every tool whose results carry previews (`view_workspace_image`,
- * `read_chat_file`, `computer_read`): count, base64 bytes, the model's declared image limits and a share of its window
- * (`DIRECT_IMAGE_VIEW_LIMITS`), the run's own input images counted first and once. One per tool registry, since each
- * agent sends requests of its own.
+ * `read_chat_file`, `computer_read`). The previews' own count and bytes (`DIRECT_IMAGE_VIEW_LIMITS`) bound the previews
+ * alone; the model's declared image limits, else the request totals, and a share of its window bound the whole request,
+ * the run's own input images counted first and once. One per tool registry, since each agent sends requests of its own.
  */
 export function createRequestImageAllowance(request: ProviderRunRequest): RequestImageAllowance {
   const estimate = imageTokenEstimator({ modelId: request.modelId, provider: request.provider });
   const limits = request.modelCapabilities.imageInputLimits;
   const own = request.attachments.filter((file) => file.kind === "image" && Boolean(file.dataUrl || file.base64Data));
+  const ownBytes = own.reduce((total, file) => total + (file.dataUrl?.length ?? file.base64Data?.length ?? 0), 0);
   const ownTokens = providerAttachmentBudgetTokens({ attachments: own, estimateImageTokens: estimate, modelCapabilities: request.modelCapabilities });
   const window = request.modelCapabilities.contextWindow;
+  // A chat whose input carries many images (a production card-editing chat held 12–69) kept no room for a single preview
+  // while the previews' own bounds counted those images too, so its agent could never check its own edit.
   const bound = {
-    bytes: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestBytes, limits?.payloadBytes ?? Infinity) -
-      own.reduce((total, file) => total + (file.dataUrl?.length ?? file.base64Data?.length ?? 0), 0)),
-    count: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestImages, limits?.imageCount ?? Infinity) - own.length),
+    bytes: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestBytes,
+      (limits?.payloadBytes ?? DIRECT_IMAGE_VIEW_LIMITS.requestTotalBytes) - ownBytes)),
+    count: Math.max(0, Math.min(DIRECT_IMAGE_VIEW_LIMITS.requestImages,
+      (limits?.imageCount ?? DIRECT_IMAGE_VIEW_LIMITS.requestTotalImages) - own.length)),
+    // The window holds everything else too and compaction cannot free an image, so the share stays one for the request.
     tokens: typeof window === "number" && window > 0
       ? Math.max(0, Math.floor(window * DIRECT_IMAGE_VIEW_LIMITS.windowShare) - ownTokens) : Infinity
   };
