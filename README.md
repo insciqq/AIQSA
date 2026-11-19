@@ -111,6 +111,10 @@ NODE_OPTIONS=--max-old-space-size=8192 npm run check:hermetic
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), the [security policy](SECURITY.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+## Contributors
+
+- [Hetox](https://github.com/Hetox): dozens of detailed bug reports and feature requests that shaped AIQSA.
+
 ## License
 
 [GNU Affero General Public License v3.0 only](LICENSE). You can use, modify and self-host AIQSA freely. If you modify it and let people use your version over a network, you must offer them its source code.
