@@ -19,6 +19,7 @@ import { memorySha256, normalizeMemorySearchText } from
   "../../memory/persistence/lexical";
 import { createPrismaMemoryScopeRepository } from "../../memory/persistence/scopes";
 import { MemorySuppressionKeyring } from "../../memory/suppressionKeyring";
+import { scheduledTaskScheduleColumns } from "../../scheduledTasks/store";
 import { createPrismaPermanentChatDeletionHandler } from "./cleanup";
 import { createPrismaPermanentChatDeletionRepository } from "./repository";
 import { createPermanentChatDeletionService } from "./service";
@@ -880,6 +881,69 @@ async function runScenario(alsoForgetOriginMemories: boolean) {
   return { evidence, userId };
 }
 
+// A scheduled task chat whose occurrence history links its chat, prompts and
+// runs, plus an occurrence of the same task in another chat that must survive
+// untouched (production 2026-11-18: P2003 on the occurrence userMessageId key).
+async function createScheduledTaskChat(userId: string) {
+  const task = await prisma.scheduledTask.create({ data: {
+    ...scheduledTaskScheduleColumns({ kind: "daily", time: "09:00" }), chatMode: "SAME",
+    modelId: "permanent-chat-test-model", prompt: "Summarize the release notes.",
+    provider: "permanent-chat-test-provider", timeZone: "UTC", title: "Release notes", userId
+  } });
+  const chat = await prisma.chat.create({
+    data: { scheduledTaskId: task.id, title: "Release notes", userId }
+  });
+  const otherChat = await prisma.chat.create({ data: { title: "Release notes (later)", userId } });
+  await prisma.scheduledTask.update({ data: { chatId: chat.id }, where: { id: task.id } });
+  const start = Date.now() - 3 * 86_400_000;
+  let parentMessageId: string | null = null;
+  const occurrenceIds: string[] = [];
+  const turn = async (chatId: string, index: number, parent: string | null) => {
+    const at = new Date(start + index * 86_400_000);
+    const occurrenceId = randomUUID();
+    const userMessage = await prisma.message.create({ data: {
+      chatId, content: textMessageContent(`Scheduled prompt ${index}`), createdAt: at,
+      parentMessageId: parent, role: "user", scheduledTaskPrompt: true, status: "complete"
+    } });
+    const assistantMessage = await prisma.message.create({ data: {
+      chatId, content: textMessageContent(`Scheduled answer ${index}`),
+      createdAt: new Date(at.getTime() + 1_000), modelId: "permanent-chat-test-model",
+      parentMessageId: userMessage.id, provider: "permanent-chat-test-provider",
+      role: "assistant", status: "complete"
+    } });
+    const run = await prisma.modelRun.create({ data: {
+      assistantMessageId: assistantMessage.id, chatId, createdAt: at,
+      modelId: "permanent-chat-test-model", normalizedRequest: {},
+      provider: "permanent-chat-test-provider", scheduledOccurrenceId: occurrenceId,
+      scheduledTaskGeneration: 1, scheduledTaskId: task.id, status: "complete", userId,
+      userMessageId: userMessage.id
+    } });
+    await prisma.scheduledTaskOccurrence.create({ data: {
+      chatId, finishedAt: new Date(at.getTime() + 2_000), id: occurrenceId, runId: run.id,
+      scheduledFor: at, startedAt: at, state: "COMPLETED", taskGeneration: 1,
+      taskId: task.id, trigger: "schedule", userId, userMessageId: userMessage.id
+    } });
+    return { assistantMessage, occurrenceId, run, userMessage };
+  };
+  for (const index of [0, 1]) {
+    const created = await turn(chat.id, index, parentMessageId);
+    parentMessageId = created.assistantMessage.id;
+    occurrenceIds.push(created.occurrenceId);
+  }
+  await prisma.chat.update({
+    data: { activeLeafMessageId: parentMessageId },
+    where: { id: chat.id }
+  });
+  const other = await turn(otherChat.id, 2, null);
+  return {
+    activeLeafMessageId: parentMessageId!,
+    chat,
+    occurrenceIds,
+    other: { ...other, chatId: otherChat.id },
+    task
+  };
+}
+
 describe("permanent chat deletion cleanup", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -889,6 +953,82 @@ describe("permanent chat deletion cleanup", () => {
     const { userId } = await runScenario(false);
     await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.delete({ where: { id: userId } });
+  });
+
+  it("deletes a scheduled task chat in one attempt and keeps its occurrence history detached", async () => {
+    const userId = await createOwner();
+    const scheduled = await createScheduledTaskChat(userId);
+    const service = createPermanentChatDeletionService({
+      authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma),
+      capability: { enabled: true },
+      kick: () => undefined,
+      repository: createPrismaPermanentChatDeletionRepository(prisma)
+    });
+    const before = await prisma.chat.findUniqueOrThrow({ where: { id: scheduled.chat.id } });
+    const authorization = await service.mintAuthorization(userId, scheduled.chat.id, {
+      alsoForgetOriginMemories: false,
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      expectedActiveLeafMessageId: scheduled.activeLeafMessageId,
+      expectedChatRevision: before.memorySourceRevision,
+      requestNonce: randomUUID()
+    });
+    const admission = await service.admit(userId, scheduled.chat.id, {
+      alsoForgetOriginMemories: false,
+      expectedActiveLeafMessageId: scheduled.activeLeafMessageId,
+      expectedChatRevision: before.memorySourceRevision,
+      mutationAuthorizationId: authorization.mutationAuthorizationId
+    });
+    const registry = new MemoryCoordinatorRegistry();
+    registry.registerDeletion(
+      createPrismaPermanentChatDeletionHandler(createMemoryStorageAdapter(), prisma)
+    );
+    const coordinator = new MemoryCoordinator({
+      now: () => new Date(),
+      policy: { maxDeletionFastAttempts: 2 },
+      registry,
+      repository: createPrismaMemoryCoordinatorRepository(prisma)
+    });
+    try {
+      await coordinator.reconcileNow();
+
+      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
+        where: { id: admission.deletionId }
+      })).resolves.toMatchObject({ attemptCount: 1, errorCode: null, state: "SUCCEEDED" });
+      await expect(prisma.chat.count({ where: { id: scheduled.chat.id } })).resolves.toBe(0);
+      await expect(prisma.message.count({ where: { chatId: scheduled.chat.id } })).resolves.toBe(0);
+      await expect(prisma.modelRun.count({ where: { chatId: scheduled.chat.id } })).resolves.toBe(0);
+      // The task and its history stay, with only the links into the deleted
+      // chat cleared, exactly as the SET NULL foreign keys would leave them.
+      await expect(prisma.scheduledTask.findUniqueOrThrow({ where: { id: scheduled.task.id } }))
+        .resolves.toMatchObject({ chatId: null, status: "ACTIVE" });
+      const history = await prisma.scheduledTaskOccurrence.findMany({
+        orderBy: { scheduledFor: "asc" },
+        where: { id: { in: scheduled.occurrenceIds } }
+      });
+      expect(history).toHaveLength(2);
+      for (const occurrence of history) {
+        expect(occurrence).toMatchObject({
+          chatId: null,
+          finishedAt: expect.any(Date),
+          runId: null,
+          state: "COMPLETED",
+          taskId: scheduled.task.id,
+          userMessageId: null
+        });
+      }
+      await expect(prisma.scheduledTaskOccurrence.findUniqueOrThrow({
+        where: { id: scheduled.other.occurrenceId }
+      })).resolves.toMatchObject({
+        chatId: scheduled.other.chatId,
+        runId: scheduled.other.run.id,
+        userMessageId: scheduled.other.userMessage.id
+      });
+      await expect(prisma.modelRun.count({ where: { id: scheduled.other.run.id } })).resolves.toBe(1);
+    } finally {
+      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+      await prisma.scheduledTask.deleteMany({ where: { userId } });
+      await prisma.user.delete({ where: { id: userId } });
+    }
   });
 
   it("uses the normal Forget fence only when the admitted origin-memory option is true", async () => {

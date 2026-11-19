@@ -421,6 +421,44 @@ async function releaseAggregateExecutionReferences(
   });
 }
 
+// Occurrence history outlives the chat with its chat, message and run links
+// cleared, the end state of their SET NULL foreign keys. Clearing them in one
+// statement before any run or the chat goes is required: otherwise deleting the
+// runs rewrites the occurrence rows first, and PostgreSQL re-checks every
+// foreign key of a row this transaction already wrote when the chat's cascade
+// later clears its chatId, while the cascaded messages are already gone and
+// their own SET NULL has not run yet (P2003 on the userMessageId key). The
+// task's chatId needs no such step: nothing earlier in this transaction writes
+// that row, so the chat's SET NULL re-checks none of its other keys.
+async function detachScheduledTaskOccurrences(
+  tx: Prisma.TransactionClient,
+  claim: MemoryDeletionClaim
+): Promise<void> {
+  await tx.$executeRaw(Prisma.sql`
+    WITH chat_runs AS (
+      SELECT run."id" FROM "ModelRun" AS run
+      WHERE run."userId" = ${claim.userId} AND run."chatId" = ${claim.targetId}
+    ), chat_messages AS (
+      SELECT message."id" FROM "Message" AS message
+      WHERE message."chatId" = ${claim.targetId}
+    )
+    UPDATE "ScheduledTaskOccurrence" AS occurrence
+    SET
+      "chatId" = CASE WHEN occurrence."chatId" = ${claim.targetId}
+        THEN NULL ELSE occurrence."chatId" END,
+      "runId" = CASE WHEN occurrence."runId" IN (SELECT "id" FROM chat_runs)
+        THEN NULL ELSE occurrence."runId" END,
+      "userMessageId" = CASE WHEN occurrence."userMessageId" IN (SELECT "id" FROM chat_messages)
+        THEN NULL ELSE occurrence."userMessageId" END
+    WHERE occurrence."userId" = ${claim.userId}
+      AND (
+        occurrence."chatId" = ${claim.targetId}
+        OR occurrence."runId" IN (SELECT "id" FROM chat_runs)
+        OR occurrence."userMessageId" IN (SELECT "id" FROM chat_messages)
+      )
+  `);
+}
+
 async function auditCleanup(
   tx: Prisma.TransactionClient,
   claim: MemoryDeletionClaim,
@@ -667,6 +705,7 @@ async function applyAggregateDeletion(
       });
     }
   }
+  await detachScheduledTaskOccurrences(tx, claim);
   if (ids.runIds.length > 0) {
     await tx.modelRun.deleteMany({
       where: { id: { in: [...ids.runIds] }, userId: claim.userId }
