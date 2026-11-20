@@ -870,6 +870,40 @@ describe("a sub-agent's children on PostgreSQL", () => {
     await prisma.mcpServer.delete({ where: { id: serverId } });
   }));
 
+  it("gives a child the MCP bindings its background parent's own find_tools made, and none of the main run's", async () => fixture(async (f) => {
+    const parent = await backgroundParent(f);
+    const serverId = randomUUID(), revisionId = randomUUID();
+    await prisma.mcpServer.create({ data: { displayName: "Synthetic Records", enabled: true, id: serverId, namespace: `copied_${randomUUID().replaceAll("-", "")}` } });
+    try {
+      await prisma.mcpRevision.create({ data: { configuration: {}, draftHash: "a".repeat(64), id: revisionId, identityHash: "b".repeat(64), revisionNumber: 1,
+        serverId, validationEvidence: {} } });
+      const userServer = await prisma.mcpUserServer.create({ data: { enabled: true, serverId, userId: f.userId } });
+      const generation = (fingerprint: string) => prisma.mcpRuntimeGeneration.create({ data: { fingerprint, revisionId, state: "ready",
+        userServerId: userServer.id } });
+      // Fingerprints are unique across the installation.
+      const fingerprint = () => randomUUID().replaceAll("-", "").repeat(2);
+      const [own, main] = [await generation(fingerprint()), await generation(fingerprint())];
+      // What the parent's discovery bound on its own run, and what the main agent bound on its.
+      await prisma.mcpRunBinding.create({ data: { modelRunId: parent.runId, runtimeGenerationFingerprint: own.fingerprint, runtimeGenerationId: own.id } });
+      await prisma.mcpRunBinding.create({ data: { modelRunId: f.main.runId, runtimeGenerationFingerprint: main.fingerprint, runtimeGenerationId: main.id } });
+      const admitted = await store.admit(childAdmission(f, parent, await childThread(f, parent, "copy")));
+      if (admitted.kind !== "admitted") throw new Error("child_not_admitted");
+      const rows = (runId: string) => prisma.mcpRunBinding.findMany({ select: { runtimeGenerationFingerprint: true, runtimeGenerationId: true },
+        where: { modelRunId: runId } });
+      // Its request names the server its parent loaded, so its own run binds it as its parent's does.
+      expect(await rows(admitted.runId)).toEqual(await rows(parent.runId));
+      // A sub-agent of the main agent reads the main run's rows by reference and copies none.
+      const sibling = await store.admit(admission(f, await f.thread("sibling")));
+      if (sibling.kind !== "admitted") throw new Error("sibling_not_admitted");
+      expect(await rows(sibling.runId)).toEqual([]);
+    } finally {
+      // Its generations go with the preference, and the runs' rows keep their fingerprints.
+      await prisma.mcpUserServer.deleteMany({ where: { serverId } });
+      await prisma.mcpRevision.deleteMany({ where: { serverId } });
+      await prisma.mcpServer.delete({ where: { id: serverId } });
+    }
+  }));
+
   it("refuses a parent's call on another agent's thread, under the lock", async () => fixture(async (f) => {
     const parent = await backgroundParent(f);
     const strangers = await f.thread("strangers");

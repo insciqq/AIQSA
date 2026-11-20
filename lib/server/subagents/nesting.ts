@@ -41,6 +41,24 @@ export function turnMainRunId(parentRunId: string, parentRun: Readonly<{ subagen
   return parentRun.subagentTurn?.parentRunId ?? parentRunId;
 }
 
+/** A run as `mcpBindingRunIds` reads it: a background sub-agent's own run names its turn and the turn's parent run. */
+export type McpBindingRun = Readonly<{ id: string; subagentTurn?: Readonly<{ parentRunId: string;
+  parentRun: Readonly<{ subagentTurn?: Readonly<{ parentRunId: string }> | null }> }> | null }>;
+
+/**
+ * The runs whose `McpRunBinding` rows a run's MCP calls may link: its own, and for a background sub-agent's own run also
+ * the main-agent run behind its turn (`turnMainRunId`). Such a run calls what that run bound under its rows (integrator
+ * decision 2026-10-30) and binds on itself what its own `find_tools` loads, because a discovery epoch writes and locks
+ * only the run that calls it (`lib/server/runs/prismaRepositoryMcpDiscovery.ts`); a child of a background sub-agent takes
+ * copies of its parent's own rows at admission (`lib/server/runs/subagentBackground/store.ts`). No other run of the chat,
+ * a sibling sub-agent's included, qualifies; the keys tie a turn to its parent's user and chat.
+ */
+export function mcpBindingRunIds(run: McpBindingRun): readonly string[] {
+  if (!run.subagentTurn) return [run.id];
+  const main = turnMainRunId(run.subagentTurn.parentRunId, run.subagentTurn.parentRun);
+  return main === run.id ? [run.id] : [run.id, main];
+}
+
 /** The main-agent run that owns a run's bindings, and the answer it writes. */
 export type RunBindingOwner = Readonly<{ assistantMessageId: string | null; runId: string }>;
 

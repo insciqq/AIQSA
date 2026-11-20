@@ -89,7 +89,9 @@ export type SubagentTurnInput = SubagentChatScope & Readonly<{
    * while its provider, MCP and Skill binding rows stay by reference: the
    * runner reads them from `parentRunId` (an MCP write reaches the guard
    * through the parent's `McpRunBinding` rows), never from `hostRunId`
-   * (integrator decision 2026-10-30).
+   * (integrator decision 2026-10-30), except the MCP rows its own `find_tools`
+   * binds on `hostRunId` (`mcpBindingRunIds` in `nesting.ts`) and the
+   * bindings its admission copies there (`subagentBackground/store.ts`).
    */
   hostRunId: string;
   mode: SubagentTurnMode;

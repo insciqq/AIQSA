@@ -61,7 +61,7 @@ async function fixture() {
       providerCallId: randomUUID(), toolName, arguments: {}, state: "running", ...(mcpRunBindingId ? { mcpRunBindingId } : {}) } });
     return row.id;
   };
-  /** A background sub-agent turn's own run, as `backgroundRunner.ts` admits it: it holds no MCP binding rows. */
+  /** A background sub-agent turn's own run, as `backgroundRunner.ts` admits it: it holds no MCP binding rows yet. */
   const background = async (parentRunId: string, anchorRunId: string, userMessageId: string, parentThreadId?: string) => {
     const parentCall = await call(parentRunId, "call_subagent");
     const thread = await prisma.subagentThread.create({ data: { anchorRunId, chatId: chat.id, name: `agent-${ordinal}`,
@@ -89,7 +89,10 @@ async function fixture() {
     const read = await repository.read(actor, saved.handle.slice(5));
     return { handle: saved.handle, state: read.state };
   };
-  return { background, mainRun, saveAndRead };
+  /** A binding row of the generation on `runId`: what its own `find_tools` bound there, or a child's admission copied. */
+  const bind = async (runId: string) => (await prisma.mcpRunBinding.create({ data: { modelRunId: runId, runtimeGenerationId: generation.id,
+    runtimeGenerationFingerprint: fingerprint } })).id;
+  return { background, bind, mainRun, saveAndRead };
 }
 
 describe("MCP observation source authority", () => {
@@ -107,6 +110,29 @@ describe("MCP observation source authority", () => {
     expect(await f.saveAndRead(child.id, main.bindingId)).toMatchObject({ state: "READY" });
     const grandchild = await f.background(child.id, main.id, main.userMessageId, child.threadId);
     expect(await f.saveAndRead(grandchild.id, main.bindingId)).toMatchObject({ state: "READY" });
+  });
+
+  it("saves and reads a background sub-agent's MCP result under the binding its own find_tools made on its run", async () => {
+    const f = await fixture();
+    const main = await f.mainRun();
+    const child = await f.background(main.id, main.id, main.userMessageId);
+    // Production 2026-11-20: such a tool was refused before it ran, since nothing read the sub-agent's own rows.
+    expect(await f.saveAndRead(child.id, await f.bind(child.id))).toMatchObject({ state: "READY" });
+    // A child of that sub-agent calls under the copies its admission took.
+    const grandchild = await f.background(child.id, main.id, main.userMessageId, child.threadId);
+    expect(await f.saveAndRead(grandchild.id, await f.bind(grandchild.id))).toMatchObject({ state: "READY" });
+  });
+
+  it("refuses a sibling sub-agent's own binding, and a background parent's own to its child", async () => {
+    const f = await fixture();
+    const main = await f.mainRun();
+    const [one, two] = [await f.background(main.id, main.id, main.userMessageId), await f.background(main.id, main.id, main.userMessageId)];
+    const ones = await f.bind(one.id);
+    expect(await f.saveAndRead(two.id, ones)).toEqual({ unsavedReason: "tool_observation_unavailable" });
+    // The main agent never calls under a sub-agent's row either.
+    expect(await f.saveAndRead(main.id, ones)).toEqual({ unsavedReason: "tool_observation_unavailable" });
+    const child = await f.background(one.id, main.id, main.userMessageId, one.threadId);
+    expect(await f.saveAndRead(child.id, ones)).toEqual({ unsavedReason: "tool_observation_unavailable" });
   });
 
   it("refuses a binding held by any other run of the chat", async () => {

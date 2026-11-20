@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { copyCallProviderBindings, createPrismaSubagentBackgroundStore } from "./store";
+import { copyCallProviderBindings, copyParentMcpRunBindings, createPrismaSubagentBackgroundStore } from "./store";
 
 const scope = { chatId: "chat-1", userId: "user-1" };
 
@@ -146,6 +146,37 @@ describe("the provider bindings a background run takes from its parent", () => {
     const { client, createMany, findMany } = tx([row("run-main", "answer"), row("run-other", "vision_analysis")]);
     await copyCallProviderBindings(client, { fromRunId: "run-main", toRunId: "run-bg" });
     expect(findMany).toHaveBeenCalledOnce();
+    expect(createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("the MCP bindings a child of a background sub-agent takes from it", () => {
+  type Binding = Readonly<{ modelRunId: string; runtimeGenerationFingerprint: string; runtimeGenerationId: string | null }>;
+  const row = (modelRunId: string, fingerprint: string, generation: string | null = `generation-${fingerprint}`): Binding =>
+    ({ modelRunId, runtimeGenerationFingerprint: fingerprint, runtimeGenerationId: generation });
+
+  /** A run's rows as the database filters and orders them. */
+  function tx(rows: readonly Binding[]) {
+    const findMany = vi.fn(async ({ orderBy, where }: { orderBy: { runtimeGenerationFingerprint: "asc" }; where: { modelRunId: string } }) => {
+      expect(orderBy).toEqual({ runtimeGenerationFingerprint: "asc" });
+      return rows.filter((binding) => binding.modelRunId === where.modelRunId)
+        .sort((left, right) => left.runtimeGenerationFingerprint.localeCompare(right.runtimeGenerationFingerprint))
+        .map(({ modelRunId: _run, ...binding }) => binding);
+    });
+    const createMany = vi.fn(async (_input: { data: readonly Binding[] }) => ({ count: 0 }));
+    return { client: { mcpRunBinding: { createMany, findMany } } as unknown as Parameters<typeof copyParentMcpRunBindings>[0], createMany };
+  }
+
+  it("copies the rows its parent's own find_tools made, unchanged and in fingerprint order, onto the child's run", async () => {
+    const { client, createMany } = tx([row("run-bg", "fp-b"), row("run-bg", "fp-a", null), row("run-main", "fp-c")]);
+    await copyParentMcpRunBindings(client, { fromRunId: "run-bg", toRunId: "run-child" });
+    expect(createMany).toHaveBeenCalledOnce();
+    expect(createMany.mock.calls[0]![0].data).toEqual([row("run-child", "fp-a", null), row("run-child", "fp-b")]);
+  });
+
+  it("writes nothing for a parent that bound nothing of its own", async () => {
+    const { client, createMany } = tx([row("run-main", "fp-c")]);
+    await copyParentMcpRunBindings(client, { fromRunId: "run-bg", toRunId: "run-child" });
     expect(createMany).not.toHaveBeenCalled();
   });
 });

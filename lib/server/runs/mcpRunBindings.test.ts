@@ -100,6 +100,14 @@ describe("atomic MCP run bindings", () => {
     ]));
   });
 
+  it("inserts in fingerprint order whatever order the plan lists them, so writers of one run's rows never cross", async () => {
+    const executeRaw = vi.fn<ExecuteRaw>(async () => 1);
+    await insertAcceptedMcpRunBindings(transaction(executeRaw), { bindings: [...bindings].reverse(), runId: "run-1", tools: [],
+      userId: "user-1" });
+    expect(executeRaw.mock.calls.map(([strings, ...values]) => boundAfter(strings, values, 'generation."fingerprint" =')))
+      .toEqual(["fingerprint-1", "fingerprint-2"]);
+  });
+
   it("rejects a stale binding when the guarded insert selects no current generation", async () => {
     const executeRaw = vi.fn<ExecuteRaw>(async () => 0);
 

@@ -240,7 +240,10 @@ export async function insertAcceptedMcpRunBindings(
     fingerprints.add(binding.fingerprint);
   }
 
-  for (const binding of bindings) {
+  // In fingerprint order, whatever order the plan lists them: writers of one run's rows take their unique-index entries
+  // in one order (`prismaRepositoryMcpDiscovery.ts`).
+  for (const binding of [...bindings].sort((left, right) =>
+    left.fingerprint < right.fingerprint ? -1 : left.fingerprint > right.fingerprint ? 1 : 0)) {
     const inserted = await tx.$executeRaw`
       INSERT INTO "McpRunBinding" (
         "id",

@@ -5,6 +5,7 @@ import {
   MAIN_AGENT_AUTHOR,
   childAdmissionRefusal,
   mailboxWriter,
+  mcpBindingRunIds,
   runBindingOwner,
   turnAnswerMessageId,
   turnMainRunId,
@@ -133,5 +134,20 @@ describe("the run that owns a run's bindings", () => {
     // A foreground turn never has a run of its own.
     const foreground = db([{ ...background, subagentTurn: { mode: "foreground", parentRun: { subagentTurn: null }, parentRunId: "run-main" } }, main]);
     expect(await runBindingOwner(foreground.client, { chatId: "chat", runId: "run-bg", userId: "user" })).toBeNull();
+  });
+});
+
+describe("the runs whose MCP bindings a run's calls may link", () => {
+  it("is a main-agent run's own alone", () => {
+    expect(mcpBindingRunIds({ id: "run-main", subagentTurn: null })).toEqual(["run-main"]);
+  });
+
+  it("is a background sub-agent's own run and the main-agent run behind its turn, a child's too, never its parent's run", () => {
+    // What its own `find_tools` loaded is bound on its own run; the rest it calls under the main-agent run's rows.
+    expect(mcpBindingRunIds({ id: "run-bg", subagentTurn: { parentRun: { subagentTurn: null }, parentRunId: "run-main" } }))
+      .toEqual(["run-bg", "run-main"]);
+    // A child of that sub-agent holds copies of its parent's own rows, so its parent's run is none of its.
+    expect(mcpBindingRunIds({ id: "run-child", subagentTurn: { parentRun: { subagentTurn: { parentRunId: "run-main" } }, parentRunId: "run-bg" } }))
+      .toEqual(["run-child", "run-main"]);
   });
 });
