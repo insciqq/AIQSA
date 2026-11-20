@@ -413,7 +413,8 @@ services:
       timeout: 3s
       retries: 30
     logging: *default-logging
-    mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-1g}
+    # A backup copies every object through the filer; 1g was OOM-killed during a production backup (2026-11-20).
+    mem_limit: ${AIQSA_MINIO_MEMORY_LIMIT:-2g}
     network_mode: none
     read_only: true
     restart: unless-stopped
