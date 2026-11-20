@@ -1,7 +1,11 @@
 import { create } from "zustand";
 
-export type SavedArtifactPanelTarget = Readonly<{ chatId: string; artifactId: string; versionId: string; draftId?: never }>;
-export type ArtifactPanelTarget = SavedArtifactPanelTarget | Readonly<{ chatId: string; draftId: string; artifactId?: never; versionId?: never }>;
+export type SavedArtifactPanelTarget = Readonly<{ chatId: string; artifactId: string; versionId: string; draftId?: never; file?: never }>;
+/** A PDF or text file of an answer, previewed beside the chat like an artifact (operator request 2026-11-20). */
+export type PanelFile = Readonly<{ attachmentId: string; byteSize: number; fileName: string; previewKind: "pdf" | "text" }>;
+export type FileArtifactPanelTarget = Readonly<{ chatId: string; file: PanelFile; artifactId?: never; draftId?: never; versionId?: never }>;
+export type ArtifactPanelTarget = SavedArtifactPanelTarget | FileArtifactPanelTarget |
+  Readonly<{ chatId: string; draftId: string; artifactId?: never; versionId?: never; file?: never }>;
 
 export const useArtifactPanelStore = create<{ open: ArtifactPanelTarget | null }>(() => ({ open: null }));
 
@@ -13,7 +17,8 @@ export function focusArtifactPanel(): void {
 
 export function openArtifactPanel(target: ArtifactPanelTarget, source?: HTMLElement | null): void {
   const previous = useArtifactPanelStore.getState().open;
-  if (previous?.chatId === target.chatId && previous.draftId === target.draftId && previous.artifactId === target.artifactId && previous.versionId === target.versionId) {
+  if (previous?.chatId === target.chatId && previous.draftId === target.draftId && previous.artifactId === target.artifactId &&
+    previous.versionId === target.versionId && previous.file?.attachmentId === target.file?.attachmentId) {
     focusArtifactPanel();
     return;
   }

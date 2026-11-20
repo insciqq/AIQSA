@@ -858,6 +858,32 @@ describe("answer outputs v2", () => {
     await waitFor(() => expect(markdown).toHaveTextContent("First **point**."));
   });
 
+  it("hands a PDF or text output to the chat's panel when it has one, and keeps an image's own viewer", () => {
+    const onOpenFile = vi.fn();
+    const files = [
+      { attachmentId: "notes-id", byteSize: 120, fileName: "notes.md", mimeType: "text/markdown", relativePath: "notes.md" },
+      { attachmentId: "report-id", byteSize: 2_048, fileName: "report.pdf", mimeType: "application/pdf", relativePath: "report.pdf" },
+      { attachmentId: "chart-id", byteSize: 2_048, fileName: "chart.png", mimeType: "image/png", relativePath: "chart.png" }
+    ];
+    render(<AnswerOutputsV2 canSaveFiles onOpenFile={onOpenFile} artifact={{ citations: [], generatedFiles: files, reasoningText: [], sources: [] }} />);
+    const region = screen.getByRole("region", { name: "Generated files" });
+    const notes = within(region).getByRole("button", { name: "notes.md" });
+    // A panel is no dialog.
+    expect(notes).not.toHaveAttribute("aria-haspopup");
+    fireEvent.click(notes);
+    expect(onOpenFile).toHaveBeenLastCalledWith(files[0], "text", notes);
+    const report = within(region).getByRole("button", { name: "report.pdf" });
+    fireEvent.click(region.querySelectorAll<HTMLButtonElement>("button.v2-generated-file-tile")[1]!);
+    expect(onOpenFile).toHaveBeenLastCalledWith(files[1], "pdf", report);
+    expect(report).toHaveFocus();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const chart = within(region).getByRole("button", { name: "chart.png" });
+    expect(chart).toHaveAttribute("aria-haspopup", "dialog");
+    fireEvent.click(chart);
+    expect(onOpenFile).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("dialog", { name: "chart.png" })).toBeVisible();
+  });
+
   it("renders settled generated files with safe metadata and authorized downloads", () => {
     render(<AnswerOutputsV2 artifact={{
       citations: [],

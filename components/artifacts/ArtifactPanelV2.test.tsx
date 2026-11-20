@@ -19,6 +19,39 @@ function Harness({ version, compact = false }: { version: number; compact?: bool
   return target ? <ArtifactPanelV2 target={target} compact={compact} latest={latest(version)} onEdit={vi.fn(async () => undefined)} /> : null;
 }
 afterEach(() => { closeArtifactPanel(false); currentVersionId = "v1"; vi.unstubAllGlobals(); });
+describe("an answer's file in the chat panel (operator request 2026-11-20)", () => {
+  const panelFile = (attachmentId: string, fileName: string) => ({ attachmentId, byteSize: 20, fileName, previewKind: "text" as const });
+
+  it("docks beside the chat, replaces another file, expands to the window and back, and closes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => new Response(path.includes("/f2/") ? "second file" : "first file")));
+    openArtifactPanel({ chatId: "chat", file: panelFile("f1", "first.txt") });
+    render(<Harness version={1} />);
+    const docked = await screen.findByRole("complementary", { name: "File preview: first.txt" });
+    await waitFor(() => expect(docked).toHaveTextContent("first file"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Another file takes the panel: the same artifact panel's rule, keyed by the file.
+    act(() => openArtifactPanel({ chatId: "chat", file: panelFile("f2", "second.txt") }));
+    const second = await screen.findByRole("complementary", { name: "File preview: second.txt" });
+    await waitFor(() => expect(second).toHaveTextContent("second file"));
+    fireEvent.click(screen.getByRole("button", { name: "Expand preview" }));
+    const expanded = await screen.findByRole("dialog", { name: "File preview: second.txt" });
+    fireEvent.keyDown(expanded, { key: "Escape" });
+    await screen.findByRole("complementary", { name: "File preview: second.txt" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Expand preview" })).toHaveFocus());
+    fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
+    expect(useArtifactPanelStore.getState().open).toBeNull();
+  });
+
+  it("takes the window on a narrow screen, with no Expand", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("first file")));
+    openArtifactPanel({ chatId: "chat", file: panelFile("f1", "first.txt") });
+    render(<Harness version={1} compact />);
+    const dialog = await screen.findByRole("dialog", { name: "File preview: first.txt" });
+    await waitFor(() => expect(dialog).toHaveTextContent("first file"));
+    expect(screen.queryByRole("button", { name: "Expand preview" })).toBeNull();
+  });
+});
+
 describe("chat artifact panel", () => {
   it("follows new current versions without moving focus and keeps historical selection", async () => {
     installFixture();

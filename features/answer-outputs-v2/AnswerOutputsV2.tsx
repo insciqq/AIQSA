@@ -354,6 +354,7 @@ export function AnswerOutputsV2({
   onEditArtifact,
   onEditScheduledTask,
   onOpenArtifact,
+  onOpenFile,
   onOpenLibrary,
   onStartAssistantChat,
   onUseImageInArtifact,
@@ -373,6 +374,8 @@ export function AnswerOutputsV2({
   /** Opens a scheduled task the answer created or managed in its editor. */
   onEditScheduledTask?(taskId: string): void | Promise<void>;
   onOpenArtifact?(artifact: ThreadGeneratedArtifact, source: HTMLElement): void;
+  /** Opens an output's PDF or text preview in the chat's panel; without it the preview takes the window. */
+  onOpenFile?: GeneratedFileOpener;
   /** Opens a Settings address (`/?library=...`) a card links to in the shell. */
   onOpenLibrary?(href: string): void;
   /** Starts a new chat with an Assistant an answer created, as `/assistant/<id>` does. */
@@ -402,7 +405,7 @@ export function AnswerOutputsV2({
         <SkillSaveCardsV2 cards={skillSaves} live onOpenLibrary={onOpenLibrary} />
         <ResourceChangeCardsV2 cards={resourceChanges} live navigation={cardNavigation} />
         <McpApprovalCardsV2 cards={mcpApprovals} live runId={runId} />
-        {drafts.length ? <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={drafts} previewImages /> : null}
+        {drafts.length ? <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={drafts} onOpenFile={onOpenFile} previewImages /> : null}
       </div> : null;
   }
   const hasSuggestions = artifact?.groundingDisplay?.provider === "gemini";
@@ -441,7 +444,8 @@ export function AnswerOutputsV2({
       <ResourceChangeCardsV2 cards={resourceChanges} navigation={cardNavigation} />
       <McpApprovalCardsV2 cards={mcpApprovals} offerContinue={latestAnswer} onContinue={onContinueAfterMcpApproval} runId={runId} />
       {hasGeneratedFiles ? (
-        <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} previewImages />
+        <GeneratedFilesV2 key="generated-files" canSave={canSaveFiles} files={artifact?.generatedFiles ?? []} onOpenFile={onOpenFile}
+          previewImages />
       ) : null}
       {artifact?.groundingDisplay?.provider === "gemini" ? (
         <GeminiSearchSuggestionsV2 html={artifact.groundingDisplay.suggestionsHtml} />
@@ -629,10 +633,15 @@ function draftDetails(checkpoint: NonNullable<ThreadGeneratedFile["checkpoint"]>
  * "Draft", so nothing moves when the answer settles; its description and
  * time are the meta line's tooltip, or lines of their own with
  * `describeDrafts` (Export history, where they tell same-named drafts apart). */
-export function GeneratedFilesV2({ files, canSave = false, describeDrafts = false, onUseFile, previewImages = false, useDisabled = false }: Readonly<{
+/** Opens an output's PDF or text preview elsewhere (the chat's panel); `source` takes focus back when it closes. */
+export type GeneratedFileOpener = (file: ThreadGeneratedFile, previewKind: "pdf" | "text", source: HTMLElement) => void;
+
+export function GeneratedFilesV2({ files, canSave = false, describeDrafts = false, onOpenFile, onUseFile, previewImages = false,
+  useDisabled = false }: Readonly<{
   files: readonly ThreadGeneratedFile[];
   canSave?: boolean;
   describeDrafts?: boolean;
+  onOpenFile?: GeneratedFileOpener;
   onUseFile?(attachmentId: string, fileName: string): void;
   previewImages?: boolean;
   useDisabled?: boolean;
@@ -641,6 +650,12 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
   if (files.length === 0) return null;
   const previews = previewImages ? files.filter(previewableImageFile) : [];
   const viewingKind = viewing ? generatedFilePreviewKind(viewing) : null;
+  // A PDF or text file goes to the chat's panel where there is one (operator request 2026-11-20); images keep their viewer.
+  const open = (file: ThreadGeneratedFile, source: HTMLElement) => {
+    const kind = generatedFilePreviewKind(file);
+    if (onOpenFile && (kind === "pdf" || kind === "text")) onOpenFile(file, kind, source);
+    else setViewing(file);
+  };
   return (
     <section className="v2-generated-files" aria-label="Generated files">
       {previews.map((file) => (
@@ -658,13 +673,15 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
                 // one control keyboards and screen readers use, and it takes focus so closing the viewer returns there.
                 <button aria-hidden="true" className="v2-generated-file-tile v2-generated-file-tile-open" tabIndex={-1} type="button"
                   onClick={(event) => {
-                    event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".v2-generated-file-name")?.focus();
-                    setViewing(file);
+                    const name = event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".v2-generated-file-name");
+                    name?.focus();
+                    open(file, name ?? event.currentTarget);
                   }}>{icon}</button>
               ) : <span className="v2-generated-file-tile" aria-hidden="true">{icon}</span>}
               <span className="v2-generated-file-copy">
                 {generatedFilePreviewKind(file) ? (
-                  <button aria-haspopup="dialog" className="v2-generated-file-name v2-focusable" onClick={() => setViewing(file)}
+                  <button aria-haspopup={onOpenFile && generatedFilePreviewKind(file) !== "image" ? undefined : "dialog"}
+                    className="v2-generated-file-name v2-focusable" onClick={(event) => open(file, event.currentTarget)}
                     title={file.relativePath} type="button">
                     <strong>{file.fileName}</strong>
                   </button>

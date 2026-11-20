@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, lazy, useEffect, useState, type ComponentType, type RefObject } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type ComponentType, type RefObject } from "react";
 import type { PdfViewerProps } from "@/features/pdf-viewer-v2/PdfViewerV2";
 import { ArtifactViewerFrameV2 } from "@/components/artifacts/ArtifactViewerFrameV2";
 import { CopyTextBarV2, SourceCode } from "@/components/artifacts/ArtifactCodeV2";
@@ -52,6 +52,8 @@ type Props = Readonly<{
   canSave?: boolean;
   compact: boolean;
   file: FilePreviewFileV2;
+  /** Where the docked viewer sits: the Files page, or the chat's artifact panel (an answer's file). */
+  host?: "chat" | "library";
   group: readonly FilePreviewFileV2[];
   saved: boolean;
   onClose(): void;
@@ -62,29 +64,37 @@ type Props = Readonly<{
 }>;
 
 export function FilePreviewV2(props: Props) {
-  return <ArtifactViewerFrameV2 compact={props.compact} expanded={false} host="library"
-    label={`File preview: ${props.file.name}`} title={props.file.name} onClose={props.onClose}>
-    {initialFocusRef => <FilePreviewPanel {...props} closeRef={initialFocusRef} />}
+  // A docked viewer expands to the whole window and back, as an artifact does; Escape collapses it first.
+  const [expanded, setExpanded] = useState(false);
+  const full = expanded && !props.compact;
+  return <ArtifactViewerFrameV2 compact={props.compact} expanded={full} host={props.host ?? "library"}
+    label={`File preview: ${props.file.name}`} title={props.file.name} onClose={() => { if (full) setExpanded(false); else props.onClose(); }}>
+    {initialFocusRef => <FilePreviewPanel {...props} closeRef={initialFocusRef} expanded={full}
+      onExpand={props.compact ? undefined : () => setExpanded(value => !value)} />}
   </ArtifactViewerFrameV2>;
 }
 
-function FilePreviewPanel({ canSave = false, compact, file, group, saved, onClose, onSelect, onOpen, onUse, useDisabled, closeRef }:
-  Props & { closeRef: RefObject<HTMLButtonElement | null> }) {
+function FilePreviewPanel({ canSave = false, compact, expanded, file, group, saved, onClose, onExpand, onSelect, onOpen, onUse, useDisabled, closeRef }:
+  Props & { closeRef: RefObject<HTMLButtonElement | null>; expanded: boolean; onExpand?: () => void }) {
   const [chosenMode, setChosenMode] = useState<{ fileId: string; mode: "rendered" | "source" } | null>(null);
   const [failedRender, setFailedRender] = useState<string | null>(null);
   const mode = failedRender === file.id ? "source" : chosenMode?.fileId === file.id ? chosenMode.mode : "rendered";
   const markdown = file.previewKind === "text" && ["md", "markdown"].includes(fileExtension(file.name));
   const index = group.findIndex(candidate => candidate.id === file.id);
   const href = attachmentDownloadHref(file.id);
+  const expandRef = useRef<HTMLButtonElement>(null);
+  const wasExpanded = useRef(false);
   useEffect(() => {
     // The shared modal restores its opener when changing back to a dock.
-    // Keep focus in this preview through that transition as well as on entry.
-    const frame = requestAnimationFrame(() => closeRef.current?.focus());
+    // Keep focus in this preview through that transition as well as on entry; collapsing returns to Expand.
+    const target = wasExpanded.current && !expanded ? expandRef : closeRef;
+    wasExpanded.current = expanded;
+    const frame = requestAnimationFrame(() => target.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [closeRef, compact]);
+  }, [closeRef, compact, expanded]);
 
   return <div className="v2-file-preview" data-testid="file-preview">
-    <header className="v2-file-preview-header">
+    <header className="v2-file-preview-header" data-expandable={onExpand ? "" : undefined}>
       <FileTypeTileV2 file={file} />
       <div className="v2-file-preview-heading">
         <h2 title={file.name}>{file.name}</h2>
@@ -92,6 +102,8 @@ function FilePreviewPanel({ canSave = false, compact, file, group, saved, onClos
       </div>
       <a aria-label={`Download ${file.name}`} className="v2-icon-button v2-focusable" download href={href}
         title={`Download ${file.name}`}><UiV2Icon name="download" /></a>
+      {onExpand ? <UiV2IconButton icon={expanded ? "collapse" : "expand"} label={expanded ? "Collapse preview" : "Expand preview"}
+        onClick={onExpand} ref={expandRef} /> : null}
       <UiV2IconButton icon="close" label="Close preview" onClick={onClose} ref={closeRef} />
       {markdown ? <div className="v2-file-preview-modes v2-markdown-editor-modes" role="radiogroup" aria-label="Preview mode"
         onKeyDown={event => {

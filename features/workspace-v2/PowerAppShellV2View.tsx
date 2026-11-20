@@ -1457,6 +1457,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 onOpenArtifact={temporarySession ? undefined : (generated, source) => {
                   if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, artifactId: generated.artifactId, versionId: generated.versionId }, source);
                 }}
+                // An answer's PDF or text file opens in the artifact's panel beside the chat (operator request 2026-11-20).
+                onOpenFile={temporarySession ? undefined : (file, previewKind, source) => {
+                  if (session.activeChatId) openArtifactPanel({ chatId: session.activeChatId, file: { attachmentId: file.attachmentId,
+                    byteSize: file.byteSize, fileName: file.fileName, previewKind } }, source);
+                }}
                 onOpenLibrary={openLibraryHref}
                 onStartAssistantChat={workspace.pane.actions.openAssistantAddress}
                 onUseImageInArtifact={temporarySession || !composer.reuseFile ? undefined : async (attachmentId) => {
@@ -1899,7 +1904,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
               </div>
             ) : null}
             </div>
-            {visibleArtifactPanel ? <ArtifactPanelV2 key={`${visibleArtifactPanel.chatId}:${visibleArtifactPanel.draftId ?? visibleArtifactPanel.artifactId}`}
+            {visibleArtifactPanel ? <ArtifactPanelV2 key={`${visibleArtifactPanel.chatId}:${visibleArtifactPanel.draftId ?? visibleArtifactPanel.artifactId ?? visibleArtifactPanel.file?.attachmentId}`}
               target={visibleArtifactPanel} compact={workspaceWidth < 896} latest={latestPanelArtifact} onEdit={editArtifact}
               draft={thread.artifactDrafts?.find(draft => draft.draftId === visibleArtifactPanel.draftId)} /> : null}
           </LiveWorkspaceSectionV2>

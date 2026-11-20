@@ -25,7 +25,11 @@ const files = [
   { attachmentId: "text-table", byteSize: table.length, fileName: "amounts.csv", mimeType: "text/csv", relativePath: "amounts.csv", body: table }
 ];
 
+/** The viewer, docked beside the chat on a wide screen and taking the window on a narrow one (operator request 2026-11-20). */
+let preview: (name: string) => ReturnType<Page["getByTestId"]>;
+
 async function openChat(page: Page) {
+  preview = (name: string) => page.getByTestId("file-preview").filter({ has: page.getByRole("heading", { name, exact: true }) });
   await installMatrixCatalogFixture(page, { folders: [], chats: [{
     id: chatId, title: "Text outputs", activeLeafMessageId: "answer", createdAt: timestamp, updatedAt: timestamp,
     defaultProvider: "openai", defaultModelId: "gpt-5.5", folderId: null, pinned: false, messageCount: 2,
@@ -67,14 +71,14 @@ test.describe("text files in an answer", () => {
       await expectWithinViewport(page, region.locator("li", { hasText: "amounts.csv" }));
     } });
     await tile.click();
-    const fromTile = page.getByRole("dialog", { name: "File preview: cookies.txt" });
+    const fromTile = preview("cookies.txt");
     await expect(fromTile.getByText("# Netscape HTTP Cookie File")).toBeVisible();
     await fromTile.getByRole("button", { name: "Close preview" }).click();
     await expect(page.getByTestId("file-preview")).toHaveCount(0);
     await expect(name).toBeFocused();
 
     await name.click();
-    const text = page.getByRole("dialog", { name: "File preview: cookies.txt" });
+    const text = preview("cookies.txt");
     await expect(text.getByText("# Netscape HTTP Cookie File")).toBeVisible();
     await text.getByRole("button", { name: "Copy" }).click();
     await expect(text.getByRole("button", { name: "Copied" })).toBeVisible();
@@ -84,12 +88,23 @@ test.describe("text files in an answer", () => {
       await expectWithinViewport(page, text.getByRole("button", { name: /^Cop(y|ied)$/u }));
       await expectWithinViewport(page, text.getByRole("button", { name: "Close preview" }));
     } });
+    // Wide: the panel sits beside the chat, which stays in view; Expand takes the window and Escape gives it back.
+    await expect(page.getByRole("complementary", { name: "File preview: cookies.txt" })).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(region).toBeInViewport();
+    await page.screenshot({ path: testInfo.outputPath("answer-text-preview-panel-desktop.png") });
+    await text.getByRole("button", { name: "Expand preview" }).click();
+    await expect(page.getByRole("dialog", { name: "File preview: cookies.txt" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("answer-text-preview-panel-expanded.png") });
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("complementary", { name: "File preview: cookies.txt" })).toBeVisible();
+    await expect(text.getByRole("button", { name: "Expand preview" })).toBeFocused();
     await text.getByRole("button", { name: "Close preview" }).click();
     await expect(page.getByTestId("file-preview")).toHaveCount(0);
     await expect(name).toBeFocused();
 
     await region.getByRole("button", { name: "notes.md", exact: true }).click();
-    const markdown = page.getByRole("dialog", { name: "File preview: notes.md" });
+    const markdown = preview("notes.md");
     await expect(markdown.getByRole("heading", { name: "Release notes" })).toBeVisible();
     await expect(markdown.getByRole("radio", { name: "Rendered" })).toBeChecked();
     await markdown.getByRole("button", { name: "Copy" }).click();
@@ -108,7 +123,7 @@ test.describe("text files in an answer", () => {
     await markdown.getByRole("button", { name: "Close preview" }).click();
 
     await region.getByRole("button", { name: "amounts.csv", exact: true }).click();
-    const csv = page.getByRole("dialog", { name: "File preview: amounts.csv" });
+    const csv = preview("amounts.csv");
     await expect(csv.getByText("name,amount")).toBeVisible();
     await expect(csv.getByRole("button", { name: "Copy" })).toBeVisible();
     await csv.getByRole("button", { name: "Close preview" }).click();

@@ -864,6 +864,11 @@
   border-bottom: 1px solid var(--v2-color-border);
 }
 
+/* A docked viewer also has Expand beside Download and Close. */
+.v2-file-preview-header[data-expandable] {
+  grid-template-columns: 2.5rem minmax(0, 1fr) auto auto auto;
+}
+
 .v2-file-preview-heading {
   min-width: 0;
 }

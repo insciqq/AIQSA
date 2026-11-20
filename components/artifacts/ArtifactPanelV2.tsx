@@ -7,6 +7,7 @@ import type { ThreadGeneratedArtifact } from "@/lib/contracts/chats";
 import { ArtifactViewerV2 } from "./ArtifactViewerV2";
 import { closeArtifactPanel, selectArtifactPanelVersion, useArtifactPanelStore, type ArtifactPanelTarget, type SavedArtifactPanelTarget } from "./artifactPanelStore";
 import { ArtifactGenerationPanelV2 } from "./ArtifactGenerationPanelV2";
+import { FilePreviewV2 } from "@/features/library-v2/FilePreviewV2";
 import type { ArtifactGenerationDraft } from "./artifactGenerationState";
 
 type Props = Readonly<{
@@ -28,6 +29,14 @@ export function ArtifactPanelV2(props: Props) {
   }, [props.target, saved]);
   if (props.target.draftId !== undefined) {
     return <ArtifactGenerationPanelV2 draft={props.draft} compact={props.compact} />;
+  }
+  if (props.target.file) {
+    const { file } = props.target;
+    // An answer's file: the Files viewer in the artifact's place, its PDF Save to Files included (no temporary chat has the panel).
+    const viewed = { byteSize: file.byteSize, canOpenChat: false, id: file.attachmentId, name: file.fileName,
+      previewKind: file.previewKind, status: "ready" as const };
+    return <FilePreviewV2 canSave compact={props.compact} file={viewed} group={[viewed]} host="chat" onClose={() => closeArtifactPanel()}
+      onSelect={() => undefined} saved={false} useDisabled={false} />;
   }
   return <SavedArtifactPanelV2 {...props} target={props.target} />;
 }
