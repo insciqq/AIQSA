@@ -19,7 +19,8 @@ const failureMessage = "Workspace stopped execution, but could not durably confi
 const workspace = { available: true, enabled: true, internetEnabled: false, sessionState: "ready" };
 const drafts: ThreadGeneratedFile[] = ["one", "two"].map((version, index) => ({
   attachmentId: `checkpoint-layout-${version}`, byteSize: 18,
-  fileName: "composition.psd", mimeType: "application/octet-stream", relativePath: "composition.psd",
+  // Two files of one name at different paths: a later checkpoint of the same path replaces the earlier draft (2026-11-20).
+  fileName: "composition.psd", mimeType: "application/octet-stream", relativePath: index ? "variants/composition.psd" : "composition.psd",
   checkpoint: { id: `checkpoint-${version}`, createdAt: `2026-09-24T09:0${index}:00.000Z`,
     description: index ? "Adjusted composition" : `Original composition · ${"LongDescription".repeat(12)}` }
 }));

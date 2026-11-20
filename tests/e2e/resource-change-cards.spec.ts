@@ -132,8 +132,9 @@ test("resource change cards stay compact and every verb stays reachable at every
 
   const instructions = page.locator("[data-resource='instructions']");
   await expect(instructions).toContainText("Instructions updated");
-  await captureState(page, info, "instructions-updated", { anchor: instructions, sizes, atEachSize: async () => {
-    await expectWithinViewport(page, instructions.getByRole("button", { name: `Undo changes to ${instructionsUpdated.name}` }));
+  const instructionsUndo = instructions.getByRole("button", { name: `Undo changes to ${instructionsUpdated.name}` });
+  await captureState(page, info, "instructions-updated", { anchor: instructionsUndo, sizes, atEachSize: async () => {
+    await expectWithinViewport(page, instructionsUndo);
     await expectWithinViewport(page, instructions.getByRole("link", { name: "Open Instructions" }));
     await expectNoHorizontalOverflow(page);
   } });
