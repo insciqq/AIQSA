@@ -122,6 +122,30 @@ describe("WorkspaceSecretsPanel", () => {
       } } });
   });
 
+  it("offers Sign in again on each saved sign-in whose file names its site, and reports a chat that could not open", async () => {
+    const mail: WorkspaceSecretSummary = { ...saved, id: "10000000-0000-4000-8000-000000000031", kind: "browser_session",
+      name: "mail.example.com", originalName: "mail.example.com.json", browserSession: { autoSaved: true } };
+    const imported: WorkspaceSecretSummary = { ...saved, id: "10000000-0000-4000-8000-000000000032", kind: "browser_session",
+      name: "My import", originalName: "my-login.json", browserSession: { autoSaved: false } };
+    request.mockResolvedValue(listed([mail, imported, { ...saved, originalName: "notes.example.json" }]));
+    const onSignInAgain = vi.fn(async () => undefined);
+    const { unmount } = render(<WorkspaceSecretsPanel onSignInAgain={onSignInAgain} />);
+    await screen.findByRole("heading", { name: "My import" });
+    expect(screen.getAllByRole("button", { name: /^Sign in again/u })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in again to mail.example.com" }));
+    await waitFor(() => expect(onSignInAgain).toHaveBeenCalledExactlyOnceWith("mail.example.com"));
+
+    onSignInAgain.mockRejectedValueOnce(new Error("The new chat could not be opened."));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in again to mail.example.com" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The new chat could not be opened.");
+    unmount();
+
+    // Without a way to leave Settings there is no button.
+    render(<WorkspaceSecretsPanel />);
+    await screen.findByRole("heading", { name: "My import" });
+    expect(screen.queryByRole("button", { name: /^Sign in again/u })).toBeNull();
+  });
+
   it("shows the latest skipped autosave outcome without names and admits browser imports up to the browser limit", async () => {
     const browser: WorkspaceSecretSummary = { ...saved, kind: "browser_session", name: "Shop session", originalName: "shop.example.json",
       byteSize: 600 * 1024, browserSession: { autoSaved: true } };

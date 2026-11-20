@@ -63,6 +63,7 @@ import { InstructionsSettingsPanel } from "@/features/settings-v2/InstructionsSe
 import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPanel";
 import { SubagentsPanelV2 } from "@/features/library-v2/subagents/SubagentsPanelV2";
 import { ScheduledTasksPanel } from "@/features/scheduled-tasks/ScheduledTasksPanel";
+import { requestBrowserSignIn } from "@/features/workspace-v2/browserSignInRequest";
 import { scheduledTaskMemoryAvailability, scheduledTaskWorkspaceAvailability } from "@/features/scheduled-tasks/scheduledTaskDraft";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
@@ -175,6 +176,19 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
       throw new Error("This chat is no longer available.");
     }
     closeLibrary();
+  };
+  /**
+   * Sign in again from Settings: leaves for the chat it belongs in (an automation's chat) or a new chat, where the shell
+   * sends the request once that chat is open (`browserSignInRequest.ts`). A chat that is gone throws, like opening it.
+   */
+  const signInAgain = async (chatId: string | null, host: string) => {
+    if (chatId) {
+      await openArtifactChat(chatId);
+    } else {
+      await props.workspace.pane.actions.createChat();
+      closeLibrary();
+    }
+    requestBrowserSignIn(chatId, host);
   };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
   const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
@@ -307,9 +321,10 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "apps", label: "Claude Code & Codex", content: <ConnectedAppsSettingsSectionV2 accountId={session.accountId} onBusyChange={setSectionBusy} /> },
     { id: "defaults", label: "Chat defaults", content: <ChatDefaultsPanelV2 composer={composer} onNavigate={navigateToSection} /> },
     { id: "instructions", label: "Instructions", content: <InstructionsSettingsPanel key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} onSubviewChange={setInstructionsSubview} onRequestExit={requestInstructionsClose} /> },
-    { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy} /> },
+    { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy}
+      onSignInAgain={(host) => signInAgain(null, host)} /> },
     { id: "subagents", label: "Sub-agents", content: <SubagentsPanelV2 key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
-    { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} memory={scheduledTaskMemoryAvailability(memoryData)} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
+    { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} memory={scheduledTaskMemoryAvailability(memoryData)} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} onSignInAgain={signInAgain} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
     {
       id: "mcp",
       label: "MCP servers",

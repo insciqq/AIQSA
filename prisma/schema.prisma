@@ -80,6 +80,8 @@ enum MessageSystemTurnKind {
   answer_revision_request
   /// A wake-up turn: the callbacks of background sub-agents for an idle main agent (`SubagentTurn.callbackRunId`).
   subagent_callback
+  /// A Sign in again request for one site (`lib/contracts/browserSignIn.ts`).
+  browser_sign_in_request
 }
 
 /// How a retired answer review session advanced (see `AnswerReviewSession`).
@@ -6341,6 +6343,10 @@ model ScheduledTaskOccurrence {
   /// When the occurrence first waited for a scheduled Workspace slot; kept after
   /// the wait ends, for the administrator's content-free capacity counts.
   workspaceWaitStartedAt DateTime?
+  /// A `browser_sign_in_required` failure: the host the run's browser last showed
+  /// before its agent asked for the owner, which Sign in again opens; null when
+  /// the run showed none.
+  signInHost     String?                      @db.VarChar(253)
   createdAt      DateTime                     @default(now())
   task           ScheduledTask                @relation(fields: [userId, taskId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
   /// The migration uses column-scoped SET NULL for chat and run references.

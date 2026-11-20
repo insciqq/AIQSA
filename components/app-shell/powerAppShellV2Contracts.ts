@@ -206,6 +206,11 @@ export type ShellThreadView = {
   sendMcpApprovalContinuation?(card: Readonly<{ approvalId: string; serverName: string; toolName: string }>):
     Promise<McpApprovalContinuationOutcome>;
   /**
+   * Sign in again for one site in the open chat (`lib/contracts/browserSignIn.ts`); an attempt that starts no run says
+   * why in the chat's notice.
+   */
+  sendBrowserSignIn?(host: string): Promise<void>;
+  /**
    * "Report a problem…" on the open chat's settled answers: the chat the
    * report goes to and the quiet confirmation after a send. Absent before
    * the chat exists.

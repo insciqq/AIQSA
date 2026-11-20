@@ -4,6 +4,7 @@
  * `lib/domain/scheduledTaskSchedule.ts`; this leaf only owns shapes and bounds.
  */
 
+import { normalizeBrowserSignInHost } from "./browserSignIn";
 import type { ChatDefaultMcpMode } from "./chatDefaults";
 
 export const SCHEDULED_TASK_MAX_ACTIVE = 10;
@@ -223,6 +224,8 @@ export type ScheduledTaskLastRun = {
   finishedAt: string;
   /** This run's result is not seen yet, by the rule of `ScheduledTaskRun.unseen`. */
   unseen: boolean;
+  /** See `ScheduledTaskRun.signInHost`. */
+  signInHost?: string;
 };
 
 /**
@@ -356,7 +359,17 @@ export type ScheduledTaskRun = {
   unavailableSources: ScheduledTaskUnavailableSource[];
   /** The task's pinned Skills the run loaded, with the version each used; empty without pins or a run. */
   skills: ScheduledTaskRunSkill[];
+  /**
+   * A run that failed with `SCHEDULED_TASK_BROWSER_SIGN_IN_CODE`: the site its browser showed when its agent asked for
+   * the owner, which Sign in again opens (`lib/contracts/browserSignIn.ts`). Absent when the run showed none.
+   */
+  signInHost?: string;
 };
+
+/** The site a failed run's Sign in again opens, or null when it offers none. */
+export function scheduledTaskSignInHost(run: Pick<ScheduledTaskRun, "reasonCode" | "signInHost" | "state"> | null): string | null {
+  return run?.state === "failed" && run.reasonCode === SCHEDULED_TASK_BROWSER_SIGN_IN_CODE && run.signInHost ? run.signInHost : null;
+}
 
 /**
  * A run that went ahead without a relevant source: its result could not check
@@ -719,9 +732,18 @@ const RUN_STATES: readonly unknown[] = ["pending", "running", "completed", "fail
 const SETTLED_RUN_STATES: readonly unknown[] = ["completed", "failed", "skipped"] satisfies ScheduledTaskSettledRunState[];
 
 function lastRun(value: unknown): value is ScheduledTaskLastRun {
-  return record(value) && keys(value, ["scheduledFor", "state", "reasonCode", "finishedAt", "unseen"]) &&
+  if (!record(value)) return false;
+  const { signInHost, ...fields } = value;
+  return keys(fields, ["scheduledFor", "state", "reasonCode", "finishedAt", "unseen"]) &&
     instant(value.scheduledFor) && SETTLED_RUN_STATES.includes(value.state) &&
-    nullable(value.reasonCode, code) && instant(value.finishedAt) && typeof value.unseen === "boolean";
+    nullable(value.reasonCode, code) && instant(value.finishedAt) && typeof value.unseen === "boolean" &&
+    runSignInHost(signInHost, value.state, value.reasonCode);
+}
+
+/** A run's `signInHost`: absent, or a host on a sign-in failure only. */
+function runSignInHost(value: unknown, state: unknown, reasonCode: unknown): boolean {
+  return value === undefined || (typeof value === "string" && state === "failed" &&
+    reasonCode === SCHEDULED_TASK_BROWSER_SIGN_IN_CODE && normalizeBrowserSignInHost(value) === value);
 }
 
 /** Exactly the projected webhook fields: a token or its hash never crosses the wire. */
@@ -804,7 +826,8 @@ export function decodeScheduledTask(value: unknown): ScheduledTask | null {
     status: value.status as ScheduledTaskStatus, pauseReason: value.pauseReason,
     completionReason: value.completionReason, nextRunAt: value.nextRunAt,
     lastRun: run && {
-      scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen
+      scheduledFor: run.scheduledFor, state: run.state, reasonCode: run.reasonCode, finishedAt: run.finishedAt, unseen: run.unseen,
+      ...(run.signInHost !== undefined ? { signInHost: run.signInHost } : {})
     },
     running: value.running, ...(waitingForWorkspace ? { waitingForWorkspace: true as const } : {}), chatId: value.chatId,
     unseenResult: value.unseenResult,
@@ -845,7 +868,9 @@ export function decodeScheduledTaskRunSkills(value: unknown): ScheduledTaskRunSk
 }
 
 export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null {
-  if (!record(value) || !keys(value, RUN_KEYS) || !id(value.id) ||
+  if (!record(value)) return null;
+  const { signInHost, ...fields } = value;
+  if (!keys(fields, RUN_KEYS) || !id(value.id) || !runSignInHost(signInHost, value.state, value.reasonCode) ||
     !instant(value.scheduledFor) || !RUN_TRIGGERS.includes(value.trigger) ||
     !RUN_STATES.includes(value.state) || !nullable(value.reasonCode, code) || !nullable(value.startedAt, instant) ||
     !nullable(value.finishedAt, instant) || !nullable(value.chatId, id) || typeof value.unseen !== "boolean" ||
@@ -857,7 +882,7 @@ export function decodeScheduledTaskRun(value: unknown): ScheduledTaskRun | null 
     id: value.id, scheduledFor: value.scheduledFor, trigger: value.trigger as ScheduledTaskRunTrigger,
     state: value.state as ScheduledTaskRunState,
     reasonCode: value.reasonCode, startedAt: value.startedAt, finishedAt: value.finishedAt, chatId: value.chatId,
-    unseen: value.unseen, unavailableSources, skills
+    unseen: value.unseen, unavailableSources, skills, ...(typeof signInHost === "string" ? { signInHost } : {})
   };
 }
 
@@ -997,8 +1022,9 @@ export function scheduledTaskReasonMessage(reasonCode: string | null): string | 
     case "model_run_cancelled": return "Stopped in the chat.";
     case "run_deadline": return `Stopped after running for ${SCHEDULED_TASK_RUN_DEADLINE_MINUTES} minutes.`;
     case SCHEDULED_TASK_BROWSER_SIGN_IN_CODE:
-      return "A website needed you to sign in again or pass a check. Open the automation's chat and ask the agent to open the " +
-        "site; sign in in the live browser there, and later runs use the saved sign-in.";
+      return "A website needed you to sign in again or pass a check. Use Sign in again on the automation in Settings › " +
+        "Automations, or ask the agent in its chat to open the site; sign in in the live browser there, and later runs use " +
+        "the saved sign-in.";
     default: return "The run did not complete.";
   }
 }

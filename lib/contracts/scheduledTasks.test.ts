@@ -53,7 +53,10 @@ import {
   scheduledTaskSourceMessage,
   scheduledTaskToolDefaults,
   scheduledTaskWebhookPath,
+  SCHEDULED_TASK_BROWSER_SIGN_IN_CODE,
+  scheduledTaskSignInHost,
   type ScheduledTask,
+  type ScheduledTaskRun,
   type ScheduledTaskSchedule
 } from "./scheduledTasks";
 
@@ -213,6 +216,26 @@ describe("scheduled task wire contract", () => {
       { ...run, skills: Array.from({ length: 5 }, () => ({ name: "digest", version: 1 })) }]) {
       expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [malformed] })).toBeNull();
     }
+  });
+
+  it("carries the site a sign-in failure recorded, on that failure only, for its Sign in again", () => {
+    const failed = { id: "run-3", scheduledFor: "2026-11-20T06:00:00.000Z", trigger: "schedule", state: "failed",
+      reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, startedAt: "2026-11-20T06:00:05.000Z", finishedAt: "2026-11-20T06:03:00.000Z",
+      chatId: "chat-1", unseen: false, unavailableSources: [], skills: [], signInHost: "mail.example.com" };
+    expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [failed] })?.recentRuns).toEqual([failed]);
+    expect(scheduledTaskSignInHost(failed as ScheduledTaskRun)).toBe("mail.example.com");
+    const { signInHost: _host, ...unnamed } = failed;
+    expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [unnamed] })?.recentRuns).toEqual([unnamed]);
+    expect(scheduledTaskSignInHost(unnamed as ScheduledTaskRun)).toBeNull();
+    for (const malformed of [{ ...failed, signInHost: "https://mail.example.com" }, { ...failed, signInHost: "Mail.example.com" },
+      { ...failed, signInHost: null }, { ...failed, reasonCode: "run_failed" }, { ...failed, state: "completed", reasonCode: null }]) {
+      expect(decodeScheduledTaskDetailResponse({ task, recentRuns: [malformed] }), JSON.stringify(malformed)).toBeNull();
+    }
+    const lastRun = { scheduledFor: failed.scheduledFor, state: "failed", reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE,
+      finishedAt: failed.finishedAt, unseen: false, signInHost: "mail.example.com" };
+    expect(decodeScheduledTask({ ...task, lastRun })).toEqual({ ...task, lastRun });
+    expect(decodeScheduledTask({ ...task, lastRun: { ...lastRun, signInHost: "mail.example.com/login" } })).toBeNull();
+    expect(decodeScheduledTask({ ...task, lastRun: { ...task.lastRun, signInHost: "mail.example.com" } })).toBeNull();
   });
 
   it("starts a new task's switches from the composer defaults and marks runs that missed a source", () => {

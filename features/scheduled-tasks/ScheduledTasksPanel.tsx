@@ -8,7 +8,7 @@ import { useEventCallback } from "@/components/app-shell/useEventCallback";
 import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import type { Catalog } from "@/lib/contracts/catalog";
-import type { ScheduledTask, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
+import { scheduledTaskSignInHost, type ScheduledTask, type ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTaskSheet, type ScheduledTaskRecentRuns } from "./ScheduledTaskSheet";
 import {
   blankScheduledTaskDraft,
@@ -151,6 +151,7 @@ export function ScheduledTasksPanel({
   memory = "unknown",
   onBusyChange,
   onOpenChat,
+  onSignInAgain,
   workspace = "unknown"
 }: Readonly<{
   accountId: string;
@@ -159,6 +160,11 @@ export function ScheduledTasksPanel({
   memory?: ScheduledTaskMemoryAvailability;
   onBusyChange?(busy: boolean): void;
   onOpenChat(chatId: string): Promise<void> | void;
+  /**
+   * Sign in again on a run that failed because a site needed the owner: leaves Settings for that chat (a new one without
+   * it) and asks the agent there to open the site and hand the browser over.
+   */
+  onSignInAgain?(chatId: string | null, host: string): Promise<void>;
   /** The installation's Workspace availability, from the shell's own read. */
   workspace?: ScheduledTaskWorkspaceAvailability;
 }>) {
@@ -266,6 +272,14 @@ export function ScheduledTasksPanel({
     editorEpoch.current += 1;
     setEditor(null);
     void openTaskChat(task, chatId);
+  }
+
+  /** Leaves the editor for one failed run's Sign in again. */
+  function signInAgainFromRun(task: ScheduledTask, chatId: string | null, host: string) {
+    restoreFocus.current = task.id;
+    editorEpoch.current += 1;
+    setEditor(null);
+    signInAgain(task, chatId, host);
   }
 
   // "Edit task" in a task's chat opens Settings › Automations with that task's editor.
@@ -387,12 +401,19 @@ export function ScheduledTasksPanel({
    * Settings. Unlike a mutation it never reports the panel busy, because Settings
    * refuses to close while it is; a chat that is gone reports on the row.
    */
-  async function openTaskChat(task: ScheduledTask, chatId: string) {
+  function openTaskChat(task: ScheduledTask, chatId: string) {
+    return leaveForChat(task, () => onOpenChat(chatId));
+  }
+  /** Sign in again on a sign-in failure, the same way: in the run's chat, or a new chat when the task has none. */
+  function signInAgain(task: ScheduledTask, chatId: string | null, host: string) {
+    if (onSignInAgain) void leaveForChat(task, () => onSignInAgain(chatId, host));
+  }
+  async function leaveForChat(task: ScheduledTask, go: () => Promise<void> | void) {
     if (pending.current) return;
     pending.current = true; setNotice(null);
     setRowErrors(({ [task.id]: _removed, ...rest }) => rest);
     try {
-      await onOpenChat(chatId);
+      await go();
     } catch (error) {
       if (!active.current) return;
       setRowErrors((current) => ({ ...current, [task.id]: error instanceof Error && !(error instanceof ScheduledTaskApiError)
@@ -459,6 +480,7 @@ export function ScheduledTasksPanel({
               onEdit={() => openEdit(task)}
               onOpenChat={() => void openChat(task)}
               onRunNow={() => void runNow(task)}
+              onSignInAgain={onSignInAgain ? (host) => signInAgain(task, task.chatId, host) : null}
               onToggle={(resume) => void setPaused(task, resume)}
             />
           ))}
@@ -486,6 +508,8 @@ export function ScheduledTasksPanel({
           })}
           onClose={closeEditor}
           onOpenRunChat={(chatId) => { if (editor.original) openRunChat(editor.original, chatId); }}
+          onSignInAgain={onSignInAgain
+            ? (chatId, host) => { if (editor.original) signInAgainFromRun(editor.original, chatId, host); } : undefined}
           onRunsShown={(runs) => { if (editor.original) runsShown(editor.original, runs); }}
           onSubmit={() => void save()}
           onWebhookTokenIssued={(issuedAt) => {
@@ -507,7 +531,7 @@ export function ScheduledTasksPanel({
  * "…" menu hold the rest.
  */
 function ScheduledTaskRow({
-  busy, deleting, error, onCancelDelete, onConfirmDelete, onDelete, onEdit, onOpenChat, onRunNow, onToggle,
+  busy, deleting, error, onCancelDelete, onConfirmDelete, onDelete, onEdit, onOpenChat, onRunNow, onSignInAgain, onToggle,
   rowBusy, task, titleRef, viewerTimeZone
 }: Readonly<{
   busy: boolean;
@@ -519,6 +543,8 @@ function ScheduledTaskRow({
   onEdit(): void;
   onOpenChat(): void;
   onRunNow(): void;
+  /** Present where Sign in again can leave Settings; shown while the last run failed on a site that needed the owner. */
+  onSignInAgain: ((host: string) => void) | null;
   onToggle(resume: boolean): void;
   rowBusy: boolean;
   task: ScheduledTask;
@@ -526,6 +552,8 @@ function ScheduledTaskRow({
   viewerTimeZone: string;
 }>) {
   const status = scheduledTaskStatusLine(task);
+  // Paused after such failures too: signing in is what lets the next run work.
+  const signInHost = !task.running ? scheduledTaskSignInHost(task.lastRun) : null;
   const titleId = `v2-scheduled-task-${task.id}`;
   const unreadId = `${titleId}-unread`;
   const labelledBy = task.unseenResult ? `${titleId} ${unreadId}` : titleId;
@@ -553,6 +581,12 @@ function ScheduledTaskRow({
           {task.kind === "monitoring" ? <span className="v2-scheduled-row-kind">Monitoring · </span> : null}
           <TranslatableLabel>{status.text}</TranslatableLabel>
         </p>
+        {signInHost && onSignInAgain ? (
+          <p className="v2-scheduled-row-sign-in">
+            <UiV2Button type="button" icon="key" disabled={busy} aria-label={`Sign in again to ${signInHost}`}
+              onClick={() => onSignInAgain(signInHost)}>Sign in again</UiV2Button>
+          </p>
+        ) : null}
         {error ? <p className="v2-scheduled-row-error" role="alert">{error}</p> : null}
       </div>
       <div className="v2-scheduled-row-actions">

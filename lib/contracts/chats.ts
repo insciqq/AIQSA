@@ -1,5 +1,7 @@
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "./memorySearchActivity";
 import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "./fetchUrlActivity";
+import { BROWSER_HANDOFF_OUTCOMES, type BrowserHandoffOutcome } from "./browserLive";
+import { normalizeBrowserSignInHost } from "./browserSignIn";
 import { decodeSearchPlan, type SearchPlan } from "./search";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { isRunProviderWait, type RunProviderWait } from "./runs";
@@ -358,9 +360,24 @@ export type ThreadMcpUnavailableServer = {
   reason: McpUnavailableServerReason;
 };
 
+/**
+ * A `browser_handoff` call that asked the user to sign in (a sign-in, a code or a check) and ended: how, and the host of
+ * the page the browser showed then. Owner-only like the chat; never the page's path or title.
+ */
+export type ThreadBrowserHandoffFacts = { host: string; outcome: BrowserHandoffOutcome };
+
+function decodeThreadBrowserHandoffFacts(value: unknown): ThreadBrowserHandoffFacts | null {
+  if (!isRecord(value) || Object.keys(value).length !== 2 || typeof value.outcome !== "string" ||
+    !(BROWSER_HANDOFF_OUTCOMES as readonly string[]).includes(value.outcome)) return null;
+  const host = normalizeBrowserSignInHost(value.host);
+  return host && host === value.host ? { host, outcome: value.outcome as BrowserHandoffOutcome } : null;
+}
+
 export type ThreadToolActivityCall = FetchUrlActivityFacts & {
   /** An MCP call refused for the user's approval: never sent; the answer's card decides it. */
   approvalRequired?: true;
+  /** `browser_handoff` only: a sign-in handoff that ended, for the answer's Sign in again. */
+  browserHandoff?: ThreadBrowserHandoffFacts;
   details?: { roundIndex: number; ordinal: number };
   /** `computer` only: the command's exit code, once a foreground `computer_shell` call or a job has ended. */
   exitCode?: number;
@@ -1324,8 +1341,10 @@ export function decodeThreadToolActivity(value: unknown): ThreadToolActivity | n
         mcpUnavailable.push({ name, reason: server.reason });
       }
     }
+    const browserHandoff = candidate.browserHandoff === undefined ? null : decodeThreadBrowserHandoffFacts(candidate.browserHandoff);
     calls.push({
       ...(candidate.approvalRequired === true ? { approvalRequired: true as const } : {}),
+      ...(browserHandoff ? { browserHandoff } : {}),
       ...(details ? { details } : {}),
       ...(mcpUnavailable ? { mcpUnavailable } : {}),
       ...(candidate.origin === "memory" && candidate.toolName === "memory_search" ? {

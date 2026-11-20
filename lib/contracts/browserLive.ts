@@ -59,7 +59,7 @@ export const BROWSER_HANDOFF_REASONS = ["sign_in", "verification_code", "captcha
 export type BrowserHandoffReason = (typeof BROWSER_HANDOFF_REASONS)[number];
 
 /** How a handoff ended, as the model learns it. */
-export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out"] as const;
+export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out", "not_answered"] as const;
 export type BrowserHandoffOutcome = (typeof BROWSER_HANDOFF_OUTCOMES)[number];
 
 /** Who drives the browser: the agent, or the user after Take control or during a handoff. */

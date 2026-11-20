@@ -11,6 +11,7 @@ import {
   SCHEDULED_TASK_PROMPT_MAX_LENGTH,
   SCHEDULED_TASK_TITLE_MAX_LENGTH,
   SCHEDULED_TASK_WEEKDAYS,
+  scheduledTaskSignInHost,
   type ScheduledTask,
   type ScheduledTaskChatMode,
   type ScheduledTaskEveryHours,
@@ -88,6 +89,8 @@ export type ScheduledTaskSheetProps = Readonly<{
   onOpenRunChat(chatId: string): void;
   /** The runs the history rendered with unread results, once per load. */
   onRunsShown(runs: readonly ScheduledTaskRun[]): void;
+  /** Leaves the editor for a failed run's Sign in again (its chat, or a new one); unsaved changes are confirmed first. */
+  onSignInAgain?(chatId: string | null, host: string): void;
   onSubmit(): void;
   /** A token was issued for the saved task's webhook, with its issue time; never the token. */
   onWebhookTokenIssued?(issuedAt: string): void;
@@ -138,7 +141,8 @@ function toggled(days: readonly ScheduledTaskWeekday[], day: ScheduledTaskWeekda
 /** Create and edit sheet: one form, a live next-run preview and the task's recent runs. */
 export function ScheduledTaskSheet({
   busy, catalog, draft, emailAvailable, errors, initialDraft, loadSkillOptions, memory = "unknown", notice, onChange, onClose,
-  onOpenRunChat, onRunsShown, onSubmit, onWebhookTokenIssued, original, recentRuns, telegramAvailable = false, viewerTimeZone, workspace = "unknown"
+  onOpenRunChat, onRunsShown, onSignInAgain, onSubmit, onWebhookTokenIssued, original, recentRuns, telegramAvailable = false, viewerTimeZone,
+  workspace = "unknown"
 }: ScheduledTaskSheetProps) {
   const formId = useId();
   const ids = {
@@ -283,6 +287,7 @@ export function ScheduledTaskSheet({
             now={now}
             onOpenChat={(chatId) => leave(() => onOpenRunChat(chatId))}
             onRunsShown={onRunsShown}
+            onSignInAgain={onSignInAgain ? (chatId, host) => leave(() => onSignInAgain(chatId, host)) : undefined}
           />
         ) : null}
         <fieldset className="v2-scheduled-fields" disabled={busy}>
@@ -779,12 +784,13 @@ function SavedWebhook({ hook, now, onTokenIssued, task }: Readonly<{
  * The task's latest runs, first in the editor so results come before
  * settings: the newest few, and the rest on request.
  */
-function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Readonly<{
+function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown, onSignInAgain }: Readonly<{
   recentRuns: ScheduledTaskRecentRuns;
   timeZone: string;
   now: Date;
   onOpenChat(chatId: string): void;
   onRunsShown(runs: readonly ScheduledTaskRun[]): void;
+  onSignInAgain: ((chatId: string | null, host: string) => void) | undefined;
 }>) {
   const headingId = useId();
   const listId = useId();
@@ -808,6 +814,8 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                 {visible.map((run) => {
                   const row = scheduledTaskRunRow(run, timeZone, now);
                   const chatId = run.chatId;
+                  // A run that failed on a site needing the owner offers Sign in again, which opens its chat too.
+                  const signInHost = onSignInAgain ? scheduledTaskSignInHost(run) : null;
                   return (
                     <li key={run.id} data-tone={row.tone} data-unseen={run.unseen || undefined}>
                       <span className="v2-scheduled-run-time">{row.time}</span>
@@ -818,7 +826,12 @@ function RecentRuns({ recentRuns, timeZone, now, onOpenChat, onRunsShown }: Read
                         {row.sources.map((source, index) => <span key={`${index}:${source}`} className="v2-scheduled-run-source">{source}</span>)}
                         {row.skills ? <span className="v2-scheduled-run-source v2-scheduled-run-skills">{row.skills}</span> : null}
                       </span>
-                      {chatId ? (
+                      {signInHost && onSignInAgain ? (
+                        <button type="button" className="v2-scheduled-run-chat v2-focusable"
+                          aria-label={`Sign in again to ${signInHost}`} onClick={() => onSignInAgain(chatId, signInHost)}>
+                          Sign in again
+                        </button>
+                      ) : chatId ? (
                         <button type="button" className="v2-scheduled-run-chat v2-focusable"
                           aria-label={`Open chat from ${row.time}`} onClick={() => onOpenChat(chatId)}>
                           Open chat

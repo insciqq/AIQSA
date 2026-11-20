@@ -11,6 +11,7 @@ import type { LibraryTabIdV2 } from "@/features/library-v2/contracts";
 import { useStudioNavigation } from "@/features/library-v2/useStudioNavigation";
 import { scheduledTaskResultNotice } from "@/features/scheduled-tasks/scheduledTaskPresentation";
 import { requestScheduledTaskEdit, useScheduledTasksStore } from "@/features/scheduled-tasks/scheduledTasksStore";
+import { takeBrowserSignInRequest, useBrowserSignInRequestStore } from "@/features/workspace-v2/browserSignInRequest";
 import {
   renderedUnseenScheduledRuns,
   scheduledTaskContinuingIn,
@@ -1268,6 +1269,7 @@ export function PowerAppShellV2({
   const {
     refreshInterruptedRun,
     regenerateMessage,
+    sendBrowserSignInRequest,
     sendContinueTurn,
     sendMcpApprovalContinuation,
     sendStarterPrompt,
@@ -1342,6 +1344,15 @@ export function PowerAppShellV2({
   });
   // Stable, so a caller that outlives its render (a starter chip in Settings) sends from the current chat.
   const sendStarterEvent = useEventCallback((prompt: string) => void sendStarterPrompt(prompt));
+  // Sign in again from Settings: Settings opens the chat and records the request; it is sent once that chat is open and loaded.
+  const browserSignInRequest = useBrowserSignInRequestStore((state) => state.request);
+  const sendRequestedBrowserSignIn = useEventCallback(() => {
+    const host = takeBrowserSignInRequest(useWorkspaceStore.getState().activeChatId);
+    if (host) void sendBrowserSignInRequest(host);
+  });
+  useEffect(() => {
+    if (browserSignInRequest && !activeChatDetailLoading) sendRequestedBrowserSignIn();
+  }, [activeChatDetailLoading, activeChatId, browserSignInRequest, sendRequestedBrowserSignIn]);
 
   const {
     handleBranchFromMessage,
@@ -1605,6 +1616,7 @@ export function PowerAppShellV2({
     handleThreadScroll,
     interruptedRun: activeChatInterruptedRun,
     refreshInterruptedRun: () => refreshInterruptedRun(),
+    sendBrowserSignIn: sendBrowserSignInRequest,
     sendContinueTurn,
     sendMcpApprovalContinuation,
     problemReport: activeChatId ? {

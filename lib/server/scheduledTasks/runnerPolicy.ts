@@ -73,6 +73,8 @@ export type ScheduledTaskOutcome = Readonly<{
   reasonCode: string | null;
   /** A permanent admission refusal that pauses a scheduled (not manual) task. */
   pauseReason?: ScheduledTaskPauseReason;
+  /** `browser_sign_in_required`: the site the run's browser showed, which Sign in again opens; null when none. */
+  signInHost?: string | null;
 }>;
 
 /**

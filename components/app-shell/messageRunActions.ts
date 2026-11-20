@@ -77,8 +77,10 @@ import {
   MCP_APPROVAL_CONTINUATION_KIND,
   MCP_APPROVAL_CONTINUATION_UNAVAILABLE,
   mcpApprovalContinuationText,
-  type McpApprovalContinuationOutcome
+  type McpApprovalContinuationOutcome,
+  type MessageSystemTurnKind
 } from "@/lib/contracts/mcpApprovals";
+import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText } from "@/lib/contracts/browserSignIn";
 
 type MutableRef<T> = { current: T };
 
@@ -271,6 +273,12 @@ function mcpApprovalContinuationRetryCopy(reason: string): string {
 /** Why Continue on an interrupted answer started no run; Continue retries it. */
 function continueTurnRetryCopy(reason: string): string {
   return continuationRetryCopy(reason, "Continue");
+}
+
+/** Why Sign in again started no run; the button retries it. */
+function browserSignInRetryCopy(reason: string): string {
+  const sentence = reason.trim();
+  return `${/[.!?)]$/u.test(sentence) ? sentence : `${sentence}.`} The sign-in request was not sent. Use Sign in again to try again.`;
 }
 const MCP_APPROVAL_CONTINUATION_UNAVAILABLE_COPY =
   "This approval expired or was already used, so the answer did not continue. Send your request again for a new approval.";
@@ -1422,17 +1430,27 @@ export function useMessageRunActions({
    * normal send/admission path. It never touches the composer draft: failure
    * reports a notice instead of restoring starter text into the draft.
    */
-  async function sendStarterPrompt(promptText: string) {
+  /**
+   * A starter prompt, or a turn the server writes (`systemTurn`: the request body field naming it, and its kind for the
+   * optimistic turn), sent as the open chat's next or first message. A server-written turn never takes the composer's
+   * draft, but waits for a clean composer like a starter; an attempt that starts nothing then says why.
+   */
+  async function sendStarterPrompt(promptText: string, systemTurn?: Readonly<{
+    body: Readonly<Record<string, unknown>>; kind: MessageSystemTurnKind; retryCopy(reason: string): string;
+  }>) {
     const text = promptText.trim();
     const settleChatId = useWorkspaceStore.getState().activeChatId;
+    const notStarted = (reason: string) => {
+      if (systemTurn) setNotice({ ...(settleChatId ? { chatId: settleChatId } : {}), kind: "error", text: systemTurn.retryCopy(reason) });
+    };
     if (assistantUpdatePending(settleChatId) && !(await settleAssistantBeforeRun(settleChatId))) {
-      return;
+      return notStarted("The chat's Assistant change is still being saved.");
     }
     // The open chat is read at call time: a starter sent right after a
     // navigation (a starter chip in Settings) must follow the chat now open.
     const current = useWorkspaceStore.getState();
     if (!text || current.activeChatDetailLoading) {
-      return;
+      return notStarted("The chat is still loading.");
     }
     const sourceSessionKey = useComposerSessionStore.getState().activeSessionKey;
     const sourceSession = selectComposerSession(
@@ -1446,11 +1464,11 @@ export function useMessageRunActions({
       sourceSession.pendingSend ||
       sourceSession.pendingUploadGenerations.length > 0
     ) {
-      return;
+      return notStarted("Send or clear the message in the composer first.");
     }
     const runControlSnapshot = captureRunControlSnapshot();
     if (!runControlSnapshot.model || assistantBlocksRun(runControlSnapshot)) {
-      return;
+      return notStarted(runControlSnapshot.assistant?.blockReason ?? "No available model is selected for this chat.");
     }
     const sourceComposerChatId = chatIdFromComposerSessionKey(sourceSessionKey);
     const initialMemoryPayload = temporaryAdmissionPayload(
@@ -1463,14 +1481,14 @@ export function useMessageRunActions({
       )?.memoryMode === "TEMPORARY"
     );
     if (sourceComposerChatId !== current.activeChatId) {
-      return;
+      return notStarted("The chat changed before the request could be sent.");
     }
     if (
       sourceComposerChatId &&
       hasUnreconciledOptimisticLeaf(sourceComposerChatId) &&
       !(await reconcileBeforeRunMutation(sourceComposerChatId))
     ) {
-      return;
+      return notStarted("The chat's previous answer could not be reconciled yet.");
     }
 
     const contentBlocks = [{ text, type: "text" as const }];
@@ -1493,7 +1511,7 @@ export function useMessageRunActions({
           sourceSessionKey
         );
         if (!chat) {
-          return;
+          return notStarted("The new chat could not be created.");
         }
 
         chatIdForSend = chat.id;
@@ -1505,7 +1523,7 @@ export function useMessageRunActions({
 
       const activeSend = useRunLifecycleStore.getState().activeStreams[chatIdForSend];
       if (activeSend && !activeSend.answerComplete) {
-        return;
+        return notStarted("Another answer is still running in this chat.");
       }
 
       if (chatIdForSend && parentLeafForSend) {
@@ -1525,7 +1543,8 @@ export function useMessageRunActions({
         parentMessageId: parentLeafForSend,
         provider: runControlSnapshot.provider,
         role: "user",
-        status: "complete"
+        status: "complete",
+        ...(systemTurn ? { systemTurnKind: systemTurn.kind } : {})
       };
       const assistantId = `assistant-${Date.now()}`;
       const assistantMessage: ThreadMessage = {
@@ -1595,7 +1614,8 @@ export function useMessageRunActions({
               expectedActiveLeafId: parentLeafForSend,
               ...(personalDraftForSend ? { personalDraft: personalDraftForSend } : {}),
               ...initialMemoryPayload,
-              ...starterControlPayload
+              ...starterControlPayload,
+              ...(systemTurn?.body ?? {})
             }),
             headers: { "content-type": "application/json" },
             method: "POST",
@@ -1651,7 +1671,7 @@ export function useMessageRunActions({
     /** The optimistic user turn's text until the server's copy replaces it. */
     content: string;
     retryCopy(reason: string): string;
-    systemTurnKind?: typeof MCP_APPROVAL_CONTINUATION_KIND;
+    systemTurnKind?: typeof MCP_APPROVAL_CONTINUATION_KIND | typeof BROWSER_SIGN_IN_TURN_KIND;
     /** A refusal that retrying cannot help, and what the chat says instead. */
     unavailable?: Readonly<{ code: string; copy: string }>;
   }>): Promise<McpApprovalContinuationOutcome> {
@@ -1812,6 +1832,26 @@ export function useMessageRunActions({
     return outcome === "started" ? "started" : "not_started";
   }
 
+  /**
+   * Sign in again for one site in the open chat (`lib/contracts/browserSignIn.ts`): a turn whose text the server writes
+   * from the host, after the chat's latest answer, or as the first message of a new chat. It shows as a chip, never as
+   * the user's words, and leaves the composer draft alone.
+   */
+  async function sendBrowserSignInRequest(host: string): Promise<void> {
+    const systemTurn = { host, kind: BROWSER_SIGN_IN_TURN_KIND };
+    const content = browserSignInRequestText(host);
+    const chatId = useWorkspaceStore.getState().activeChatId;
+    const thread = selectThreadSnapshot(useThreadStore.getState(), chatId);
+    const leaf = chatId ? effectiveActiveLeafId(thread.messages, thread.activeLeafId) ??
+      useWorkspaceStore.getState().chats.find((candidate) => candidate.id === chatId)?.activeLeafMessageId ?? null : null;
+    if (chatId && leaf) {
+      await sendAnswerContinuation({ body: { systemTurn }, content, retryCopy: browserSignInRetryCopy,
+        systemTurnKind: BROWSER_SIGN_IN_TURN_KIND });
+      return;
+    }
+    await sendStarterPrompt(content, { body: { systemTurn }, kind: BROWSER_SIGN_IN_TURN_KIND, retryCopy: browserSignInRetryCopy });
+  }
+
   async function regenerateMessage(messageId: string) {
     const chatIdForRegenerate = activeChatId;
     if (!chatIdForRegenerate) {
@@ -1941,6 +1981,7 @@ export function useMessageRunActions({
     submitFollowup: submitRunFollowup,
     refreshInterruptedRun,
     regenerateMessage,
+    sendBrowserSignInRequest,
     sendContinueTurn,
     sendMcpApprovalContinuation,
     sendStarterPrompt,

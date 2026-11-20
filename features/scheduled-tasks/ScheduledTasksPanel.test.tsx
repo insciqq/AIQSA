@@ -280,6 +280,40 @@ describe("ScheduledTasksPanel", () => {
     expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 2, title: "Digest", pinnedSkillIds: [] });
   });
 
+  it("offers Sign in again on a run that failed on a site needing the owner, in its chat, and a new chat without one", async () => {
+    const failed = { scheduledFor: "2026-11-20T06:00:00.000Z", state: "failed", reasonCode: "browser_sign_in_required",
+      finishedAt: "2026-11-20T06:03:00.000Z", unseen: false, signInHost: "mail.example.com" } as const;
+    const task = scheduledTaskFixture({ chatId: "chat-1", lastRun: failed });
+    const unnamed = scheduledTaskFixture({ id: "task-2", title: "Inbox digest", chatId: "chat-2",
+      lastRun: { ...failed, signInHost: undefined } });
+    list.mockResolvedValue(listed([task, unnamed]));
+    detail.mockResolvedValue({ task, recentRuns: [
+      { id: "run-2", scheduledFor: failed.scheduledFor, trigger: "schedule", state: "failed", reasonCode: "browser_sign_in_required",
+        startedAt: "2026-11-20T06:00:05.000Z", finishedAt: failed.finishedAt, chatId: null, unseen: false, unavailableSources: [], skills: [],
+        signInHost: "portal.example.org" }
+    ] });
+    const onSignInAgain = vi.fn(async () => undefined);
+    account += 1;
+    render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory="available" onOpenChat={vi.fn()}
+      onSignInAgain={onSignInAgain} workspace="available" />);
+
+    expect(await screen.findByText(/Failed: mail\.example\.com needs you to sign in again/u)).toBeInTheDocument();
+    // Without a recorded site the row keeps the way through the chat and offers no button.
+    expect(screen.getByText(/ask the agent in the automation's chat to open the site/u)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Sign in again/u })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in again to mail.example.com" }));
+    await waitFor(() => expect(onSignInAgain).toHaveBeenCalledExactlyOnceWith("chat-1", "mail.example.com"));
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^More actions for/u })[0]!);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const sheet = screen.getByRole("dialog", { name: "Edit automation" });
+    const runs = await within(sheet).findByRole("region", { name: "Recent runs" });
+    expect(runs).toHaveTextContent("Failed: portal.example.org needs you to sign in again");
+    fireEvent.click(within(runs).getByRole("button", { name: "Sign in again to portal.example.org" }));
+    await waitFor(() => expect(onSignInAgain).toHaveBeenLastCalledWith(null, "portal.example.org"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("shows no links note and sends nothing for an unchanged save of instructions with links", async () => {
     const task = scheduledTaskFixture({ revision: 2, prompt: "Summarize https://news.example/today" });
     list.mockResolvedValue(listed([task]));

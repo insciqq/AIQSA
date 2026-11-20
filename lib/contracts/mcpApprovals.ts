@@ -6,6 +6,7 @@
  * once and Always allow start a continuation turn; Deny starts nothing.
  */
 
+import { BROWSER_SIGN_IN_TURN_KIND } from "./browserSignIn";
 import { SUBAGENT_CALLBACK_TURN_KIND } from "./subagents";
 
 export const MCP_APPROVAL_DECISIONS = ["allow_once", "allow_server", "deny"] as const;
@@ -56,14 +57,16 @@ export type McpApprovalCard = Readonly<{
 export const MCP_APPROVAL_CONTINUATION_KIND = "mcp_approval_continuation";
 /**
  * Every kind of user turn the server writes for the user that a reader sees
- * (`Message.systemTurnKind`): the continuation after an approval, and the
- * wake-up turn with background sub-agents' callbacks. The retired answer
- * review turns never reach a reader (`lib/domain/answerReviewTranscript.ts`).
+ * (`Message.systemTurnKind`): the continuation after an approval, the
+ * wake-up turn with background sub-agents' callbacks, and the request a
+ * Sign in again button sends (`lib/contracts/browserSignIn.ts`). The retired
+ * answer review turns never reach a reader (`lib/domain/answerReviewTranscript.ts`).
  */
-export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND | typeof SUBAGENT_CALLBACK_TURN_KIND;
+export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND | typeof SUBAGENT_CALLBACK_TURN_KIND |
+  typeof BROWSER_SIGN_IN_TURN_KIND;
 
 export function isMessageSystemTurnKind(value: unknown): value is MessageSystemTurnKind {
-  return value === MCP_APPROVAL_CONTINUATION_KIND || value === SUBAGENT_CALLBACK_TURN_KIND;
+  return value === MCP_APPROVAL_CONTINUATION_KIND || value === SUBAGENT_CALLBACK_TURN_KIND || value === BROWSER_SIGN_IN_TURN_KIND;
 }
 /** The send refusal of a continuation whose approval expired or was used. */
 export const MCP_APPROVAL_CONTINUATION_UNAVAILABLE = "mcp_approval_continuation_unavailable";
