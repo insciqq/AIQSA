@@ -332,7 +332,7 @@ class HostProfileTests(unittest.IsolatedAsyncioTestCase):
         options = self.chromium.options[0]
         self.assertIn(f"--disk-cache-size={_profile.DISK_CACHE_BYTES}", options["args"])
         self.assertEqual((options["channel"], options["headless"], options["no_viewport"], options["accept_downloads"]),
-                         ("chromium", True, True, True))
+                         ("chromium", False, True, True))
         context = self.chromium.context
         self.assertEqual([[entry["name"] for entry in batch] for batch in context.added], [["cart"], ["sid"]])
         self.assertEqual(context.added[1][0]["value"], "from-another-chat")

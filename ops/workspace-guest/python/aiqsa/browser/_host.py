@@ -1,7 +1,9 @@
 """The Workspace browser host: one full Chromium per turn on the chat's profile, shared by up to five agent identities.
 
 The first `aiqsa.browser` call of a boot starts this process detached from the
-command (`_client.py`). It owns Playwright and the browser, answers requests
+command (`_client.py`). It owns Patchright (Playwright without the CDP traces
+detectors read, `_identity.py`), its own X server (`_display.py`) and the
+headed browser on it, answers requests
 on a private Unix socket, keeps site sessions current and isolates each
 agent's tabs, current page, lock and steps. The browser runs on the chat's
 persistent profile (`_profile.py`), so cookies, site data and each agent's tabs
@@ -36,11 +38,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-from playwright.async_api import async_playwright
+from patchright.async_api import Error as PlaywrightError
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError
+from patchright.async_api import async_playwright
 
-from . import _dom, _files, _format, _human, _identity, _livehub, _paths, _profile, _sessions
+from . import _display, _dom, _files, _format, _human, _identity, _livehub, _paths, _profile, _sessions
 from ..proxy import client as _proxy
 from ..proxy import selection as _proxy_selection
 from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, AGENT_NAME_MAX_CHARS, BROWSER_AGENT_SLOTS, BROWSER_BUSY_CODE, BROWSER_MEMORY_LOW_CODE, MAIN_AGENT_ID
@@ -251,6 +253,8 @@ class Host:
         #: Pages the agent built, opened by their Workspace path (`_files`).
         self.files = _files.FileServer()
         self.playwright = None
+        #: The X server the headed browser runs on, this host's own.
+        self.display = _display.Display()
         #: The browser's one persistent context on the chat's profile (`_launch`).
         self.context = None
         self.version = ""
@@ -506,15 +510,19 @@ class Host:
         if _proxy.has_plan():
             # Failing to start it fails the browser: a browser without it would open hinted sites directly.
             self.proxy_port = await asyncio.to_thread(_proxy.ensure)
+        try:
+            await self.display.start(self._on_disconnected)
+        except _display.DisplayError as error:
+            raise HostError(error.code, error.message) from None
         self.playwright = await async_playwright().start()
         chromium = self.playwright.chromium
-        env = _identity.launch_env(self.environ, self.locale, self.timezone)
-        # The build's own user agent and client hints, read once without any override.
-        probe = await chromium.launch(channel="chromium", headless=True, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
+        env = {**_identity.launch_env(self.environ, self.locale, self.timezone), **self.display.env()}
+        # The build's own user agent and client hints, read once without any override, headed like the browser itself.
+        probe = await chromium.launch(channel="chromium", headless=False, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
                                       args=_identity.launch_args(self.locale), env=env)
         try:
             cdp = await probe.new_browser_cdp_session()
-            headless_ua = (await cdp.send("Browser.getVersion"))["userAgent"]
+            build_ua = (await cdp.send("Browser.getVersion"))["userAgent"]
             context = await probe.new_context()
             page = await context.new_page()
             await page.route("https://aiqsa.invalid/**", lambda route: route.fulfill(
@@ -524,7 +532,7 @@ class Host:
             self.version = probe.version
         finally:
             await probe.close()
-        self.user_agent = _identity.native_user_agent(headless_ua)
+        self.user_agent = _identity.native_user_agent(build_ua)
         self.metadata = _identity.user_agent_metadata(reported)
         state = self.store.load()
         self.local_storage = {origin["origin"]: origin["localStorage"] for origin in state["origins"]}
@@ -552,10 +560,11 @@ class Host:
             started.current = page
 
     def _launch_options(self) -> Dict[str, Any]:
-        """How Chromium starts, in one place: the build's identity read in `start` (`_identity.py`) and the profile's bounds."""
-        return {"channel": "chromium", "headless": True, "ignore_default_args": _identity.IGNORED_DEFAULT_ARGS,
+        """How Chromium starts, in one place: headed on this host's display, the build's identity read in `start`
+        (`_identity.py`) and the profile's bounds. Only the browser's environment names the display."""
+        return {"channel": "chromium", "headless": False, "ignore_default_args": _identity.IGNORED_DEFAULT_ARGS,
                 "args": [*_identity.launch_args(self.locale, self.user_agent, self.proxy_port), *_profile.LAUNCH_ARGS],
-                "env": _identity.launch_env(self.environ, self.locale, self.timezone),
+                "env": {**_identity.launch_env(self.environ, self.locale, self.timezone), **self.display.env()},
                 "no_viewport": True, "accept_downloads": True}
 
     async def _launch(self, restart: bool = False) -> List[str]:
@@ -672,6 +681,7 @@ class Host:
 
     async def stop(self) -> None:
         if self.stopped.is_set() and self.context is None:
+            await self.display.stop()
             return
         await self.live.close()
         try:
@@ -688,6 +698,10 @@ class Host:
             if self.playwright is not None:
                 await asyncio.wait_for(self.playwright.stop(), 10)
         except Exception:  # noqa: BLE001
+            pass
+        try:
+            await self.display.stop()
+        except Exception:  # noqa: BLE001 - the VM stop ends it anyway
             pass
         self.context = None
         self.profile.release()
@@ -1335,11 +1349,17 @@ class Host:
                 "tabs": len(tabs), "tab": (tabs.index(page) + 1) if page in tabs else 1}
 
     async def _captcha_forms(self, page: Any) -> List[str]:
-        """CAPTCHA or bot-check widgets and forms in the page's own document."""
-        try:
-            return [str(kind) for kind in await page.main_frame.evaluate(_dom.CAPTCHA, [_dom.CAPTCHA_SELECTORS, _dom.CAPTCHA_GLOBALS])]
-        except PlaywrightError:
-            return []
+        """CAPTCHA or bot-check widgets and forms in the page's own document. The widgets are read from the isolated world
+        Patchright evaluates in, which sees the DOM and nothing a page script left; a check page's own globals (Cloudflare's
+        `_cf_chl_opt`) live only in the page's world, so that one lookup alone runs there."""
+        found: List[str] = []
+        for arguments, isolated in (([_dom.CAPTCHA_SELECTORS, []], True), (([], _dom.CAPTCHA_GLOBALS), False)):
+            try:
+                kinds = await page.main_frame.evaluate(_dom.CAPTCHA, list(arguments), isolated_context=isolated)
+            except PlaywrightError:
+                continue
+            found.extend(str(kind) for kind in kinds if str(kind) not in found)
+        return found
 
     async def _captcha_open(self, page: Any, kinds: List[str]) -> Tuple[List[str], List[str]]:
         """The kinds still to pass, and those whose widget already holds its answer (it still shows until the form is sent)."""
@@ -2015,7 +2035,8 @@ class Host:
         page = state.current if state.current is not None and not state.current.is_closed() else None
         markers = None
         if args.get("markers") and page is not None:
-            markers = self.hidden.mask(await page.evaluate(_dom.MARKERS))
+            # What the page's own scripts see, so the main world, not Patchright's isolated one.
+            markers = self.hidden.mask(await page.evaluate(_dom.MARKERS, isolated_context=False))
         data = {"version": self.version, "pinned": _pinned_chromium(), "locale": self.locale, "timezone": self.timezone,
                 "userAgentHeadless": "Headless" in self.user_agent, "tabs": len([t for t in self.tabs if not t.is_closed()]),
                 "otherAgentTabs": sum(len([tab for tab in state.tabs if not tab.is_closed()]) for state in self._states.values()
@@ -2305,11 +2326,12 @@ class Host:
         return {"text": text, "data": {"length": length}}
 
     async def op_js(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate a script in the page and return its JSON value, bounded and masked."""
+        """Evaluate a script in the page and return its JSON value, bounded and masked. It runs in the page's own world,
+        where its data lives (`window.__NEXT_DATA__`); every other evaluation of the host stays in Patchright's isolated one."""
         expression = _text(args, "expression", 20_000)
         page = await self._page()
         try:
-            value = self.hidden.mask(await page.evaluate(expression))
+            value = self.hidden.mask(await page.evaluate(expression, isolated_context=False))
         except PlaywrightError as error:
             raise HostError("script_error", self._error_text(error)) from None
         text = json.dumps(value, ensure_ascii=False, default=str)
@@ -2589,11 +2611,11 @@ class Host:
 
 
 def _pinned_chromium() -> Optional[str]:
-    """The Chromium version Playwright pins (its browsers.json), to compare with the running build."""
+    """The Chromium version Patchright pins (its browsers.json), to compare with the running build."""
     try:
-        import playwright
+        import patchright
 
-        registry = Path(playwright.__file__).parent / "driver" / "package" / "browsers.json"
+        registry = Path(patchright.__file__).parent / "driver" / "package" / "browsers.json"
         data = json.loads(registry.read_text("utf-8"))
         return next(entry.get("browserVersion") for entry in data["browsers"] if entry.get("name") == "chromium")
     except (OSError, ValueError, KeyError, StopIteration, ImportError):

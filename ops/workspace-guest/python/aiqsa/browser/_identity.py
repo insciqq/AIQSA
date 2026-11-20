@@ -1,12 +1,15 @@
-"""How the Workspace browser presents itself (operator decision 2026-10-26).
+"""How the Workspace browser presents itself (operator decision 2026-11-20, replacing 2026-10-26).
 
-A full Chromium that does not advertise automation, inside one boundary
-(`agent_docs/SECURITY.md`, Workspace): launch flags, the browser's own user
-agent without the headless product name, and the browser's own client-hint
-metadata. Nothing is forged: no WebGL, plugin, platform, hardware or worker
-values, no input emulation. The user's language and time zone, frozen at
-admission, arrive as environment values; anything malformed falls back to the
-documented defaults.
+The AIQSA browser is a person's AI-assisted browser, not a bot, and sites should meet it as that person's browser.
+It is the full Chromium build driven by Patchright (a Playwright build without the CDP traces detectors read), headed
+on the guest's own X server (`_display.py`) with WebGL on SwiftShader, as the bot-check matrix chose: pixelscan and
+deviceandbrowserinfo flagged the CDP traces, and Cloudflare's Turnstile accepted a click only from a headed browser.
+What it reports is its own: the running build's user agent and client hints (read from a probe of the same build in
+the same mode), a desktop window on a screen the X server really has, the user's language and time zone (frozen at
+admission, arriving as environment values; anything malformed falls back to the documented defaults). No renderer,
+plugin, platform or hardware value is overridden, since detectors read overrides as lies; input that moves like a
+person's lives in `_human.py`. The identity's launch flags are here, in one place; `Host._launch_options` adds the
+profile's bounds (`_profile.LAUNCH_ARGS`) and the display.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ TIMEZONE_ENV = "AIQSA_BROWSER_TIMEZONE"
 #: No interface language is stored for users yet; the browser then speaks US English.
 DEFAULT_LOCALE = "en-US"
 DEFAULT_TIMEZONE = "UTC"
-#: A normal desktop window on a larger screen.
+#: A normal desktop window on a larger screen; the X server's screen is `SCREEN` (`_display.py`).
 WINDOW = (1440, 900)
 SCREEN = (1920, 1080)
 #: Playwright's own default flag that turns `navigator.webdriver` on.
@@ -48,7 +51,11 @@ def browser_timezone(environ: Mapping[str, str]) -> str:
 
 
 def launch_args(locale: str, user_agent: Optional[str] = None, proxy_port: Optional[int] = None) -> List[str]:
-    """Flags only: no automation blink feature, the user's language, a desktop window and screen.
+    """Flags only: no automation blink feature, the user's language, a desktop window, WebGL.
+
+    The screen is the X server's (`_display.py`, `SCREEN`): headed Chromium ignores `--screen-info`. The VM has no GPU,
+    and headed Chromium then turns WebGL off altogether; SwiftShader keeps it, as headless had it, because sites need it
+    (maps) and a browser without WebGL is itself rare.
 
     A run with proxies adds the local forwarder, and WebRTC keeps to it: its UDP would show a site the VM's own
     address beside the proxy's. Chromium itself bypasses the proxy for loopback, so a local page still opens.
@@ -57,7 +64,7 @@ def launch_args(locale: str, user_agent: Optional[str] = None, proxy_port: Optio
         "--disable-blink-features=AutomationControlled",
         f"--lang={locale}",
         f"--window-size={WINDOW[0]},{WINDOW[1]}",
-        f"--screen-info={{{SCREEN[0]}x{SCREEN[1]}}}",
+        "--enable-unsafe-swiftshader",
     ]
     if user_agent:
         args.append(f"--user-agent={user_agent}")
