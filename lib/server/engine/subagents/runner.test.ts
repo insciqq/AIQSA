@@ -858,8 +858,7 @@ describe("sub-agent runner", () => {
       expect(plain).toContain(WORKSPACE_CHECKPOINT_GUIDANCE);
       expect(plain).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
       // The texts of 2026-11-16 before that change, with the approval line naming the card's buttons and the 401/403 and browser
-      // lines (2026-11-20): a change
-      // here is a deliberate rewording, never a side effect.
+      // lines (2026-11-20): a change here is a deliberate rewording, never a side effect.
       expect([sha(plain), sha(await systemOf({}, childHost())), sha(await systemOf({ parentAgent }))]).toEqual([
         "237941ae2160f543cf032d5561baa174bf6a480685d6e8e732eb9cebcf76eae2",
         "e5c2b43f0a9f35d3024d7805f850bb99c85bd7fe92f42b3d1734ad14525c89ea",
