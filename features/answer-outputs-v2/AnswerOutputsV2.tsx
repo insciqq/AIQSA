@@ -650,9 +650,18 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
         {files.map((file) => {
           const type = generatedFileType(file);
           const details = file.checkpoint ? draftDetails(file.checkpoint) : null;
+          const icon = <UiV2Icon name={generatedFileIcon(file, type)} />;
           return (
             <li key={file.attachmentId}>
-              <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
+              {generatedFilePreviewKind(file) ? (
+                // A second, larger pointer target for the name's viewer (operator request 2026-11-20); the name stays the
+                // one control keyboards and screen readers use, and it takes focus so closing the viewer returns there.
+                <button aria-hidden="true" className="v2-generated-file-tile v2-generated-file-tile-open" tabIndex={-1} type="button"
+                  onClick={(event) => {
+                    event.currentTarget.parentElement?.querySelector<HTMLButtonElement>(".v2-generated-file-name")?.focus();
+                    setViewing(file);
+                  }}>{icon}</button>
+              ) : <span className="v2-generated-file-tile" aria-hidden="true">{icon}</span>}
               <span className="v2-generated-file-copy">
                 {generatedFilePreviewKind(file) ? (
                   <button aria-haspopup="dialog" className="v2-generated-file-name v2-focusable" onClick={() => setViewing(file)}

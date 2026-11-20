@@ -832,10 +832,22 @@ describe("answer outputs v2", () => {
     fireEvent.click(within(viewer).getByRole("button", { name: "Close preview" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
+    // The type tile opens it too, for the pointer only: the name stays the one control, and focus comes back to it.
+    const tiles = region.querySelectorAll<HTMLButtonElement>("button.v2-generated-file-tile");
+    expect(tiles).toHaveLength(2);
+    expect(tiles[0]).toHaveAttribute("tabindex", "-1");
+    expect(tiles[0]).toHaveAttribute("aria-hidden", "true");
+    expect(region.querySelector("li:last-child .v2-generated-file-tile")?.tagName).toBe("SPAN");
+    fireEvent.click(tiles[0]!);
+    const again = await screen.findByRole("dialog", { name: "File preview: youtube_cookies.txt" });
+    fireEvent.click(within(again).getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(text).toHaveFocus());
+
     fireEvent.click(within(region).getByRole("button", { name: "notes.md" }));
     const markdown = await screen.findByRole("dialog", { name: "File preview: notes.md" });
     await waitFor(() => expect(within(markdown).getByRole("heading", { name: "Notes" })).toBeVisible());
-    expect(shellFetch.mock.calls[1]?.[0]).toBe("/api/attachments/notes-id/content?preview=text");
+    expect(shellFetch.mock.calls.at(-1)?.[0]).toBe("/api/attachments/notes-id/content?preview=text");
     // One click copies the whole file in the rendered view too.
     const writeText = vi.fn(async () => undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });

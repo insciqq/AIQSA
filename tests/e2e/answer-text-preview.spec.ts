@@ -56,6 +56,23 @@ test.describe("text files in an answer", () => {
     const region = page.getByRole("region", { name: "Generated files" });
 
     const name = region.getByRole("button", { name: "cookies.txt", exact: true });
+    // The card reads as a link, not a magnifier, and its type tile opens the same viewer (operator request 2026-11-20).
+    const tile = region.locator("li", { hasText: "cookies.txt" }).locator("button.v2-generated-file-tile");
+    expect(await name.evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+    await tile.hover();
+    expect(await tile.evaluate((element) => getComputedStyle(element).cursor)).toBe("pointer");
+    await page.screenshot({ clip: (await region.boundingBox())!, path: testInfo.outputPath("answer-text-preview-tile-hover.png") });
+    await captureState(page, testInfo, "answer-text-preview-cards", { anchor: region, settleMs: 200, atEachSize: async () => {
+      await expectNoHorizontalOverflow(page);
+      await expectWithinViewport(page, region.locator("li", { hasText: "amounts.csv" }));
+    } });
+    await tile.click();
+    const fromTile = page.getByRole("dialog", { name: "File preview: cookies.txt" });
+    await expect(fromTile.getByText("# Netscape HTTP Cookie File")).toBeVisible();
+    await fromTile.getByRole("button", { name: "Close preview" }).click();
+    await expect(page.getByTestId("file-preview")).toHaveCount(0);
+    await expect(name).toBeFocused();
+
     await name.click();
     const text = page.getByRole("dialog", { name: "File preview: cookies.txt" });
     await expect(text.getByText("# Netscape HTTP Cookie File")).toBeVisible();

@@ -108,6 +108,19 @@
   background: var(--v2-color-surface2);
 }
 
+.v2-generated-file-tile-open {
+  padding: 0;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The translucent wash goes over the tile's own fill: in place of it, the tile would get lighter, not darker. */
+.v2-generated-file-tile-open:hover {
+  color: var(--v2-color-text);
+  background-image: linear-gradient(var(--v2-color-active), var(--v2-color-active));
+}
+
 .v2-generated-file-copy {
   display: grid;
   min-width: 0;
@@ -142,7 +155,7 @@
   background: none;
   font: inherit;
   text-align: start;
-  cursor: zoom-in;
+  cursor: pointer;
 }
 
 .v2-generated-file-name > strong {
