@@ -20,7 +20,7 @@ const ENTRY_COUNT = WORKSPACE_SECRET_MAX_COUNT + WORKSPACE_BROWSER_SESSION_MAX_C
  * model never invents login windows or buttons. Paid on every Workspace run.
  */
 export const WORKSPACE_BROWSER_SESSION_USER_PATH =
-  "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. Never ask for a password or a code in the chat. As an advanced alternative, the user can import a Playwright storage_state JSON in Settings → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
+  "A website sign-in with no saved credentials and none the user gave goes through browser_handoff: the user signs in, and enters any code, in the live browser of the web chat and presses Done, and the sign-in is saved to their Secrets after the answer for later requests. The user may also send a password or a code in the chat, and you may ask for one there, except in a Discord thread, which is public; type what they send. As an advanced alternative, the user can import a Playwright storage_state JSON in Settings → Secrets (Add secret → Browser session, or Edit → Replace saved value) for their next Workspace request. Websites have no Reconnect or Reauthorize (MCP Reconnect is unrelated).";
 /**
  * One proxy of a run on its way to the guest's forwarder (`ops/workspace-guest/python/aiqsa/proxy/`): the frozen plan
  * entry, with the credentials `RunProxies` loaded now. `available: false` is a plan entry that cannot be used now; it

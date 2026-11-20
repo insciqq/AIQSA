@@ -19,27 +19,14 @@ function byteLabel(bytes: number): string {
   return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-/** A long file shows only its start; the complete text stays in the ZIP download. */
-export function SourceCode({ file, zipHref }: { file: SourceFile; zipHref?: string }) {
-  const text = file.text ?? "";
-  const largeVendor = file.group === "vendored" && Math.max(file.byteSize ?? 0, new TextEncoder().encode(text).byteLength) > MAX_VENDOR_HIGHLIGHT_BYTES;
-  const plain = largeVendor || text.length > MAX_HIGHLIGHT_CHARACTERS;
-  const language = sourceLanguage(file);
-  const [highlight, setHighlight] = useState<{ text: string; language: string; html: string } | null>(null);
-  const highlighted = highlight?.text === text && highlight.language === language ? highlight.html : null;
+/** A file's name and one Copy for its whole text, above a source or a rendered view of it. */
+export function CopyTextBarV2({ copyable = true, label, text }: Readonly<{ copyable?: boolean; label: string; text: string }>) {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    let active = true;
-    if (!plain) {
-      void highlightCodeBlock(text, language).then(result => {
-        if (active && result) setHighlight({ text, language, html: result.html });
-      }).catch(() => undefined);
-    }
-    return () => { active = false; mounted.current = false; };
-  }, [language, plain, text]);
-
+    return () => { mounted.current = false; };
+  }, []);
   async function copy() {
     try {
       await navigator.clipboard.writeText(text);
@@ -48,13 +35,34 @@ export function SourceCode({ file, zipHref }: { file: SourceFile; zipHref?: stri
       if (mounted.current) setCopyState("failed");
     }
   }
+  return <div className="v2-artifact-code-actions">
+    <span>{label}</span>
+    {copyState === "failed" ? <span role="status">Select the code and copy it manually.</span> : null}
+    {copyable ? <UiV2Button icon={copyState === "copied" ? "check" : "copy"} onClick={() => void copy()} type="button">{copyState === "copied" ? "Copied" : "Copy"}</UiV2Button> : null}
+  </div>;
+}
+
+/** A long file shows only its start; the complete text stays in the ZIP download. */
+export function SourceCode({ file, zipHref }: { file: SourceFile; zipHref?: string }) {
+  const text = file.text ?? "";
+  const largeVendor = file.group === "vendored" && Math.max(file.byteSize ?? 0, new TextEncoder().encode(text).byteLength) > MAX_VENDOR_HIGHLIGHT_BYTES;
+  const plain = largeVendor || text.length > MAX_HIGHLIGHT_CHARACTERS;
+  const language = sourceLanguage(file);
+  const [highlight, setHighlight] = useState<{ text: string; language: string; html: string } | null>(null);
+  const highlighted = highlight?.text === text && highlight.language === language ? highlight.html : null;
+  useEffect(() => {
+    let active = true;
+    if (!plain) {
+      void highlightCodeBlock(text, language).then(result => {
+        if (active && result) setHighlight({ text, language, html: result.html });
+      }).catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [language, plain, text]);
+
   return <>
-    <div className="v2-artifact-code-actions">
-      <span>{file.path}</span>
-      {copyState === "failed" ? <span role="status">Select the code and copy it manually.</span> : null}
-      {/* Copying the start of a long file would pass for the whole file. */}
-      {file.truncated ? null : <UiV2Button icon={copyState === "copied" ? "check" : "copy"} onClick={() => void copy()} type="button">{copyState === "copied" ? "Copied" : "Copy"}</UiV2Button>}
-    </div>
+    {/* Copying the start of a long file would pass for the whole file. */}
+    <CopyTextBarV2 copyable={!file.truncated} label={file.path} text={text} />
     {file.truncated ? <p className="v2-artifact-code-note" role="note">
       Showing the first {byteLabel(new TextEncoder().encode(text).byteLength)} of {byteLabel(file.byteSize ?? 0)}. {zipHref
         ? <a className="v2-focusable" download href={zipHref}>Download the ZIP</a> : "Download the ZIP"} for the full file.

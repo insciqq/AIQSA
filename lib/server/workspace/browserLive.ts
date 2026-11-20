@@ -136,6 +136,11 @@ export type BrowserLiveHandoffInput = Readonly<{
   message: string;
   reason: BrowserHandoffReason;
   signal: AbortSignal;
+  /**
+   * Hears the user writing in the chat (a follow-up to the run), which ends the wait at once as `replied`; returns
+   * the function that stops listening. Without it only Done, Cancel and the wait end it.
+   */
+  userWrote?(listener: () => void): () => void;
   /** The whole wait at most, however active the user is; without a sign of them it ends after `BROWSER_HANDOFF_IDLE_MS`. */
   waitMs: number;
 }>;
@@ -416,7 +421,8 @@ class LiveRun implements BrowserLiveRunHandle {
    * agents go on; the run's Stop or deadline (`signal`) ends it too, by throwing its reason. The wait ends
    * `BROWSER_HANDOFF_IDLE_MS` after the last sign of the user (`userSeen`), and after `waitMs` however active they are
    * (operator decision 2026-11-20: a user who has not come within 1-2 minutes will not come, while 16 of 39 who came
-   * needed longer than 2 minutes to finish): `not_answered` when no sign came at all, else `timed_out`. Each agent
+   * needed longer than 2 minutes to finish): `not_answered` when no sign came at all, else `timed_out`. The user
+   * writing in the chat while its card is the one shown ends it at once as `replied` (operator decision 2026-11-20). Each agent
    * has at most one pending, and the panel shows the oldest first. On Done the guest saves the site of that agent's
    * tab, only for a handoff about signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end
    * carries the reason.
@@ -453,6 +459,7 @@ class LiveRun implements BrowserLiveRunHandle {
         settled = true;
         clearTimeout(timer);
         input.signal.removeEventListener("abort", onAbort);
+        stopListening?.();
         resolve(value);
       };
       // One timer: a sign only moves the deadline, and the timer looks again when it fires.
@@ -464,6 +471,9 @@ class LiveRun implements BrowserLiveRunHandle {
       let timer = setTimeout(expire, deadline() - startedAt);
       const onAbort = () => finish("aborted");
       input.signal.addEventListener("abort", onAbort, { once: true });
+      // Only the card the user sees takes what they write: another agent's waiting request may be for another site, and a
+      // password meant for one must not reach the other (review 2026-11-20).
+      const stopListening = input.userWrote?.(() => { if (this.agents.shown(id)) finish("replied"); });
       const pending: BrowserLivePendingHandoff = { agent, expiresAt: deadline(), id, message: input.message, reason: input.reason,
         resolve: finish, startedAt,
         seen: () => {
@@ -489,8 +499,10 @@ class LiveRun implements BrowserLiveRunHandle {
         askingRunId).catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
-    // The guest knows three outcomes; for it both unanswered ones only end the user's control, saving nothing.
-    const ending = { action: "end", [AGENT_FIELD]: agent.id, outcome: outcome === "not_answered" ? "timed_out" : outcome,
+    // The guest knows three outcomes; for it both unanswered ones and a reply in the chat only end the user's control,
+    // saving nothing: the agent goes on with what the user wrote and saves a sign-in it finishes itself.
+    const ending = { action: "end", [AGENT_FIELD]: agent.id,
+      outcome: outcome === "not_answered" || outcome === "replied" ? "timed_out" : outcome,
       reason: input.reason, t: "handoff" };
     let end = await this.command(ending, undefined, askingRunId).catch(() => null);
     if (end?.ok !== true && !this.ended) {

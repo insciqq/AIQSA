@@ -22,6 +22,7 @@ import { activeRunControllers, runSettlements } from "../runs/activeRunControlle
 import { contextCompactionArtifact } from "../runs/contextCompactionEvents";
 import { liveRunPhaseStatus } from "../runs/liveToolStatus";
 import { setRunProviderWait } from "../runs/providerWaits";
+import { subscribeRunFollowups } from "../runs/runFollowupRegistry";
 import { serializeChatUpdate } from "../runs/chatUpdateWire";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository, RunUsageAttribution } from "../runs/runRepositoryContract";
@@ -632,7 +633,16 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             : input.connectorTurn === "discord" ? { kind: "discord" }
               : input.connectorTurn === "telegram" ? { chatUrl: webChatUrl(scope.chatId), kind: "telegram" }
                 : { kind: "interactive", live, toolTimeLeftMs: () => toolTimeEndsAt - now(),
-                  researching: () => research?.holding() ?? false };
+                  researching: () => research?.holding() ?? false,
+                  // The user's follow-ups to this answer end the main agent's wait, and so does one written just before
+                  // its card showed, still waiting for the main agent's next round.
+                  userWrote: (listener) => {
+                    const stop = subscribeRunFollowups(runId, listener);
+                    void followupOps?.load({ runId, userId: input.userId }).then((batch) => {
+                      if (batch?.entries.some((entry) => entry.delivery === "accepted" && userAuthoredFollowup(entry))) listener();
+                    }).catch(() => undefined);
+                    return stop;
+                  } };
         const registryInput = {
           ...(browserHandoff ? { browserHandoff } : {}),
           chatId: scope.chatId,
@@ -668,8 +678,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           Readonly<{ browserHandoff: BrowserHandoffMode }> | null => {
           if (!browserHandoff || agent.kind !== "subagent") return null;
           if (browserHandoff.kind !== "interactive") return { browserHandoff };
-          return { browserHandoff: { ...browserHandoff, agent: { id: agent.threadId, name: agent.name },
-            ...(host ? { live: host.live, toolTimeLeftMs: host.toolTimeLeftMs } : {}) } };
+          // A foreground sub-agent hears only messages written while it waits: one still waiting for the main agent's next
+          // round may be one it has already read (review 2026-11-20).
+          if (!host) return { browserHandoff: { ...browserHandoff, agent: { id: agent.threadId, name: agent.name },
+            userWrote: (listener) => subscribeRunFollowups(runId, listener) } };
+          // A background turn outlives this answer, whose follow-ups the user writes to the main agent, not to it.
+          const { userWrote: _mainAnswer, ...rest } = browserHandoff;
+          return { browserHandoff: { ...rest, agent: { id: agent.threadId, name: agent.name }, live: host.live,
+            toolTimeLeftMs: host.toolTimeLeftMs } };
         };
         const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" },
           fetchUrlResearch: async (signal) => research?.holding() ? research.unreachableSites(signal) : null,

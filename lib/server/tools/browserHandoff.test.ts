@@ -121,6 +121,7 @@ describe("a handoff's result", () => {
 
 describe("a handoff of one agent", () => {
   const call = { arguments: { message: "Please sign in to the shop.", reason: "sign_in" }, id: "call-1", name: BROWSER_HANDOFF_TOOL_NAME };
+  const page = { title: "Sign in", url: "https://shop.example/login" };
 
   it("asks the live browser for that agent's tab, and the main agent's when none is named", async () => {
     const asked: unknown[] = [];
@@ -134,6 +135,26 @@ describe("a handoff of one agent", () => {
     await executeBrowserHandoff(call, { kind: "interactive", live, toolTimeLeftMs: () => 3_600_000 }, new AbortController().signal);
     expect(asked).toEqual([shopper, undefined]);
     expect((busy.content[0] as unknown as { value: { error: string } }).value.error).toBe("browser_handoff_busy");
+  });
+
+  it("hears the user writing in the chat while it waits and tells the model to act on their message", async () => {
+    const handoff = vi.fn<BrowserLiveRunHandle["handoff"]>(async () => ({ kind: "ended", outcome: "replied", page, saved: null }));
+    const userWrote = vi.fn(() => () => undefined);
+    const result = valueOf(await executeBrowserHandoff(call, { kind: "interactive", live: { end: async () => undefined, handoff },
+      toolTimeLeftMs: () => BROWSER_HANDOFF_WAIT_MS, userWrote }, new AbortController().signal));
+    expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ userWrote }));
+    expect(result).toMatchObject({ outcome: "replied", page });
+    expect(result).not.toHaveProperty("signInSavedAfterAnswer");
+    expect(result.next).toContain("The user wrote in the chat instead of finishing in the browser; their message follows.");
+    expect(result.next).toContain("type a code or a password it holds into the page at once");
+  });
+
+  it("has a Telegram turn's agent ask in the chat for what the site needs, with the web chat as the other way", async () => {
+    const result = await executeBrowserHandoff(call, { chatUrl: "https://aiqsa.test/c/1", kind: "telegram" }, new AbortController().signal);
+    const message = String((result.content[0] as unknown as { value: { message: string } }).value.message);
+    expect(message).toContain("Ask the user here for what the site needs (a code, a password, a choice)");
+    expect(message).toContain("https://aiqsa.test/c/1");
+    expect(message).not.toMatch(/do not ask/iu);
   });
 
   it("is unavailable for every agent of a Telegram or Discord turn or an unattended run", async () => {
@@ -163,6 +184,10 @@ describe("a handoff of one agent", () => {
     expect(browserHandoffTool.description).toContain("a CAPTCHA or bot check you could not pass yourself in a few attempts");
     expect(browserHandoffTool.description).toContain("Pass a CAPTCHA or bot check yourself first, as a person would");
     expect(browserHandoffTool.description).not.toMatch(/never try to solve/u);
+    // A code the user writes in the chat is theirs to give: the model types it instead of handing the browser back.
+    expect(browserHandoffTool.description).toContain("a password or a code the user writes in the chat is one they gave, so type it yourself");
+    expect(browserHandoffTool.description).toContain("the call then returns `replied` at once and their message follows");
+    expect(browserHandoffTool.description).not.toMatch(/never ask for a password/iu);
   });
 });
 

@@ -30,7 +30,8 @@ export function createRunFollowupHandler(deps: {
       if (result.kind === "conflict") return json({ error: "followup_conflict" }, 409);
       if (result.kind === "context_full") return json({ error: "followup_context_full",
         message: "This follow-up exceeds the task's remaining context. Shorten it or send it after the answer finishes." }, 400);
-      notifyRunFollowup(runId, result.entry.ordinal);
+      // Only a new message wakes a waiting handoff: a retried submission may already have been read.
+      if (result.created) notifyRunFollowup(runId, result.entry.ordinal);
       return json({ followup: result.entry });
     } catch (error) {
       logEvent("service_operation", { error, subsystem: "run_recovery", stage: "continuation", outcome: "failed",

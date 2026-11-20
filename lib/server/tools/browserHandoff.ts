@@ -26,7 +26,9 @@ export const BROWSER_HANDOFF_UNAVAILABLE = "browser_handoff_unavailable";
 export type BrowserHandoffMode =
   | Readonly<{ agent?: BrowserAgentRef; kind: "interactive"; live: BrowserLiveRunHandle | null; toolTimeLeftMs(): number;
     /** Read at each call: research never asks a person to take over. */
-    researching?(): boolean }>
+    researching?(): boolean;
+    /** Hears the user writing in the chat to this run, which ends a waiting handoff as `replied`. */
+    userWrote?(listener: () => void): () => void }>
   | Readonly<{ chatUrl: string; kind: "telegram" }>
   | Readonly<{ kind: "discord" }>
   | Readonly<{ kind: "unattended" }>;
@@ -45,7 +47,9 @@ export const browserHandoffTool: RunTool = {
     "nobody came, `timed_out` that the user came but did not finish. " +
     "During research it returns immediately: record the site as unreachable and go on. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
-    "on. Never ask for a password in the chat, and type only credentials the user saved or gave you. Pass a CAPTCHA or bot " +
+    "on. The user may answer in the chat instead (a code, a password, a choice): the call then returns `replied` at once " +
+    "and their message follows. Type only credentials the user saved or gave you; a password or a code the user writes in " +
+    "the chat is one they gave, so type it yourself. Pass a CAPTCHA or bot " +
     "check yourself first, as a person would (`aiqsa-browser captcha`, then a picture, slider or text task from a screenshot).",
   inputSchema: {
     additionalProperties: false,
@@ -102,7 +106,7 @@ function cardMessage(value: unknown): string | null {
 
 const NEXT_STEPS: Readonly<Record<BrowserHandoffOutcome, string>> = {
   completed: "The user pressed Done. Look at the page yourself before you go on (take a screenshot and view it); the user may " +
-    "have left it anywhere. Never repeat or ask for what the user typed. A site named in signInSavedAfterAnswer keeps its sign-in " +
+    "have left it anywhere. Never repeat or ask for what the user typed in the browser. A site named in signInSavedAfterAnswer keeps its sign-in " +
     "in this browser now and is saved to the user's Secrets after your answer, unless that save is skipped; it is not saved yet.",
   cancelled: "The user pressed Cancel. Do not ask for the handoff again unless the user asks; tell the user what you could not do " +
     "without it, and go on with what you can.",
@@ -113,7 +117,11 @@ const NEXT_STEPS: Readonly<Record<BrowserHandoffOutcome, string>> = {
   not_answered: "Nobody came to the browser: the user is not at the screen now. Do not hand the browser over again in this " +
     "answer. Continue without the user where another path to the same result exists (an MCP tool, an API, a public page); if " +
     "none does, finish with what you have, say plainly what the site needs (for example a sign-in), and that the user can ask " +
-    "you again when they are at the screen."
+    "you again when they are at the screen.",
+  replied: "The user wrote in the chat instead of finishing in the browser; their message follows. Look at the page yourself " +
+    "(take a screenshot and view it), then do what the message gives: type a code or a password it holds into the page at " +
+    "once (codes expire within minutes), make the choice it names, or act on what it asks. Hand the browser over again only " +
+    "if the page still needs the user."
 };
 
 /**
@@ -143,8 +151,9 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
   if (mode.kind === "telegram") {
     return result(call, "error", { chatUrl: mode.chatUrl, error: BROWSER_HANDOFF_UNAVAILABLE,
       message: "This turn came from Telegram, where the live browser cannot be shown, so nobody can take over the browser " +
-        "now. Tell the user what the site needs and to continue in this chat on the web, where they can take over the browser: " +
-        `${mode.chatUrl}. Do not ask for passwords or codes in the chat.` });
+        "now. Ask the user here for what the site needs (a code, a password, a choice) and finish your answer; this chat's " +
+        "browser keeps the page, so when their next message brings it, type it into the page yourself. They can also " +
+        `continue in this chat on the web, where they can take over the browser: ${mode.chatUrl}.` });
   }
   if (mode.kind === "discord") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
@@ -172,7 +181,7 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
           "finish with what you have; they can ask you again to continue." });
   }
   const handoff = await mode.live.handoff({ ...(mode.agent ? { agent: mode.agent } : {}), message,
-    reason: reason as BrowserHandoffReason, signal, waitMs });
+    reason: reason as BrowserHandoffReason, signal, ...(mode.userWrote ? { userWrote: mode.userWrote } : {}), waitMs });
   switch (handoff.kind) {
     case "no_browser":
       return result(call, "error", { error: "browser_handoff_no_browser", message: "No page is open in the Workspace browser. " +

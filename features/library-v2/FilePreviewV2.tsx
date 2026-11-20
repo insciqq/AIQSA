@@ -3,7 +3,7 @@
 import { Suspense, lazy, useEffect, useState, type ComponentType, type RefObject } from "react";
 import type { PdfViewerProps } from "@/features/pdf-viewer-v2/PdfViewerV2";
 import { ArtifactViewerFrameV2 } from "@/components/artifacts/ArtifactViewerFrameV2";
-import { SourceCode } from "@/components/artifacts/ArtifactCodeV2";
+import { CopyTextBarV2, SourceCode } from "@/components/artifacts/ArtifactCodeV2";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { MarkdownPreviewBoundary } from "@/components/chat/MarkdownPreviewBoundary";
 import { UiV2Button, UiV2Icon, UiV2IconButton } from "@/components/ui-v2";
@@ -166,9 +166,13 @@ function FilePreviewContent({ file, rendered, onRenderError }: {
     <img alt={file.name} src={content.url} onLoad={() => setImageLoaded(true)} onError={() => setContent({ kind: "error" })} />
   </div>;
   const source = <SourceCode file={{ path: file.name, mimeType: "text/plain", text: content.text }} />;
-  return rendered ? <div className="v2-file-preview-markdown v2-focusable" tabIndex={0} aria-label="Rendered file">
-    <MarkdownPreviewBoundary resetKey={file.id} fallback={source} onError={onRenderError}>
-      <MarkdownMessage content={content.text} resolveHref={inertHref} />
-    </MarkdownPreviewBoundary>
+  // The rendered view keeps the source's one-click Copy of the whole text.
+  return rendered ? <div className="v2-artifact-code-content">
+    <CopyTextBarV2 label={file.name} text={content.text} />
+    <div className="v2-file-preview-markdown v2-focusable" tabIndex={0} aria-label="Rendered file">
+      <MarkdownPreviewBoundary resetKey={file.id} fallback={source} onError={onRenderError}>
+        <MarkdownMessage content={content.text} resolveHref={inertHref} />
+      </MarkdownPreviewBoundary>
+    </div>
   </div> : <div className="v2-artifact-code-content">{source}</div>;
 }

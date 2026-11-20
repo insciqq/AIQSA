@@ -89,7 +89,8 @@ export function requestWithRunFollowups(request: ProviderRunRequest, entries: re
 }
 
 export type AcceptRunFollowupResult =
-  | Readonly<{ kind: "accepted"; entry: RunFollowup }>
+  /** `created`: this request wrote it; a retry of the same submission returns the entry it wrote before. */
+  | Readonly<{ kind: "accepted"; entry: RunFollowup; created?: true }>
   | Readonly<{ kind: "not_found" }>
   | Readonly<{ kind: "closed" }>
   | Readonly<{ kind: "conflict" }>

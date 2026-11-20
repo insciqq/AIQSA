@@ -152,6 +152,8 @@ describe("BrowserLivePanelV2", () => {
     const card = screen.getByTestId("browser-live-handoff");
     // Alone in the browser, a sub-agent is still named.
     expect(card).toHaveTextContent("Asked by signer");
+    // A sub-agent's request may be a background one, which a reply in the chat never reaches: no such hint on its card.
+    expect(card).not.toHaveTextContent("send the code, password or choice in the chat");
     fireEvent.click(within(card).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
   });
@@ -286,7 +288,8 @@ describe("BrowserLivePanelV2", () => {
     const card = screen.getByTestId("browser-live-handoff");
     expect(card).toHaveTextContent("Time is up");
     expect(card).toHaveTextContent("This is the agent's own browser on the server, not yours, and nothing is taken from your browser. " +
-      "Sign in or act in it below, then press Done to hand control back; the agent does not see what you type.");
+      "Sign in or act in it below, then press Done to hand control back; the agent does not see what you type there. " +
+      "Or send the code, password or choice in the chat, and the agent enters it for you.");
     expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
     // The server, not the client clock, decides: a late Done gets its own refusal, and the card goes.
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));

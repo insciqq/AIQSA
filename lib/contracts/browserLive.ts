@@ -63,8 +63,12 @@ export const BROWSER_LIVE_LIMITS = Object.freeze({
 export const BROWSER_HANDOFF_REASONS = ["sign_in", "verification_code", "captcha", "consent", "user_choice", "other"] as const;
 export type BrowserHandoffReason = (typeof BROWSER_HANDOFF_REASONS)[number];
 
-/** How a handoff ended, as the model learns it. */
-export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out", "not_answered"] as const;
+/**
+ * How a handoff ended, as the model learns it. `replied`: the user wrote in the chat while it waited (a code, a
+ * password, a choice), which ends the wait at once so the agent reads the message and acts on it (operator decision
+ * 2026-11-20: a user who sent an OTP in the chat waited out the card and the code expired).
+ */
+export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out", "not_answered", "replied"] as const;
 export type BrowserHandoffOutcome = (typeof BROWSER_HANDOFF_OUTCOMES)[number];
 
 /**

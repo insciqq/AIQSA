@@ -122,7 +122,7 @@ export function createPrismaRunFollowupOperations(db: PrismaClient): RunFollowup
         await tx.modelRun.update({ where: { id: run.id }, data: {
           followupRevision: { increment: 1 }, followupBudgetTokens: { decrement: cost }
         } });
-        return { kind: "accepted", entry: projectRunFollowups({ ...run, followups: [entry] }, userFollowups.length).entries[0]! };
+        return { kind: "accepted", created: true, entry: projectRunFollowups({ ...run, followups: [entry] }, userFollowups.length).entries[0]! };
       });
     },
     load: async input => {
