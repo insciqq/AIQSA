@@ -148,16 +148,16 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
   }
   if (mode.kind === "discord") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
-      message: "This turn came from a Discord thread, where nobody can take over the browser. Do not try to sign in yourself, " +
-        "and do not ask for passwords or codes in the thread. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say " +
+      message: "This turn came from a Discord thread, where nobody can take over the browser. Without credentials saved for " +
+        "this thread, do not try to sign in, and do not ask for passwords or codes in the thread. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say " +
         "plainly what the site needed that you could not do." });
   }
   if (mode.kind === "unattended") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
-      message: "This run is unattended (a scheduled task or a webhook), so nobody can take over the browser now. Do not try to " +
-        "sign in yourself. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say what stopped you; for a sign-in, that " +
-        "the user needs to sign in to the site again in a chat with you (ask there to open the site; the chat shows the live " +
-        "browser), so later runs can use the saved sign-in." });
+      message: "This run is unattended (a scheduled task or a webhook), so nobody can take over the browser now. Without " +
+        "credentials the user saved, do not try to sign in. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say " +
+        "what stopped you; for a sign-in, say which site needs the user to sign in again: the automation's failure offers " +
+        "them Sign in again, and later runs use the saved sign-in." });
   }
   if (mode.researching?.()) {
     return result(call, "complete", { outcome: "unreachable", next: RESEARCH_UNREACHABLE_NEXT });
