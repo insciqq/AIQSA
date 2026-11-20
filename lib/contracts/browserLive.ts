@@ -110,9 +110,16 @@ function chatPath(chatId: string): string {
   return `/api/chats/${encodeURIComponent(chatId)}/browser`;
 }
 
-/** GET: the SSE stream of `state`, `frame`, `steps` and `end` events; open only while the panel is open. */
-export function browserLiveStreamPath(chatId: string): string {
-  return `${chatPath(chatId)}/stream`;
+/** The stream's query flag of an opening the person made (`presence`). */
+export const BROWSER_LIVE_PRESENCE_PARAM = "presence";
+
+/**
+ * GET: the SSE stream of `state`, `frame`, `steps` and `end` events; open only while the panel is open. `presence`:
+ * the person opened it on a page they can see (the panel opened, Reopen, the page came back into view), which counts as
+ * a sign of them for a waiting handoff; an automatic reconnect sends none.
+ */
+export function browserLiveStreamPath(chatId: string, options: Readonly<{ presence?: boolean }> = {}): string {
+  return `${chatPath(chatId)}/stream${options.presence ? `?${BROWSER_LIVE_PRESENCE_PARAM}=1` : ""}`;
 }
 
 /** POST `BrowserLiveInput`: one pointer, key or text input; only while the user controls the browser. */

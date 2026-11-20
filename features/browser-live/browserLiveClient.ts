@@ -93,7 +93,7 @@ export class BrowserLiveStream {
     if (this.running) return;
     this.running = true;
     this.failures = 0;
-    this.open();
+    this.open(true);
   }
 
   /** Closes the stream and drops the frame, so no picture outlives the open panel. */
@@ -130,14 +130,18 @@ export class BrowserLiveStream {
     this.source = null;
   }
 
-  private open(): void {
+  /**
+   * `presence`: the person opened the stream (`start`, `restart`; the panel opens it only on a page that is shown), a
+   * sign of them for a waiting handoff. A reconnect after a failure is the transport's own and claims nothing.
+   */
+  private open(presence: boolean): void {
     const generation = ++this.generation;
     this.closeSource();
     if (!this.openEventSource) {
       this.fail(generation);
       return;
     }
-    const source = this.openEventSource(browserLiveStreamPath(this.chatId));
+    const source = this.openEventSource(browserLiveStreamPath(this.chatId, { presence }));
     this.source = source;
     const handle = (event: MessageEvent<string>) => {
       if (generation !== this.generation) return;
@@ -189,7 +193,7 @@ export class BrowserLiveStream {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      if (generation === this.generation && this.running) this.open();
+      if (generation === this.generation && this.running) this.open(false);
     }, delay);
   }
 }

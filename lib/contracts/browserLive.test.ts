@@ -98,5 +98,6 @@ describe("browser live requests", () => {
 
   it("builds chat-scoped paths", () => {
     expect(browserLiveStreamPath("chat/1")).toBe("/api/chats/chat%2F1/browser/stream");
+    expect(browserLiveStreamPath("chat/1", { presence: true })).toBe("/api/chats/chat%2F1/browser/stream?presence=1");
   });
 });

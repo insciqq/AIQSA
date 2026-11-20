@@ -1,8 +1,10 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
+import { browserLiveStreamPath, type BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
+import type { AuthenticatedSession } from "../auth/requestAuth";
 import { BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
 import { BROWSER_HANDOFF_IDLE_MS, BrowserLiveRelay } from "./browserLive";
+import { createBrowserLiveHandlers } from "./browserLiveHandlers";
 import { fakeLiveGuest, recordingWriter } from "./browserLive.testFixtures";
 
 /**
@@ -36,7 +38,7 @@ async function asked(waitMs = BROWSER_HANDOFF_WAIT_MS) {
   await at(100);
   expect(guest.guest.handoff).toBe(true);
   const tab = recordingWriter();
-  return { at, guest, handle, outcome: () => outcome, tab, t0, view };
+  return { at, guest, handle, outcome: () => outcome, relay, tab, t0, view };
 }
 
 describe("a handoff's wait for the user", () => {
@@ -47,7 +49,7 @@ describe("a handoff's wait for the user", () => {
     await at(BROWSER_HANDOFF_IDLE_MS + 1_000);
     expect(outcome()).toBe("not_answered");
     expect(Date.now() - t0).toBeLessThan(BROWSER_HANDOFF_IDLE_MS + 2_000);
-    await view.watch(owner, tab.writer);
+    await view.watch(owner, tab.writer, { presence: true });
     expect(tab.last<BrowserLiveStateEvent>("state")).toMatchObject({ controller: "agent", handoff: null,
       ended: [{ agent: { id: "main", name: null }, outcome: "not_answered" }] });
   });
@@ -56,7 +58,7 @@ describe("a handoff's wait for the user", () => {
     const { at, outcome, tab, t0, view } = await asked();
     await at(110_000);
     expect(outcome()).toBeNull();
-    await view.watch(owner, tab.writer);
+    await view.watch(owner, tab.writer, { presence: true });
     // The card counts down from the user's arrival.
     const shown = tab.last<BrowserLiveStateEvent>("state")!.handoff!;
     expect(Date.parse(shown.expiresAt) - t0).toBeGreaterThanOrEqual(110_000 + BROWSER_HANDOFF_IDLE_MS);
@@ -74,7 +76,7 @@ describe("a handoff's wait for the user", () => {
   it("ends as timed_out two minutes after the last sign of a user who left halfway", async () => {
     const { at, outcome, tab, view } = await asked();
     await at(30_000);
-    await view.watch(owner, tab.writer);
+    await view.watch(owner, tab.writer, { presence: true });
     for (const time of [60_000, 120_000, 180_000]) {
       await at(time);
       expect(await view.input(owner, click)).toBeNull();
@@ -103,7 +105,7 @@ describe("a handoff's wait for the user", () => {
 
   it("stops at the whole wait however active the user is, and at a short cap without a sign as not_answered", async () => {
     const busy = await asked();
-    await busy.view.watch(owner, busy.tab.writer);
+    await busy.view.watch(owner, busy.tab.writer, { presence: true });
     for (let time = 60_000; time < BROWSER_HANDOFF_WAIT_MS; time += 60_000) {
       await busy.at(time);
       expect(await busy.view.input(owner, click)).toBeNull();
@@ -125,7 +127,7 @@ describe("a handoff's wait for the user", () => {
   it("moves the card's deadline a few seconds at a time, not with every key", async () => {
     const { at, tab, view } = await asked();
     await at(10_000);
-    await view.watch(owner, tab.writer);
+    await view.watch(owner, tab.writer, { presence: true });
     await at(20_000);
     const before = tab.of("state").length;
     for (let index = 0; index < 10; index += 1) expect(await view.input(owner, click)).toBeNull();
@@ -136,12 +138,42 @@ describe("a handoff's wait for the user", () => {
     expect(tab.of("state")).toHaveLength(before + 1);
   });
 
+  // Review 2026-11-20: a panel left open reconnected on its own 100 s in, which pushed the wait back with nobody there.
+  it("takes only an opening the person made through the route as a sign, never an automatic reconnect", async () => {
+    const session = { expiresAt: new Date(Date.now() + 3_600_000), id: "session-1", userId: "user-1",
+      user: { email: "user-1@example.test", id: "user-1", role: "member", status: "active" } } as AuthenticatedSession;
+    const open = async (relay: BrowserLiveRelay, presence: boolean) => {
+      const routes = createBrowserLiveHandlers({ authSessionActive: async () => true, relay: () => relay,
+        resolveAuth: async () => session });
+      const response = await routes.stream(new Request(`https://aiqsa.test${browserLiveStreamPath("chat-1", { presence })}`),
+        { params: { chatId: "chat-1" } });
+      expect(response.headers.get("content-type")).toContain("text/event-stream");
+    };
+
+    const reconnect = await asked();
+    await reconnect.at(100_000);
+    await open(reconnect.relay, false);
+    await reconnect.at(BROWSER_HANDOFF_IDLE_MS + 1_000);
+    expect(reconnect.outcome()).toBe("not_answered");
+    for (const end of handles.splice(0)) await end();
+    vi.useRealTimers();
+
+    const opened = await asked();
+    await opened.at(100_000);
+    await opened.view.watch(owner, opened.tab.writer);
+    await open(opened.relay, true);
+    await opened.at(BROWSER_HANDOFF_IDLE_MS + 1_000);
+    expect(opened.outcome()).toBeNull();
+    await opened.at(100_000 + BROWSER_HANDOFF_IDLE_MS + 1_000);
+    expect(opened.outcome()).toBe("timed_out");
+  });
+
   it("forgets an agent's unanswered request once it asks again", async () => {
     const { at, guest, handle, outcome, tab, view } = await asked(40_000);
     await at(41_000);
     expect(outcome()).toBe("not_answered");
     expect(guest.guest.handoff).toBe(false);
-    await view.watch(owner, tab.writer);
+    await view.watch(owner, tab.writer, { presence: true });
     expect(tab.last<BrowserLiveStateEvent>("state")?.ended).toHaveLength(1);
     void handle.handoff({ message: "Please choose", reason: "consent", signal: new AbortController().signal, waitMs: 60_000 });
     await at(42_000);
