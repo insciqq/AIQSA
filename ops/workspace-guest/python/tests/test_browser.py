@@ -754,6 +754,35 @@ class HostCaptchaTests(unittest.TestCase):
         # A turn the client does not name (no bearer): counted per boot, the same way.
         self.assertEqual(self.host_of("not a turn")._active_state().turn, None)
 
+    def test_time_on_a_check_is_bounded_per_turn_from_its_first_try(self) -> None:
+        """A model can stay within the try bounds and still spend half an hour on one puzzle; time ends it too."""
+        page = _HostPage("https://www.shop.example/check")
+        clock = [1000.0]
+        with mock.patch.object(_host, "_clock", lambda: clock[0]):
+            host = self.host_of("d" * 32)
+            self.assertEqual(host._captcha_try(page, "input")[0], 1)  # the first input into the task starts the time
+            clock[0] += _host.CAPTCHA_SECONDS - 1
+            self.assertEqual(host._captcha_try(page, "attempt")[0], 1)
+            clock[0] += 1
+            with self.assertRaises(_host.HostError) as raised:
+                host._captcha_try(page, "input")
+            self.assertEqual(raised.exception.code, "captcha_attempts_exhausted")
+            self.assertIn(f"Time ran out for the check on shop.example: you have worked on it for over "
+                          f"{_host.CAPTCHA_SECONDS // 60} minutes in this turn", raised.exception.message)
+            self.assertIn("call browser_handoff with reason captcha", raised.exception.message)
+            self.assertIn("where nobody can take over (Telegram, Discord, an unattended run) or in research", raised.exception.message)
+            # The browser closed and opened again in the same turn: the time still counts.
+            with self.assertRaises(_host.HostError):
+                self.host_of("d" * 32)._captcha_try(page, "attempt")
+            # A later turn, and another site, start afresh.
+            self.assertEqual(self.host_of("e" * 32)._captcha_try(page, "attempt")[0], 1)
+            self.assertEqual(host._captcha_try(_HostPage("https://other.example/"), "attempt")[0], 1)
+            # A pass clears the time with the tries: a site that checks on every page is no failure.
+            host._captcha_passed(page)
+            self.assertEqual(host._captcha_try(page, "attempt")[0], 1)
+            clock[0] += _host.CAPTCHA_SECONDS - 1
+            self.assertEqual(host._captcha_try(page, "attempt")[0], 2)
+
     def test_the_count_holds_when_the_run_directory_cannot_keep_it(self) -> None:
         host = self.host_of("c" * 32)
         page = _HostPage("https://shop.example/")
