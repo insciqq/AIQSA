@@ -199,6 +199,29 @@ describe("persisted personal Workspace secrets", () => {
     expect(await value()).toContain("after-the-change");
   });
 
+  it("never lets a run's unchanged copy, nor a stamp past the clock, replace a revision saved since its admission", async () => {
+    const userId = await owner();
+    const base = Date.now() - 30 * 60_000;
+    const state = (value: string, savedAt: number) => Buffer.from(JSON.stringify({ cookies: [{ name: "session", value, domain: "shop.example",
+      path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }], origins: [], aiqsa: { savedAt } }));
+    const save = (input: WorkspaceBrowserSaveInput, bytes: Buffer) => saveWorkspaceBrowserSessions(prisma,
+      { ...input, files: [{ fileName: "shop.example.json", bytes }] }, () => key);
+    const first = await browserRun(userId);
+    expect(await save(first, state("v1", base))).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    // Both runs are given v1; the later one saves v2 first.
+    const earlier = await browserRun(userId);
+    const later = await browserRun(userId);
+    expect(await save(later, state("v2", base + 60_000))).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    // The earlier run ends with the copy it was given, never rewritten: no write of its own.
+    expect(await save(earlier, state("v1", base))).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_stale: 1 } });
+    // A copy stamped past the clock is no write time: acceptance order keeps v2, at this and every later collection.
+    for (let round = 0; round < 2; round++) {
+      expect(await save(earlier, state("v1-forged", Date.now() + 86_400_000))).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_stale: 1 } });
+    }
+    const saved = (await currentBrowser(userId, "shop.example.json")).value;
+    expect(saved.kind === "browser_session" ? Buffer.from(saved.base64, "base64").toString("utf8") : "").toContain("v2");
+  });
+
   it("records only safe skip codes and rejects foreign, stale and Workspace-Off authority", async () => {
     const userId = await owner(), foreignUserId = await owner();
     const input = await browserRun(userId);

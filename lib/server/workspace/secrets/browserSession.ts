@@ -54,19 +54,30 @@ export function workspaceBrowserSessionSavedAt(bytes: Uint8Array): number | null
 export type WorkspaceBrowserSaveOrder = "write" | "unchanged" | "browser_session_stale";
 
 /**
+ * How far a guest's clock may run ahead of the server's; a stamp later than that is no write time
+ * (a clock gone wrong, or a file guest code wrote), so it never orders a save.
+ */
+export const WORKSPACE_BROWSER_STAMP_SKEW_MS = 5 * 60_000;
+
+type SavedRevision = Readonly<{ checksum: string | null; savedAt: () => number | null }>;
+
+/**
  * Whether a session file a run collected replaces the saved one.
  *
  * - A run accepted before the user's last change in Settings never writes (the
  *   manual fence).
  * - Equal bytes are unchanged, whichever run was accepted first.
- * - A file the guest stamped wins when it was written after the saved one:
- *   every run of a chat shares one VM and its files, so the run that saves last
- *   may hold what an earlier save already took plus newer writes, and a run
- *   accepted earlier but ending later (background sub-agents, wake-ups) must not
- *   lose them to acceptance order. A copy only restored and never rewritten
- *   keeps its old stamp and loses. Stamps come from the guest, so neither one
- *   counts later than the server's own time of its save (`createdAt`, `now`).
- * - A file without a stamp keeps acceptance order.
+ * - What this run was given at admission (`given`, its bound revision) and
+ *   collects back unchanged, or with a stamp no later than that revision's, is
+ *   no write of its own: it never replaces a revision saved since.
+ * - Otherwise a file the guest stamped wins when it was written after the saved
+ *   revision: every run of a chat shares one VM and its files, so a run accepted
+ *   earlier but ending later (background sub-agents, wake-ups) keeps what its
+ *   browser wrote last. The saved revision's time is its own stamp, or the
+ *   server's time of its save when its stamp is missing or lies past that.
+ * - A file without a stamp, or with one past the server's clock and its skew,
+ *   keeps acceptance order: such a stamp is never re-dated to the time it is
+ *   collected, so a stale file cannot become new again at each run's end.
  */
 export function workspaceBrowserSaveOrder(input: Readonly<{
   sequence: bigint;
@@ -74,13 +85,21 @@ export function workspaceBrowserSaveOrder(input: Readonly<{
   now: number;
   incoming: Readonly<{ checksum: string; savedAt: number | null }>;
   current: Readonly<{ checksum: string | null; writerSequence: bigint; createdAt: Date; savedAt: () => number | null }> | null;
+  given?: SavedRevision | null;
 }>): WorkspaceBrowserSaveOrder {
   if (input.sequence <= input.manualSequence) return "browser_session_stale";
   const current = input.current;
   if (!current) return "write";
   if (current.checksum === input.incoming.checksum) return "unchanged";
-  if (input.incoming.savedAt === null) return input.sequence >= current.writerSequence ? "write" : "browser_session_stale";
+  const given = input.given ?? null;
+  if (given?.checksum === input.incoming.checksum) return "browser_session_stale";
+  const stamp = input.incoming.savedAt !== null && input.incoming.savedAt <= input.now + WORKSPACE_BROWSER_STAMP_SKEW_MS
+    ? input.incoming.savedAt : null;
+  if (stamp === null) return input.sequence >= current.writerSequence ? "write" : "browser_session_stale";
+  const givenAt = given?.savedAt() ?? null;
+  if (givenAt !== null && stamp <= givenAt) return "browser_session_stale";
   const saved = current.createdAt.getTime();
-  const currentAt = Math.min(current.savedAt() ?? saved, saved);
-  return Math.min(input.incoming.savedAt, input.now) > currentAt ? "write" : "browser_session_stale";
+  const currentStamp = current.savedAt();
+  const currentAt = currentStamp !== null && currentStamp <= saved + WORKSPACE_BROWSER_STAMP_SKEW_MS ? currentStamp : saved;
+  return stamp > currentAt ? "write" : "browser_session_stale";
 }

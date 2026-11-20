@@ -8,9 +8,9 @@ are still applied at launch, and one written after this profile last held it win
 sign-in made in another chat reaches this one (`sign_ins_to_apply`).
 
 Beside Chromium's own files the profile keeps `aiqsa-state.json`: which saved sign-ins it already holds, the
-browser's cookies as of the last action or tick (Chromium drops session cookies when it closes and commits its
-cookie store only every half minute, while the VM may stop right after an answer), and each agent's open tabs,
-which reopen at that agent's first browser command of a later boot.
+browser's session cookies as of the last action or tick (Chromium drops them when it closes, an anonymous cart among
+them; its own store keeps the persistent ones, fresher than any copy), and each agent's open tabs, which reopen at that
+agent's first browser command of a later boot.
 
 One browser host per boot uses it (`_client.py` starts one), and a lock file it holds for its life refuses a
 second. Chromium's own lock left by a browser of an earlier boot is cleared, and an orphan browser of this boot
@@ -241,6 +241,7 @@ class ChatProfile:
         if self.root.is_symlink() or (self.root.exists() and not self.root.is_dir()):
             # Never let Chromium write through a link, into exported folders or elsewhere.
             _remove(self.root)
+        self._remove_stale_staging()
         self.state = self._read_state() if self.root.is_dir() else {}
         made_by = self.state.get("chromium")
         if self.root.is_dir() and _major(made_by) > _major(version) > 0:
@@ -252,6 +253,16 @@ class ChatProfile:
         self._clear_singleton()
         self.fresh = not self.root.is_dir() or not [name for name in os.listdir(self.root) if name != STATE_FILE]
         self.root.mkdir(mode=0o700, exist_ok=True)
+
+    def _remove_stale_staging(self) -> None:
+        """Bookkeeping files a browser stopped mid-write left; the rename never happened."""
+        try:
+            with os.scandir(self.root) as scan:
+                for entry in scan:
+                    if entry.name.startswith(f".{STATE_FILE}.") and entry.name.endswith(".tmp") and entry.is_file(follow_symlinks=False):
+                        _remove(Path(entry.path))
+        except OSError:
+            pass
 
     def _bound(self) -> None:
         if not self.root.is_dir():
@@ -326,9 +337,10 @@ class ChatProfile:
         value = self.state.get("applied")
         return value if isinstance(value, dict) else {}
 
-    def cookies(self) -> List[Dict[str, Any]]:
+    def session_cookies(self) -> List[Dict[str, Any]]:
+        """The session cookies of the copy: only those, since a persistent cookie in Chromium's own store may be fresher."""
         value = self.state.get("cookies")
-        return live_cookies(value, self.clock()) if isinstance(value, list) else []
+        return [cookie for cookie in live_cookies(value, self.clock()) if cookie.get("expires") == -1] if isinstance(value, list) else []
 
     def tabs(self) -> Dict[str, Dict[str, Any]]:
         """Each agent's remembered tabs: `urls` and the index of the `current` one."""

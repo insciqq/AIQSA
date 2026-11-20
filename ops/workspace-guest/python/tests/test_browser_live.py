@@ -415,6 +415,33 @@ class LiveBrowserTests(unittest.TestCase):
         state = json.loads((self.workspace / "secrets" / ".browser-profile" / "aiqsa-state.json").read_text("utf-8"))
         self.assertEqual(state["tabs"]["main"]["urls"], [self.base + "/cart"])
 
+    def test_3c_a_turns_first_command_never_races_the_tabs_of_the_last(self) -> None:
+        from aiqsa import browser
+        from aiqsa.browser import _client
+
+        def restart() -> None:
+            browser.close()
+            self.wait_for_host_exit()
+            for process in _client._STARTED:
+                self.assertIsNotNone(process.wait(timeout=30))
+
+        # The last turn ended on a page that redirects to a sign-in, beside another tab.
+        self.quiet(browser.open, self.base + "/private")
+        self.quiet(browser.new_tab, self.base + "/")
+        restart()
+        # A first command that opens a page itself gets the list, and nothing of the last turn loads again under it.
+        page = self.quiet(browser.open, self.base + "/human")
+        self.assertEqual(page.title, "Human")
+        self.assertIn("Your last turn ended with these tabs open: 1. 127.0.0.1:", str(page))
+        self.assertIn("Not reopened, since this command opens a page itself", str(page))
+        # Any other first command reopens them, and the next page opens without a late load in its way.
+        self.quiet(browser.open, self.base + "/private")
+        restart()
+        reopened = self.quiet(browser.page_info)
+        self.assertIn("Reopened the tab", str(reopened))
+        self.assertEqual(self.quiet(browser.open, self.base + "/human").title, "Human")
+        self.assertEqual(self.quiet(browser.back).url, self.base + "/signin?next=/private")
+
     def test_4_errors_name_the_next_step(self) -> None:
         from aiqsa import browser
 

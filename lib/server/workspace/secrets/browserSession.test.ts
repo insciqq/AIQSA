@@ -6,7 +6,8 @@ import {
 } from "@/lib/contracts/workspaceSecrets";
 import { parseWorkspaceSecretValue } from "./validation";
 import {
-  workspaceBrowserSaveOrder, workspaceBrowserSessionChecksum, workspaceBrowserSessionError, workspaceBrowserSessionSavedAt
+  WORKSPACE_BROWSER_STAMP_SKEW_MS, workspaceBrowserSaveOrder, workspaceBrowserSessionChecksum, workspaceBrowserSessionError,
+  workspaceBrowserSessionSavedAt
 } from "./browserSession";
 import { readWorkspaceBrowserCollection, type WorkspaceBrowserSaveItem } from "./browserCollection";
 import type { WorkspaceBrowserCollection } from "../runtime";
@@ -140,13 +141,15 @@ describe("which saved browser session wins", () => {
   });
 
   function order(input: Readonly<{ sequence?: bigint; manualSequence?: bigint; incoming: Buffer; current?: Buffer | null;
-    writerSequence?: bigint; createdAt?: number }>) {
+    writerSequence?: bigint; createdAt?: number; given?: Buffer }>) {
     const current = input.current === undefined ? stamped(at(-30), "saved") : input.current;
+    const given = input.given;
     let reads = 0;
     const result = workspaceBrowserSaveOrder({ sequence: input.sequence ?? 10n, manualSequence: input.manualSequence ?? 0n, now,
       incoming: { checksum: workspaceBrowserSessionChecksum(input.incoming), savedAt: workspaceBrowserSessionSavedAt(input.incoming) },
       current: current === null ? null : { checksum: workspaceBrowserSessionChecksum(current), writerSequence: input.writerSequence ?? 11n,
-        createdAt: new Date(input.createdAt ?? at(-20)), savedAt: () => { reads++; return workspaceBrowserSessionSavedAt(current); } } });
+        createdAt: new Date(input.createdAt ?? at(-20)), savedAt: () => { reads++; return workspaceBrowserSessionSavedAt(current); } },
+      given: given ? { checksum: workspaceBrowserSessionChecksum(given), savedAt: () => workspaceBrowserSessionSavedAt(given) } : null });
     return { result, reads };
   }
 
@@ -174,15 +177,36 @@ describe("which saved browser session wins", () => {
     expect(order({ sequence: 11n, writerSequence: 11n, incoming: stamped(undefined, "old-guest") }).result).toBe("write");
   });
 
-  it("never lets a guest's stamp count later than the server's own time of a save", () => {
-    // A forged future stamp counts as its save time, so an honest later write still wins over it.
+  it("never lets a stamp past the server's clock order a save, nor re-dates it at each collection", () => {
+    // A saved revision with a future stamp counts as the server's time of its save, so an honest later write wins over it.
     const forged = stamped(at(60 * 24 * 365), "forged");
     expect(order({ incoming: stamped(at(-1)), current: forged, createdAt: at(-10) }).result).toBe("write");
     expect(order({ incoming: stamped(at(-15)), current: forged, createdAt: at(-10) }).result).toBe("browser_session_stale");
-    // And an incoming one counts as now.
-    expect(order({ incoming: forged, current: stamped(at(-30)), createdAt: at(-20) }).result).toBe("write");
+    // An incoming one is no write time: acceptance order decides, so an older run's stale file never wins by it (review B).
+    expect(order({ sequence: 10n, writerSequence: 11n, incoming: forged, current: stamped(at(-30)), createdAt: at(-20) }).result)
+      .toBe("browser_session_stale");
+    expect(order({ sequence: 12n, writerSequence: 11n, incoming: forged, current: stamped(at(-30)), createdAt: at(-20) }).result)
+      .toBe("write");
+    expect(workspaceBrowserSaveOrder({ sequence: 10n, manualSequence: 0n, now: 3000,
+      incoming: { checksum: "old-future-stamped", savedAt: 9_000_000_000_000 },
+      current: { checksum: "new-honest", writerSequence: 11n, createdAt: new Date(2100), savedAt: () => 2000 } })).toBe("browser_session_stale");
+    // A guest clock a little ahead is still its write time.
+    expect(order({ incoming: stamped(now + WORKSPACE_BROWSER_STAMP_SKEW_MS), current: stamped(at(-30)) }).result).toBe("write");
     // A saved revision without a stamp (an upload, an older guest's) counts as the time it was saved.
     expect(order({ incoming: stamped(at(-25)), current: stamped(undefined, "uploaded"), createdAt: at(-20) }).result).toBe("browser_session_stale");
     expect(order({ incoming: stamped(at(-5)), current: stamped(undefined, "uploaded"), createdAt: at(-20) }).result).toBe("write");
+  });
+
+  it("never lets a run's own copy, unchanged since its admission, replace a revision saved since", () => {
+    const given = stamped(at(-40), "given");
+    // Collected back byte for byte: no write of this run, whatever its stamp, so the newer revision stays.
+    expect(order({ incoming: given, given, current: stamped(at(-30), "newer") }).result).toBe("browser_session_stale");
+    // A stamp no later than what the run was given is no newer write either.
+    expect(order({ incoming: stamped(at(-45), "older-than-given"), given, current: stamped(at(-30), "newer") }).result)
+      .toBe("browser_session_stale");
+    // What the run's browser wrote after both is kept.
+    expect(order({ incoming: stamped(at(-1), "rotated"), given, current: stamped(at(-30), "newer") }).result).toBe("write");
+    // When nothing was saved since, its unchanged copy is simply unchanged.
+    expect(order({ incoming: given, given, current: given }).result).toBe("unchanged");
   });
 });
