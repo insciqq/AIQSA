@@ -81,6 +81,24 @@ TEXT_MAX_CHARS = 20_000
 JS_MAX_CHARS = 8_000
 ACTION_TIMEOUT_MS = 10_000
 NAVIGATION_TIMEOUT_MS = 45_000
+# Every phase after an action has its own budget inside the command's, so a heavy or busy page
+# gives a partial answer that says so instead of a timeout that hides whether the action ran.
+#: What a command keeps of its time for writing its answer after the last page phase.
+ANSWER_RESERVE_SECONDS = 3.0
+#: Longest the saved sign-ins may take to read after an action; a busy page skips it and the next action catches up.
+AUTOSAVE_SECONDS = 5.0
+#: Longest the page summary may take; elements not listed by then are left out and the summary says so.
+SUMMARY_SECONDS = 20.0
+#: The least a summary gets, even when earlier phases used the command's time up.
+SUMMARY_MIN_SECONDS = 1.0
+#: What waiting for a page to load leaves for saving sign-ins and the summary after it.
+AFTER_SETTLE_SECONDS = 8.0
+#: Frames looked at for the element list, hidden ones included: each costs a few round trips to the page.
+FRAME_CANDIDATES = 24
+#: The command's deadline (`time.monotonic()`), set by `Host.dispatch`; None outside a command.
+_DEADLINE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("browser_deadline", default=None)
+#: Handle releases left running after an answer; kept here so they are not collected before they finish.
+_BACKGROUND: set = set()
 _KEY = re.compile(r"^(?:(?:Control|Shift|Alt|Meta)\+){0,3}(?:[A-Za-z0-9]|F[1-9]|F1[0-2]|Enter|Escape|Tab|Backspace|Delete|Space|"
                   r"ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|Insert)$")
 
@@ -153,6 +171,20 @@ def _web_url(value: str) -> str:
     if candidate != "about:blank" and (parts.scheme not in ("http", "https") or not parts.hostname):
         raise HostError("invalid_url", "Only http and https addresses can be opened.")
     return candidate
+
+
+def _left(cap: float, keep: float = 0.0) -> float:
+    """Seconds a phase may take: its own cap, within the command's deadline less what later phases keep."""
+    deadline = _DEADLINE.get()
+    if deadline is None:
+        return cap
+    return max(0.0, min(cap, deadline - time.monotonic() - keep))
+
+
+def _in_background(awaitable: Any) -> None:
+    task = asyncio.ensure_future(awaitable)
+    _BACKGROUND.add(task)
+    task.add_done_callback(lambda done: (_BACKGROUND.discard(done), done.cancelled() or done.exception()))
 
 
 def _within(path: Path, roots: Any) -> bool:
@@ -896,20 +928,24 @@ class Host:
     # Waiting ---------------------------------------------------------------------------------------------------
 
     async def _settle(self, page: Any, quiet_seconds: float = 0.4, budget: float = 2.0) -> None:
-        """Wait for what an action started: a document load, then a short network quiet."""
-        await asyncio.sleep(0.25)
+        """Wait for what an action started: a document load, then a short network quiet, leaving the command time to answer."""
+        await asyncio.sleep(_left(0.25, AFTER_SETTLE_SECONDS))
         if page.is_closed():
             return
-        for state, timeout in (("domcontentloaded", 15_000), ("load", 5_000)):
+        for state, timeout in (("domcontentloaded", 15.0), ("load", 5.0)):
+            left = _left(timeout, AFTER_SETTLE_SECONDS)
+            if left < 0.05:
+                # Playwright reads a zero timeout as none at all.
+                return
             try:
-                await page.wait_for_load_state(state, timeout=timeout)
+                await page.wait_for_load_state(state, timeout=left * 1000)
             except PlaywrightError:
                 pass
         counters = self.activity.get(page)
         if counters is None:
             return
         loop = asyncio.get_running_loop()
-        end = loop.time() + budget
+        end = loop.time() + _left(budget, AFTER_SETTLE_SECONDS)
         seen, since = counters[0], loop.time()
         while loop.time() < end and not page.is_closed():
             await asyncio.sleep(0.1)
@@ -921,21 +957,33 @@ class Host:
     # Element lists ---------------------------------------------------------------------------------------------
 
     async def _frames(self, page: Any) -> List[Tuple[Any, Optional[Dict[str, float]]]]:
+        return (await self._frames_until(page, None))[0]
+
+    async def _frames_until(self, page: Any, end: Optional[float]) -> Tuple[List[Tuple[Any, Optional[Dict[str, float]]]], bool]:
+        """The main frame and the visible frames worth listing, and whether time (`end`, monotonic) ran out before all were looked at."""
         frames: List[Tuple[Any, Optional[Dict[str, float]]]] = [(page.main_frame, None)]
-        for frame in page.frames[1:]:
+
+        async def place(frame: Any) -> Tuple[Optional[Dict[str, float]], bool]:
+            element = await frame.frame_element()
+            return await element.bounding_box(), await element.is_visible()
+
+        for frame in page.frames[1:1 + FRAME_CANDIDATES]:
             if len(frames) > MAX_FRAMES:
                 break
             if frame.is_detached():
                 continue
+            left = None if end is None else end - time.monotonic()
+            if left is not None and left <= 0:
+                return frames, True
             try:
-                element = await frame.frame_element()
-                box = await element.bounding_box()
-                visible = await element.is_visible()
+                box, visible = await asyncio.wait_for(place(frame), left)
+            except asyncio.TimeoutError:
+                return frames, True
             except PlaywrightError:
                 continue
             if box and visible and box["width"] >= 20 and box["height"] >= 20:
                 frames.append((frame, box))
-        return frames
+        return frames, False
 
     def _captcha_frame(self, frame: Any) -> Optional[str]:
         url = (frame.url or "").lower()
@@ -947,7 +995,46 @@ class Host:
                 return kind
         return None
 
+    async def _collect(self, frame: Any, attempts: List[Dict[str, Any]], end: float) -> Optional[Tuple[Dict[str, Any], Any, Any, Dict[str, Any]]]:
+        """One frame's element list by `end`: the page script stops itself a little before; this wait is for a page too busy to run it."""
+
+        async def run() -> Optional[Tuple[Dict[str, Any], Any, Any, Dict[str, Any]]]:
+            result, used = None, attempts[0]
+            for attempt in attempts:
+                try:
+                    budget = max(1, int((end - time.monotonic() - 0.5) * 1000))
+                    result = await frame.evaluate_handle(_dom.COLLECT, {**attempt, "ms": budget, "sent": int(time.time() * 1000)})
+                    used = attempt
+                    break
+                except PlaywrightError:
+                    continue
+            if result is None:
+                return None
+            try:
+                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, timeCut: r.timeCut, "
+                                             "title: r.title, titleCut: r.titleCut, scroll: r.scroll, loading: r.loading })")
+                elements = await result.get_property("elements")
+                numbers = await result.get_property("numbers")
+            except PlaywrightError:
+                return None
+            finally:
+                _in_background(self._dispose([result]))
+            return data, elements, numbers, used
+
+        return await asyncio.wait_for(run(), max(0.0, end - time.monotonic()))
+
+    @staticmethod
+    async def _dispose(handles: Sequence[Any]) -> None:
+        for handle in handles:
+            try:
+                await handle.dispose()
+            except PlaywrightError:
+                pass
+
     async def _snapshot(self, page: Any) -> Dict[str, Any]:
+        """The page summary within the command's time: what could not be listed in it is left out, and the summary says so."""
+        started = time.monotonic()
+        end = started + max(SUMMARY_MIN_SECONDS, _left(SUMMARY_SECONDS))
         previous = self.snapshots.get(page) or {}
         frames_before: Dict[Any, Dict[str, Any]] = previous.get("frames", {})
         main_url = page.main_frame.url
@@ -960,7 +1047,8 @@ class Host:
         meta: Dict[str, Any] = {"title": "", "scroll": {}, "loading": False, "truncated": False}
         captcha: List[str] = []
         viewport = None
-        for index, (frame, box) in enumerate(await self._frames(page)):
+        frames, partial = await self._frames_until(page, end)
+        for index, (frame, box) in enumerate(frames):
             kind = self._captcha_frame(frame) if index else None
             if kind and kind not in captcha:
                 captcha.append(kind)
@@ -981,24 +1069,20 @@ class Host:
                 attempts.append({key: value for key, value in options.items() if key != "previous"})
             if masked:
                 attempts.append({key: value for key, value in options.items() if key not in ("previous", "masked")})
-            result = None
-            for attempt in attempts:
-                try:
-                    result = await frame.evaluate_handle(_dom.COLLECT, attempt)
-                    break
-                except PlaywrightError:
-                    continue
-            if result is None:
+            if end <= time.monotonic():
+                partial = True
+                break
+            try:
+                collected = await self._collect(frame, attempts, end)
+            except asyncio.TimeoutError:
+                partial = True
+                break
+            if collected is None:
                 continue
+            data, elements, numbers, attempt = collected
             if masked and "masked" not in attempt:
                 self.masked.pop(frame, None)
-            try:
-                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, title: r.title, "
-                                             "titleCut: r.titleCut, scroll: r.scroll, loading: r.loading })")
-                elements = await result.get_property("elements")
-                numbers = await result.get_property("numbers")
-            except PlaywrightError:
-                continue
+            partial = partial or bool(data.get("timeCut"))
             next_number = max(next_number, int(data["next"]))
             frames_after[frame] = {"elements": elements, "numbers": numbers, "doc": frame.url}
             _format.page_items(data["items"], self.hidden)
@@ -1019,22 +1103,37 @@ class Host:
                             item["position"], item["inView"] = "below", False
                 refs[int(item["n"])] = (frame, elements, local)
                 items.append(item)
-        for kind in await self._captcha_forms(page):
+        forms: Optional[List[str]] = None
+        if end > time.monotonic():
+            try:
+                forms = await asyncio.wait_for(self._captcha_forms(page), end - time.monotonic())
+            except asyncio.TimeoutError:
+                pass
+        partial = partial or forms is None
+        for kind in forms or []:
             if kind not in captcha:
                 captcha.append(kind)
-        # The previous list's handles were only needed to keep numbers; release them all.
-        for before in (previous.get("frames") or {}).values():
-            for name in ("elements", "numbers"):
-                try:
-                    await before[name].dispose()
-                except PlaywrightError:
-                    pass
+        listed = {int(item["n"]): item for item in items}
+        if partial:
+            # A frame not listed in time keeps its last list: numbers read before still mean the same elements and can be used.
+            for frame, before in frames_before.items():
+                if frame in frames_after or frame.is_detached():
+                    continue
+                frames_after[frame] = before
+                for number, reference in (previous.get("refs") or {}).items():
+                    if reference[0] is frame and number not in listed:
+                        refs[number], listed[number] = reference, previous["items"][number]
+        # The previous list's handles were only needed to keep numbers. Release them after the answer: a busy page is slow to.
+        kept = [id(entry) for entry in frames_after.values()]
+        _in_background(self._dispose([before[name] for before in (previous.get("frames") or {}).values() if id(before) not in kept
+                                      for name in ("elements", "numbers")]))
         self.snapshots[page] = {"url": main_url, "frames": frames_after, "next": next_number, "refs": refs,
-                                "items": {int(item["n"]): item for item in items}, "captcha": captcha}
+                                "items": listed, "captcha": captcha}
         notes, self.notes = self.notes, []
         tabs = [tab for tab in self.tabs if not tab.is_closed()]
         return {"url": self.hidden.text(_format.without_userinfo(page.url)), "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
                 "truncated": meta["truncated"], "items": items, "captcha": captcha, "notes": notes,
+                "partial": max(1, round(time.monotonic() - started)) if partial else None,
                 "tabs": len(tabs), "tab": (tabs.index(page) + 1) if page in tabs else 1}
 
     async def _captcha_forms(self, page: Any) -> List[str]:
@@ -1159,6 +1258,18 @@ class Host:
                 self.notes.append(f"The session {name} was not saved: {error.message}")
         return saved
 
+    async def _autosave_in_time(self) -> None:
+        """`_autosave` after an action, leaving the summary its time; a page too busy to read is caught up after the next action."""
+        if not self.store.tracked:
+            return
+        left = _left(AUTOSAVE_SECONDS, SUMMARY_MIN_SECONDS)
+        try:
+            if left <= 0:
+                raise asyncio.TimeoutError()
+            await asyncio.wait_for(self._autosave(), left)
+        except asyncio.TimeoutError:
+            self.notes.append("Saved sign-ins were not updated after this step: the page was too busy to read in time. The next step tries again.")
+
     # Request handling ------------------------------------------------------------------------------------------
 
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -1248,6 +1359,8 @@ class Host:
         timeout = 75.0 if op in ("open", "wait", "back", "forward", "reload", "new_tab") else 45.0
         if op == "wait":
             timeout = _int(args, "timeout", 15, 1, 120) + 15.0
+        # The task `wait_for` starts copies this context, so every phase of the command sees its deadline.
+        deadline = _DEADLINE.set(time.monotonic() + timeout - ANSWER_RESERVE_SECONDS)
         try:
             return await asyncio.wait_for(handler(args), timeout)
         except asyncio.TimeoutError:
@@ -1256,6 +1369,8 @@ class Host:
             if self.crashed:
                 raise HostError("browser_crashed", "The browser stopped unexpectedly; the next command starts a new one.") from None
             raise HostError("browser_error", self._error_text(error)) from None
+        finally:
+            _DEADLINE.reset(deadline)
 
     async def _act(self, action: str, target: Optional[str], run: Any, *, settle: bool = True, info: bool = True) -> Dict[str, Any]:
         """Run one agent action, record its step, keep sessions current and summarize the page."""
@@ -1277,7 +1392,7 @@ class Host:
         await self._finish_step(step, page)
         if self.proxy_port is not None:
             await self._note_proxy(step, page, action, site_before)
-        await self._autosave()
+        await self._autosave_in_time()
         result: Dict[str, Any] = {"step": step}
         if info:
             summary = await self._snapshot(page)

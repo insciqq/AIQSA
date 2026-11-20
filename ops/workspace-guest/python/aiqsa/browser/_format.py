@@ -340,7 +340,9 @@ def render_info(info: Mapping[str, Any], *, every: bool = False, limit: int = 80
     shown = [item for item in items if every or item.get("inView")]
     above = sum(1 for item in items if item.get("position") == "above")
     below = sum(1 for item in items if item.get("position") == "below")
-    if not items:
+    if not items and info.get("partial"):
+        lines.append("No elements were listed.")
+    elif not items:
         lines.append("No interactive elements found." + (" The page may still be loading; try `wait` or `info` again."
                                                           if info.get("loading") else ""))
     else:
@@ -355,6 +357,9 @@ def render_info(info: Mapping[str, Any], *, every: bool = False, limit: int = 80
             lines.append("Scroll, `find TEXT` or `info --all` for the rest; clicking an element scrolls to it.")
     if info.get("truncated"):
         lines.append("Only the first elements of a very large page were numbered.")
+    if info.get("partial"):
+        lines.append(f"Only part of the page was listed: it was too heavy or busy to list within {int(info['partial'])} seconds "
+                     "(an action before this list did run). `find TEXT`, `text` or `shot` read the page another way; `info` again may list more.")
     return _bounded(lines)
 
 

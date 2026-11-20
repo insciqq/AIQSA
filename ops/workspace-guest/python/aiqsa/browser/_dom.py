@@ -6,6 +6,9 @@ themselves, which the browser host keeps as handles. An element that is still
 on the page keeps its number from the previous list of the same document, so
 a number the agent read a few steps ago still means the same element. Fields
 the agent filled from the environment (`options.masked`) read as hidden values.
+`options.ms` bounds the walk in time from `options.sent` (the host's wall clock): on a heavy or
+busy page it stops there and says so (`timeCut`), so the host lists part of the page instead of
+waiting for all of it.
 Names, values, links and the title come back raw (whitespace kept, at most
 `options.raw` characters, with `cut` naming what was shortened): the host masks
 values typed from the environment first, then makes each one bounded line
@@ -27,6 +30,11 @@ COLLECT = r"""
   const masked = new Set(options.masked || []);
   const RAW = options.raw || 2000;
   let next = options.next;
+  // A list the host stopped waiting for still runs once the page is free: the time it waited counts, so it ends at once.
+  // A page's own clock may lie (frozen or shifted time); a delay that cannot be real is ignored.
+  const delay = options.sent > 0 ? Date.now() - options.sent : 0;
+  const until = options.ms > 0 ? performance.now() + options.ms - (delay > 0 && delay < 600000 ? delay : 0) : Infinity;
+  let timeCut = false;
   const vw = window.innerWidth, vh = window.innerHeight;
   const items = [], elements = [], numbers = [];
   let truncated = false;
@@ -155,6 +163,7 @@ COLLECT = r"""
   function visit(root, insideLeaf) {
     for (const el of root.children) {
       if (items.length >= max) { truncated = true; return; }
+      if (timeCut || performance.now() > until) { timeCut = true; return; }
       let leaf = insideLeaf;
       if (!insideLeaf && el.matches(STRONG)) {
         const rect = rendered(el);
@@ -173,6 +182,7 @@ COLLECT = r"""
   // A generic click target counts only when it wraps no real control.
   for (const el of weak) {
     if (items.length >= max) { truncated = true; break; }
+    if (performance.now() > until) { timeCut = true; break; }
     if (el.querySelector(STRONG)) continue;
     const rect = rendered(el);
     if (!rect || !filled(nameOf(el))) continue;
@@ -180,7 +190,7 @@ COLLECT = r"""
   }
   const scroller = document.scrollingElement || document.documentElement;
   return {
-    items, elements, numbers, next, truncated,
+    items, elements, numbers, next, truncated, timeCut,
     title: String(document.title || '').slice(0, RAW), titleCut: String(document.title || '').length > RAW,
     scroll: { y: Math.round(scroller ? scroller.scrollTop : 0), height: Math.round(scroller ? scroller.scrollHeight : 0), viewport: [vw, vh] },
     loading: document.readyState !== 'complete'

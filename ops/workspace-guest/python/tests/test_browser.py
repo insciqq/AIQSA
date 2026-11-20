@@ -574,6 +574,165 @@ def _bare_host() -> Any:
     return _host.Host({})
 
 
+FOREVER = 3600
+
+
+class _ListHandle:
+    """The page script's result handle: what `COLLECT` returned, and the arrays it keeps."""
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    async def evaluate(self, _script: str, *_args: Any) -> Any:
+        return self.value
+
+    async def get_property(self, _name: str) -> "_ListHandle":
+        return _ListHandle([])
+
+    async def dispose(self) -> None:
+        return None
+
+
+class _BusyFrame:
+    """A frame whose scripts answer at once, or never (a page whose main thread does not come back)."""
+
+    def __init__(self, page: "_BusyPage", hang: bool, items: List[Dict[str, Any]], time_cut: bool) -> None:
+        self.page, self.hang, self.items, self.time_cut = page, hang, items, time_cut
+        self.options: List[Dict[str, Any]] = []
+
+    @property
+    def url(self) -> str:
+        return self.page.url
+
+    def is_detached(self) -> bool:
+        return False
+
+    async def evaluate_handle(self, _script: str, options: Dict[str, Any]) -> _ListHandle:
+        self.options.append(options)
+        if self.hang:
+            await asyncio.sleep(FOREVER)
+        return _ListHandle({"items": [dict(item) for item in self.items], "next": len(self.items) + 1, "truncated": False,
+                            "timeCut": self.time_cut, "title": "Board", "titleCut": False,
+                            "scroll": {"y": 0, "height": 800, "viewport": [1280, 800]}, "loading": False})
+
+    async def evaluate(self, _script: str, _arg: Any = None) -> Any:
+        if self.hang:
+            await asyncio.sleep(FOREVER)
+        return []
+
+
+class _BusyPage:
+    def __init__(self, *, hang: bool = False, time_cut: bool = False) -> None:
+        self.url = "https://board.example/space/1"
+        items = [{"n": 1, "role": "button", "name": "New card", "position": "screen", "inView": True}]
+        self.main_frame = _BusyFrame(self, hang, items, time_cut)
+        self.frames = [self.main_frame]
+        self.keyboard = self
+        self.pressed: List[str] = []
+
+    def is_closed(self) -> bool:
+        return False
+
+    async def press(self, key: str) -> None:
+        self.pressed.append(key)
+
+    async def wait_for_load_state(self, _state: str, timeout: float) -> None:
+        # A page that never finishes loading: Playwright gives up at the timeout, as here.
+        await asyncio.sleep(timeout / 1000)
+        raise _host.PlaywrightTimeoutError("load state timeout")
+
+
+class _HangingContext:
+    async def cookies(self) -> List[Dict[str, Any]]:
+        await asyncio.sleep(FOREVER)
+        return []
+
+
+@unittest.skipUnless(_host is not None, "Playwright is not installed")
+class HostBudgetTests(unittest.IsolatedAsyncioTestCase):
+    """A heavy or busy page: every phase after the action keeps to its share of the command's time."""
+
+    def host_on(self, page: Any) -> Any:
+        host = _bare_host()
+        state = host._active_state()
+        state.tabs, state.current = [page], page
+        host._pages[page] = state
+        ready = asyncio.get_running_loop().create_future()
+        ready.set_result(None)
+        host._setups[page] = ready
+        return host
+
+    def deadline_in(self, seconds: float) -> None:
+        token = _host._DEADLINE.set(time.monotonic() + seconds)
+        self.addCleanup(_host._DEADLINE.reset, token)
+
+    async def test_a_page_that_never_answers_gets_a_partial_summary_in_time_and_the_host_stays_responsive(self) -> None:
+        page = _BusyPage(hang=True)
+        host = self.host_on(page)
+        host.context = _HangingContext()
+        host.store.tracked = {"board.example.json": {"board.example"}}
+        self.deadline_in(0.8)
+        started = time.monotonic()
+        with mock.patch.multiple(_host, AFTER_SETTLE_SECONDS=0.5, AUTOSAVE_SECONDS=0.2, SUMMARY_MIN_SECONDS=0.2):
+            result = await host.op_press({"key": "Enter"})
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.8 + 0.5)
+        self.assertEqual(page.pressed, ["Enter"])
+        self.assertEqual(result["step"]["action"], "press")
+        self.assertTrue(result["info"]["partial"])
+        self.assertIn("Only part of the page was listed", result["text"])
+        self.assertIn("No elements were listed.", result["text"])
+        self.assertNotIn("No interactive elements found", result["text"])
+        self.assertIn("Saved sign-ins were not updated after this step", result["text"])
+        with mock.patch.object(_host, "_pinned_chromium", return_value=None):
+            status = await asyncio.wait_for(host.op_status({}), 1)
+        self.assertEqual(status["data"]["tabs"], 1)
+
+    async def test_the_page_script_gets_the_time_left_and_says_when_it_stopped(self) -> None:
+        page = _BusyPage(time_cut=True)
+        host = self.host_on(page)
+        self.deadline_in(30)
+        result = await host.op_info({})
+        options = page.main_frame.options[0]
+        self.assertGreater(options["ms"], 1000)
+        self.assertLessEqual(options["ms"], _host.SUMMARY_SECONDS * 1000)
+        self.assertIn('[1] button "New card"', result["text"])
+        self.assertIn("Only part of the page was listed", result["text"])
+
+    async def test_an_ordinary_page_lists_in_full_without_a_partial_line(self) -> None:
+        page = _BusyPage()
+        host = self.host_on(page)
+        result = await host.op_info({})
+        self.assertIsNone(result["info"]["partial"])
+        self.assertIn('[1] button "New card"', result["text"])
+        self.assertNotIn("Only part of the page", result["text"])
+
+    async def test_a_cut_list_keeps_the_numbers_it_could_not_read_again(self) -> None:
+        page = _BusyPage()
+        host = self.host_on(page)
+        await host.op_info({})
+        page.main_frame.hang = True
+        self.deadline_in(0.4)
+        result = await host.op_info({})
+        self.assertIn("Only part of the page was listed", result["text"])
+        snapshot = host.snapshots[page]
+        self.assertIs(snapshot["refs"][1][0], page.main_frame)
+        self.assertEqual(snapshot["items"][1]["name"], "New card")
+        self.assertEqual(snapshot["next"], 2)
+
+    async def test_dispatch_sets_and_clears_the_command_deadline(self) -> None:
+        host = _bare_host()
+        seen: List[Any] = []
+
+        async def probe(_args: Dict[str, Any]) -> Dict[str, Any]:
+            seen.append(_host._DEADLINE.get())
+            return {}
+
+        host.op_probe = probe
+        started = time.monotonic()
+        await host.dispatch("probe", {})
+        self.assertAlmostEqual(seen[0] - started, 45.0 - _host.ANSWER_RESERVE_SECONDS, delta=1)
+        self.assertIsNone(_host._DEADLINE.get())
 
 
 class FakeHost:

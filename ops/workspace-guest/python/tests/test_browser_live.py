@@ -60,8 +60,48 @@ INDEX = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fix
   this.attachShadow({ mode: 'open' }).innerHTML = '<button>Shadow button</button>'; } });</script>
 </body></html>"""
 
+#: A heavy single-page app: tens of thousands of nodes, deep open shadow roots, many frames, constant DOM changes and long tasks.
+HEAVY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Heavy board</title></head><body><main id="app"></main><script>
+const app = document.getElementById('app');
+let rows = '';
+for (let r = 0; r < 600; r++) {
+  rows += '<div class="row">';
+  for (let c = 0; c < 50; c++) rows += c % 10 === 0 ? '<button>Card ' + r + '.' + c + '</button>' : '<span tabindex="0">' + r + '.' + c + '</span>';
+  rows += '</div>';
+}
+app.innerHTML = rows;
+let deep = document.body;
+for (let d = 0; d < 40; d++) {
+  const host = document.createElement('div');
+  deep.appendChild(host);
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = '<button>Deep ' + d + '</button><div></div>';
+  deep = root.lastChild;
+}
+for (let i = 0; i < 30; i++) {
+  const frame = document.createElement('iframe');
+  frame.srcdoc = '<button>Frame ' + i + '</button>' + '<p>filler</p>'.repeat(300);
+  frame.style.cssText = i % 3 ? 'width:160px;height:80px' : 'display:none';
+  document.body.appendChild(frame);
+}
+setInterval(() => {
+  const note = document.createElement('span');
+  note.textContent = String(Date.now());
+  app.appendChild(note);
+  if (app.childElementCount > 700) app.removeChild(app.children[600]);
+}, 5);
+setInterval(() => { const end = performance.now() + 250; while (performance.now() < end) {} }, 300);
+</script></body></html>"""
+
+#: A page whose main thread does not answer for 24 seconds once it has loaded, longer than a summary may take.
+BUSY = ("<!doctype html><title>Busy</title><button>After the wait</button><script>"
+        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 24000; while (Date.now() < end) {} }, 0));"
+        "</script>")
+
 PAGES = {
-    "/frame": "<!doctype html><title>frame</title><button>Frame button</button>",
+    "/heavy": HEAVY,
+    "/busy": BUSY,
+    "/frame":"<!doctype html><title>frame</title><button>Frame button</button>",
     "/popup": "<!doctype html><title>Popup page</title><h1>Popup</h1>",
     "/catalog": "<!doctype html><title>Catalog</title>" + "".join(f"<button>Add item {i}</button>" for i in range(1, 601)),
     "/captcha": ("<!doctype html><title>Robot check</title><form action='/errors/validateCaptcha'>"
@@ -376,6 +416,47 @@ class LiveBrowserTests(unittest.TestCase):
         second = browser.text(start=100, max_chars=100)
         self.assertTrue(first.startswith("word0 word1"))
         self.assertNotEqual(first.split("\n")[0], second.split("\n")[0])
+
+    def test_6b_a_heavy_page_answers_open_info_and_click_within_their_budgets(self) -> None:
+        from aiqsa import browser
+
+        timings = {}
+        started = time.monotonic()
+        page = self.quiet(browser.open, self.base + "/heavy")
+        timings["open"] = time.monotonic() - started
+        self.assertIn("Title: Heavy board", str(page))
+        started = time.monotonic()
+        again = browser.page_info()
+        timings["info"] = time.monotonic() - started
+        card = next(item for item in again.items if str(item.get("name", "")).startswith("Card "))
+        started = time.monotonic()
+        self.quiet(browser.click, card["n"])
+        timings["click"] = time.monotonic() - started
+        started = time.monotonic()
+        self.assertIn("tabs", browser.status())
+        timings["status"] = time.monotonic() - started
+        # Seconds only, for the stand's record of each phase's cost on this page.
+        print(f"heavy page timings: {json.dumps({key: round(value, 1) for key, value in timings.items()})}", file=sys.stderr)
+        self.assertLess(timings["open"], 75)
+        self.assertLess(timings["info"], 45)
+        self.assertLess(timings["click"], 45)
+        self.assertLess(timings["status"], 5)
+
+    def test_6c_a_page_too_busy_to_list_is_listed_in_part_and_then_in_full(self) -> None:
+        from aiqsa import browser
+
+        started = time.monotonic()
+        page = self.quiet(browser.open, self.base + "/busy")
+        self.assertLess(time.monotonic() - started, 75)
+        self.assertIn("Only part of the page was listed", str(page))
+        # Once the page is free again, the next list is whole; the cut list left nothing running that delays it.
+        deadline = time.monotonic() + 60
+        while True:
+            again = browser.page_info()
+            if "Only part of the page" not in str(again) or time.monotonic() > deadline:
+                break
+        self.assertNotIn("Only part of the page", str(again))
+        self.assertIn('"After the wait"', str(again))
 
     def test_7_tabs_dialogs_downloads_and_steps(self) -> None:
         from aiqsa import browser
