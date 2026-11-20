@@ -109,9 +109,9 @@ FRAME_CANDIDATES = 24
 _DEADLINE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("browser_deadline", default=None)
 #: Handle releases left running after an answer; kept here so they are not collected before they finish.
 _BACKGROUND: set = set()
-#: Tries at one site's check per agent in one browser (a turn): `captcha` calls, and inputs into a challenge (clicks,
-#: drags, typing on its elements or inside its frames; a picture task takes a dozen per round). Past either the
-#: agent hands the check over or reports it: never a loop.
+#: Failed tries at one site's check per agent and turn: `captcha` calls, and inputs into a challenge (clicks, drags,
+#: typing on its elements or inside its frames; a picture task takes a dozen per round). A check that passes clears
+#: them. Past either bound the agent hands the check over or reports it: never a loop.
 CAPTCHA_ATTEMPTS = 3
 CAPTCHA_INPUTS = 50
 CAPTCHA_WAIT_SECONDS = 20
@@ -121,6 +121,11 @@ CAPTCHA_EXHAUSTED = ("You have tried the check on {site} {count} times in this t
 #: False for a request that asked for no page summary (`page: false`, a quiet or chained command): the action is
 #: done and recorded, and the next summary shows its notes.
 _SUMMARY: contextvars.ContextVar[bool] = contextvars.ContextVar("browser_summary", default=True)
+#: The tries of this boot's turns, in the run directory, so a browser closed and opened again keeps them.
+CAPTCHA_TRIES_FILE = "captcha-tries.json"
+CAPTCHA_TRIES_KEPT = 200
+#: A turn as the client names it (`_client.py`): never the bearer itself.
+_TURN = re.compile(r"^[a-f0-9]{32}$")
 _KEY = re.compile(r"^(?:(?:Control|Shift|Alt|Meta)\+){0,3}(?:[A-Za-z0-9]|F[1-9]|F1[0-2]|Enter|Escape|Tab|Backspace|Delete|Space|"
                   r"ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Home|End|PageUp|PageDown|Insert)$")
 
@@ -159,6 +164,20 @@ class AgentState:
         self.reopened = False
         #: Its tabs are closing on a release or an expiry, remembered as they were before (`Host._close_agent_tabs`).
         self.leaving = False
+        #: The turn of this agent's latest request, when the client knows it (`_client.py`).
+        self.turn: Optional[str] = None
+
+
+class _Missed(Exception):
+    """The point the pointer reached no longer hits the element: nothing is pressed there."""
+
+
+def _boot_id() -> str:
+    """This VM boot: tries of an earlier boot never count, whatever the run directory kept."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text("utf-8").strip()[:64]
+    except OSError:
+        return ""
 
 
 def _first_line(error: BaseException, limit: int = 300) -> str:
@@ -278,7 +297,7 @@ class Host:
         self.shot_count = 0
         #: The chat's behaviour profile and the pointer of each page, for the agent's own input only.
         self.input = _human.Input(_paths.shots_dir())
-        self._captcha_tries: Dict[Tuple[str, str], Dict[str, int]] = {}
+        self._captcha_tries: Dict[Tuple[str, ...], List[int]] = {}
         #: The local forwarder's port when this browser started on a plan; None means no forwarder and no flag.
         self.proxy_port: Optional[int] = None
         self._proxy_restart_lock = asyncio.Lock()
@@ -339,7 +358,10 @@ class Host:
         name = self._valid_agent_name(raw.get("name") if isinstance(raw.get("name"), str) else "")
         if agent_id == MAIN_AGENT_ID:
             name = ""
-        return self._state_for(agent_id, name)
+        state = self._state_for(agent_id, name)
+        turn = raw.get("turn")
+        state.turn = turn if isinstance(turn, str) and _TURN.fullmatch(turn) else None
+        return state
 
     def _memory_available_mib(self) -> Optional[int]:
         """Return the VM's bounded available memory, when procfs exposes it."""
@@ -1307,10 +1329,13 @@ class Host:
         for kind in forms or []:
             if kind not in captcha:
                 captcha.append(kind)
+        # Both read the page again, so a busy page may cut them like the list itself: the summary then says it is partial.
+        passed: List[str] = []
         try:
             captcha, passed = await asyncio.wait_for(self._captcha_open(page, captcha), max(0.5, end - time.monotonic()))
+            await asyncio.wait_for(self._mark_captcha_items(page, frames_after, items), max(0.5, end - time.monotonic()))
         except asyncio.TimeoutError:
-            partial, passed = True, []
+            partial = True
         listed = {int(item["n"]): item for item in items}
         if partial:
             # A frame not listed in time keeps its last list: numbers read before still mean the same elements and can be used.
@@ -1340,6 +1365,21 @@ class Host:
             return [str(kind) for kind in await page.main_frame.evaluate(_dom.CAPTCHA, [_dom.CAPTCHA_SELECTORS, _dom.CAPTCHA_GLOBALS])]
         except PlaywrightError:
             return []
+
+    async def _mark_captcha_items(self, page: Any, frames: Dict[Any, Dict[str, Any]], items: List[Dict[str, Any]]) -> None:
+        """Mark the top document's elements that belong to a CAPTCHA widget or form, as frame items of a check are
+        marked, so the summary shows them as part of it and their inputs count towards its bound."""
+        listed = frames.get(page.main_frame)
+        if listed is None:
+            return
+        try:
+            inside = await listed["elements"].evaluate(_dom.IN_CAPTCHA_LIST, _dom.CAPTCHA_CONTAINERS)
+        except PlaywrightError:
+            return
+        # The top document is listed first, in the order of its elements.
+        for item, marked in zip((item for item in items if not item.get("frame")), inside if isinstance(inside, list) else []):
+            if marked is True:
+                item["captcha"] = True
 
     async def _captcha_open(self, page: Any, kinds: List[str]) -> Tuple[List[str], List[str]]:
         """The kinds still to pass, and those whose widget already holds its answer (it still shows until the form is sent)."""
@@ -1749,6 +1789,21 @@ class Host:
 
     # Human-like input (`_human.py`) ----------------------------------------------------------------------------
 
+    def _check_turn(self) -> None:
+        """The user took this agent's tab (or is taking it, or a handoff waits): its input stops between two events
+        and the command answers `user_in_control`, so nothing of the agent reaches the page while the user has it."""
+        if self._agent_held_by_user(self._active_state().agent_id):
+            raise _livehub.UserInControl()
+
+    def _mouse(self, page: Any) -> Any:
+        return _human.Guarded(page.mouse, self._check_turn)
+
+    def _keyboard(self, page: Any) -> Any:
+        return _human.Guarded(page.keyboard, self._check_turn)
+
+    async def _sleep(self, seconds: float) -> None:
+        await _human.guarded_sleep(self._check_turn)(seconds)
+
     async def _bounds(self, page: Any) -> Tuple[float, float]:
         try:
             width, height = await page.evaluate(_human.VIEWPORT)
@@ -1761,15 +1816,19 @@ class Host:
         where = self.input.where(page)
         if where is None:
             where = self.input.resting_point(bounds)
-            await page.mouse.move(*where)
+            await self._mouse(page).move(*where)
             self.input.moved(page, where)
         return where
 
     async def _pointer_to(self, page: Any, x: float, y: float, width: float = 24.0, *, drag: bool = False) -> None:
         bounds = await self._bounds(page)
         start = await self._pointer(page, bounds)
-        end = await _human.move(page.mouse, start, (x, y), self.input.profile, self.input.rng, width=width, bounds=bounds, drag=drag)
+        end = await _human.move(self._mouse(page), start, (x, y), self.input.profile, self.input.rng, width=width, bounds=bounds,
+                                drag=drag, sleep=self._sleep)
         self.input.moved(page, end)
+
+    async def _press(self, page: Any, *, hold_ms: Optional[float] = None, ready: Any = None) -> None:
+        await _human.press(self._mouse(page), self.input.profile, self.input.rng, hold_ms=hold_ms, sleep=self._sleep, ready=ready)
 
     async def _box(self, element: Any) -> Optional[Dict[str, float]]:
         try:
@@ -1800,7 +1859,7 @@ class Host:
                 safe = False
             if not safe:
                 break
-            await _human.wheel(page.mouse, distance, self.input.profile, self.input.rng)
+            await _human.wheel(self._mouse(page), distance, self.input.profile, self.input.rng, sleep=self._sleep)
             moved = await self._settled_box(element)
             if moved is None or abs(moved["y"] - box["y"]) < 2:
                 break
@@ -1810,12 +1869,36 @@ class Host:
         """The element's box once the wheel's scrolling stopped: smooth scrolling runs on after the last notch."""
         box = await self._box(element)
         for _ in range(6):
-            await asyncio.sleep(0.08)
+            await self._sleep(0.08)
             latest = await self._box(element)
             if latest is None or (box is not None and abs(latest["y"] - box["y"]) < 1):
                 return latest
             box = latest
         return box
+
+    async def _hit(self, element: Any, x: float, y: float) -> str:
+        """What a press at viewport point x, y reaches: `ok` only when the element (or its label) is on top in its own
+        document and each frame around it is on top in its parent's document at that point, so a dialog of the top
+        page over a frame's button takes no click meant for the button. Otherwise `covered`, `outside`, `hidden` or
+        `detached`."""
+        current = element
+        try:
+            for _ in range(MAX_FRAMES + 2):
+                box = await current.bounding_box()
+                if box is None:
+                    return "hidden"
+                rect = await current.evaluate(_human.RECT)
+                # The same point in the coordinates of the document that holds `current`.
+                seen = await current.evaluate(_human.HIT_AT, [x - (box["x"] - rect[0]), y - (box["y"] - rect[1])])
+                if seen != "ok":
+                    return str(seen)
+                frame = await current.owner_frame()
+                if frame is None or frame.parent_frame is None:
+                    return "ok"
+                current = await frame.frame_element()
+        except PlaywrightError:
+            return "detached"
+        return "covered"
 
     async def _aim(self, page: Any, element: Any) -> Optional[Tuple[float, float, float]]:
         """A point a person would click on the element once it is in view, with the element's smaller side; None
@@ -1830,47 +1913,106 @@ class Host:
             if seen in ("disabled", "hidden"):
                 return None
             box = await self._box(element)
-            if seen != "ok" or not box:
-                continue
+            if not box:
+                return None
             x, y = box["x"] + box["width"] * fx, box["y"] + box["height"] * fy
-            if 0 <= x < bounds[0] and 0 <= y < bounds[1]:
+            if 0 <= x < bounds[0] and 0 <= y < bounds[1] and await self._hit(element, x, y) == "ok":
                 return x, y, min(box["width"], box["height"])
         return None
 
-    async def _human_click(self, page: Any, element: Any, *, move_only: bool = False) -> None:
-        """Move the pointer to the element as a person would and click it (or only come to rest on it). Anything
-        unusual falls back to Playwright's own click, whose waiting and errors stay as they were."""
+    async def _human_click(self, page: Any, element: Any, *, move_only: bool = False, fallback: bool = True) -> bool:
+        """Move the pointer to the element as a person would and click it (or only come to rest on it). The point is
+        checked through every frame right before the button goes down; where it does not reach the element (covered,
+        moved away, gone), nothing is pressed there: Playwright's own click runs instead, whose waiting and errors stay
+        as they were, or with `fallback` off nothing is clicked. Returns whether the pointer pressed the element."""
         target = await self._aim(page, element)
-        if target is None:
-            if move_only:
-                return
+        if target is not None:
+            x, y, size = target
+            await self._pointer_to(page, x, y, size)
             box = await self._box(element)
-            await element.click(timeout=ACTION_TIMEOUT_MS)
-            self.input.moved(page, (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) if box else None)
-            return
-        x, y, size = target
-        await self._pointer_to(page, x, y, size)
+            if box and not _human.within((x, y), [box]):
+                # It moved while the pointer travelled (an animation, a late layout): follow it once.
+                x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+                await self._pointer_to(page, x, y, size)
+            if move_only:
+                return False
+
+            async def ready() -> None:
+                if await self._hit(element, x, y) != "ok":
+                    raise _Missed()
+
+            try:
+                await self._press(page, ready=ready)
+                return True
+            except _Missed:
+                pass
+        if move_only or not fallback:
+            return False
+        self._check_turn()
         box = await self._box(element)
-        if box and not _human.within((x, y), [box]):
-            # It moved while the pointer travelled (an animation, a late layout): follow it once.
-            await self._pointer_to(page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, size)
-        if not move_only:
-            await _human.press(page.mouse, self.input.profile, self.input.rng)
+        await element.click(timeout=ACTION_TIMEOUT_MS)
+        self.input.moved(page, (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) if box else None)
+        return False
 
     async def _human_key(self, page: Any, combo: str) -> None:
-        await _human.key(page.keyboard, combo, self.input.profile, self.input.rng)
+        await _human.key(self._keyboard(page), combo, self.input.profile, self.input.rng, sleep=self._sleep)
 
     # CAPTCHAs and bot checks -----------------------------------------------------------------------------------
 
+    def _tries(self, page: Any, url: Optional[str] = None) -> Tuple[List[Any], List[List[Any]], List[Any], str]:
+        """The key of this turn's tries at the page's site (or `url`'s), every stored entry of this boot, and the key's entry."""
+        site = self._site_of(url or page.url) or "this page"
+        state = self._active_state()
+        key = [_boot_id(), state.turn or "", state.agent_id, site]
+        try:
+            stored = json.loads((_paths.run_dir() / CAPTCHA_TRIES_FILE).read_text("utf-8"))
+            entries = [entry for entry in stored if isinstance(entry, list) and len(entry) == 6 and entry[0] == key[0] and
+                       all(isinstance(value, str) for value in entry[:4]) and
+                       all(isinstance(value, int) and not isinstance(value, bool) for value in entry[4:])]
+        except (OSError, ValueError, TypeError):
+            entries = []
+        entry = next((entry for entry in entries if entry[:4] == key), None)
+        if entry is None:
+            entry = [*key, 0, 0]
+            entries.append(entry)
+        # This browser's own count stands where the file was lost or could not be written.
+        known = self._captcha_tries.get(tuple(key), [0, 0])
+        entry[4], entry[5] = max(entry[4], known[0]), max(entry[5], known[1])
+        return key, entries, entry, site
+
+    def _store_tries(self, key: List[Any], entries: List[List[Any]], entry: List[Any]) -> None:
+        self._captcha_tries[tuple(key)] = [entry[4], entry[5]]
+        path = _paths.run_dir() / CAPTCHA_TRIES_FILE
+        try:
+            temporary = path.with_name(f".{CAPTCHA_TRIES_FILE}.{os.getpid()}")
+            temporary.write_text(json.dumps(entries[-CAPTCHA_TRIES_KEPT:]), "utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            pass
+
     def _captcha_try(self, page: Any, kind: str) -> Tuple[int, str]:
-        """Count one try at the check of the page's site (`attempt`: a `captcha` call; `input`: an input into a
-        challenge); past the bound the try is refused. Returns the count with this try, and the site."""
-        site = self._site_of(page.url) or "this page"
-        tries = self._captcha_tries.setdefault((self._active_state().agent_id, site), {"attempt": 0, "input": 0})
-        if tries[kind] >= (CAPTCHA_ATTEMPTS if kind == "attempt" else CAPTCHA_INPUTS):
-            raise HostError("captcha_attempts_exhausted", CAPTCHA_EXHAUSTED.format(site=site, count=tries[kind]))
-        tries[kind] += 1
-        return tries[kind], site
+        """Count one failed try at the check of the page's site until it passes (`attempt`: a `captcha` call; `input`:
+        an input into a challenge); past the bound the try is refused. Returns the count with this try, and the site.
+
+        The tries belong to the agent's turn, not to this browser: they are kept in the boot's run directory, so closing
+        and reopening the browser keeps them, and a later turn of the same agent on a VM that stayed up (a background
+        sub-agent holds it) starts afresh. A turn is known by the run's code bearer when the run has one (`_client.py`);
+        without one, by this boot. A check that passes clears them (`_captcha_passed`).
+        """
+        key, entries, entry, site = self._tries(page)
+        index = 4 if kind == "attempt" else 5
+        if entry[index] >= (CAPTCHA_ATTEMPTS if kind == "attempt" else CAPTCHA_INPUTS):
+            raise HostError("captcha_attempts_exhausted", CAPTCHA_EXHAUSTED.format(site=site, count=entry[index]))
+        entry[index] += 1
+        self._store_tries(key, entries, entry)
+        return entry[index], site
+
+    def _captcha_passed(self, page: Any, url: Optional[str] = None) -> None:
+        """The site's check passed: the tries that led there were not failures, and the next check starts afresh."""
+        key, entries, entry, _site = self._tries(page, url)
+        if entry[4] or entry[5]:
+            entry[4] = entry[5] = 0
+            self._store_tries(key, entries, entry)
 
     async def _captcha_boxes(self, page: Any) -> List[Dict[str, float]]:
         """Where checks show on the page: their frames, and the widgets and forms of the top document."""
@@ -1925,17 +2067,24 @@ class Host:
                 state["checkbox"] = {"kind": kind, "element": element, "box": box, "hold": role == "hold"}
         return state
 
-    async def _tick(self, page: Any, target: Dict[str, Any]) -> None:
-        """Tick a checkbox widget as a person does; a press-and-hold button is held until it lets the page go."""
+    async def _tick(self, page: Any, target: Dict[str, Any]) -> bool:
+        """Tick a checkbox widget as a person does; a press-and-hold button is held until it lets the page go. Returns
+        whether it pressed: a box covered, off screen or gone is left alone, never pressed where the pointer rests."""
         element, box = target["element"], target["box"]
         if target["hold"]:
-            await self._human_click(page, element, move_only=True)
+            point = await self._aim(page, element)
+            if point is None:
+                return False
+            await self._pointer_to(page, point[0], point[1], point[2])
+            if await self._hit(element, point[0], point[1]) != "ok":
+                return False
+            self._check_turn()
             await page.mouse.down()
             loop = asyncio.get_running_loop()
             end = loop.time() + self.input.rng.uniform(9.0, 13.0)
             try:
                 while loop.time() < end:
-                    await asyncio.sleep(0.5)
+                    await self._sleep(0.5)
                     try:
                         if page.is_closed() or not await element.is_visible():
                             break
@@ -1943,24 +2092,30 @@ class Host:
                         break
             finally:
                 await page.mouse.up()
-        elif element is not None:
-            await self._human_click(page, element)
-        elif box:
+            return True
+        if element is not None:
+            return await self._human_click(page, element, fallback=False)
+        if box:
             # A box in a closed shadow root (Turnstile) is clicked by its place: at the left of the frame, centred.
             x = box["x"] + (min(30.0, box["width"] * 0.15) if box["width"] >= 120 else box["width"] / 2)
             y = box["y"] + box["height"] / 2
             await self._pointer_to(page, x + self.input.rng.uniform(-3, 3), y + self.input.rng.uniform(-3, 3), 20)
-            await _human.press(page.mouse, self.input.profile, self.input.rng)
+            await self._press(page)
+            return True
+        return False
 
     async def _pass_check(self, page: Any, wait: int) -> Dict[str, Any]:
         """Wait for a check that passes by itself and tick its box when one shows, as a person would, until it passes,
-        a task shows or `wait` seconds are over. Each box is ticked once; reading a page that navigates away is retried."""
+        a task shows or `wait` seconds are over. Each box is ticked once; reading a page that navigates away is retried.
+        The user taking the tab ends it between two steps (`_check_turn`)."""
         loop = asyncio.get_running_loop()
         end = loop.time() + wait
         first_seen: Dict[str, float] = {}
+        tried: List[str] = []
         ticked: List[str] = []
         open_kinds: List[str] = []
         while True:
+            self._check_turn()
             try:
                 state = await self._check_state(page)
             except PlaywrightError:
@@ -1973,13 +2128,14 @@ class Host:
                 if state["challenge"]:
                     return {"outcome": "challenge", "challenge": state["challenge"], "open": open_kinds, "ticked": ticked}
                 target = state["checkbox"]
-                if target and target["kind"] not in ticked:
+                if target and target["kind"] not in tried:
                     # A person reads the box before ticking it; Turnstile often passes alone while it says "Verifying".
                     linger = self.input.rng.uniform(0.8, 1.8) + (1.5 if target["kind"].startswith("Cloudflare") else 0.0)
                     if now - first_seen.setdefault(target["kind"], now) >= linger:
-                        ticked.append(target["kind"])
+                        tried.append(target["kind"])
                         try:
-                            await self._tick(page, target)
+                            if await self._tick(page, target):
+                                ticked.append(target["kind"])
                         except PlaywrightError:
                             pass
                         continue
@@ -1993,7 +2149,7 @@ class Host:
                     await self._pointer_to(page, x + self.input.rng.uniform(-40, 40), y + self.input.rng.uniform(-25, 25), 40)
                 except PlaywrightError:
                     pass
-            await asyncio.sleep(0.5)
+            await self._sleep(0.5)
 
     def _shot_path(self) -> Path:
         self.shots_dir.mkdir(parents=True, exist_ok=True)
@@ -2139,26 +2295,32 @@ class Host:
                 if replace and fillable and not typeable:
                     await element.fill(text, timeout=ACTION_TIMEOUT_MS)
                 else:
-                    await self._human_click(page, element)
+                    # A field under a floating label or another layer is not pressed through: it takes the focus instead.
+                    await self._human_click(page, element, fallback=not fillable)
                     if not await element.evaluate(_human.FOCUSED):
                         await element.focus()
+                    before = await element.evaluate(_human.VALUE) if fillable else ""
                     if not await element.evaluate(_human.FOCUSED):
                         # The click went elsewhere and nothing takes the focus: keys would land on the wrong thing.
                         if not fillable:
                             raise HostError("element_not_actionable", f"Element [{item['n']}] does not take typing; click it "
                                             "first or look at the page (`shot`).")
-                        await element.fill(text if replace else await element.input_value() + text, timeout=ACTION_TIMEOUT_MS)
+                        await element.fill(text if replace else before + text, timeout=ACTION_TIMEOUT_MS)
                     else:
-                        if replace and fillable and await element.evaluate(_human.HAS_VALUE):
+                        if replace and fillable and before:
                             await self._human_key(page, "Control+A")
                             await self._human_key(page, "Backspace")
                         elif not replace and fillable:
                             await self._human_key(page, "End")
-                        await _human.type_text(page.keyboard, text, self.input.profile, self.input.rng)
-                        if replace and fillable and text and not await element.evaluate(_human.HAS_VALUE):
-                            await element.fill(text, timeout=ACTION_TIMEOUT_MS)  # the keys did not reach the field
+                        await _human.type_text(self._keyboard(page), text, self.input.profile, self.input.rng, sleep=self._sleep)
+                        if fillable and text:
+                            # Keys or a paste the page ignored (a site that refuses pasting): the value is set as before.
+                            after = await element.evaluate(_human.VALUE)
+                            if (replace and not after) or (not replace and after == before):
+                                await element.fill(text if replace else before + text, timeout=ACTION_TIMEOUT_MS)
                 if submit:
-                    await asyncio.sleep(self.input.rng.uniform(0.15, 0.4))
+                    await self._sleep(self.input.rng.uniform(0.15, 0.4))
+                    self._check_turn()
                     await element.press("Enter", delay=self.input.rng.uniform(*self.input.profile.key_hold_ms),
                                         timeout=ACTION_TIMEOUT_MS)
             except PlaywrightTimeoutError as error:
@@ -2234,11 +2396,12 @@ class Host:
                 before = await page.evaluate(_human.SCROLL_TOP)
                 if await page.evaluate(_human.WHEEL_SAFE, list(at)):
                     sign = 1 if direction == "down" else -1
-                    await _human.wheel(page.mouse, sign * bounds[1] * 0.85 * self.input.rng.uniform(0.93, 1.05),
-                                       self.input.profile, self.input.rng)
-                    await asyncio.sleep(0.4)
+                    await _human.wheel(self._mouse(page), sign * bounds[1] * 0.85 * self.input.rng.uniform(0.93, 1.05),
+                                       self.input.profile, self.input.rng, sleep=self._sleep)
+                    await self._sleep(0.4)
                     if await page.evaluate(_human.SCROLL_TOP) != before:
                         return
+            self._check_turn()
             await page.evaluate(_dom.SCROLL, direction)
             await asyncio.sleep(0.4)
 
@@ -2323,11 +2486,14 @@ class Host:
         page = await self._page()
         open_kinds, passed = await self._captcha_open(page, await self._captcha_in_page(page))
         if not open_kinds:
+            if passed:
+                self._captcha_passed(page)
             lead = "No CAPTCHA or bot check is open on this page" + (f"; {', '.join(passed)} already passed" if passed else "") + "."
             if not _SUMMARY.get():
                 return {"text": lead}
             summary = await self._snapshot(page)
             return {"info": summary, "text": lead + "\n" + _format.render_info(summary)}
+        url = page.url
         attempt, site = self._captcha_try(page, "attempt")
         outcome: Dict[str, Any] = {}
 
@@ -2343,6 +2509,7 @@ class Host:
         tries = f"Attempt {attempt} of {CAPTCHA_ATTEMPTS} at the check on {site} in this turn."
         ticked = f" Ticked: {', '.join(outcome['ticked'])}." if outcome.get("ticked") else ""
         if outcome["outcome"] == "passed":
+            self._captcha_passed(page, url)
             lead = f"The check passed.{ticked}"
         elif outcome["outcome"] == "challenge":
             challenge = outcome["challenge"]
@@ -2381,7 +2548,7 @@ class Host:
 
         async def run(current: Any) -> None:
             await self._pointer_to(current, x, y, 12)
-            await _human.press(current.mouse, self.input.profile, self.input.rng, hold_ms=hold or None)
+            await self._press(current, hold_ms=hold or None)
 
         return await self._act("click_at", f"{x},{y}" + (f" held {hold / 1000:g} s" if hold else ""), run)
 
@@ -2395,12 +2562,15 @@ class Host:
         async def run(current: Any) -> None:
             rng = self.input.rng
             await self._pointer_to(current, x1, y1, 16)
-            await asyncio.sleep(rng.uniform(*self.input.profile.settle_ms) / 1000)
-            await current.mouse.down()
-            await asyncio.sleep(rng.uniform(0.08, 0.18))
-            await self._pointer_to(current, x2, y2, 16, drag=True)
-            await asyncio.sleep(rng.uniform(0.05, 0.15))
-            await current.mouse.up()
+            await self._sleep(rng.uniform(*self.input.profile.settle_ms) / 1000)
+            await self._mouse(current).down()
+            try:
+                await self._sleep(rng.uniform(0.08, 0.18))
+                await self._pointer_to(current, x2, y2, 16, drag=True)
+                await self._sleep(rng.uniform(0.05, 0.15))
+            finally:
+                # Stopped half way (the user took the tab, a timeout): the button is never left held.
+                await current.mouse.up()
 
         return await self._act("drag", f"{x1},{y1} to {x2},{y2}", run)
 

@@ -113,6 +113,13 @@ PAGES = {
                       "<p>Type the characters you see in this image</p><div style='width:200px;height:70px;background:#ddd'>XKCD42</div>"
                       "<input id='captchacharacters' name='field-keywords' aria-label='Type the characters'>"
                       "<button>Continue shopping</button></form>"),
+    "/covered": ("<!doctype html><title>Covered</title><script>window.clicks = [];"
+                 "addEventListener('message', (e) => clicks.push(e.data));</script>"
+                 "<iframe src='/frame-wanted' style='position:absolute;left:40px;top:40px;width:300px;height:120px;border:0'></iframe>"
+                 "<button id='wrong' style='position:absolute;left:40px;top:40px;width:300px;height:120px;z-index:5;opacity:0.9' "
+                 "onclick=\"clicks.push('wrong')\">Confirm order</button>"),
+    "/frame-wanted": ("<!doctype html><title>Wanted</title><button style='width:280px;height:100px' "
+                      "onclick=\"parent.postMessage('wanted', '*')\">Wanted</button>"),
     "/human": ("<!doctype html><title>Human</title><button style='margin:300px 400px'>Press</button>"
                "<input aria-label='Text'><div style='height:4000px'></div><script>window.seen = [];"
                "for (const t of ['mousemove', 'mousedown', 'mouseup', 'keydown', 'wheel']) "
@@ -444,10 +451,10 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertIn("The check passed. Ticked: Amazon bot check.", str(passed))
         self.assertIn("[browser #", self.printed)
         self.assertEqual(browser.js("document.title"), '"Missing"')
-        # A text task is reported with a screenshot to answer from; tries at one site (the fixture's, so the call
-        # above was the first) are bounded, never a loop.
+        # A text task is reported with a screenshot to answer from; failed tries at one site are bounded, never a loop
+        # (the pass above cleared the fixture site's count).
         page = self.quiet(browser.open, self.base + "/captcha-text")
-        for attempt in (2, 3):
+        for attempt in (1, 2, 3):
             task = self.quiet(browser.captcha, 2)
             self.assertIn("A task of the Amazon bot check shows", str(task))
             self.assertIn(f"Attempt {attempt} of 3", str(task))
@@ -488,6 +495,23 @@ class LiveBrowserTests(unittest.TestCase):
         clicked = self.quiet(browser.click_at, 40, 40)
         self.assertIn("click_at: 40,40", self.printed)
         self.assertTrue(clicked.url.endswith("/human"))
+
+    def test_5d_a_frame_button_under_a_top_page_control_is_never_pressed_through(self) -> None:
+        """The pointer's press goes to whatever is on top: a covered frame's button is refused, and the control
+        covering it (here "Confirm order") never gets a click meant for the button."""
+        from aiqsa import browser
+
+        page = self.quiet(browser.open, self.base + "/covered")
+        wanted = self.item(page, "Wanted")
+        self.assertTrue(wanted.get("frame"))
+        with self.assertRaises(browser.BrowserError) as raised:
+            self.quiet(browser.click, wanted["n"])
+        self.assertEqual(raised.exception.code, "element_not_actionable")
+        self.assertEqual(json.loads(browser.js("window.clicks")), [])
+        # Uncovered, the same button takes the pointer's click.
+        browser.js("document.getElementById('wrong').remove()")
+        self.quiet(browser.click, self.item(browser.page_info(), "Wanted")["n"])
+        self.assertEqual(json.loads(browser.js("window.clicks")), ["wanted"])
 
     def test_5c_a_chain_runs_its_commands_in_one_call_and_stops_at_the_first_failure(self) -> None:
         from aiqsa import browser
