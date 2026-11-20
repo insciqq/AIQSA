@@ -47,7 +47,7 @@ export function fakeInstructionDb(input: Readonly<{ activeUsers: readonly string
     },
     delete: async ({ where }: { where: { userId_id: { userId: string; id: string } } }) => {
       const index = state.presets.findIndex((row) => row.userId === where.userId_id.userId && row.id === where.userId_id.id);
-      if (index < 0) throw new Error("fake_preset_missing");
+      if (index < 0) throw new Error("fake preset missing");
       const [row] = state.presets.splice(index, 1);
       for (const settings of state.settings.values()) if (settings.activeInstructionPresetId === row!.id) settings.activeInstructionPresetId = null;
     },
@@ -63,7 +63,7 @@ export function fakeInstructionDb(input: Readonly<{ activeUsers: readonly string
     },
     update: async ({ where, data, select }: { where: { userId_id: { userId: string; id: string } }; data: Record<string, unknown>; select?: Select }) => {
       const row = presetOf(where.userId_id.userId, where.userId_id.id);
-      if (!row) throw new Error("fake_preset_missing");
+      if (!row) throw new Error("fake preset missing");
       const { revision, ...fields } = data;
       Object.assign(row, fields, revision ? { revision: row.revision + 1 } : {}, { updatedAt: now() });
       return pick(row, select);
