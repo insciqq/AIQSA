@@ -205,7 +205,8 @@ describe("agents of a run without a Workspace", () => {
   });
 
   it("keep a sub-agent's whole system prompt with a Workspace byte for byte, its harness and environment included", () => {
-    // The texts of 2026-11-16 before a sub-agent's own tools decided them: the "# Workspace" section and the secrets' Workspace variables.
+    // The texts of 2026-11-16 before a sub-agent's own tools decided them: the "# Workspace" section and the secrets' Workspace variables,
+    // with the harness's 401/403 and Workspace browser lines of 2026-11-20 added and nothing else changed.
     const secrets = [{ kind: "env", name: "github", variables: ["GITHUB_TOKEN"] }, { kind: "text", name: "notes", variables: [] }];
     const tools = ["apply_patch", "fetch_url", "find_tools", "load_skill", "read_secret", "read_tool_result", "update_plan"];
     const prompt = (selfService: string) => systemPromptFor(model, { environment: { ...environment, secrets }, selfService, tools, webSearch: true,
@@ -213,8 +214,8 @@ describe("agents of a run without a Workspace", () => {
     expect(prompt(SUBAGENT_ROLE_SECTION)).toContain("# Workspace");
     expect(prompt(SUBAGENT_ROLE_SECTION)).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
     expect([sha(prompt(SUBAGENT_ROLE_SECTION)), sha(prompt(SUBAGENT_CHILD_ROLE_SECTION))]).toEqual([
-      "cca3d44b2d921d1a6ab2e60229925f4dbf098fa3ebf555fc74a7249afdd35000",
-      "b35fcd8063240ca1fd4947d0d96b8f767a937c2453a13ebd9d8cb7c4da120d76"
+      "8ec479be2307903fc8f196bd0529777f7c4acf36dbb9026e0518669fee6773b1",
+      "ac7197c72ee6af25e421f696e33b7b5ce85a0e9ecb78ba1daed6be439a1c346e"
     ]);
   });
 

@@ -11,6 +11,7 @@ import { LOAD_SKILL_TOOL_NAME } from "../../tools/skill";
 import { UPDATE_PLAN_TOOL_NAME } from "../../tools/updatePlan";
 import { CLAUDE_FAMILY_PROMPT } from "./claude";
 import { GPT_FAMILY_PROMPT } from "./gpt";
+import { HARNESS_ACCESS_DENIED_LINE, harnessBrowserLine } from "./harness";
 import { HARNESS_SEARCH_TOOL, HARNESS_TOOL_NAMES, systemPromptFamily, systemPromptFor } from "./index";
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 
@@ -111,6 +112,20 @@ describe("system prompt", () => {
     expect(prompt({ tools: ["search_selected_engines"] })).toContain("Search before you answer anything that may have changed");
     expect(prompt({ tools: ["search_engine_2"] })).toContain("# Web search");
     expect(prompt({ tools: [], webSearch: true })).toContain("# Web search");
+  });
+
+  it("reads a refused API or MCP call as missing access and keeps connected systems out of the browser", () => {
+    expect(HARNESS_ACCESS_DENIED_LINE).toBe("- An HTTP 401 or 403 from an API or MCP call means the secret or connection you used lacks access (expired, or missing a permission or scope); signing in through a browser does not fix it. Check which secret or connection you used and tell the user exactly what access is missing.");
+    expect(harnessBrowserLine(true)).toBe("Use the Workspace browser only when a task needs the website itself. For Google services (Docs, Sheets, Drive, Gmail, Calendar) and other systems the user connected, use their MCP tools (search with `find_tools`) or their API with a saved secret first: Google and corporate sign-ins often refuse a browser on a server.");
+    expect(harnessBrowserLine(false)).not.toContain("find_tools");
+    const prompt = (tools: readonly string[], workspace: boolean) =>
+      systemPromptFor({ modelId: "x", provider: "openai" }, { environment, tools, workspace }).stable;
+    const bare = prompt([], false);
+    expect(bare).toContain(`${HARNESS_ACCESS_DENIED_LINE}\n\n# When to stop and ask`);
+    expect(bare).not.toContain("Use the Workspace browser only");
+    expect(prompt([], true)).toContain(`read any other text secret with read_secret.\n${harnessBrowserLine(false)}\n\n`);
+    expect(prompt(allTools, true)).toContain(`unless the user asks for it.\n${HARNESS_ACCESS_DENIED_LINE}\n\n`);
+    expect(prompt(allTools, true)).toContain(harnessBrowserLine(true));
   });
 
   it("keeps the derived prompts free of the source products' own identities", () => {

@@ -180,7 +180,8 @@ describe("BrowserLivePanelV2", () => {
     send("state", liveState({ controller: "user", handoff: handoff("captcha", { expiresAt: new Date(Date.now() - 1_000).toISOString() }) }));
     const card = screen.getByTestId("browser-live-handoff");
     expect(card).toHaveTextContent("Time is up");
-    expect(card).toHaveTextContent("Your keystrokes are not sent to the agent. When you press Done, the agent continues from the page as you leave it.");
+    expect(card).toHaveTextContent("This is the agent's own browser on the server, not yours, and nothing is taken from your browser. " +
+      "Sign in or act in it below, then press Done to hand control back; the agent does not see what you type.");
     // The server, not the client clock, decides: a late Done gets its own refusal.
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
     fireEvent.click(within(card).getByRole("button", { name: "Done" }));

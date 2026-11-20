@@ -115,8 +115,8 @@ function HandoffCardV2({ asker, claimScroll, handoff, host, live, onAnswer, onSh
         </p>
       ) : (
         <p className="v2-browser-live-handoff-hint">
-          You have control. Use the browser below, then press Done. Your keystrokes are not sent to the agent. When you
-          press Done, the agent continues from the page as you leave it.
+          This is the agent&apos;s own browser on the server, not yours, and nothing is taken from your browser. Sign in or
+          act in it below, then press Done to hand control back; the agent does not see what you type.
         </p>
       )}
       {remembered ? null : <p className="v2-browser-live-handoff-note" role="note">{BROWSER_SIGN_IN_NOT_REMEMBERED_V2}</p>}

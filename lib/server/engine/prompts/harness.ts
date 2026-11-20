@@ -97,6 +97,22 @@ function researchPromptSection(): string {
 /** The way forward for deep research asked for in words alone: the control's name stays as the interface writes it. */
 export const RESEARCH_CONTROL_LINE = "- When the user asks in words for deep research, answer as usual and add one sentence saying that choosing Deep research in the + menu of the message box starts it; keep the name Deep research as the menu writes it.";
 
+/**
+ * A refused API or MCP call is missing access, not a sign-in: on production an agent sent the user to the browser
+ * handoff twice for a saved token without read scope before it read the 403.
+ */
+export const HARNESS_ACCESS_DENIED_LINE = "- An HTTP 401 or 403 from an API or MCP call means the secret or connection you used lacks access (expired, or missing a permission or scope); signing in through a browser does not fix it. Check which secret or connection you used and tell the user exactly what access is missing.";
+
+/**
+ * The Workspace browser comes last for connected systems: Google and corporate sign-ins often refuse a server's
+ * browser (production: SSO never completed, a CAPTCHA, an empty Google project), while their MCP tools or API work.
+ */
+export function harnessBrowserLine(findTools: boolean): string {
+  return "Use the Workspace browser only when a task needs the website itself. For Google services (Docs, Sheets, Drive, Gmail, Calendar) and other systems the user connected, use their MCP tools" +
+    (findTools ? ` (search with \`${HARNESS_TOOL_NAMES.findTools}\`)` : "") +
+    " or their API with a saved secret first: Google and corporate sign-ins often refuse a browser on a server.";
+}
+
 export function harnessPromptSection(input: HarnessPromptInput): string {
   const has = new Set(input.tools);
   const tool = (name: string, line: string) => has.has(name) ? [line] : [];
@@ -120,7 +136,8 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       ...tool(HARNESS_TOOL_NAMES.loadSkill, `- The user's Skills are listed by name and description. Load a Skill's instructions with \`${HARNESS_TOOL_NAMES.loadSkill}\` before you follow it; this needs no Workspace.`),
       ...tool(HARNESS_TOOL_NAMES.updatePlan, `- \`${HARNESS_TOOL_NAMES.updatePlan}\` shows your plan to the user as progress; use it for work with several steps.`),
       ...tool(HARNESS_TOOL_NAMES.applyPatch, `- Edit text files in the Workspace with \`${HARNESS_TOOL_NAMES.applyPatch}\`; create binary or generated files with code.`),
-      ...tool(HARNESS_TOOL_NAMES.readSecret, `- The user's saved secrets (tokens, passwords, keys) are yours to use for their tasks: \`${HARNESS_TOOL_NAMES.readSecret}\` returns a value by name, in any chat. When a task needs a login, token or key, look for a matching one among the saved secrets first and ask the user only when none fits. A value you read is stored in this chat's history; do not repeat it in your answer unless the user asks for it.`)
+      ...tool(HARNESS_TOOL_NAMES.readSecret, `- The user's saved secrets (tokens, passwords, keys) are yours to use for their tasks: \`${HARNESS_TOOL_NAMES.readSecret}\` returns a value by name, in any chat. When a task needs a login, token or key, look for a matching one among the saved secrets first and ask the user only when none fits. A value you read is stored in this chat's history; do not repeat it in your answer unless the user asks for it.`),
+      HARNESS_ACCESS_DENIED_LINE
     ],
     ...(search ? [[
       "# Web search",
@@ -132,7 +149,8 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
     ...(input.workspace ? [[
       "# Workspace",
       "This chat has a private Linux sandbox with a persistent disk, shell, Python, package managers, a headless browser and Office, PDF and image libraries. It starts on the first call that runs code or touches its files, which takes about a second, and keeps this chat's files between turns. Tools that run no code (secrets, Skills, MCP, search, Memory, images) work without it.",
-      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides but holds no values; read any other text secret with read_secret."
+      "Answer directly when the request needs no execution. When correctness depends on a computation, the user's files or real data, run it in the Workspace rather than guess. Saved secrets are available there too: every command has an env secret's variables and a text secret named like a variable (capitals, digits and underscores) under that name, SSH keys and files are files, and /workspace/SECRETS.md lists what each secret provides but holds no values; read any other text secret with read_secret.",
+      harnessBrowserLine(has.has(HARNESS_TOOL_NAMES.findTools))
     ]] : []),
     ...(has.has(CALL_SUBAGENT_TOOL_NAME) ? [[subagentsPromptSection(input.subagents, input.workspace)]] : []),
     ...(has.has(START_RESEARCH_TOOL_NAME) ? [[researchPromptSection()]] : []),

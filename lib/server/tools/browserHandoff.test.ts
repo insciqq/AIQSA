@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 import type { BrowserLiveRunHandle } from "../workspace/browserLive";
-import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS, browserHandoffNeededSignIn, executeBrowserHandoff, type BrowserHandoffMode } from "./browserHandoff";
+import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS, browserHandoffNeededSignIn, browserHandoffTool, executeBrowserHandoff,
+  type BrowserHandoffMode } from "./browserHandoff";
 import type { ToolExecutionResult } from "./types";
 
 afterEach(() => vi.useRealTimers());
@@ -14,6 +15,17 @@ function valueOf(result: ToolExecutionResult) {
     !("next" in content.value) || !("outcome" in content.value)) throw new Error("Expected a JSON handoff result.");
   return content.value;
 }
+
+describe("the handoff tool's definition", () => {
+  it("sends connected systems to their MCP tools or API, and has the card say whose browser it is and to press Done", () => {
+    expect(browserHandoffTool.description).toContain("Google and corporate sign-ins often fail in this browser, so where an MCP " +
+      "tool or an API fits the task, use it instead; a 401 or 403 from one is missing access, not a reason to sign in here.");
+    const message = (browserHandoffTool.inputSchema.properties as Record<string, { description: string }>).message!;
+    expect(message.description).toBe("One or two short sentences the user reads on the card: what to do in the browser shown " +
+      "below it, which is your browser in the sandbox, not the user's own, and to press Done when finished, for example " +
+      "\"Please sign in to your Google account in my browser below (it runs in my sandbox, not in your browser), then press Done.\"");
+  });
+});
 
 describe("a handoff's wait", () => {
   const call = { arguments: { message: "Please sign in to the shop.", reason: "sign_in" }, id: "call-1", name: BROWSER_HANDOFF_TOOL_NAME };
