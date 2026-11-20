@@ -735,6 +735,56 @@ class HostBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(_host._DEADLINE.get())
 
 
+class _LoopingPage(_HostPage):
+    async def goto(self, url: str, **_: Any) -> None:
+        raise _host.PlaywrightError(f"net::ERR_TOO_MANY_REDIRECTS at {url}\nCall log: navigating")
+
+
+@unittest.skipUnless(_host is not None, "Playwright is not installed")
+class SignInWallTests(unittest.IsolatedAsyncioTestCase):
+    def note(self, host: Any, requested: str, landed: str, password: bool = False) -> str:
+        return host._sign_in_note(requested, _HostPage(landed), {"password": password})
+
+    async def test_a_redirect_loop_says_it_usually_needs_a_sign_in_and_names_a_stale_saved_one(self) -> None:
+        host = _bare_host()
+        with self.assertRaises(_host.HostError) as raised:
+            await host._goto(_LoopingPage(), "https://tracker.example.org/issues")
+        self.assertEqual(raised.exception.code, "navigation_failed")
+        self.assertIn("ERR_TOO_MANY_REDIRECTS", raised.exception.message)
+        self.assertIn("tracker.example.org keeps redirecting, which usually means it needs a sign-in. Prefer a connected service",
+                      raised.exception.message)
+        self.assertNotIn("Call log", raised.exception.message)
+        host.store.tracked = {"example.org.json": {"example.org"}, "shop.example.json": {"shop.example"}}
+        with self.assertRaises(_host.HostError) as raised:
+            await host._goto(_LoopingPage(), "https://tracker.example.org/issues")
+        self.assertIn("or the saved sign-in example.org for it has gone stale", raised.exception.message)
+        self.assertNotIn("shop.example", raised.exception.message)
+
+    async def test_landing_on_a_sign_in_page_names_the_site_that_asked(self) -> None:
+        host = _bare_host()
+        google = self.note(host, "https://docs.google.com/document/d/1", "https://accounts.google.com/v3/signin/identifier?continue=x")
+        self.assertTrue(google.startswith("docs.google.com asks for a sign-in: it sent the browser to accounts.google.com to sign in. "
+                                          "Prefer a connected service (MCP or API) for docs.google.com;"))
+        self.assertTrue(google.endswith("\n"))
+        self.assertIn("to its sign-in page", self.note(host, "https://board.example/space/7", "https://board.example/login?next=x", True))
+        self.assertIn("to sso.example to sign in", self.note(host, "https://board.example/", "https://sso.example/auth", True))
+        host.store.tracked = {"board.example.json": {"board.example"}}
+        self.assertIn("the saved sign-in board.example did not keep it signed in",
+                      self.note(host, "https://www.board.example/space/7", "https://board.example/login", True))
+
+    async def test_ordinary_pages_and_sign_in_pages_opened_on_purpose_add_no_line(self) -> None:
+        host = _bare_host()
+        cases = [
+            ("https://shop.example/", "https://shop.example/", True),  # a password form where the agent asked to go
+            ("https://shop.example", "https://www.shop.example/", True),  # the same page with a slash and www
+            ("https://accounts.google.com/", "https://accounts.google.com/v3/signin/identifier", True),
+            ("https://shop.example/cart", "https://shop.example/basket", False),  # moved, but no password form
+            ("https://shop.example/", "chrome-error://chromewebdata/", True),
+        ]
+        for requested, landed, password in cases:
+            self.assertEqual(self.note(host, requested, landed, password), "", requested)
+
+
 class FakeHost:
     """A browser host stand-in on a Unix socket: records requests, answers what the test queues."""
 

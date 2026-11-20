@@ -161,6 +161,13 @@ class Fixture(BaseHTTPRequestHandler):
                               f"<input aria-label='Your number' value='{member}'><button aria-label=\"Pay {member}\">x</button>"
                               "<button onclick=\"alert('Hi ' + document.querySelector('input').value)\">Greet</button>"
                               f"<p>{'y' * 5990}{member}</p>")
+        # Sign-in walls: a redirect loop, the site's own sign-in page, and another host's (localhost is another host than 127.0.0.1).
+        if self.path in ("/loop", "/private", "/sso"):
+            port = self.server.server_address[1]
+            target = {"/loop": "/loop", "/private": "/signin?next=/private", "/sso": f"http://localhost:{port}/signin"}[self.path]
+            return self.reply("", status=302, headers={"location": target})
+        if self.path.startswith("/signin?"):
+            return self.reply(PAGES["/signin"])
         if self.path in PAGES:
             return self.reply(PAGES[self.path])
         return self.reply("<!doctype html><title>Missing</title>", status=404)
@@ -416,6 +423,22 @@ class LiveBrowserTests(unittest.TestCase):
         second = browser.text(start=100, max_chars=100)
         self.assertTrue(first.startswith("word0 word1"))
         self.assertNotEqual(first.split("\n")[0], second.split("\n")[0])
+
+    def test_5b_sign_in_walls_say_so(self) -> None:
+        from aiqsa import browser
+
+        with self.assertRaises(browser.BrowserError) as raised:
+            self.quiet(browser.open, self.base + "/loop")
+        self.assertEqual(raised.exception.code, "navigation_failed")
+        self.assertIn("ERR_TOO_MANY_REDIRECTS", raised.exception.message)
+        self.assertIn("127.0.0.1 keeps redirecting, which usually means it needs a sign-in", raised.exception.message)
+        own = self.quiet(browser.open, self.base + "/private")
+        self.assertIn("127.0.0.1 asks for a sign-in: it sent the browser to its sign-in page", str(own))
+        other = self.quiet(browser.open, self.base + "/sso")
+        self.assertIn("127.0.0.1 asks for a sign-in: it sent the browser to localhost to sign in", str(other))
+        # A sign-in page opened on purpose, and an ordinary page with a password form, are no wall.
+        for path in ("/signin", "/"):
+            self.assertNotIn("asks for a sign-in", str(self.quiet(browser.open, self.base + path)))
 
     def test_6b_a_heavy_page_answers_open_info_and_click_within_their_budgets(self) -> None:
         from aiqsa import browser

@@ -363,6 +363,30 @@ def render_info(info: Mapping[str, Any], *, every: bool = False, limit: int = 80
     return _bounded(lines)
 
 
+_SIGN_IN_ORDER = "otherwise sign in with the user's saved credentials, or hand the sign-in to the user"
+
+
+def _names(saved: Sequence[str]) -> str:
+    return ", ".join(clean(name, 80) for name in saved)
+
+
+def redirect_loop_line(host: str, saved: Sequence[str]) -> str:
+    """A navigation that never ends redirecting: most often a site that wants a sign-in, or a saved one gone stale."""
+    site = clean(host, 100)
+    stale = f", or the saved sign-in {_names(saved)} for it has gone stale" if saved else ""
+    return (f"{site} keeps redirecting, which usually means it needs a sign-in{stale}. "
+            f"Prefer a connected service (MCP or API) for {site}; {_SIGN_IN_ORDER}, then open it again.")
+
+
+def sign_in_line(asked: str, landed: Optional[str], saved: Sequence[str]) -> str:
+    """The site the agent opened sent the browser to a sign-in page: its own (`landed` None) or another host's."""
+    site = clean(asked, 100)
+    where_to = f"to {clean(landed, 100)} to sign in" if landed else "to its sign-in page"
+    stale = f"; the saved sign-in {_names(saved)} did not keep it signed in" if saved else ""
+    return (f"{site} asks for a sign-in: it sent the browser {where_to}{stale}. Prefer a connected service (MCP or API) for {site}; "
+            f"{_SIGN_IN_ORDER}.")
+
+
 def render_find(query: str, items: Sequence[Mapping[str, Any]], limit: int = 30) -> str:
     needle = query.casefold()
     found = [item for item in items

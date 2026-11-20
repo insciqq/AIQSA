@@ -35,6 +35,8 @@ COLLECT = r"""
   const delay = options.sent > 0 ? Date.now() - options.sent : 0;
   const until = options.ms > 0 ? performance.now() + options.ms - (delay > 0 && delay < 600000 ? delay : 0) : Infinity;
   let timeCut = false;
+  // A rendered password field: with a redirect, the page reads as a sign-in wall.
+  let password = false;
   const vw = window.innerWidth, vh = window.innerHeight;
   const items = [], elements = [], numbers = [];
   let truncated = false;
@@ -118,6 +120,7 @@ COLLECT = r"""
       else if (type === 'password' || /one-time-code|cc-|password/.test(autocomplete)) { item.secret = true; item.filled = el.value.length > 0; }
       else if (!['submit', 'button', 'reset', 'image'].includes(type)) item.value = take(el.value, 'value');
       if (type === 'search') item.search = true;
+      if (type === 'password') password = true;
     } else if (tag === 'TEXTAREA') {
       item.value = take(el.value, 'value');
     } else if (tag === 'SELECT') {
@@ -190,7 +193,7 @@ COLLECT = r"""
   }
   const scroller = document.scrollingElement || document.documentElement;
   return {
-    items, elements, numbers, next, truncated, timeCut,
+    items, elements, numbers, next, truncated, timeCut, password,
     title: String(document.title || '').slice(0, RAW), titleCut: String(document.title || '').length > RAW,
     scroll: { y: Math.round(scroller ? scroller.scrollTop : 0), height: Math.round(scroller ? scroller.scrollHeight : 0), viewport: [vw, vh] },
     loading: document.readyState !== 'complete'

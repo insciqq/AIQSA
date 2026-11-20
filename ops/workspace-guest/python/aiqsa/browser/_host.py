@@ -77,6 +77,9 @@ PROXY_RESTART_PENDING = "proxy_browser_restart_pending"
 #: Chromium's errors that read as a site or a network refusing this address, so the failure names proxies to try.
 REFUSAL_ERRORS = ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_EMPTY_RESPONSE", "ERR_TIMED_OUT",
                   "ERR_CONNECTION_TIMED_OUT", "ERR_TUNNEL_CONNECTION_FAILED", "ERR_SSL_PROTOCOL_ERROR", "ERR_HTTP2_PROTOCOL_ERROR")
+#: Sign-in pages of the big identity providers: another site sending the browser here asks for a sign-in.
+SIGN_IN_HOSTS = frozenset({"accounts.google.com", "passport.yandex.ru", "passport.yandex.com", "id.yandex.ru",
+                           "login.microsoftonline.com", "login.live.com"})
 TEXT_MAX_CHARS = 20_000
 JS_MAX_CHARS = 8_000
 ACTION_TIMEOUT_MS = 10_000
@@ -890,6 +893,10 @@ class Host:
             failure = await self._proxy_navigation_failure(page, url, error)
             if failure is not None:
                 raise failure from None
+            if "ERR_TOO_MANY_REDIRECTS" in str(error):
+                host = (urlsplit(url).hostname or "").lower()
+                raise HostError("navigation_failed", self._error_text(error) + " " +
+                                self.hidden.text(_format.redirect_loop_line(host, self._saved_sign_ins(host)))) from None
             raise
         if response is None:
             return None
@@ -899,6 +906,30 @@ class Host:
             if failure is not None:
                 raise failure
         return response.status
+
+    def _saved_sign_ins(self, host: str) -> List[str]:
+        """The saved sign-ins this browser restored or keeps for a host."""
+        return sorted(name[: -len(".json")] for name, sites in self.store.tracked.items() if _sessions.domain_matches(host, sites))
+
+    def _sign_in_note(self, requested: str, page: Any, summary: Mapping[str, Any]) -> str:
+        """A line when opening a site ended on a sign-in page: a known provider's on another host, or a password form it redirected to."""
+        try:
+            asked, landed = urlsplit(requested), urlsplit(getattr(page, "url", "") or "")
+        except ValueError:
+            return ""
+        if asked.scheme not in ("http", "https") or landed.scheme not in ("http", "https"):
+            return ""
+        asked_host, landed_host = (re.sub(r"^www\.", "", (parts.hostname or "").lower()) for parts in (asked, landed))
+        if not asked_host or not landed_host or asked_host in SIGN_IN_HOSTS:
+            return ""
+        moved = landed_host != asked_host or (asked.path or "/") != (landed.path or "/")
+        if landed_host != asked_host and landed_host in SIGN_IN_HOSTS:
+            line = _format.sign_in_line(asked_host, landed_host, self._saved_sign_ins(asked_host))
+        elif moved and summary.get("password"):
+            line = _format.sign_in_line(asked_host, landed_host if landed_host != asked_host else None, self._saved_sign_ins(asked_host))
+        else:
+            return ""
+        return self.hidden.text(line) + "\n"
 
     async def _blocked_note(self, url: str, status: Optional[int]) -> str:
         """A site's answer that reads as a block names the proxies to try; the site answered, so moving on is the agent's call."""
@@ -1011,7 +1042,7 @@ class Host:
             if result is None:
                 return None
             try:
-                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, timeCut: r.timeCut, "
+                data = await result.evaluate("r => ({ items: r.items, next: r.next, truncated: r.truncated, timeCut: r.timeCut, password: r.password, "
                                              "title: r.title, titleCut: r.titleCut, scroll: r.scroll, loading: r.loading })")
                 elements = await result.get_property("elements")
                 numbers = await result.get_property("numbers")
@@ -1048,6 +1079,7 @@ class Host:
         captcha: List[str] = []
         viewport = None
         frames, partial = await self._frames_until(page, end)
+        password = False
         for index, (frame, box) in enumerate(frames):
             kind = self._captcha_frame(frame) if index else None
             if kind and kind not in captcha:
@@ -1083,6 +1115,7 @@ class Host:
             if masked and "masked" not in attempt:
                 self.masked.pop(frame, None)
             partial = partial or bool(data.get("timeCut"))
+            password = password or bool(data.get("password"))
             next_number = max(next_number, int(data["next"]))
             frames_after[frame] = {"elements": elements, "numbers": numbers, "doc": frame.url}
             _format.page_items(data["items"], self.hidden)
@@ -1133,7 +1166,7 @@ class Host:
         tabs = [tab for tab in self.tabs if not tab.is_closed()]
         return {"url": self.hidden.text(_format.without_userinfo(page.url)), "title": meta["title"], "scroll": meta["scroll"], "loading": meta["loading"],
                 "truncated": meta["truncated"], "items": items, "captcha": captcha, "notes": notes,
-                "partial": max(1, round(time.monotonic() - started)) if partial else None,
+                "partial": max(1, round(time.monotonic() - started)) if partial else None, "password": password,
                 "tabs": len(tabs), "tab": (tabs.index(page) + 1) if page in tabs else 1}
 
     async def _captcha_forms(self, page: Any) -> List[str]:
@@ -1446,6 +1479,7 @@ class Host:
                 raise HostError("navigation_failed", self._error_text(error)) from None
 
         result = await self._act("open", None, run)
+        result["text"] = self._sign_in_note(url, self.current, result.get("info") or {}) + result["text"]
         if status.get("code") and status["code"] >= 400:
             result["text"] = f"HTTP status {status['code']}.\n" + await self._blocked_note((result.get("info") or {}).get("url") or url, status["code"]) + result["text"]
         result["data"] = status
@@ -1743,6 +1777,8 @@ class Host:
                 status["code"] = await self._goto(current, url)
 
         result = await self._act("new_tab", None, run, settle=url is not None)
+        if url:
+            result["text"] = self._sign_in_note(url, self.current, result.get("info") or {}) + result["text"]
         note = await self._blocked_note((result.get("info") or {}).get("url") or url or "", status.get("code"))
         if note:
             result["text"] = f"HTTP status {status['code']}.\n" + note + result["text"]

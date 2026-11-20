@@ -73,6 +73,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def session(self):
         try:
             cookie = SimpleCookie(self.headers.get("Cookie", ""))["session"].value
@@ -95,6 +101,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path in ("/heavy", "/busy"):
             self.send(HEAVY if self.path == "/heavy" else BUSY)
+            return
+        # Sign-in walls: a redirect loop, the site's own sign-in page, and another host's (localhost is another host than 127.0.0.1).
+        if self.path in ("/loop", "/private", "/sso"):
+            port = self.server.server_address[1]
+            self.redirect({"/loop": "/loop", "/private": "/?next=/private", "/sso": f"http://localhost:{port}/"}[self.path])
             return
         session = self.session()
         if session:
