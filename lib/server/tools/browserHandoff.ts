@@ -1,11 +1,14 @@
-import { BROWSER_HANDOFF_REASONS, BROWSER_LIVE_LIMITS, type BrowserHandoffReason } from "@/lib/contracts/browserLive";
+import { BROWSER_HANDOFF_REASONS, BROWSER_LIVE_LIMITS, type BrowserHandoffOutcome, type BrowserHandoffReason } from "@/lib/contracts/browserLive";
 import type { BrowserAgentRef } from "@/lib/contracts/subagents";
 import type { BrowserLiveRunHandle } from "../workspace/browserLive";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "./types";
 
 export const BROWSER_HANDOFF_TOOL_NAME = "browser_handoff";
 
-/** The longest a handoff waits for the user (`BROWSER_LIVE_LIMITS.handoffWaitSeconds`); never past the turn's tool time. */
+/**
+ * The longest a handoff waits for the user (`BROWSER_LIVE_LIMITS.handoffWaitSeconds`), never past the turn's tool time;
+ * without a sign of the user it ends much sooner (`BROWSER_HANDOFF_IDLE_MS` in `browserLive.ts`).
+ */
 export const BROWSER_HANDOFF_WAIT_MS = BROWSER_LIVE_LIMITS.handoffWaitSeconds * 1_000;
 
 /** The run's stable answer where nobody can take the browser: a Telegram or Discord turn, or an unattended run. */
@@ -36,7 +39,10 @@ export const browserHandoffTool: RunTool = {
     "corporate sign-ins often fail in this browser, so where an MCP tool or an API fits the task, use it instead; a 401 or 403 " +
     "from one is missing access, not a reason to sign in here. Open the page " +
     "that needs them first. The chat shows the user the live browser with your message; they act in it and press Done or " +
-    "Cancel, and this call returns then, or when the run's handoff wait ends, with the outcome and the page the browser shows. During research it returns immediately: record the site as unreachable and go on. You " +
+    "Cancel, and this call returns then with the outcome and the page the browser shows. " +
+    "It waits about two minutes for a sign of the user and longer while they act, at most ten minutes: `not_answered` means " +
+    "nobody came, `timed_out` that the user came but did not finish. " +
+    "During research it returns immediately: record the site as unreachable and go on. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
     "on. Never ask for a password in the chat, type only credentials the user saved or gave you, and never try to solve a " +
     "CAPTCHA.",
@@ -93,14 +99,20 @@ function cardMessage(value: unknown): string | null {
     : text.slice(0, BROWSER_LIVE_LIMITS.handoffMessageChars - 1).trimEnd() + "…";
 }
 
-const NEXT_STEPS: Readonly<Record<"cancelled" | "completed" | "timed_out", string>> = {
+const NEXT_STEPS: Readonly<Record<BrowserHandoffOutcome, string>> = {
   completed: "The user pressed Done. Look at the page yourself before you go on (take a screenshot and view it); the user may " +
     "have left it anywhere. Never repeat or ask for what the user typed. A site named in signInSavedAfterAnswer keeps its sign-in " +
     "in this browser now and is saved to the user's Secrets after your answer, unless that save is skipped; it is not saved yet.",
   cancelled: "The user pressed Cancel. Do not ask for the handoff again unless the user asks; tell the user what you could not do " +
     "without it, and go on with what you can.",
-  timed_out: "The user did not finish in time. Look at the page; if the step is still needed, tell the user what is waiting for " +
-    "them and finish with what you have."
+  timed_out: "The user came but did not finish in time. Look at the page yourself (take a screenshot and view it); if the step " +
+    "is done, go on. Otherwise continue without the user where another path to the same result exists (an MCP tool, an API, a " +
+    "public page); if none does, finish with what you have, say plainly what the site still needs, and that the user can ask " +
+    "you again when they are ready.",
+  not_answered: "Nobody came to the browser: the user is not at the screen now. Do not hand the browser over again in this " +
+    "answer. Continue without the user where another path to the same result exists (an MCP tool, an API, a public page); if " +
+    "none does, finish with what you have, say plainly what the site needs (for example a sign-in), and that the user can ask " +
+    "you again when they are at the screen."
 };
 
 export const RESEARCH_UNREACHABLE_NEXT = "Call record_evidence with kind \"unreachable\", target set to the site, " +
@@ -108,7 +120,8 @@ export const RESEARCH_UNREACHABLE_NEXT = "Call record_evidence with kind \"unrea
   "or wait for a person; go on with the remaining research.";
 
 /**
- * `browser_handoff`: the call waits inside the turn until Done, Cancel or its bounded wait, never past the
+ * `browser_handoff`: the call waits inside the turn until Done, Cancel or its bounded wait (two minutes without a sign
+ * of the user, each sign starting them again, ten at most), never past the
  * turn's tool time; Stop and the run's deadline end it through `signal`, which the batch then treats as the
  * run stopping. The model learns only the outcome and the page, never what the user typed or saw.
  */

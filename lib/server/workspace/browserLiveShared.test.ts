@@ -71,7 +71,7 @@ describe("browser live transport through a member with a guest session", () => {
     const { failing, guest, main, starts, subagent } = mainAndSubagent();
     failing.set("run-subagent", "workspace_session_lost");
     const result = await subagent.handoff({ agent: shop, message: "Solve the check", reason: "captcha", signal: signal(), waitMs: 200 });
-    expect(result).toEqual({ kind: "ended", outcome: "timed_out", page: { title: "Sign in", url: "https://shop.example/login" },
+    expect(result).toEqual({ kind: "ended", outcome: "not_answered", page: { title: "Sign in", url: "https://shop.example/login" },
       saved: null });
     // The asking agent's run first, then the others.
     expect(starts()).toEqual(["run-subagent", "run-main"]);
@@ -85,7 +85,7 @@ describe("browser live transport through a member with a guest session", () => {
   it("begins a handoff through the asking agent's run when it has a guest session", async () => {
     const { main, starts, subagent } = mainAndSubagent();
     expect(await subagent.handoff({ agent: shop, message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 50 }))
-      .toMatchObject({ kind: "ended", outcome: "timed_out" });
+      .toMatchObject({ kind: "ended", outcome: "not_answered" });
     expect(starts()).toEqual(["run-subagent"]);
     await subagent.end("run_finished");
     await main.end("run_finished");

@@ -15,7 +15,7 @@ import { proposeCall } from "../research/planWindow.testFixtures";
 import type { ResearchEvidencePort } from "../research/ports";
 import type { ResearchEngineDeps } from "../research/run";
 import type { ModelToolCall, ToolExecutionResult } from "../tools/types";
-import { browserLiveRelay, type BrowserLiveRunHandle, type BrowserLiveView } from "../workspace/browserLive";
+import { BROWSER_HANDOFF_IDLE_MS, browserLiveRelay, type BrowserLiveRunHandle, type BrowserLiveView } from "../workspace/browserLive";
 import { fakeLiveGuest, recordingWriter, until } from "../workspace/browserLive.testFixtures";
 import { WORKSPACE_BROWSER_AGENT_IMAGE } from "../workspace/browserGuidance";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -292,10 +292,8 @@ describe("browser_handoff in a native run", () => {
     const reading = events(run.response);
     const panel = await openPanel(run.chatId);
     expect(panel.handoff).toMatchObject({ message: "Please sign in to the shop and press Done.", reason: "sign_in" });
-    // The tool time of a 15-minute Workspace turn caps the wait below the ten-minute limit (`turnDeadline.ts`).
-    const waits = Date.parse(panel.handoff.expiresAt) - Date.parse(panel.handoff.startedAt);
-    expect(waits).toBeLessThanOrEqual(480_000);
-    expect(waits).toBeGreaterThan(470_000);
+    // Without a sign of the user the card counts down the idle time; the turn's tool time caps the whole wait.
+    expect(Date.parse(panel.handoff.expiresAt) - Date.parse(panel.handoff.startedAt)).toBe(BROWSER_HANDOFF_IDLE_MS);
     expect(await panel.view.input(owner, { kind: "text", text: "zz-typed-4242" })).toBeNull();
     expect(panel.view.answerHandoff(owner, { action: "done", handoffId: panel.handoff.id })).toBeNull();
     const result = await reading;
@@ -322,14 +320,15 @@ describe("browser_handoff in a native run", () => {
     expect(handoffResult(run.model.requests).signInSavedAfterAnswer).toBeUndefined();
   });
 
-  it("returns timed_out once the wait capped at the turn's tool time ran out", async () => {
+  it("returns not_answered when nobody comes, long before the wait capped at the turn's tool time", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     const run = start();
     const reading = events(run.response);
-    await openPanel(run.chatId);
-    await vi.advanceTimersByTimeAsync(480_000);
+    // No view opens: a view opened after the handoff began is a sign of the user.
+    await until(() => run.space.guest.received.some((message) => message.t === "handoff" && message.action === "begin"));
+    await vi.advanceTimersByTimeAsync(BROWSER_HANDOFF_IDLE_MS);
     await reading;
-    expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "timed_out" });
+    expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "not_answered", next: expect.stringContaining("Nobody came") });
   });
 
   it("is ended by Stop: the run is cancelled and the guest's handoff ends with it", async () => {
@@ -346,14 +345,18 @@ describe("browser_handoff in a native run", () => {
 
   it("is ended by the run's deadline", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-    // A clock that reads the run as just started gives the handoff its whole ten minutes; the five-minute turn ends first.
+    // A clock that reads the run as just started gives the handoff its whole ten minutes; with the user active (each
+    // input starts the idle time again), the five-minute turn ends first.
     const startedAt = Date.now();
     let reads = 0;
     const run = start({ now: () => (reads++ === 0 ? startedAt : startedAt - 3_600_000), turnTimeoutSeconds: 300 });
     const reading = events(run.response);
     const panel = await openPanel(run.chatId);
-    expect(Date.parse(panel.handoff.expiresAt) - Date.parse(panel.handoff.startedAt)).toBe(600_000);
-    await vi.advanceTimersByTimeAsync(300_000);
+    expect(Date.parse(panel.handoff.expiresAt) - Date.parse(panel.handoff.startedAt)).toBe(BROWSER_HANDOFF_IDLE_MS);
+    for (let minute = 0; minute < 5; minute += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await panel.view.input(owner, { kind: "text", text: "a" });
+    }
     const result = await reading;
     expect(result.at(-1)).toMatchObject({ data: { code: RUN_TIME_LIMIT_FAILURE.code }, type: "error" });
     expect(run.repo.failRun).toHaveBeenCalled();

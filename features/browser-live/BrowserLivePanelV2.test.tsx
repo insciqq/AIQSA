@@ -10,7 +10,7 @@ import {
 } from "@/lib/contracts/browserLive";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
-import { BrowserLivePanelV2 } from "./BrowserLivePanelV2";
+import { BROWSER_LIVE_HIDDEN_GRACE_MS, BrowserLivePanelV2 } from "./BrowserLivePanelV2";
 import { fakeEventSources, liveAgent, liveFrame, liveState, type FakeBrowserLiveEventSource } from "./browserLive.testFixtures";
 
 const CHAT = "chat-1";
@@ -200,6 +200,68 @@ describe("BrowserLivePanelV2", () => {
     send("state", liveState());
     expect(screen.queryByTestId("browser-live-handoff")).toBeNull();
     expect(posted()).toHaveLength(1);
+  });
+
+  it("closes the card of a request nobody answered with a plain line, until its agent asks again", () => {
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in") }));
+    expect(screen.getByTestId("browser-live-handoff")).toBeVisible();
+    send("state", liveState({ ended: [{ id: "handoff-1", agent: { id: "main", name: null }, outcome: "not_answered" }] }));
+    expect(screen.queryByTestId("browser-live-handoff")).toBeNull();
+    expect(screen.getByTestId("browser-live-handoff-ended")).toHaveTextContent(
+      "Nobody answered in time, so the agent went on without you. You can ask it again when you are at the screen.");
+    send("state", liveState({ ended: [{ id: "handoff-2", agent: { id: "thread_shop", name: "shop" }, outcome: "timed_out" }] }));
+    expect(screen.getByTestId("browser-live-handoff-ended")).toHaveTextContent(
+      "Shop stopped waiting before you finished. You can ask it again when you are ready.");
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in", { id: "handoff-3" }) }));
+    expect(screen.queryByTestId("browser-live-handoff-ended")).toBeNull();
+    expect(screen.getByTestId("browser-live-handoff")).toBeVisible();
+  });
+
+  describe("while the page is hidden", () => {
+    let hidden = false;
+    const setHidden = (value: boolean) => {
+      hidden = value;
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    };
+    beforeEach(() => {
+      hidden = false;
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => hidden ? "hidden" : "visible" });
+    });
+    afterEach(() => {
+      delete (document as { visibilityState?: unknown }).visibilityState;
+      vi.useRealTimers();
+    });
+
+    // Opening the view is how the server learns the user came to a waiting request: a background tab never opens it.
+    it("closes the stream after a short grace and opens it again when the page shows", () => {
+      vi.useFakeTimers();
+      renderPanel({ toolActivity: handoffCall });
+      expect(sources).toHaveLength(1);
+      setHidden(true);
+      act(() => { vi.advanceTimersByTime(BROWSER_LIVE_HIDDEN_GRACE_MS - 1_000); });
+      expect(sources[0]!.closed).toBe(false);
+      // A short look at another app keeps it.
+      setHidden(false);
+      act(() => { vi.advanceTimersByTime(BROWSER_LIVE_HIDDEN_GRACE_MS); });
+      expect(sources[0]!.closed).toBe(false);
+      setHidden(true);
+      act(() => { vi.advanceTimersByTime(BROWSER_LIVE_HIDDEN_GRACE_MS); });
+      expect(sources[0]!.closed).toBe(true);
+      expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("Needs your help");
+      setHidden(false);
+      expect(sources).toHaveLength(2);
+      expect(sources[1]!.closed).toBe(false);
+    });
+
+    it("does not open the stream in a tab loaded in the background", () => {
+      hidden = true;
+      renderPanel({ toolActivity: handoffCall });
+      expect(screen.getByRole("button", { name: /Hide/u })).toBeVisible();
+      expect(sources).toHaveLength(0);
+      setHidden(false);
+      expect(sources).toHaveLength(1);
+    });
   });
 
   it("keeps Done and Cancel usable when the client clock says the time is up, and drops a request that already ended", async () => {

@@ -20,7 +20,8 @@ import {
 } from "@/lib/contracts/browserLive";
 import { logEvent } from "../observability";
 import { WORKSPACE_AGENT_PROTOCOL } from "../subagents/guestProtocol";
-import { BROWSER_LIVE_MAIN_REF, BrowserLiveAgents, browserLivePage, guestMessageAgent } from "./browserLiveAgents";
+import { BROWSER_LIVE_MAIN_REF, BrowserLiveAgents, browserLivePage, guestMessageAgent,
+  type BrowserLivePendingHandoff } from "./browserLiveAgents";
 import type { WorkspaceBrowserLiveAction, WorkspaceBrowserLiveReply } from "./runtime";
 
 /**
@@ -72,8 +73,13 @@ export const BROWSER_LIVE_RELAY_LIMITS = Object.freeze({
   /** Bytes of one view's SSE queue (a few frames); a view that falls behind loses frames, never state. */
   viewQueueBytes: 4 * 1_024 * 1_024,
   /** How long the end of a run waits for its streamer to close. */
-  endMs: 3_000
+  endMs: 3_000,
+  /** A sign of the user moves a handoff's shown deadline once it gained this much, so typing does not send a state each key. */
+  handoffDeadlineStepMs: 5_000
 });
+
+/** A handoff ends this long after the last sign of the user, or after its start without one (`not_answered`). */
+export const BROWSER_HANDOFF_IDLE_MS = BROWSER_LIVE_LIMITS.handoffIdleSeconds * 1_000;
 
 const MAX_LINE_CHARS = BROWSER_LIVE_LIMITS.frameBase64Chars + 64 * 1_024;
 
@@ -121,6 +127,7 @@ export type BrowserLiveHandoffInput = Readonly<{
   message: string;
   reason: BrowserHandoffReason;
   signal: AbortSignal;
+  /** The whole wait at most, however active the user is; without a sign of them it ends after `BROWSER_HANDOFF_IDLE_MS`. */
   waitMs: number;
 }>;
 
@@ -286,6 +293,16 @@ class LiveRun implements BrowserLiveRunHandle {
 
   // Views ---------------------------------------------------------------------------------------------------------
 
+  /**
+   * The owner acted in this chat's live browser (opened a view, sent input, took or returned control, picked an agent,
+   * answered a handoff): every pending handoff learns the user is there, so its wait starts its idle time again. The
+   * panel opens its stream only while its page is shown (`BrowserLivePanelV2.tsx`), so a view opening is the user
+   * coming to the screen, not a tab left open in the background.
+   */
+  private userSeen(): void {
+    for (const pending of [...this.agents.pendingAll()]) pending.seen?.();
+  }
+
   /** Opens one view of the owner: the state, the steps and the latest frame now, then every change. */
   async watch(viewer: BrowserLiveViewer, writer: BrowserLiveWriter): Promise<string | null> {
     if (this.remembered === null) this.remembered = await this.registration.signInRemembered().catch(() => false);
@@ -294,6 +311,7 @@ class LiveRun implements BrowserLiveRunHandle {
       writer.close({ data: { reason: "not_available" }, event: "end" });
       return null;
     }
+    this.userSeen();
     while (this.views.size >= BROWSER_LIVE_RELAY_LIMITS.views) {
       const [oldestId, oldest] = this.views.entries().next().value!;
       this.views.delete(oldestId);
@@ -328,6 +346,7 @@ class LiveRun implements BrowserLiveRunHandle {
   /** One input from the owner into the agent's tab it names, in arrival order, only while the user holds that tab. */
   async input(viewer: BrowserLiveViewer, input: BrowserLiveInput): Promise<BrowserLiveErrorCode | null> {
     if (this.ended) return "browser_live_not_found";
+    this.userSeen();
     if (!this.allow(viewer.userId)) return "browser_live_rate_limited";
     const { agent = BROWSER_LIVE_MAIN_AGENT, ...event } = input;
     if (!this.agents.userControls(agent)) return "browser_live_not_in_control";
@@ -348,6 +367,7 @@ class LiveRun implements BrowserLiveRunHandle {
   async control(_viewer: BrowserLiveViewer, request: BrowserLiveControlRequest | BrowserLiveControlRequest["action"]):
     Promise<BrowserLiveErrorCode | null> {
     if (this.ended) return "browser_live_not_found";
+    this.userSeen();
     const asked: Readonly<{ action: BrowserLiveControlRequest["action"]; agent?: string }> =
       typeof request === "string" ? { action: request } : request;
     const agent = asked.agent ?? BROWSER_LIVE_MAIN_AGENT;
@@ -371,18 +391,23 @@ class LiveRun implements BrowserLiveRunHandle {
   answerHandoff(_viewer: BrowserLiveViewer, request: BrowserLiveHandoffRequest): BrowserLiveErrorCode | null {
     if (this.ended) return "browser_live_not_found";
     const pending = this.agents.pending(request.handoffId);
-    if (!pending) return "browser_live_handoff_stale";
-    pending.resolve(request.action === "done" ? "completed" : "cancelled");
-    return null;
+    pending?.resolve(request.action === "done" ? "completed" : "cancelled");
+    // The other agents' requests wait on: the user is here.
+    this.userSeen();
+    return pending ? null : "browser_live_handoff_stale";
   }
 
   // The engine ----------------------------------------------------------------------------------------------------
 
   /**
-   * An agent's handoff: the user holds that agent's tab until Done, Cancel or `waitMs`, while the other agents go on;
-   * the run's Stop or deadline (`signal`) ends it too, by throwing its reason. Each agent has at most one pending, and
-   * the panel shows the oldest first. On Done the guest saves the site of that agent's tab, only for a handoff about
-   * signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end carries the reason.
+   * An agent's handoff: the user holds that agent's tab until Done, Cancel or the end of its wait, while the other
+   * agents go on; the run's Stop or deadline (`signal`) ends it too, by throwing its reason. The wait ends
+   * `BROWSER_HANDOFF_IDLE_MS` after the last sign of the user (`userSeen`), and after `waitMs` however active they are
+   * (operator decision 2026-11-20: a user who has not come within 1-2 minutes will not come, while 16 of 39 who came
+   * needed longer than 2 minutes to finish): `not_answered` when no sign came at all, else `timed_out`. Each agent
+   * has at most one pending, and the panel shows the oldest first. On Done the guest saves the site of that agent's
+   * tab, only for a handoff about signing in (sign-in, code, check, consent; operator decision 2026-10-27): the end
+   * carries the reason.
    * `askingRunId`, the asking agent's run, is tried first as the transport; the commands still name only `agent`'s tab.
    */
   async handoff(input: BrowserLiveHandoffInput, askingRunId?: string): Promise<BrowserLiveHandoffResult> {
@@ -405,8 +430,12 @@ class LiveRun implements BrowserLiveRunHandle {
     }
     const startedAt = Date.now();
     const id = `handoff_${randomBytes(12).toString("base64url")}`;
+    const capAt = startedAt + input.waitMs;
     const outcome = await new Promise<BrowserHandoffOutcome | "aborted">((resolve) => {
       let settled = false;
+      let came = false;
+      let lastSign = startedAt;
+      const deadline = () => Math.min(lastSign + BROWSER_HANDOFF_IDLE_MS, capAt);
       const finish = (value: BrowserHandoffOutcome | "aborted") => {
         if (settled) return;
         settled = true;
@@ -414,16 +443,32 @@ class LiveRun implements BrowserLiveRunHandle {
         input.signal.removeEventListener("abort", onAbort);
         resolve(value);
       };
-      const timer = setTimeout(() => finish("timed_out"), input.waitMs);
+      // One timer: a sign only moves the deadline, and the timer looks again when it fires.
+      const expire = () => {
+        const left = deadline() - Date.now();
+        if (left > 0) timer = setTimeout(expire, left);
+        else finish(came ? "timed_out" : "not_answered");
+      };
+      let timer = setTimeout(expire, deadline() - startedAt);
       const onAbort = () => finish("aborted");
       input.signal.addEventListener("abort", onAbort, { once: true });
-      if (this.agents.addHandoff({ agent, expiresAt: startedAt + input.waitMs, id, message: input.message, reason: input.reason,
-        resolve: finish, startedAt })) this.selectionMoved();
+      const pending: BrowserLivePendingHandoff = { agent, expiresAt: deadline(), id, message: input.message, reason: input.reason,
+        resolve: finish, startedAt,
+        seen: () => {
+          if (settled) return;
+          came = true;
+          lastSign = Date.now();
+          // The card's countdown follows a few seconds at a time.
+          if (deadline() - pending.expiresAt < BROWSER_LIVE_RELAY_LIMITS.handoffDeadlineStepMs) return;
+          pending.expiresAt = deadline();
+          this.broadcastState();
+        } };
+      if (this.agents.addHandoff(pending)) this.selectionMoved();
       else this.broadcastState();
       if (input.signal.aborted) finish("aborted");
     });
     const before = this.agents.selected;
-    this.agents.removeHandoff(id);
+    this.agents.removeHandoff(id, outcome);
     if (this.agents.selected !== before) this.selectionMoved();
     else this.broadcastState();
     if (outcome === "aborted") {
@@ -432,7 +477,9 @@ class LiveRun implements BrowserLiveRunHandle {
         askingRunId).catch(() => undefined);
       throw input.signal.reason ?? new Error("browser_handoff_aborted");
     }
-    const ending = { action: "end", [AGENT_FIELD]: agent.id, outcome, reason: input.reason, t: "handoff" };
+    // The guest knows three outcomes; for it both unanswered ones only end the user's control, saving nothing.
+    const ending = { action: "end", [AGENT_FIELD]: agent.id, outcome: outcome === "not_answered" ? "timed_out" : outcome,
+      reason: input.reason, t: "handoff" };
     let end = await this.command(ending, undefined, askingRunId).catch(() => null);
     if (end?.ok !== true && !this.ended) {
       // Once more on a fresh streamer: the guest's control must not stay with the user for the rest of the turn.
