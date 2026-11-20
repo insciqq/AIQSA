@@ -291,6 +291,8 @@ def _states(item: Mapping[str, Any]) -> List[str]:
         states.append(f"{item['files']} file(s) chosen")
     if item.get("frame"):
         states.append("in a frame")
+    if item.get("captcha"):
+        states.append("part of a CAPTCHA")
     return states
 
 
@@ -334,8 +336,13 @@ def render_info(info: Mapping[str, Any], *, every: bool = False, limit: int = 80
         lines.append(clean(note, 400))
     captcha = info.get("captcha") or []
     if captcha:
-        lines.append("Warning: this page shows a CAPTCHA or bot check (" + ", ".join(clean(kind, 40) for kind in captcha) +
-                     "). Do not try to solve or get around it; stop and tell the user.")
+        lines.append("This page shows a CAPTCHA or bot check (" + ", ".join(clean(kind, 40) for kind in captcha) +
+                     "). Pass it as a person would: `captcha` waits while it checks the browser and ticks an \"I'm not a "
+                     "robot\" box; a picture, slider or text task you answer from a screenshot. Hand it to the user only "
+                     "after a few attempts fail.")
+    passed = info.get("captchaPassed") or []
+    if passed and not captcha:
+        lines.append("The page's check is passed (" + ", ".join(clean(kind, 40) for kind in passed) + "); go on with the page.")
     items: Sequence[Mapping[str, Any]] = info.get("items") or []
     shown = [item for item in items if every or item.get("inView")]
     above = sum(1 for item in items if item.get("position") == "above")

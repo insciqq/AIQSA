@@ -220,9 +220,10 @@ describe("where a researcher reads the method", () => {
     expect(RESEARCH_REVIEWS_GUIDANCE).not.toContain("`standing` claimed");
   });
 
-  it("holds the small sample's bound, and goes past no block", () => {
+  it("holds the small sample's bound, passes a check as a person would and stops at a block or a check that still stands", () => {
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain(`Fewer than ${RESEARCH_SMALL_SAMPLE_BELOW} kept reviews is a small sample`);
-    expect(RESEARCH_REVIEWS_GUIDANCE).toContain("never work around it");
+    expect(RESEARCH_REVIEWS_GUIDANCE).toContain("A CAPTCHA or bot check you pass as a person would (`aiqsa-browser captcha`)");
+    expect(RESEARCH_REVIEWS_GUIDANCE).toContain("a check that still stands after a few attempts ends collecting there");
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain("`unreachable`");
     expect(RESEARCH_REVIEWS_GUIDANCE).toContain("go on at once; never wait for a person");
   });

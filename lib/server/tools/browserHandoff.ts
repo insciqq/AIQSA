@@ -35,7 +35,8 @@ export const browserHandoffTool: RunTool = {
   capability: "workspace",
   description: "Hand the Workspace browser to the user for a step only they should take: signing in when the user saved no " +
     "credentials for the site and gave none in the chat, a code sent to them " +
-    "(SMS, email, an authenticator app), a CAPTCHA or bot check, a consent, or a choice that is theirs to make. Google and " +
+    "(SMS, email, an authenticator app), a CAPTCHA or bot check you could not pass yourself in a few attempts, a consent, " +
+    "or a choice that is theirs to make. Google and " +
     "corporate sign-ins often fail in this browser, so where an MCP tool or an API fits the task, use it instead; a 401 or 403 " +
     "from one is missing access, not a reason to sign in here. Open the page " +
     "that needs them first. The chat shows the user the live browser with your message; they act in it and press Done or " +
@@ -44,8 +45,8 @@ export const browserHandoffTool: RunTool = {
     "nobody came, `timed_out` that the user came but did not finish. " +
     "During research it returns immediately: record the site as unreachable and go on. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
-    "on. Never ask for a password in the chat, type only credentials the user saved or gave you, and never try to solve a " +
-    "CAPTCHA.",
+    "on. Never ask for a password in the chat, and type only credentials the user saved or gave you. Pass a CAPTCHA or bot " +
+    "check yourself first, as a person would (`aiqsa-browser captcha`, then a picture, slider or text task from a screenshot).",
   inputSchema: {
     additionalProperties: false,
     properties: {
@@ -115,7 +116,14 @@ const NEXT_STEPS: Readonly<Record<BrowserHandoffOutcome, string>> = {
     "you again when they are at the screen."
 };
 
-export const RESEARCH_UNREACHABLE_NEXT = "Call record_evidence with kind \"unreachable\", target set to the site, " +
+/**
+ * Where nobody can take over, checks are still the agent's (operator decision 2026-11-20: the browser is a person's
+ * AI-assisted browser, so it passes what a person passes); only the handoff is missing, and the tries stay bounded.
+ */
+const PASS_CHECKS_YOURSELF = "A CAPTCHA or bot check you have not tried yet you pass yourself, as a person would " +
+  "(`aiqsa-browser captcha`, then a picture, slider or text task from a screenshot); after a few failed attempts stop trying.";
+
+export const RESEARCH_UNREACHABLE_NEXT ="Call record_evidence with kind \"unreachable\", target set to the site, " +
   "and reason explaining why it could not be reached, in the reader's language, so it reaches the report. Do not open this site again " +
   "or wait for a person; go on with the remaining research.";
 
@@ -140,16 +148,16 @@ export async function executeBrowserHandoff(call: ModelToolCall, mode: BrowserHa
   }
   if (mode.kind === "discord") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
-      message: "This turn came from a Discord thread, where nobody can take over the browser. Do not try to sign in or get " +
-        "around the check yourself, and do not ask for passwords or codes in the thread. Finish with what you have and say " +
+      message: "This turn came from a Discord thread, where nobody can take over the browser. Do not try to sign in yourself, " +
+        "and do not ask for passwords or codes in the thread. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say " +
         "plainly what the site needed that you could not do." });
   }
   if (mode.kind === "unattended") {
     return result(call, "error", { error: BROWSER_HANDOFF_UNAVAILABLE,
       message: "This run is unattended (a scheduled task or a webhook), so nobody can take over the browser now. Do not try to " +
-        "sign in or get around the check yourself. Finish with what you have and say that the user needs to sign in to the site " +
-        "again in a chat with you (ask there to open the site; the chat shows the live browser), so later runs can use the " +
-        "saved sign-in." });
+        "sign in yourself. " + PASS_CHECKS_YOURSELF + " Finish with what you have and say what stopped you; for a sign-in, that " +
+        "the user needs to sign in to the site again in a chat with you (ask there to open the site; the chat shows the live " +
+        "browser), so later runs can use the saved sign-in." });
   }
   if (mode.researching?.()) {
     return result(call, "complete", { outcome: "unreachable", next: RESEARCH_UNREACHABLE_NEXT });

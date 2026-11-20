@@ -1,12 +1,14 @@
-"""`aiqsa-browser`: drive the Workspace browser from any shell, one action per command.
+"""`aiqsa-browser`: drive the Workspace browser from any shell.
 
     aiqsa-browser open https://www.saucedemo.com
-    aiqsa-browser type 1 --env SHOP_LOGIN
-    aiqsa-browser type 2 --env SHOP_PASSWORD --submit
+    aiqsa-browser type 1 --env SHOP_LOGIN --then type 2 --env SHOP_PASSWORD --submit
     aiqsa-browser click 7
 
-An action prints its step line, then the page with numbered elements. A
-failure prints `error[<code>]: <what to do>` on stderr with a stable exit code.
+An action prints its step line, then the page with numbered elements. Commands
+joined with `--then` run in order in one call: each prints its step line, the
+page is printed once after the last, and the first failure stops the rest and
+prints the page as it is. A failure prints `error[<code>]: <what to do>` on
+stderr with a stable exit code.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from ..proxy import selection as proxy_selection
 from ._client import BrowserError, call
 from ._format import step_line
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 EXIT_USAGE = 2
 EXIT_UNAVAILABLE = 3
 EXIT_ELEMENT = 4
@@ -35,6 +37,11 @@ _ELEMENT = {"element_not_found", "stale_element", "element_not_actionable", "not
 _PAGE = {"invalid_url", "navigation_failed", "navigation_timeout", "wait_timeout", "timeout", "tab_not_found", "script_error"}
 _UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error", "proxy_browser_restart_pending",
                 proxy_client.UNAVAILABLE}
+#: Joins several commands into one call: each prints its step line, the page is printed once after the last, and the
+#: first failure stops the rest. Fewer calls mean fewer model rounds (browser audit 2026-11-20).
+THEN = "--then"
+#: Commands that answer without the browser and never join a chain.
+_ALONE = {"proxied", "proxies"}
 #: What a shell answers when a command is missing or not executable.
 EXIT_COMMAND_NOT_RUN = 127
 _PROXY_HELP = "A proxy's name or id, `direct`, or `auto` to follow its hints again (a proxy called direct or auto is named by id)."
@@ -49,7 +56,7 @@ def exit_code(code: str) -> int:
         return EXIT_ELEMENT
     if code in _PAGE:
         return EXIT_PAGE
-    if code == "captcha_requires_user":
+    if code.startswith("captcha_"):
         return EXIT_CAPTCHA
     if code in ("user_in_control", "user_returned_control"):
         return EXIT_USER_IN_CONTROL
@@ -72,7 +79,8 @@ class _UsageError(Exception):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="aiqsa-browser", description="Drive this turn's Workspace browser (full Chromium, kept between commands).")
+    parser = _Parser(prog="aiqsa-browser", description="Drive this turn's Workspace browser (full Chromium, kept between commands). "
+                     "Join commands with --then to run them in one call: aiqsa-browser type 1 alice --then click 2.")
     parser.add_argument("--version", action="version", version=f"aiqsa-browser {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     quiet = argparse.ArgumentParser(add_help=False)
@@ -115,10 +123,22 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("n", type=int, nargs="?")
     command.add_argument("--start", type=int, default=0)
     command.add_argument("--max", type=int, default=6000)
-    command = commands.add_parser("js", help="Read page data: evaluate a JavaScript expression and print its JSON value. Only for "
-                                  "reading; never to click, solve a challenge or change how the browser identifies itself. "
-                                  "Refused while the page shows a CAPTCHA.")
+    command = commands.add_parser("js", help="Evaluate a JavaScript expression in the page and print its JSON value, to read "
+                                  "data. Act on the page with click, type and the other commands: sites read a scripted click as a bot.")
     command.add_argument("expression")
+    command = commands.add_parser("captcha", parents=[quiet], help="Pass the page's CAPTCHA or bot check as a person would: wait "
+                                  "while it checks the browser, tick an \"I'm not a robot\" box, and report a picture, slider or "
+                                  "text task with a screenshot to answer.")
+    command.add_argument("--wait", type=int, default=20, help="Seconds to wait for the check, at most 60.")
+    command = commands.add_parser("click-at", parents=[quiet], help="Click the point X,Y of the visible page, in the pixels of a "
+                                  "`shot` of it: a tile of a picture task, a canvas, a map.")
+    command.add_argument("x", type=int)
+    command.add_argument("y", type=int)
+    command.add_argument("--hold", type=float, default=0.0, metavar="SECONDS", help="Press and hold this long, at most 20.")
+    command = commands.add_parser("drag", parents=[quiet], help="Drag from X1,Y1 to X2,Y2 of the visible page with the button "
+                                  "held: a slider, a puzzle piece.")
+    for name in ("x1", "y1", "x2", "y2"):
+        command.add_argument(name, type=int)
     command = commands.add_parser("shot", help="Save a PNG screenshot and print its path.")
     command.add_argument("n", type=int, nargs="?")
     command.add_argument("--full", action="store_true", help="The whole page, not only the viewport.")
@@ -182,6 +202,14 @@ def _request(parsed: argparse.Namespace) -> tuple:
         return "status", {"markers": parsed.markers}
     if name == "upload":
         return "upload", {"n": parsed.n, "path": os.path.abspath(parsed.path)}
+    if name == "captcha":
+        return "captcha", {"wait": parsed.wait}
+    if name == "click-at":
+        if not 0 <= parsed.hold <= 20:
+            raise _UsageError("--hold is seconds from 0 to 20")
+        return "click_at", {"x": parsed.x, "y": parsed.y, **({"hold_ms": round(parsed.hold * 1000)} if parsed.hold else {})}
+    if name == "drag":
+        return "drag", {"x1": parsed.x1, "y1": parsed.y1, "x2": parsed.x2, "y2": parsed.y2}
     keys = {"open": ("url", "proxy"), "find": ("text",), "click": ("n",), "select": ("n", "option"), "press": ("key",),
             "tab": ("index",), "js": ("expression",)}
     return name, {key: getattr(parsed, key) for key in keys.get(name, ())}
@@ -248,31 +276,72 @@ def _run_proxied(parsed: argparse.Namespace, stderr: TextIO) -> int:
     return EXIT_COMMAND_NOT_RUN
 
 
+def _chain(argv: List[str]) -> List[List[str]]:
+    """The commands of one call, split at `--then`. `proxied` runs its own command line, which is never split."""
+    if argv[:1] == ["proxied"] or THEN not in argv:
+        return [argv]
+    parts: List[List[str]] = [[]]
+    for token in argv:
+        if token == THEN:
+            parts.append([])
+        else:
+            parts[-1].append(token)
+    if any(not part for part in parts):
+        raise _UsageError(f"`{THEN}` joins two commands; one side of it is empty")
+    return parts
+
+
+def _write(result: Dict[str, Any], quiet: bool, stdout: TextIO) -> None:
+    if result.get("step"):
+        stdout.write(step_line(result["step"]) + "\n")
+    text = str(result.get("text") or "")
+    if text and not (quiet and result.get("step")):
+        stdout.write(text + ("" if text.endswith("\n") else "\n"))
+
+
 def main(argv: Optional[List[str]] = None, *, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
+    requests: List[tuple] = []
+    chained = False
     try:
-        parsed = _parser().parse_args(argv)
-        if parsed.command == "proxied":
-            return _run_proxied(parsed, stderr)
-        if parsed.command == "proxies":
-            stdout.write(_proxies_text(parsed.host) + "\n")
-            return 0
-        op, args = _request(parsed)
+        commands = _chain(list(sys.argv[1:] if argv is None else argv))
+        chained = len(commands) > 1
+        for index, command in enumerate(commands):
+            parsed = _parser().parse_args(command)
+            if chained and parsed.command in _ALONE:
+                raise _UsageError(f"`{parsed.command}` runs on its own, not with `{THEN}`")
+            if parsed.command == "proxied":
+                return _run_proxied(parsed, stderr)
+            if parsed.command == "proxies":
+                stdout.write(_proxies_text(parsed.host) + "\n")
+                return 0
+            op, args = _request(parsed)
+            quiet = bool(getattr(parsed, "quiet", False))
+            if quiet or index < len(commands) - 1:
+                # The page is summarized once, after the last command: earlier ones print their step lines and notes.
+                args["page"] = False
+            requests.append((parsed.command, op, args, quiet))
     except _UsageError as error:
-        stderr.write(f"error[usage]: {error}. See `aiqsa-browser --help`.\n")
+        where = f" (command {len(requests) + 1} of the chain; none of them ran)" if chained else ""
+        stderr.write(f"error[usage]: {error}{where}. See `aiqsa-browser --help`.\n")
         return EXIT_USAGE
     except proxy_client.ProxyError as error:
         stderr.write(f"error[{error.code}]: {error.message}\n")
         return exit_code(error.code)
-    try:
-        result: Dict[str, Any] = call(op, args)
-    except BrowserError as error:
-        stderr.write(f"error[{error.code}]: {error.message}\n")
-        return exit_code(error.code)
-    if result.get("step"):
-        stdout.write(step_line(result["step"]) + "\n")
-    text = str(result.get("text") or "")
-    if text and not (getattr(parsed, "quiet", False) and result.get("step")):
-        stdout.write(text + ("" if text.endswith("\n") else "\n"))
+    for index, (name, op, args, quiet) in enumerate(requests):
+        try:
+            result: Dict[str, Any] = call(op, args)
+        except BrowserError as error:
+            stderr.write(f"error[{error.code}]: {error.message}\n")
+            if chained:
+                stderr.write(f"Stopped at command {index + 1} of {len(requests)} (`{name}`); the commands after it did not run."
+                             + (" The page now is below." if index else "") + "\n")
+            if index:
+                try:
+                    stdout.write(str(call("info", {}).get("text") or "") + "\n")
+                except BrowserError:
+                    pass
+            return exit_code(error.code)
+        _write(result, quiet, stdout)
     return 0
 
 

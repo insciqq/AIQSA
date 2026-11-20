@@ -9,7 +9,9 @@ from __future__ import annotations
 import io
 import asyncio
 import json
+import math
 import os
+import random
 import re
 import socket
 import stat
@@ -25,7 +27,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from aiqsa.browser import _client, _format, _identity, _paths, _sessions, cli  # noqa: E402
+from aiqsa.browser import _client, _dom, _format, _human, _identity, _paths, _sessions, cli  # noqa: E402
 try:  # The standard guest image does not install Playwright; host fakes run where it is present.
     from aiqsa.browser import _host  # noqa: E402
 except ModuleNotFoundError:  # pragma: no cover - exercised only in the slim guest test image
@@ -262,7 +264,8 @@ class FormatTests(unittest.TestCase):
         self.assertLessEqual(len(text), _format.INFO_CHARS + 200)
         self.assertIn("On screen (80 of 399 elements; 249 below):", text)
         self.assertIn("70 more not listed", text)
-        self.assertIn("Do not try to solve or get around it", text)
+        self.assertIn("Pass it as a person would: `captcha`", text)
+        self.assertNotIn("Do not try to solve", text)
         self.assertIn("Tabs: 2, this is tab 1", text)
         self.assertIn("A dialog was dismissed.", text)
         self.assertNotIn("x" * 101, text)
@@ -387,6 +390,203 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(_format.render_steps(steps), 'Browser steps of this turn:\n  [browser #1] open @ shop.example/\n'
                                                       '  [browser #2] click: button "Buy" @ shop.example/item')
         self.assertEqual(_format.render_steps([]), "No browser steps yet.")
+
+
+class _FakeMouse:
+    def __init__(self) -> None:
+        self.events: List[tuple] = []
+
+    async def move(self, x: float, y: float) -> None:
+        self.events.append(("move", x, y))
+
+    async def down(self) -> None:
+        self.events.append(("down",))
+
+    async def up(self) -> None:
+        self.events.append(("up",))
+
+    async def wheel(self, dx: float, dy: float) -> None:
+        self.events.append(("wheel", dx, dy))
+
+
+class _FakeKeyboard:
+    def __init__(self) -> None:
+        self.events: List[tuple] = []
+
+    async def down(self, key: str) -> None:
+        self.events.append(("down", key))
+
+    async def up(self, key: str) -> None:
+        self.events.append(("up", key))
+
+    async def insert_text(self, text: str) -> None:
+        self.events.append(("insert", text))
+
+    async def press(self, key: str, delay: float = 0) -> None:
+        self.events.append(("press", key, delay))
+
+
+class HumanInputTests(unittest.TestCase):
+    """The agent's own input as a person's: paths, pace, typing and wheel, with fakes and no browser."""
+
+    def setUp(self) -> None:
+        self.slept: List[float] = []
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+
+    def test_profile_is_stable_per_chat_and_differs_between_chats(self) -> None:
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            one = _human.load_profile(Path(first) / ".browser")
+            self.assertEqual(_human.load_profile(Path(first) / ".browser").seed, one.seed)
+            self.assertEqual(vars(_human.Profile(one.seed)), vars(one))
+            self.assertNotEqual(_human.load_profile(Path(second)).seed, one.seed)
+            (Path(second) / _human.PROFILE_FILE).write_text('{"seed": "x"}')
+            fresh = _human.load_profile(Path(second))
+            self.assertEqual(json.loads((Path(second) / _human.PROFILE_FILE).read_text())["seed"], fresh.seed)
+        # Construction reads nothing: the host builds it before any page exists.
+        self.assertIsNone(_human.Input(Path("/nonexistent/aiqsa"))._profile)
+
+    def test_a_move_curves_eases_and_arrives_within_the_page(self) -> None:
+        profile, rng = _human.Profile(7), random.Random(3)
+        bent = overshot = 0
+        for _ in range(300):
+            start = (rng.uniform(0, 1440), rng.uniform(0, 813))
+            end = (rng.uniform(0, 1440), rng.uniform(0, 813))
+            points = _human.plan_move(start, end, profile, rng, width=30, bounds=(1440, 813))
+            self.assertEqual(points[-1][:2], (min(max(end[0], 2), 1438), min(max(end[1], 2), 811)))
+            self.assertTrue(all(0 <= x <= 1440 and 0 <= y <= 813 for x, y, _ in points))
+            total = sum(pause for _, _, pause in points)
+            self.assertLessEqual(total, 650 * 1.2 + 120 * 1.2)
+            length = math.hypot(end[0] - start[0], end[1] - start[1])
+            if length > 200:
+                self.assertGreaterEqual(len(points), 10)
+                # Distance from the straight line, and whether the pointer went past the target.
+                deviation = max(abs((end[0] - start[0]) * (start[1] - y) - (start[0] - x) * (end[1] - start[1])) / length
+                                for x, y, _ in points)
+                bent += deviation > 3
+                along = [((x - start[0]) * (end[0] - start[0]) + (y - start[1]) * (end[1] - start[1])) / length for x, y, _ in points]
+                overshot += max(along) > length + 2
+        self.assertGreater(bent, 100)
+        self.assertGreater(overshot, 10)
+        self.assertEqual(_human.plan_move((5, 5), (5.2, 5), profile, rng), [(5.2, 5, 0.0)])
+        drag = _human.plan_move((100, 400), (400, 400), profile, random.Random(1), drag=True)
+        self.assertGreaterEqual(len(drag), 12)
+
+    def test_typing_goes_key_by_key_and_long_or_multiline_text_is_pasted(self) -> None:
+        async def typed(text: str) -> List[tuple]:
+            keyboard = _FakeKeyboard()
+            await _human.type_text(keyboard, text, _human.Profile(1), random.Random(2), sleep=self.sleep)
+            return keyboard.events
+
+        events = asyncio.run(typed("Ab 9"))
+        self.assertEqual(events, [("down", "A"), ("up", "A"), ("down", "b"), ("up", "b"), ("down", " "), ("up", " "),
+                                  ("down", "9"), ("up", "9")])
+        self.assertEqual(asyncio.run(typed("да")), [("insert", "д"), ("insert", "а")])
+        self.assertEqual(asyncio.run(typed("line\nline")), [("insert", "line\nline")])
+        self.assertEqual(asyncio.run(typed("x" * 49)), [("insert", "x" * 49)])
+        self.assertEqual(asyncio.run(typed("")), [])
+        gaps = _human.key_gaps("hello world", _human.Profile(1), random.Random(2))
+        self.assertEqual(len(gaps), 10)
+        self.assertTrue(all(25 <= gap <= 900 for gap in gaps))
+
+    def test_a_click_travels_rests_and_holds_the_button(self) -> None:
+        mouse = _FakeMouse()
+
+        async def click() -> tuple:
+            end = await _human.move(mouse, (10, 10), (600, 400), _human.Profile(4), random.Random(5), bounds=(1440, 813), sleep=self.sleep)
+            await _human.press(mouse, _human.Profile(4), random.Random(5), sleep=self.sleep)
+            return end
+
+        self.assertEqual(asyncio.run(click()), (600, 400))
+        kinds = [event[0] for event in mouse.events]
+        self.assertGreaterEqual(kinds.count("move"), 10)
+        self.assertEqual(kinds[-2:], ["down", "up"])
+        self.assertGreater(self.slept[-1], 0.03)  # the button stays down
+        mouse.events.clear()
+        asyncio.run(_human.press(mouse, _human.Profile(4), random.Random(5), hold_ms=1500, sleep=self.sleep))
+        self.assertAlmostEqual(self.slept[-1], 1.5)
+
+    def test_the_wheel_turns_in_notches_that_add_up(self) -> None:
+        for distance in (85.0, -700.0, 3000.0):
+            ticks = _human.wheel_ticks(distance, _human.Profile(9), random.Random(1))
+            self.assertAlmostEqual(sum(delta for delta, _ in ticks), distance, places=6)
+            self.assertLessEqual(len(ticks), 14)
+            self.assertTrue(all((delta > 0) == (distance > 0) for delta, _ in ticks))
+        self.assertEqual(_human.wheel_ticks(0.4, _human.Profile(9), random.Random(1)), [])
+        mouse = _FakeMouse()
+        asyncio.run(_human.wheel(mouse, 600, _human.Profile(9), random.Random(1), sleep=self.sleep))
+        self.assertGreaterEqual(len(mouse.events), 4)
+        self.assertTrue(all(event[0] == "wheel" for event in mouse.events))
+
+    def test_time_added_per_action_stays_small(self) -> None:
+        """The planned time of a click, a typed key and a screen's scroll (the measurement in the task's Decisions)."""
+        rng = random.Random(11)
+        clicks, keys, scrolls = [], [], []
+        for seed in range(200):
+            profile = _human.Profile(seed)
+            start, end = (rng.uniform(0, 1440), rng.uniform(0, 813)), (rng.uniform(0, 1440), rng.uniform(0, 813))
+            path = sum(pause for _, _, pause in _human.plan_move(start, end, profile, rng, width=rng.uniform(16, 200)))
+            clicks.append(path + sum(profile.settle_ms) / 2 + sum(profile.hold_ms) / 2)
+            gaps = _human.key_gaps("someone@example.com", profile, rng)
+            keys.append(sum(gaps) / len(gaps))  # from one key going down to the next
+            scrolls.append(sum(pause for _, pause in _human.wheel_ticks(813 * 0.85, profile, rng)))
+        mean = lambda values: sum(values) / len(values)  # noqa: E731
+        self.assertLess(mean(clicks), 700)
+        self.assertLess(max(clicks), 1100)
+        self.assertLess(mean(keys), 150)
+        self.assertLess(mean(scrolls), 700)
+
+    def test_click_points_stay_inside_the_element(self) -> None:
+        profile, rng = _human.Profile(2), random.Random(2)
+        for _ in range(500):
+            fx, fy = _human.aim(profile, rng)
+            self.assertTrue(0.25 <= fx <= 0.75 and 0.3 <= fy <= 0.7)
+        self.assertTrue(_human.within((5, 5), [{"x": 0, "y": 0, "width": 10, "height": 10}]))
+        self.assertFalse(_human.within((15, 5), [{"x": 0, "y": 0, "width": 10, "height": 10}]))
+
+
+class CaptchaTableTests(unittest.TestCase):
+    def test_widgets_are_told_apart_by_their_frame_address(self) -> None:
+        cases = [
+            ("reCAPTCHA", "https://www.google.com/recaptcha/api2/anchor?ar=1&k=x", ("checkbox", "#recaptcha-anchor")),
+            ("reCAPTCHA", "https://www.google.com/recaptcha/enterprise/anchor?k=x", ("checkbox", "#recaptcha-anchor")),
+            ("reCAPTCHA", "https://www.google.com/recaptcha/api2/bframe?hl=en&k=x", ("challenge", None)),
+            ("hCaptcha", "https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html#frame=checkbox&id=1", ("checkbox", "#checkbox")),
+            ("hCaptcha", "https://newassets.hcaptcha.com/captcha/v1/abc/static/hcaptcha.html#frame=challenge&id=1", ("challenge", None)),
+            ("Yandex SmartCaptcha", "https://smartcaptcha.yandexcloud.net/checkbox.ru.e05501d67102945a.html", ("checkbox", ".CheckboxCaptcha-Button")),
+            ("Yandex SmartCaptcha", "https://smartcaptcha.yandexcloud.net/advanced.ru.e05501d67102945a.html", ("challenge", None)),
+            ("Cloudflare challenge", "https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/if/ov2/av0/x/normal/auto/", ("checkbox", None)),
+            ("DataDome challenge", "https://geo.captcha-delivery.com/captcha/?initialCid=x", ("challenge", None)),
+            ("reCAPTCHA", "https://www.google.com/recaptcha/api2/userverify", (None, None)),
+        ]
+        for kind, address, expected in cases:
+            self.assertEqual(_dom.captcha_widget(kind, address.lower()), expected, address)
+
+    def test_yandex_and_the_cloudflare_interstitial_are_detected(self) -> None:
+        kinds = {kind for kind, _ in _dom.CAPTCHA_FRAMES}
+        self.assertIn("Yandex SmartCaptcha", kinds)
+        self.assertIn(".CheckboxCaptcha", _dom.CAPTCHA_CONTAINERS)
+        self.assertEqual(_dom.CAPTCHA_GLOBALS, [["Cloudflare browser check", "_cf_chl_opt"]])
+        self.assertIn("/backend.", _dom.CAPTCHA_FRAMES_IGNORED)
+        self.assertEqual({kind for kind, _ in _dom.CAPTCHA_TOKENS} - kinds, set())
+
+
+@unittest.skipUnless(_host is not None, "Playwright is not installed")
+class HostCaptchaTests(unittest.TestCase):
+    def test_tries_at_a_site_check_are_bounded_per_agent(self) -> None:
+        host = _bare_host()
+        page = _HostPage("https://www.shop.example/check")
+        for count in range(1, _host.CAPTCHA_ATTEMPTS + 1):
+            self.assertEqual(host._captcha_try(page, "attempt"), (count, "shop.example"))
+        with self.assertRaises(_host.HostError) as raised:
+            host._captcha_try(page, "attempt")
+        self.assertEqual(raised.exception.code, "captcha_attempts_exhausted")
+        self.assertIn("browser_handoff", raised.exception.message)
+        self.assertEqual(cli.exit_code(raised.exception.code), cli.EXIT_CAPTCHA)
+        # Inputs into the task have their own, larger bound; another site starts afresh.
+        self.assertEqual(host._captcha_try(page, "input"), (1, "shop.example"))
+        self.assertEqual(host._captcha_try(_HostPage("https://other.example/"), "attempt")[0], 1)
 
 
 @unittest.skipUnless(_host is not None, "Playwright is not installed")
@@ -867,7 +1067,7 @@ class ClientAndCliTests(unittest.TestCase):
         self.assertEqual(self.host.requests[-1]["agent"], {"id": "thread-7", "name": "shop-amazon"})
 
     def test_failures_print_a_code_and_map_to_stable_exit_codes(self) -> None:
-        cases = [("stale_element", cli.EXIT_ELEMENT), ("captcha_requires_user", cli.EXIT_CAPTCHA),
+        cases = [("stale_element", cli.EXIT_ELEMENT), ("captcha_attempts_exhausted", cli.EXIT_CAPTCHA),
                  ("browser_session_too_large", cli.EXIT_SESSION), ("navigation_timeout", cli.EXIT_PAGE),
                  ("browser_start_failed", cli.EXIT_UNAVAILABLE), ("something_new", 1)]
         for code, expected in cases:
@@ -891,12 +1091,64 @@ class ClientAndCliTests(unittest.TestCase):
             (["status", "--markers"], "status", {"markers": True}),
             (["release"], "release", {}),
             (["select", "3", "Price (low to high)"], "select", {"n": 3, "option": "Price (low to high)"}),
+            (["captcha"], "captcha", {"wait": 20}),
+            (["captcha", "--wait", "40"], "captcha", {"wait": 40}),
+            (["click-at", "512", "300"], "click_at", {"x": 512, "y": 300}),
+            (["click-at", "512", "300", "--hold", "1.5"], "click_at", {"x": 512, "y": 300, "hold_ms": 1500}),
+            (["drag", "100", "400", "380", "402"], "drag", {"x1": 100, "y1": 400, "x2": 380, "y2": 402}),
+            (["js", "document.title"], "js", {"expression": "document.title"}),
         ]
         for argv, op, args in cases:
             self.assertEqual(self.run_cli(*argv)[0], 0, argv)
             self.assertEqual(self.host.requests[-1], {"v": 1, "op": op, "args": args, "agent": {"id": "main"}}, argv)
         self.assertEqual(self.run_cli("click")[0], cli.EXIT_USAGE)
         self.assertEqual(self.run_cli("fly")[0], cli.EXIT_USAGE)
+        self.assertEqual(self.run_cli("click-at", "1", "2", "--hold", "30")[0], cli.EXIT_USAGE)
+
+    def test_chained_commands_run_in_order_and_print_the_page_once(self) -> None:
+        steps = [{"n": n, "action": action, "target": target, "url": "https://shop.example/login"}
+                 for n, action, target in ((1, "type", 'textbox "User" (5 characters)'), (2, "type", 'textbox "Password" (6 characters)'),
+                                           (3, "click", 'button "Sign in"'))]
+        self.host.answers.extend([{"ok": True, "result": {"step": steps[0], "text": ""}},
+                                  {"ok": True, "result": {"step": steps[1], "text": "A alert dialog was accepted: \"Hi\"."}},
+                                  {"ok": True, "result": {"step": steps[2], "text": "URL: https://shop.example/account"}}])
+        with mock.patch.dict(os.environ, {"SHOP_PASSWORD": "s3cret"}):
+            code, out, err = self.run_cli("type", "1", "alice", cli.THEN, "type", "2", "--env", "SHOP_PASSWORD", cli.THEN, "click", "3")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, '[browser #1] type: textbox "User" (5 characters) @ shop.example/login\n'
+                              '[browser #2] type: textbox "Password" (6 characters) @ shop.example/login\n'
+                              'A alert dialog was accepted: "Hi".\n'
+                              '[browser #3] click: button "Sign in" @ shop.example/login\n'
+                              "URL: https://shop.example/account\n")
+        # Only the last command summarizes the page.
+        self.assertEqual([request["args"].get("page") for request in self.host.requests[-3:]], [False, False, None])
+        self.assertEqual([request["op"] for request in self.host.requests[-3:]], ["type", "type", "click"])
+        self.assertTrue(self.host.requests[-2]["args"]["masked"])
+
+    def test_the_first_failure_stops_a_chain_and_shows_the_page(self) -> None:
+        step = {"n": 4, "action": "click", "target": 'button "Next"', "url": "https://shop.example/"}
+        self.host.answers.extend([{"ok": True, "result": {"step": step, "text": ""}},
+                                  {"ok": False, "error": {"code": "element_not_found", "message": "There is no element [9]."}},
+                                  {"ok": True, "result": {"text": "URL: https://shop.example/2"}}])
+        before = len(self.host.requests)
+        code, out, err = self.run_cli("click", "4", cli.THEN, "click", "9", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_ELEMENT)
+        self.assertEqual(out, '[browser #4] click: button "Next" @ shop.example/\nURL: https://shop.example/2\n')
+        self.assertEqual(err, "error[element_not_found]: There is no element [9].\n"
+                              "Stopped at command 2 of 3 (`click`); the commands after it did not run. The page now is below.\n")
+        self.assertEqual([request["op"] for request in self.host.requests[before:]], ["click", "click", "info"])
+        # A command that cannot be read stops the chain before anything runs.
+        code, _, err = self.run_cli("click", "4", cli.THEN, "click", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("(command 2 of the chain; none of them ran)", err)
+        for argv in (["click", "4", cli.THEN], [cli.THEN, "click", "4"], ["click", "4", cli.THEN, "proxies"]):
+            self.assertEqual(self.run_cli(*argv)[0], cli.EXIT_USAGE, argv)
+        self.assertEqual(len(self.host.requests), before + 3)
+
+    def test_a_quiet_action_asks_for_no_page(self) -> None:
+        self.host.answers.append({"ok": True, "result": {"step": {"n": 1, "action": "scroll", "target": "down", "url": None}, "text": ""}})
+        self.assertEqual(self.run_cli("scroll", "--quiet"), (0, "[browser #1] scroll: down\n", ""))
+        self.assertEqual(self.host.requests[-1]["args"], {"direction": "down", "page": False})
 
     def test_a_host_that_dies_mid_request_is_reported_as_a_crash(self) -> None:
         self.host.answers.append(None)
@@ -920,6 +1172,13 @@ class ClientAndCliTests(unittest.TestCase):
         with self.assertRaises(browser.BrowserError) as raised:
             browser.click(9)
         self.assertEqual(raised.exception.code, "element_not_found")
+        with mock.patch("sys.stdout", io.StringIO()):
+            browser.click_at(5, 6, hold=1.25)
+            self.assertEqual(self.host.requests[-1]["args"], {"x": 5, "y": 6, "hold_ms": 1250})
+            browser.drag(1, 2, 3, 4)
+            self.assertEqual(self.host.requests[-1]["args"], {"x1": 1, "y1": 2, "x2": 3, "y2": 4})
+            browser.captcha()
+            self.assertEqual(self.host.requests[-1], {"v": 1, "op": "captcha", "args": {"wait": 20}, "agent": {"id": "main"}})
 
 
 class PathTests(unittest.TestCase):

@@ -106,7 +106,15 @@ PAGES = {
     "/catalog": "<!doctype html><title>Catalog</title>" + "".join(f"<button>Add item {i}</button>" for i in range(1, 601)),
     "/captcha": ("<!doctype html><title>Robot check</title><form action='/errors/validateCaptcha'>"
                  "<p>Click to continue</p><button>Continue shopping</button></form><a href='/'>Home</a>"),
-    "/storage": "<!doctype html><title>Storage</title><script>localStorage.setItem('cart', '3')</script><p>stored</p>",
+    "/captcha-text": ("<!doctype html><title>Type the characters</title><form action='/errors/validateCaptcha'>"
+                      "<p>Type the characters you see in this image</p><div style='width:200px;height:70px;background:#ddd'>XKCD42</div>"
+                      "<input id='captchacharacters' name='field-keywords' aria-label='Type the characters'>"
+                      "<button>Continue shopping</button></form>"),
+    "/human": ("<!doctype html><title>Human</title><button style='margin:300px 400px'>Press</button>"
+               "<input aria-label='Text'><div style='height:4000px'></div><script>window.seen = [];"
+               "for (const t of ['mousemove', 'mousedown', 'mouseup', 'keydown', 'wheel']) "
+               "addEventListener(t, (e) => seen.push([t, Math.round(performance.now()), e.isTrusted]), true);</script>"),
+    "/storage":"<!doctype html><title>Storage</title><script>localStorage.setItem('cart', '3')</script><p>stored</p>",
     "/text": "<!doctype html><title>Text</title><p>" + " ".join(f"word{i}" for i in range(3000)) + "</p>",
     "/member": ("<!doctype html><title>Member</title><form action='/hello' method='get'>"
                 "<input name='member' aria-label='Member number'><button>Show</button></form>"
@@ -391,21 +399,87 @@ class LiveBrowserTests(unittest.TestCase):
             self.quiet(browser.click, old)
         self.assertIn(raised.exception.code, ("stale_element", "element_not_found"))
 
-    def test_5_bot_checks_go_to_the_user(self) -> None:
+    def test_5_the_agent_passes_bot_checks_as_a_person_and_its_tries_are_bounded(self) -> None:
         from aiqsa import browser
 
         page = self.quiet(browser.open, self.base + "/captcha")
         self.assertIn("Amazon bot check", str(page))
-        self.assertIn("Do not try to solve or get around it", str(page))
+        self.assertIn("Pass it as a person would", str(page))
+        self.assertIn("part of a CAPTCHA", str(page))
+        # Reading a check page with a script is the agent's, as it is a person's.
+        self.assertEqual(browser.js("document.title"), '"Robot check"')
+        passed = self.quiet(browser.captcha, 10)
+        self.assertIn("The check passed. Ticked: Amazon bot check.", str(passed))
+        self.assertIn("[browser #", self.printed)
+        self.assertEqual(browser.js("document.title"), '"Missing"')
+        # A text task is reported with a screenshot to answer from; tries at one site (the fixture's, so the call
+        # above was the first) are bounded, never a loop.
+        page = self.quiet(browser.open, self.base + "/captcha-text")
+        for attempt in (2, 3):
+            task = self.quiet(browser.captcha, 2)
+            self.assertIn("A task of the Amazon bot check shows", str(task))
+            self.assertIn(f"Attempt {attempt} of 3", str(task))
+            shot = re.search(r"Screenshot of the page: (\S+\.png);", str(task))
+            self.assertTrue(shot and Path(shot.group(1)).is_file())
         with self.assertRaises(browser.BrowserError) as raised:
-            self.quiet(browser.click, self.item(page, "Continue shopping")["n"])
-        self.assertEqual(raised.exception.code, "captcha_requires_user")
-        # Scripts are for reading data, and not while a challenge shows.
-        with self.assertRaises(browser.BrowserError) as raised:
-            browser.js("document.querySelector('button').click()")
-        self.assertEqual(raised.exception.code, "captcha_requires_user")
-        self.quiet(browser.click, self.item(page, "Home")["n"])
-        self.assertEqual(browser.js("document.title"), '"Fixture shop"')
+            self.quiet(browser.captcha, 2)
+        self.assertEqual(raised.exception.code, "captcha_attempts_exhausted")
+        self.assertIn("browser_handoff", raised.exception.message)
+        typed = self.quiet(browser.type, self.item(page, "Type the characters")["n"], "XKCD42", submit=True)
+        self.assertEqual(typed.title, "Missing")
+        self.quiet(browser.open, self.base + "/")
+
+    def test_5b_the_agent_input_reaches_the_page_as_a_person_input(self) -> None:
+        from aiqsa import browser
+
+        page = self.quiet(browser.open, self.base + "/human")
+        browser.js("window.seen = []")
+        self.quiet(browser.click, self.item(page, "Press")["n"])
+        seen = json.loads(browser.js("window.seen"))
+        kinds = [kind for kind, _at, _trusted in seen]
+        self.assertTrue(all(trusted for _kind, _at, trusted in seen))
+        self.assertGreaterEqual(kinds[:kinds.index("mousedown")].count("mousemove"), 5)
+        down, up = (next(at for kind, at, _ in seen if kind == name) for name in ("mousedown", "mouseup"))
+        self.assertGreaterEqual(up - down, 30)
+        browser.js("window.seen = []")
+        self.quiet(browser.type, self.item(page, "Text")["n"], "hello")
+        keys = [at for kind, at, _ in json.loads(browser.js("window.seen")) if kind == "keydown"]
+        self.assertEqual(len(keys), 5)
+        self.assertGreaterEqual(min(b - a for a, b in zip(keys, keys[1:])), 20)
+        self.assertEqual(browser.js("document.querySelector('input').value"), '"hello"')
+        self.quiet(browser.type, self.item(page, "Text")["n"], "bye")
+        self.assertEqual(browser.js("document.querySelector('input').value"), '"bye"')
+        browser.js("window.seen = []")
+        self.quiet(browser.scroll, "down")
+        self.assertGreaterEqual([kind for kind, _at, _ in json.loads(browser.js("window.seen"))].count("wheel"), 2)
+        self.assertGreater(int(browser.js("Math.round(scrollY)")), 300)
+        clicked = self.quiet(browser.click_at, 40, 40)
+        self.assertIn("click_at: 40,40", self.printed)
+        self.assertTrue(clicked.url.endswith("/human"))
+
+    def test_5c_a_chain_runs_its_commands_in_one_call_and_stops_at_the_first_failure(self) -> None:
+        from aiqsa import browser
+        from aiqsa.browser import cli
+
+        def run(*argv: str) -> Tuple[int, str, str]:
+            out, err = io.StringIO(), io.StringIO()
+            return cli.main(list(argv), stdout=out, stderr=err), out.getvalue(), err.getvalue()
+
+        code, out, _ = run("open", self.base + "/signin", cli.THEN, "wait", "--text", "Sign in")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("[browser #"), 2)
+        self.assertEqual(out.count("URL: "), 1)
+        page = browser.page_info()
+        user, password, go = (self.item(page, name)["n"] for name in ("User name", "Password", "Sign in"))
+        code, out, _ = run("type", str(user), "fixture-user", cli.THEN, "type", str(password), "fixture-password", cli.THEN,
+                           "click", str(go))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("[browser #"), 3)
+        self.assertIn("Title: Welcome fixture-user", out)
+        code, out, err = run("click", "99999", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_ELEMENT)
+        self.assertIn("Stopped at command 1 of 2 (`click`)", err)
+        self.assertNotIn("Welcome back", out)
 
     def test_6_large_pages_stay_bounded(self) -> None:
         from aiqsa import browser

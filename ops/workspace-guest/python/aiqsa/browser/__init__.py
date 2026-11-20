@@ -23,9 +23,9 @@ from typing import Any, Dict, List, Optional
 from ._client import BrowserError, call
 from ._format import step_line
 
-__all__ = ["BrowserError", "Page", "back", "click", "close", "close_tab", "find", "forward", "js", "new_tab", "open",
-           "page_info", "press", "reload", "save_session", "screenshot", "scroll", "select", "status", "steps",
-           "switch_tab", "tabs", "text", "type", "upload", "wait_for", "release"]
+__all__ = ["BrowserError", "Page", "back", "captcha", "click", "click_at", "close", "close_tab", "drag", "find", "forward", "js",
+           "new_tab", "open", "page_info", "press", "reload", "save_session", "screenshot", "scroll", "select", "status",
+           "steps", "switch_tab", "tabs", "text", "type", "upload", "wait_for", "release"]
 
 
 class Page(str):
@@ -133,12 +133,28 @@ def text(n: Optional[int] = None, start: int = 0, max_chars: int = 6000) -> str:
 
 
 def js(expression: str) -> str:
-    """Read page data: evaluate a JavaScript expression and return its JSON value as text (bounded).
+    """Evaluate a JavaScript expression in the page and return its JSON value as text (bounded), to read data.
 
-    Only for reading, never to click, solve a challenge or change how the browser identifies itself;
-    refused while the page shows a CAPTCHA.
+    Act on the page with `click`, `type` and the others: sites read a scripted click as a bot.
     """
     return builtins.str(call("js", {"expression": expression}).get("text") or "")
+
+
+def captcha(wait: int = 20) -> Page:
+    """Pass the page's CAPTCHA or bot check as a person would: wait while it checks the browser (up to `wait`
+    seconds), tick an "I'm not a robot" box, and when a picture, slider or text task follows, say so with a
+    screenshot's path to answer it from (`click`, `click_at`, `drag`, `type`). A few attempts per site and turn."""
+    return _page(_run("captcha", wait=wait))
+
+
+def click_at(x: int, y: int, hold: float = 0.0) -> Page:
+    """Click the point x, y of the visible page, in the pixels of a screenshot of it; `hold` seconds press and hold."""
+    return _page(_run("click_at", x=x, y=y, **({"hold_ms": round(hold * 1000)} if hold else {})))
+
+
+def drag(x1: int, y1: int, x2: int, y2: int) -> Page:
+    """Drag from x1, y1 to x2, y2 of the visible page with the button held, as for a slider."""
+    return _page(_run("drag", x1=x1, y1=y1, x2=x2, y2=y2))
 
 
 def screenshot(n: Optional[int] = None, full_page: bool = False, path: Optional[str] = None) -> str:

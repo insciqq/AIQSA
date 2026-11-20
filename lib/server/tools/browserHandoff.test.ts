@@ -151,6 +151,19 @@ describe("a handoff of one agent", () => {
     expect(String(value.message)).toContain("say plainly what the site needed");
     expect(String(value.message)).not.toMatch(/\bchat with you\b|scheduled|webhook|\/c\//u);
   });
+
+  it("leaves checks to the agent where nobody can take over, with bounded tries, and handoffs only after its own tries", async () => {
+    for (const mode of [{ kind: "discord" as const }, { kind: "unattended" as const }]) {
+      const result = await executeBrowserHandoff(call, mode, new AbortController().signal);
+      const message = (result.content[0] as unknown as { value: { message: string } }).value.message;
+      expect(message).toContain("you pass yourself, as a person would (`aiqsa-browser captcha`");
+      expect(message).toContain("after a few failed attempts stop trying");
+      expect(message).not.toMatch(/get around/u);
+    }
+    expect(browserHandoffTool.description).toContain("a CAPTCHA or bot check you could not pass yourself in a few attempts");
+    expect(browserHandoffTool.description).toContain("Pass a CAPTCHA or bot check yourself first, as a person would");
+    expect(browserHandoffTool.description).not.toMatch(/never try to solve/u);
+  });
 });
 
 describe("a scheduled run's handoff calls", () => {
