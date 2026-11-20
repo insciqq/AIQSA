@@ -1,12 +1,14 @@
-"""`aiqsa-browser`: drive the Workspace browser from any shell, one action per command.
+"""`aiqsa-browser`: drive the Workspace browser from any shell.
 
     aiqsa-browser open https://www.saucedemo.com
-    aiqsa-browser type 1 --env SHOP_LOGIN
-    aiqsa-browser type 2 --env SHOP_PASSWORD --submit
+    aiqsa-browser type 1 --env SHOP_LOGIN --then type 2 --env SHOP_PASSWORD --submit
     aiqsa-browser click 7
 
-An action prints its step line, then the page with numbered elements. A
-failure prints `error[<code>]: <what to do>` on stderr with a stable exit code.
+An action prints its step line, then the page with numbered elements. Commands
+joined with `--then` run in order in one call: each prints its step line, the
+page is printed once after the last, and the first failure stops the rest and
+prints the page as it is. A failure prints `error[<code>]: <what to do>` on
+stderr with a stable exit code.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from ..proxy import selection as proxy_selection
 from ._client import BrowserError, call
 from ._format import step_line
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 EXIT_USAGE = 2
 EXIT_UNAVAILABLE = 3
 EXIT_ELEMENT = 4
@@ -35,6 +37,11 @@ _ELEMENT = {"element_not_found", "stale_element", "element_not_actionable", "not
 _PAGE = {"invalid_url", "navigation_failed", "navigation_timeout", "wait_timeout", "timeout", "tab_not_found", "script_error"}
 _UNAVAILABLE = {"browser_unavailable", "browser_start_failed", "browser_crashed", "protocol_error", "proxy_browser_restart_pending",
                 proxy_client.UNAVAILABLE}
+#: Joins several commands into one call: each prints its step line, the page is printed once after the last, and the
+#: first failure stops the rest. Fewer calls mean fewer model rounds (browser audit 2026-11-20).
+THEN = "--then"
+#: Commands that answer without the browser and never join a chain.
+_ALONE = {"proxied", "proxies"}
 #: What a shell answers when a command is missing or not executable.
 EXIT_COMMAND_NOT_RUN = 127
 _PROXY_HELP = "A proxy's name or id, `direct`, or `auto` to follow its hints again (a proxy called direct or auto is named by id)."
@@ -72,7 +79,8 @@ class _UsageError(Exception):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="aiqsa-browser", description="Drive this turn's Workspace browser (full Chromium, kept between commands).")
+    parser = _Parser(prog="aiqsa-browser", description="Drive this turn's Workspace browser (full Chromium, kept between commands). "
+                     "Join commands with --then to run them in one call: aiqsa-browser type 1 alice --then click 2.")
     parser.add_argument("--version", action="version", version=f"aiqsa-browser {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     quiet = argparse.ArgumentParser(add_help=False)
@@ -268,31 +276,72 @@ def _run_proxied(parsed: argparse.Namespace, stderr: TextIO) -> int:
     return EXIT_COMMAND_NOT_RUN
 
 
+def _chain(argv: List[str]) -> List[List[str]]:
+    """The commands of one call, split at `--then`. `proxied` runs its own command line, which is never split."""
+    if argv[:1] == ["proxied"] or THEN not in argv:
+        return [argv]
+    parts: List[List[str]] = [[]]
+    for token in argv:
+        if token == THEN:
+            parts.append([])
+        else:
+            parts[-1].append(token)
+    if any(not part for part in parts):
+        raise _UsageError(f"`{THEN}` joins two commands; one side of it is empty")
+    return parts
+
+
+def _write(result: Dict[str, Any], quiet: bool, stdout: TextIO) -> None:
+    if result.get("step"):
+        stdout.write(step_line(result["step"]) + "\n")
+    text = str(result.get("text") or "")
+    if text and not (quiet and result.get("step")):
+        stdout.write(text + ("" if text.endswith("\n") else "\n"))
+
+
 def main(argv: Optional[List[str]] = None, *, stdout: TextIO = sys.stdout, stderr: TextIO = sys.stderr) -> int:
+    requests: List[tuple] = []
+    chained = False
     try:
-        parsed = _parser().parse_args(argv)
-        if parsed.command == "proxied":
-            return _run_proxied(parsed, stderr)
-        if parsed.command == "proxies":
-            stdout.write(_proxies_text(parsed.host) + "\n")
-            return 0
-        op, args = _request(parsed)
+        commands = _chain(list(sys.argv[1:] if argv is None else argv))
+        chained = len(commands) > 1
+        for index, command in enumerate(commands):
+            parsed = _parser().parse_args(command)
+            if chained and parsed.command in _ALONE:
+                raise _UsageError(f"`{parsed.command}` runs on its own, not with `{THEN}`")
+            if parsed.command == "proxied":
+                return _run_proxied(parsed, stderr)
+            if parsed.command == "proxies":
+                stdout.write(_proxies_text(parsed.host) + "\n")
+                return 0
+            op, args = _request(parsed)
+            quiet = bool(getattr(parsed, "quiet", False))
+            if quiet or index < len(commands) - 1:
+                # The page is summarized once, after the last command: earlier ones print their step lines and notes.
+                args["page"] = False
+            requests.append((parsed.command, op, args, quiet))
     except _UsageError as error:
-        stderr.write(f"error[usage]: {error}. See `aiqsa-browser --help`.\n")
+        where = f" (command {len(requests) + 1} of the chain; none of them ran)" if chained else ""
+        stderr.write(f"error[usage]: {error}{where}. See `aiqsa-browser --help`.\n")
         return EXIT_USAGE
     except proxy_client.ProxyError as error:
         stderr.write(f"error[{error.code}]: {error.message}\n")
         return exit_code(error.code)
-    try:
-        result: Dict[str, Any] = call(op, args)
-    except BrowserError as error:
-        stderr.write(f"error[{error.code}]: {error.message}\n")
-        return exit_code(error.code)
-    if result.get("step"):
-        stdout.write(step_line(result["step"]) + "\n")
-    text = str(result.get("text") or "")
-    if text and not (getattr(parsed, "quiet", False) and result.get("step")):
-        stdout.write(text + ("" if text.endswith("\n") else "\n"))
+    for index, (name, op, args, quiet) in enumerate(requests):
+        try:
+            result: Dict[str, Any] = call(op, args)
+        except BrowserError as error:
+            stderr.write(f"error[{error.code}]: {error.message}\n")
+            if chained:
+                stderr.write(f"Stopped at command {index + 1} of {len(requests)} (`{name}`); the commands after it did not run."
+                             + (" The page now is below." if index else "") + "\n")
+            if index:
+                try:
+                    stdout.write(str(call("info", {}).get("text") or "") + "\n")
+                except BrowserError:
+                    pass
+            return exit_code(error.code)
+        _write(result, quiet, stdout)
     return 0
 
 

@@ -410,6 +410,30 @@ class LiveBrowserTests(unittest.TestCase):
         self.assertIn("click_at: 40,40", self.printed)
         self.assertTrue(clicked.url.endswith("/human"))
 
+    def test_5c_a_chain_runs_its_commands_in_one_call_and_stops_at_the_first_failure(self) -> None:
+        from aiqsa import browser
+        from aiqsa.browser import cli
+
+        def run(*argv: str) -> Tuple[int, str, str]:
+            out, err = io.StringIO(), io.StringIO()
+            return cli.main(list(argv), stdout=out, stderr=err), out.getvalue(), err.getvalue()
+
+        code, out, _ = run("open", self.base + "/signin", cli.THEN, "wait", "--text", "Sign in")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("[browser #"), 2)
+        self.assertEqual(out.count("URL: "), 1)
+        page = browser.page_info()
+        user, password, go = (self.item(page, name)["n"] for name in ("User name", "Password", "Sign in"))
+        code, out, _ = run("type", str(user), "fixture-user", cli.THEN, "type", str(password), "fixture-password", cli.THEN,
+                           "click", str(go))
+        self.assertEqual(code, 0)
+        self.assertEqual(out.count("[browser #"), 3)
+        self.assertIn("Title: Welcome fixture-user", out)
+        code, out, err = run("click", "99999", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_ELEMENT)
+        self.assertIn("Stopped at command 1 of 2 (`click`)", err)
+        self.assertNotIn("Welcome back", out)
+
     def test_6_large_pages_stay_bounded(self) -> None:
         from aiqsa import browser
 

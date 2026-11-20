@@ -896,6 +896,51 @@ class ClientAndCliTests(unittest.TestCase):
         self.assertEqual(self.run_cli("fly")[0], cli.EXIT_USAGE)
         self.assertEqual(self.run_cli("click-at", "1", "2", "--hold", "30")[0], cli.EXIT_USAGE)
 
+    def test_chained_commands_run_in_order_and_print_the_page_once(self) -> None:
+        steps = [{"n": n, "action": action, "target": target, "url": "https://shop.example/login"}
+                 for n, action, target in ((1, "type", 'textbox "User" (5 characters)'), (2, "type", 'textbox "Password" (6 characters)'),
+                                           (3, "click", 'button "Sign in"'))]
+        self.host.answers.extend([{"ok": True, "result": {"step": steps[0], "text": ""}},
+                                  {"ok": True, "result": {"step": steps[1], "text": "A alert dialog was accepted: \"Hi\"."}},
+                                  {"ok": True, "result": {"step": steps[2], "text": "URL: https://shop.example/account"}}])
+        with mock.patch.dict(os.environ, {"SHOP_PASSWORD": "s3cret"}):
+            code, out, err = self.run_cli("type", "1", "alice", cli.THEN, "type", "2", "--env", "SHOP_PASSWORD", cli.THEN, "click", "3")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(out, '[browser #1] type: textbox "User" (5 characters) @ shop.example/login\n'
+                              '[browser #2] type: textbox "Password" (6 characters) @ shop.example/login\n'
+                              'A alert dialog was accepted: "Hi".\n'
+                              '[browser #3] click: button "Sign in" @ shop.example/login\n'
+                              "URL: https://shop.example/account\n")
+        # Only the last command summarizes the page.
+        self.assertEqual([request["args"].get("page") for request in self.host.requests[-3:]], [False, False, None])
+        self.assertEqual([request["op"] for request in self.host.requests[-3:]], ["type", "type", "click"])
+        self.assertTrue(self.host.requests[-2]["args"]["masked"])
+
+    def test_the_first_failure_stops_a_chain_and_shows_the_page(self) -> None:
+        step = {"n": 4, "action": "click", "target": 'button "Next"', "url": "https://shop.example/"}
+        self.host.answers.extend([{"ok": True, "result": {"step": step, "text": ""}},
+                                  {"ok": False, "error": {"code": "element_not_found", "message": "There is no element [9]."}},
+                                  {"ok": True, "result": {"text": "URL: https://shop.example/2"}}])
+        before = len(self.host.requests)
+        code, out, err = self.run_cli("click", "4", cli.THEN, "click", "9", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_ELEMENT)
+        self.assertEqual(out, '[browser #4] click: button "Next" @ shop.example/\nURL: https://shop.example/2\n')
+        self.assertEqual(err, "error[element_not_found]: There is no element [9].\n"
+                              "Stopped at command 2 of 3 (`click`); the commands after it did not run. The page now is below.\n")
+        self.assertEqual([request["op"] for request in self.host.requests[before:]], ["click", "click", "info"])
+        # A command that cannot be read stops the chain before anything runs.
+        code, _, err = self.run_cli("click", "4", cli.THEN, "click", cli.THEN, "text")
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("(command 2 of the chain; none of them ran)", err)
+        for argv in (["click", "4", cli.THEN], [cli.THEN, "click", "4"], ["click", "4", cli.THEN, "proxies"]):
+            self.assertEqual(self.run_cli(*argv)[0], cli.EXIT_USAGE, argv)
+        self.assertEqual(len(self.host.requests), before + 3)
+
+    def test_a_quiet_action_asks_for_no_page(self) -> None:
+        self.host.answers.append({"ok": True, "result": {"step": {"n": 1, "action": "scroll", "target": "down", "url": None}, "text": ""}})
+        self.assertEqual(self.run_cli("scroll", "--quiet"), (0, "[browser #1] scroll: down\n", ""))
+        self.assertEqual(self.host.requests[-1]["args"], {"direction": "down", "page": False})
+
     def test_a_host_that_dies_mid_request_is_reported_as_a_crash(self) -> None:
         self.host.answers.append(None)
         with self.assertRaises(_client.BrowserError) as raised:
