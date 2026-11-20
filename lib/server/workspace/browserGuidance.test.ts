@@ -32,6 +32,8 @@ describe("Workspace browser guide", () => {
     // Operator decision 2026-11-20: a person's AI-assisted browser passes what a person passes, within bounded tries.
     expect(guide).toContain("Pass what a person passes yourself: a CAPTCHA");
     expect(guide).toContain("`captcha_attempts_exhausted`");
+    expect(guide).toContain("do not analyze its pixels with scripts");
+    expect(guide).toContain("about four minutes from your first try");
     expect(guide).toContain("Checks you still pass yourself; only the handoff is missing.");
     expect(guide).toContain("`not_answered` means nobody came");
     expect(guide).not.toMatch(/never try to solve|refused while a CAPTCHA/u);

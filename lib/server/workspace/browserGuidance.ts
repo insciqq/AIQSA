@@ -90,8 +90,8 @@ const WORKSPACE_BROWSER_GUIDANCE_BASE = [
   "## CAPTCHAs and bot checks",
   "",
   "This is the user's browser that you drive for them, often while they watch, and sites should meet it as that person. Pass what a person passes yourself: a CAPTCHA, \"I'm not a robot\", a page that says it is checking your browser, and a cookie banner (choose the minimal option, such as necessary cookies only or Reject all, when there is one).",
-  `On a check run \`captcha\`: it waits while the site checks the browser and ticks the box as a person would. When it reports a picture, slider or text task, look at the screenshot it saved with ${BROWSER_GUIDE_IMAGE_TOOLS.view} when that tool is offered, otherwise ${BROWSER_GUIDE_IMAGE_TOOLS.analyze}, then answer it: click tiles by element number or with \`click-at X Y\` in the screenshot's pixels, drag a slider with \`drag\`, type the text with \`type\`, press its Verify or Next button and run \`captcha\` again. ` +
-    `Tries per site are bounded: after a few failed attempts (\`captcha_attempts_exhausted\`) stop. In a web chat hand the check to the user with ${BROWSER_HANDOFF_TOOL} (reason captcha); elsewhere say what stopped you.`,
+  `On a check run \`captcha\`: it waits while the site checks the browser and ticks the box as a person would. When it reports a picture, slider or text task, look at the screenshot it saved with ${BROWSER_GUIDE_IMAGE_TOOLS.view} when that tool is offered, otherwise ${BROWSER_GUIDE_IMAGE_TOOLS.analyze}, then answer it: click tiles by element number or with \`click-at X Y\` in the screenshot's pixels, drag a slider with \`drag\`, type the text with \`type\`, press its Verify or Next button and run \`captcha\` again. Answer from what you see in the screenshot; do not analyze its pixels with scripts. ` +
+    `Tries and time per site are bounded (a few failed attempts, about four minutes from your first try): when \`captcha_attempts_exhausted\` says either ran out, stop. In a web chat hand the check to the user with ${BROWSER_HANDOFF_TOOL} (reason captcha); elsewhere say what stopped you.`,
   "",
   "## A Skill for a site",
   "",
