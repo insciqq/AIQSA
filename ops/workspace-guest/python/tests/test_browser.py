@@ -57,8 +57,9 @@ class IdentityTests(unittest.TestCase):
 
     def test_launch_flags_stay_inside_the_operator_boundary(self) -> None:
         args = _identity.launch_args("es-ES", "UA")
+        # Headed on the guest's X server: the screen is the server's (no `--screen-info`), WebGL runs on SwiftShader.
         self.assertEqual(args, ["--disable-blink-features=AutomationControlled", "--lang=es-ES", "--window-size=1440,900",
-                                "--screen-info={1920x1080}", "--user-agent=UA"])
+                                "--enable-unsafe-swiftshader", "--user-agent=UA"])
         self.assertNotIn("--user-agent", " ".join(_identity.launch_args("en-US")))
         self.assertEqual(_identity.IGNORED_DEFAULT_ARGS, ["--enable-automation"])
 
@@ -1029,7 +1030,7 @@ class _BusyFrame:
                             "timeCut": self.time_cut, "title": "Board", "titleCut": False,
                             "scroll": {"y": 0, "height": 800, "viewport": [1280, 800]}, "loading": False})
 
-    async def evaluate(self, _script: str, _arg: Any = None) -> Any:
+    async def evaluate(self, _script: str, _arg: Any = None, **_options: Any) -> Any:
         if self.hang:
             await asyncio.sleep(FOREVER)
         return []
@@ -1047,7 +1048,8 @@ class _BusyPage:
     def is_closed(self) -> bool:
         return False
 
-    async def press(self, key: str) -> None:
+    async def press(self, key: str, **_options: Any) -> None:
+        # The human keyboard holds each key a moment (`delay`, `_human.key`).
         self.pressed.append(key)
 
     async def wait_for_load_state(self, _state: str, timeout: float) -> None:
@@ -1090,7 +1092,8 @@ class HostBudgetTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.multiple(_host, AFTER_SETTLE_SECONDS=0.5, AUTOSAVE_SECONDS=0.2, SUMMARY_MIN_SECONDS=0.2):
             result = await host.op_press({"key": "Enter"})
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 0.8 + 0.5)
+        # The deadline, the settle bound, and the pause a person leaves after a key (`_human.key`, at most 120 ms).
+        self.assertLess(elapsed, 0.8 + 0.5 + 0.12)
         self.assertEqual(page.pressed, ["Enter"])
         self.assertEqual(result["step"]["action"], "press")
         self.assertTrue(result["info"]["partial"])

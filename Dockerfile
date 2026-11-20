@@ -196,17 +196,16 @@ RUN apt-get update \
     bash binutils build-essential ca-certificates coreutils curl ffmpeg file git \
     fonts-noto-core imagemagick jq libmagic1 libreoffice openssh-client p7zip-full \
     pkg-config poppler-utils procps python3 python3-dev python3-pip python3-venv \
-    ripgrep sqlite3 tar unzip wget xz-utils xxd zip \
+    ripgrep sqlite3 tar unzip wget xvfb xz-utils xxd zip \
   && rm -rf /var/lib/apt/lists/* \
   && python3 -m venv /opt/aiqsa-python \
   && /opt/aiqsa-python/bin/pip install --disable-pip-version-check --no-cache-dir \
     Pillow==11.3.0 lxml==6.0.1 matplotlib==3.10.6 openpyxl==3.1.5 \
     pandas==2.3.2 pdfplumber==0.11.7 pyarrow==21.0.0 pypdf==6.0.0 \
-    python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 playwright==1.60.0 pyotp==2.10.0 \
+    python-docx==1.2.0 python-pptx==1.0.2 uv==0.8.15 playwright==1.60.0 patchright==1.60.1 pyotp==2.10.0 \
   && /opt/aiqsa-python/bin/pip install --disable-pip-version-check --no-cache-dir psd-tools==1.19.0 \
   && /opt/aiqsa-python/bin/pip check \
   && /opt/aiqsa-python/bin/playwright install --with-deps --no-shell chromium \
-  && apt-get purge -y xvfb \
   && rm -rf /var/lib/apt/lists/* \
   && npm install --global --ignore-scripts --no-audit --no-fund pnpm@10.15.1 \
   && mkdir -p /workspace/inbox/messages /workspace/project /workspace/output /workspace/tmp \
@@ -223,12 +222,15 @@ RUN npm install --global --ignore-scripts --no-audit --no-fund esbuild@0.28.1 \
 # Guest code calls the run's MCP tools through `import aiqsa` or `aiqsa-mcp`.
 # The package uses the standard library only; PYTHONPATH (the guest gets it
 # from the OCI config) reaches other interpreters such as `uv run` scripts.
-# `aiqsa-browser` (and `aiqsa.browser`) drives one full Chromium per turn; its
-# host process alone imports the pinned Playwright above, and AIQSA's live view
-# runs `python3 -I -m aiqsa.browser.live` beside it. Only the full build
-# is installed: sites block the headless shell (queue measurements 2026-10-26).
-# A default `p.chromium.launch()` in user scripts still finds a browser: the
-# shell's path links to the full build (playwright-default-launch.py).
+# `aiqsa-browser` (and `aiqsa.browser`) drives one full Chromium per turn,
+# headed on its own Xvfb; its host process alone imports the pinned Patchright
+# above (operator decision 2026-11-20: Playwright without the CDP traces bot
+# checks read), which runs the same Chromium build as Playwright, so one
+# browser download serves both. Playwright stays for user scripts, and AIQSA's
+# live view runs `python3 -I -m aiqsa.browser.live` beside the host. Only the
+# full build is installed: sites block the headless shell (queue measurements
+# 2026-10-26). A default `p.chromium.launch()` in user scripts still finds a
+# browser: the shell's path links to the full build (playwright-default-launch.py).
 ENV PYTHONPATH=/opt/aiqsa-guest/python
 COPY ops/workspace-guest/python/aiqsa /opt/aiqsa-guest/python/aiqsa
 COPY ops/workspace-guest/bin/aiqsa-mcp /usr/local/bin/aiqsa-mcp
@@ -242,6 +244,8 @@ RUN chmod 0755 /usr/local/bin/aiqsa-mcp /usr/local/bin/aiqsa-browser /usr/local/
   && chmod -R u=rwX,go=rX /opt/aiqsa-guest \
   && echo /opt/aiqsa-guest/python > "$(/opt/aiqsa-python/bin/python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/aiqsa-guest.pth" \
   && /opt/aiqsa-python/bin/python3 -I -c 'import aiqsa.cli, aiqsa.mcp, aiqsa.browser, aiqsa.browser._host, aiqsa.browser.live; print("aiqsa", aiqsa.__version__)' \
+  && /opt/aiqsa-python/bin/python3 -I -c 'import json, pathlib, patchright, playwright; pinned = lambda m: next(b["revision"] for b in json.loads((pathlib.Path(m.__file__).parent / "driver/package/browsers.json").read_text())["browsers"] if b["name"] == "chromium"); assert pinned(patchright) == pinned(playwright), "Patchright and Playwright pin different Chromium builds"; print("chromium", pinned(patchright))' \
+  && test -x "$(command -v Xvfb)" \
   && aiqsa-mcp --version \
   && (aiqsa-mcp list; test $? -eq 3) \
   && aiqsa-browser --version \
@@ -264,7 +268,7 @@ RUN apt-get update \
 COPY scripts/build-workspace-oci.mjs ./build-workspace-oci.mjs
 COPY --from=workspace-guest / /workspace-rootfs/
 RUN node ./build-workspace-oci.mjs \
-  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.41 "$TARGETARCH"
+  /workspace-rootfs /workspace-image.oci.tar aiqsa-workspace:0.1.42 "$TARGETARCH"
 
 # KVM-capable runtime role. Compose grants /dev/kvm and a writable MSB_HOME;
 # the root filesystem itself remains read-only.

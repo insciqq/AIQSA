@@ -47,7 +47,7 @@ type Run = Awaited<ReturnType<typeof admit>>;
 /** The browser binding these runs are admitted with; the guest browser must use exactly it. */
 const BROWSER_BINDING = { locale: "es-ES", timeZone: "Europe/Madrid" } as const;
 /** Browser hosts and Chromium processes in the guest, counted without matching the counting command. */
-const LEFTOVER_BROWSER_PROCESSES = "ps -eo args | grep -cE '[a]iqsa[.]browser[.]_host|[c]hromium-[0-9]+/chrome' || true";
+const LEFTOVER_BROWSER_PROCESSES = "ps -eo args | grep -cE '[a]iqsa[.]browser[.]_host|[c]hromium-[0-9]+/chrome|[X]vfb -displayfd' || true";
 
 async function admit(chatId?: string) {
   step = "admission";
@@ -132,10 +132,12 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
   assert.equal((await shell(run, LEFTOVER_BROWSER_PROCESSES)).trim(), "0");
   step = "browser_guest";
   const saved = mode === "restored" || mode === "expired";
+  // The host drives Chromium through Patchright, headed on its own Xvfb; Playwright stays for user scripts (decision 2026-11-20).
   assert.equal((await shell(run, python("import importlib.metadata as m, os, pathlib, shutil; print(m.version('playwright'), " +
-    "m.version('pyotp'), os.environ['PLAYWRIGHT_BROWSERS_PATH'], shutil.which('Xvfb') is None, os.getuid() == 0, " +
+    "m.version('patchright'), m.version('pyotp'), os.environ['PLAYWRIGHT_BROWSERS_PATH'], shutil.which('Xvfb') is not None, " +
+    "'DISPLAY' in os.environ, os.getuid() == 0, " +
     "'SHOP_LOGIN' in pathlib.Path('/workspace/SECRETS.md').read_text(), pathlib.Path('/workspace/secrets/browser/shop.example.json').exists())"))).trim(),
-  `1.60.0 2.10.0 /opt/aiqsa-playwright True True True ${saved ? "True" : "False"}`);
+  `1.60.0 1.60.1 2.10.0 /opt/aiqsa-playwright True False True True ${saved ? "True" : "False"}`);
   if (mode === "expired") await shell(run, python("import os, urllib.request; urllib.request.urlopen(os.environ['SHOP_URL'] + '/expire', timeout=5).read()"));
   if (mode === "login") {
     step = "browser_default_launch";
@@ -273,7 +275,7 @@ async function main() {
     const fifth = await admit(); await startSite(fifth); await browser(fifth, "deleted"); const recreated = await finish(fifth);
     assert.notEqual(recreated.saved.id, renewed.saved.id);
     process.stdout.write(JSON.stringify({ ok: true, realKvm: true, fullChromium: true, chromiumMatchesPin: true, guestRoot: true,
-      guestMemoryMiB: config.memoryMiB, pythonPlaywright: "1.60.0", pyotp: "2.10.0", oneBrowserAcrossCalls: true,
+      guestMemoryMiB: config.memoryMiB, pythonPlaywright: "1.60.0", patchright: "1.60.1", headedOnXvfb: true, pyotp: "2.10.0", oneBrowserAcrossCalls: true,
       noMarkersPageAndWorker: true, admittedLocaleAndZone: true, noBrowserSurvivesTurn: true, savedValuesNeverPrinted: true,
       defaultLaunchRunsFullChromium: true, totp: true, cartScreenshot: true,
       personalRuns: 5, sameChat: true, newVm: true, encryptedReverseSave: true, unchangedRevision: true, expiredRelogin: true,
