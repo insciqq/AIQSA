@@ -38,8 +38,13 @@ export const BROWSER_LIVE_LIMITS = Object.freeze({
   keyChars: 32,
   /** Characters of the agent's message on a handoff card. */
   handoffMessageChars: 300,
-  /** Seconds a handoff waits at most; never past the turn's tool time. */
+  /** Seconds a handoff waits at most, however active the user is; never past the turn's tool time. */
   handoffWaitSeconds: 600,
+  /**
+   * Seconds a handoff waits with no sign of the user; each sign starts them again (operator decision 2026-11-20: a
+   * user who has not come within 1-2 minutes will not come, while one who came may need longer to sign in).
+   */
+  handoffIdleSeconds: 120,
   /** Steps one `steps` event carries; the panel keeps the newest. */
   stepsPerEvent: 50,
   /** Characters of a step's target or path. */
@@ -59,8 +64,15 @@ export const BROWSER_HANDOFF_REASONS = ["sign_in", "verification_code", "captcha
 export type BrowserHandoffReason = (typeof BROWSER_HANDOFF_REASONS)[number];
 
 /** How a handoff ended, as the model learns it. */
-export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out"] as const;
+export const BROWSER_HANDOFF_OUTCOMES = ["completed", "cancelled", "timed_out", "not_answered"] as const;
 export type BrowserHandoffOutcome = (typeof BROWSER_HANDOFF_OUTCOMES)[number];
+
+/**
+ * The outcomes of a handoff whose wait ended without Done or Cancel: the user came but did not finish in time
+ * (`timed_out`), or nobody came (`not_answered`: no sign of the user before the wait ended).
+ */
+export const BROWSER_HANDOFF_UNANSWERED_OUTCOMES = ["timed_out", "not_answered"] as const satisfies readonly BrowserHandoffOutcome[];
+export type BrowserHandoffUnansweredOutcome = (typeof BROWSER_HANDOFF_UNANSWERED_OUTCOMES)[number];
 
 /** Who drives the browser: the agent, or the user after Take control or during a handoff. */
 export const BROWSER_LIVE_CONTROLLERS = ["agent", "user"] as const;
@@ -154,9 +166,18 @@ export const browserLiveHandoffSchema = z.strictObject({
   reason: z.enum(BROWSER_HANDOFF_REASONS),
   message: text(BROWSER_LIVE_LIMITS.handoffMessageChars),
   startedAt: timestampSchema,
+  /** When the wait ends unless the user shows a sign again, which moves it (`handoffIdleSeconds`), up to the whole wait. */
   expiresAt: timestampSchema
 });
 export type BrowserLiveHandoff = z.infer<typeof browserLiveHandoffSchema>;
+
+/** A handoff whose wait ended without an answer, so its card closes with a plain line instead of just going. */
+export const browserLiveEndedHandoffSchema = z.strictObject({
+  id: idSchema,
+  agent: browserLiveAgentRefSchema,
+  outcome: z.enum(BROWSER_HANDOFF_UNANSWERED_OUTCOMES)
+});
+export type BrowserLiveEndedHandoff = z.infer<typeof browserLiveEndedHandoffSchema>;
 
 const pageSchema = z.strictObject({ url: text(BROWSER_LIVE_LIMITS.urlChars), title: text(BROWSER_LIVE_LIMITS.titleChars) });
 
@@ -186,6 +207,11 @@ export const browserLiveStateEventSchema = z.strictObject({
   handoff: browserLiveHandoffSchema.nullable(),
   /** Every pending handoff, oldest first, each with its agent (the chat labels a sub-agent's card with its name). */
   handoffs: z.array(browserLiveHandoffSchema).max(BROWSER_LIVE_LIMITS.agentsPerEvent),
+  /**
+   * The latest unanswered handoff of each agent, oldest first, until that agent asks again; absent when there is none,
+   * so a tab loaded before this field existed still reads every state that has none.
+   */
+  ended: z.array(browserLiveEndedHandoffSchema).max(BROWSER_LIVE_LIMITS.agentsPerEvent).optional(),
   /**
    * Whether sign-ins made in this browser are saved to the user's Secrets after the turn (the run's binding
    * authorizes save-back, `lib/server/workspace/secrets/browserStore.ts`); when false, the card says it will not be remembered.

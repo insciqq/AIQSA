@@ -252,7 +252,7 @@ describe("browser live handoff", () => {
     expect(view.answerHandoff(owner, { action: "done", handoffId: state.handoff!.id })).toBe("browser_live_handoff_stale");
   });
 
-  it("ends with Cancel, with its time limit, and refuses a second handoff meanwhile", async () => {
+  it("ends with Cancel, with its time limit when nobody came, and refuses a second handoff meanwhile", async () => {
     const { handle, view } = setup();
     ended.push(() => handle.end());
     const tab = recordingWriter();
@@ -262,8 +262,9 @@ describe("browser live handoff", () => {
     expect(await handle.handoff({ message: "Again", reason: "other", signal: signal(), waitMs: 60_000 })).toEqual({ kind: "busy" });
     view.answerHandoff(owner, { action: "cancel", handoffId: tab.last<BrowserLiveStateEvent>("state")!.handoff!.id });
     expect(await cancelled).toMatchObject({ kind: "ended", outcome: "cancelled", saved: null });
+    // A view opened before the handoff is no sign of the user: nobody came.
     expect(await handle.handoff({ message: "Solve it", reason: "captcha", signal: signal(), waitMs: 50 }))
-      .toMatchObject({ kind: "ended", outcome: "timed_out" });
+      .toMatchObject({ kind: "ended", outcome: "not_answered" });
   });
 
   it("works without any open view and tells a page not yet open from a browser that cannot be shown", async () => {
@@ -279,7 +280,7 @@ describe("browser live handoff", () => {
     const quiet = setup();
     ended.push(() => quiet.handle.end());
     const result = quiet.handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 100 });
-    expect(await result).toMatchObject({ kind: "ended", outcome: "timed_out" });
+    expect(await result).toMatchObject({ kind: "ended", outcome: "not_answered" });
     const stopped = setup();
     ended.push(() => stopped.handle.end());
     // A run without a guest session is no answer about the agent's tab: only the guest's `no_page` is.
@@ -294,10 +295,13 @@ describe("browser live handoff", () => {
     const { guest, handle } = setup({ connectDelayMs: 150, refuseEnds: 1 });
     ended.push(() => handle.end());
     const result = await handle.handoff({ message: "Sign in", reason: "sign_in", signal: signal(), waitMs: 300 });
-    expect(result).toEqual({ kind: "ended", outcome: "timed_out", page: { title: "Sign in", url: "https://shop.example/login" },
+    expect(result).toEqual({ kind: "ended", outcome: "not_answered", page: { title: "Sign in", url: "https://shop.example/login" },
       saved: null });
     const handoffs = guest.received.flatMap((message, index) => message.t === "handoff" ? [[message.action, guest.through[index]]] : []);
     expect(handoffs).toEqual([["begin", "exec-0"], ["end", "exec-0"], ["end", "exec-1"]]);
+    // The guest knows three outcomes: nobody came ends the user's control like a time limit, saving nothing.
+    expect(guest.received.filter((message) => message.action === "end").map((message) => message.outcome))
+      .toEqual(["timed_out", "timed_out"]);
     // The guest's control is the agent's again.
     expect(guest.guest).toMatchObject({ controller: "agent", handoff: false });
   });

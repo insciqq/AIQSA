@@ -42,6 +42,13 @@ describe("browser live events", () => {
     expect(decodeBrowserLiveEvent("frame", JSON.stringify({ agent: "main", seq: 1, mime: "image/jpeg", data: "not base64!", width: 1, height: 1 }))).toBeNull();
   });
 
+  it("reads handoffs that ended unanswered only with an unanswered outcome, and a state without them as before", () => {
+    const ended = [{ id: "handoff_0", agent: { id: "main", name: null }, outcome: "not_answered" }];
+    expect(decodeBrowserLiveEvent("state", JSON.stringify({ ...state, ended }))).toMatchObject({ value: { ended } });
+    expect(decodeBrowserLiveEvent("state", JSON.stringify({ ...state, ended: [{ ...ended[0], outcome: "completed" }] }))).toBeNull();
+    expect(decodeBrowserLiveEvent("state", JSON.stringify(state))?.value).not.toHaveProperty("ended");
+  });
+
   it("refuses a malformed agent, a sub-agent name outside the name rule and too many agents", () => {
     const agent = state.agents[1]!;
     expect(decodeBrowserLiveEvent("state", JSON.stringify({ ...state, selected: "../x" }))).toBeNull();

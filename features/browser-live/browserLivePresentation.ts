@@ -1,6 +1,7 @@
 import {
   BROWSER_LIVE_MAIN_AGENT,
   type BrowserHandoffReason,
+  type BrowserHandoffUnansweredOutcome,
   type BrowserLiveAgent,
   type BrowserLiveAgentRef,
   type BrowserLiveEndReason,
@@ -133,6 +134,17 @@ export function browserHandoffCountdownV2(expiresAt: string, now: number): Reado
   const minutes = Math.floor(remaining / 60);
   const seconds = remaining % 60;
   return { expired: false, label: `${minutes}:${String(seconds).padStart(2, "0")} left` };
+}
+
+/**
+ * The line that closes the card of a request whose wait ended without Done or Cancel: nobody came, or the person came
+ * but did not finish. `asker` names a sub-agent; the main agent is "the agent".
+ */
+export function browserHandoffEndedCopyV2(outcome: BrowserHandoffUnansweredOutcome, asker: string | null): string {
+  const agent = asker ?? "the agent";
+  return outcome === "not_answered"
+    ? `Nobody answered in time, so ${agent} went on without you. You can ask it again when you are at the screen.`
+    : `${agent.charAt(0).toUpperCase()}${agent.slice(1)} stopped waiting before you finished. You can ask it again when you are ready.`;
 }
 
 export const BROWSER_SIGN_IN_NOT_REMEMBERED_V2 =

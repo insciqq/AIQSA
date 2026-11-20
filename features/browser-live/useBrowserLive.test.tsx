@@ -207,6 +207,38 @@ describe("useBrowserLive ending control", () => {
     expect(paths()).toEqual([browserLiveControlPath(CHAT), "input:again"]);
   });
 
+  it("drops an answered handoff at once, sends nothing for a second press, and keeps a repeated answer's stale refusal silent", async () => {
+    const { result } = renderHook(() => useBrowserLive(CHAT, true, openSource));
+    const asked = liveState({ controller: "user", handoff: { id: "handoff-1", agent: { id: "main", name: null }, reason: "sign_in",
+      message: "Sign in", startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString() } });
+    act(() => sources.at(-1)!.send("state", asked));
+    act(() => { void result.current.answerHandoff("handoff-1", "done"); });
+    await flush();
+    calls[0]!.respond(ok());
+    await flush();
+    // The server's state still lists it (delivered late); the tab shows it answered and the agent's again.
+    expect(result.current.snapshot.state).toMatchObject({ controller: "agent", handoff: null, handoffs: [] });
+    expect(result.current.snapshot.state?.agents[0]).toMatchObject({ controller: "agent", waitingForUser: false });
+    await act(async () => { await result.current.answerHandoff("handoff-1", "cancel"); });
+    expect(calls).toHaveLength(1);
+
+    // The first answer's reply was lost; the server had taken it, so the second one is stale: no news to this user.
+    const again = { ...asked, handoff: { ...asked.handoff!, id: "handoff-2" }, handoffs: [{ ...asked.handoff!, id: "handoff-2" }] };
+    act(() => sources.at(-1)!.send("state", again));
+    act(() => { void result.current.answerHandoff("handoff-2", "done"); });
+    await flush();
+    calls[1]!.respond(refusal("unknown", 502));
+    await flush();
+    expect(result.current.failure).toBe("unexpected_response");
+    expect(result.current.snapshot.state?.handoff?.id).toBe("handoff-2");
+    act(() => { void result.current.answerHandoff("handoff-2", "done"); });
+    await flush();
+    calls[2]!.respond(refusal("browser_live_handoff_stale"));
+    await flush();
+    expect(result.current.failure).toBeNull();
+    expect(result.current.snapshot.state?.handoff).toBeNull();
+  });
+
   it("clears a rate-limit alert on the next accepted input", async () => {
     const { result } = setup();
     act(() => result.current.sendInput(text("a"), text("b")));

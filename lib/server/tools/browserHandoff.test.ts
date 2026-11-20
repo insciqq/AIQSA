@@ -47,7 +47,22 @@ describe("a handoff's wait", () => {
     const result = valueOf(await waiting);
     expect(result).toMatchObject({ outcome: "timed_out", page });
     expect(handoff).toHaveBeenCalledWith(expect.objectContaining({ waitMs: wait }));
-    expect(result.next).toBe("The user did not finish in time. Look at the page; if the step is still needed, tell the user what is waiting for them and finish with what you have.");
+    expect(result.next).toContain("The user came but did not finish in time. Look at the page yourself");
+    expect(result.next).toContain("finish with what you have");
+  });
+
+  it("tells the agent that nobody came, to go on another way or finish, and not to hand over again", async () => {
+    const live = { end: async () => undefined,
+      handoff: async () => ({ kind: "ended" as const, outcome: "not_answered" as const, page, saved: null }) };
+    const result = valueOf(await executeBrowserHandoff(call, { kind: "interactive", live, toolTimeLeftMs: () => BROWSER_HANDOFF_WAIT_MS },
+      new AbortController().signal));
+    expect(result).toMatchObject({ outcome: "not_answered", page });
+    expect(result.next).toBe("Nobody came to the browser: the user is not at the screen now. Do not hand the browser over again " +
+      "in this answer. Continue without the user where another path to the same result exists (an MCP tool, an API, a public " +
+      "page); if none does, finish with what you have, say plainly what the site needs (for example a sign-in), and that the " +
+      "user can ask you again when they are at the screen.");
+    expect(browserHandoffTool.description).toContain("It waits about two minutes for a sign of the user and longer while they " +
+      "act, at most ten minutes: `not_answered` means nobody came, `timed_out` that the user came but did not finish.");
   });
 
   it("reads whether research started at each call and caps ordinary waits at the remaining time", async () => {

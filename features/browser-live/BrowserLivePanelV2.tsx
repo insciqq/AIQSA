@@ -35,6 +35,7 @@ import {
 import {
   BROWSER_SIGN_IN_NOT_REMEMBERED_V2,
   browserHandoffCountdownV2,
+  browserHandoffEndedCopyV2,
   browserHandoffQueueCopyV2,
   browserHandoffTitleV2,
   browserLiveAgentLabelV2,
@@ -64,6 +65,36 @@ function useNow(active: boolean): number {
     return () => window.clearInterval(timer);
   }, [active]);
   return now;
+}
+
+/** How long the page may be hidden (a look at the SMS app for the code) before the live view's stream closes. */
+export const BROWSER_LIVE_HIDDEN_GRACE_MS = 15_000;
+
+function pageHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
+}
+
+/**
+ * Whether the page is shown, or was hidden for less than the grace. The live view streams only then: its opening is
+ * how the server learns the user came to a waiting handoff (`browserLive.ts`), so a background tab must not open it
+ * by itself, and frames for a hidden page are wasted anyway.
+ */
+function usePageShown(): boolean {
+  const [shown, setShown] = useState(() => !pageHidden());
+  useEffect(() => {
+    let timer: number | undefined;
+    const changed = () => {
+      window.clearTimeout(timer);
+      if (!pageHidden()) setShown(true);
+      else timer = window.setTimeout(() => setShown(false), BROWSER_LIVE_HIDDEN_GRACE_MS);
+    };
+    document.addEventListener("visibilitychange", changed);
+    return () => {
+      document.removeEventListener("visibilitychange", changed);
+      window.clearTimeout(timer);
+    };
+  }, []);
+  return shown;
 }
 
 function prefersReducedMotion(): boolean {
@@ -555,6 +586,14 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
       onShow={handoff.agent.id === selected ? null : () => selectAgent(handoff.agent.id)}
       pending={state?.handoffs.length ?? 1} remembered={state?.signInRemembered !== false} />
   ) : null;
+  // A request whose wait ended without an answer closes with a plain line, until its agent asks again.
+  const endedHandoff = running && !handoff ? state?.ended?.at(-1) ?? null : null;
+  const endedLine = endedHandoff ? (
+    <p className="v2-browser-live-handoff-ended" data-testid="browser-live-handoff-ended" role="status">
+      {browserHandoffEndedCopyV2(endedHandoff.outcome,
+        endedHandoff.agent.id === BROWSER_LIVE_MAIN_AGENT ? null : browserLiveAgentLabelV2(endedHandoff.agent))}
+    </p>
+  ) : null;
   const switcher = running && selected ? <AgentSwitcherV2 agents={agents} onSelect={selectAgent} selected={selected} /> : null;
   const address = state?.page && running ? (
     <p className="v2-browser-live-address" title={expanded ? state.page.url : undefined}>
@@ -656,7 +695,7 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
             <UiV2IconButton className="v2-browser-live-close" data-browser-live-close="" icon="collapse" label="Exit full screen"
               onClick={() => showFullScreen(false)} />
           </div>
-          {handoffCard}
+          {handoffCard ?? endedLine}
           {failure}
           {typing}
           <div className="v2-browser-live-fit">{stage}</div>
@@ -670,7 +709,7 @@ function LiveViewV2({ barRef, claimScroll, live }: Readonly<{
 
   return (
     <div className="v2-browser-live-view">
-      {handoffCard}
+      {handoffCard ?? endedLine}
       {switcher}
       {address}
       {toolbar}
@@ -720,7 +759,8 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
   }, []);
   const panelId = useId();
   const barRef = useRef<HTMLButtonElement>(null);
-  const live = useBrowserLive(chatId, visible && expanded, openEventSource);
+  const pageShown = usePageShown();
+  const live = useBrowserLive(chatId, visible && expanded && pageShown, openEventSource);
   const streamHandoff = live.snapshot.state?.handoff?.id ?? null;
 
   // A pending handoff opens the panel once; the user may close it again.
@@ -733,7 +773,10 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
 
   if (!visible) return null;
   const state = expanded ? live.snapshot.state : null;
-  const needsUser = Boolean(activity.pendingHandoffKey || state?.handoff);
+  // A live stream knows the pending handoffs (an answered one leaves at once); the answer's running call only
+  // ends once the agent has its result.
+  const needsUser = state && live.snapshot.connection === "live" ? state.handoff !== null
+    : Boolean(activity.pendingHandoffKey || state?.handoff);
   const status = needsUser ? "Needs your help"
     : state?.controller === "user" && state.browser === "running" ? "You have control"
     : activity.lastStep ?? "The agent is using the browser";

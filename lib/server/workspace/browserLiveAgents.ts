@@ -8,6 +8,7 @@ import {
   type BrowserLiveAgent,
   type BrowserLiveAgentRef,
   type BrowserLiveController,
+  type BrowserLiveEndedHandoff,
   type BrowserLiveHandoff,
   type BrowserLiveStateEvent
 } from "@/lib/contracts/browserLive";
@@ -38,13 +39,17 @@ type Page = BrowserLiveStateEvent["page"];
 
 export type BrowserLivePendingHandoff = Readonly<{
   agent: BrowserLiveAgentRef;
-  expiresAt: number;
   id: string;
   message: string;
   reason: BrowserHandoffReason;
   resolve: (outcome: BrowserHandoffOutcome | "aborted") => void;
+  /** A sign of the user in this chat's live browser (`browserLive.ts`): the wait starts its idle time again. */
+  seen?: () => void;
   startedAt: number;
-}>;
+}> & {
+  /** When the wait ends unless the user shows a sign again; the relay moves it with the signs. */
+  expiresAt: number;
+};
 
 type Listed = {
   acted: number;
@@ -86,6 +91,8 @@ export class BrowserLiveAgents {
   /** Agents whose tab the user took (Take control); a pending handoff counts on its own. */
   private readonly taken = new Set<string>();
   private readonly queue: BrowserLivePendingHandoff[] = [];
+  /** Each agent's latest handoff that ended without an answer, oldest first, until that agent asks again. */
+  private readonly unanswered: BrowserLiveEndedHandoff[] = [];
   /** Handoffs whose begin is under way, by agent. */
   private readonly starting = new Set<string>();
   private pinned: string | null = null;
@@ -232,20 +239,34 @@ export class BrowserLiveAgents {
   /** A new pending handoff; a new oldest one moves the stream to its agent. Returns whether the selection changed. */
   addHandoff(pending: BrowserLivePendingHandoff): boolean {
     const head = this.queue[0]?.id;
+    this.forgetUnanswered(pending.agent.id);
     this.queue.push(pending);
     this.queue.sort((left, right) => left.startedAt - right.startedAt);
     return this.headMoved(head);
   }
 
-  /** A handoff ended (answered, timed out, aborted): its agent's tab returns to the agent. */
-  removeHandoff(id: string): boolean {
+  /**
+   * A handoff ended (answered, its wait over, aborted): its agent's tab returns to the agent. One whose wait ended
+   * without an answer is listed (`unanswered`), so the panel closes its card with a line saying so.
+   */
+  removeHandoff(id: string, outcome?: BrowserHandoffOutcome | "aborted"): boolean {
     const index = this.queue.findIndex((pending) => pending.id === id);
     if (index < 0) return false;
     const head = this.queue[0]?.id;
     const [removed] = this.queue.splice(index, 1);
     this.taken.delete(removed!.agent.id);
+    if (outcome === "timed_out" || outcome === "not_answered") {
+      this.forgetUnanswered(removed!.agent.id);
+      this.unanswered.push({ agent: removed!.agent, id, outcome });
+      if (this.unanswered.length > BROWSER_LIVE_LIMITS.agentsPerEvent) this.unanswered.shift();
+    }
     this.headMoved(head);
     return true;
+  }
+
+  private forgetUnanswered(agent: string): void {
+    const index = this.unanswered.findIndex((ended) => ended.agent.id === agent);
+    if (index >= 0) this.unanswered.splice(index, 1);
   }
 
   /** Every pending handoff, oldest first, emptied (the run ended). */
@@ -259,7 +280,7 @@ export class BrowserLiveAgents {
   // Projection ----------------------------------------------------------------------------------------------------
 
   /** The agent fields of the state event. */
-  project(): Pick<BrowserLiveStateEvent, "agents" | "controller" | "handoff" | "handoffs" | "page" | "selected"> {
+  project(): Pick<BrowserLiveStateEvent, "agents" | "controller" | "ended" | "handoff" | "handoffs" | "page" | "selected"> {
     const agents = this.agentViews();
     const handoffs = this.queue.slice(0, BROWSER_LIVE_LIMITS.agentsPerEvent).map((pending): BrowserLiveHandoff => ({
       agent: pending.agent,
@@ -273,6 +294,7 @@ export class BrowserLiveAgents {
     return {
       agents,
       controller: this.controllerOf(this.current),
+      ...(this.unanswered.length > 0 ? { ended: this.unanswered.map((ended) => ({ ...ended })) } : {}),
       handoff: handoffs[0] ?? null,
       handoffs,
       page: selected?.page ?? null,
