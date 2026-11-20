@@ -190,6 +190,11 @@ export class BrowserLiveAgents {
     return this.queue.find((pending) => pending.id === id) ?? null;
   }
 
+  /** Whether this request's card is the one shown: the panel shows the oldest pending request. */
+  shown(id: string): boolean {
+    return this.queue[0]?.id === id;
+  }
+
   pendingAll(): readonly BrowserLivePendingHandoff[] {
     return this.queue;
   }

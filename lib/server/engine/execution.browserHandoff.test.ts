@@ -8,6 +8,7 @@ import type { BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
+import { notifyRunFollowup } from "../runs/runFollowupRegistry";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
@@ -145,17 +146,18 @@ function researchThreads(): SubagentThreadStore {
 }
 
 function start(options: Readonly<{ chosen?: boolean; now?: () => number; research?: ResearchEngineDeps; scheduled?: true; steps?: readonly Step[];
-  connectorTurn?: "discord" | "telegram"; turnTimeoutSeconds?: number }> = {}) {
+  connectorTurn?: "discord" | "telegram"; followups?: unknown; turnTimeoutSeconds?: number }> = {}) {
   runs += 1;
   currentChat = `chat-${runs}`;
   const runId = `run-${runs}`;
   const space = workspace();
   const model = adapter(options.steps ?? [{ calls: [handoffCall] }]);
-  const repo = repository();
+  const repo = { ...repository(), ...(options.followups ? { followups: options.followups } : {}) };
+  const ready = prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined, options.chosen ?? options.research !== undefined);
   const response = createNativeRunExecutionResponse({ adapter: model.adapter, created: { assistantMessageId: `answer-${runs}`, runId,
     userMessageId: `question-${runs}` }, engine: { ...engine(options.now),
       ...options.research ? { research: options.research, subagentThreads: researchThreads() } : {} },
-  prepared: prepared(currentChat, options.turnTimeoutSeconds, options.research !== undefined, options.chosen ?? options.research !== undefined),
+  prepared: options.followups ? { ...ready, followupAdmission: { budgetTokens: 1_000 } } : ready,
   repository: repo as unknown as RunRepository, ...(options.scheduled ? { scheduled: true } : {}),
   ...(options.connectorTurn ? { connectorTurn: options.connectorTurn } : {}), services: {}, userId: "user", workspace: space.coordinator });
   return { chatId: currentChat, model, repo, response, runId, space };
@@ -318,6 +320,70 @@ describe("browser_handoff in a native run", () => {
     await reading;
     expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "cancelled" });
     expect(handoffResult(run.model.requests).signInSavedAfterAnswer).toBeUndefined();
+  });
+
+  it("returns replied as soon as the user writes into this answer, saving nothing and handing the tab back", async () => {
+    const run = start();
+    const reading = events(run.response);
+    const panel = await openPanel(run.chatId);
+    notifyRunFollowup(`${run.runId}-other`, 1);
+    notifyRunFollowup(run.runId, 1);
+    const result = await reading;
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "replied",
+      next: expect.stringContaining("The user wrote in the chat instead of finishing in the browser") });
+    expect(handoffResult(run.model.requests).signInSavedAfterAnswer).toBeUndefined();
+    expect(run.space.guest.received.filter((message) => message.t === "handoff").map((message) => message.outcome))
+      .toEqual([undefined, "timed_out"]);
+    expect(panel.handoff.id).toMatch(/^handoff_/u);
+  });
+
+  it("returns replied at once for a message the user wrote just before the card showed, then hands the model that message", async () => {
+    // The code reached the chat while the model was still calling the handoff: it waits for the next round, undelivered.
+    let delivered = false;
+    const code = { author: "User", createdAt: "2026-11-20T10:00:00.000Z", id: "f1", ordinal: 1, origin: "user" as const, text: "482913" };
+    const followups = {
+      accept: vi.fn(),
+      close: vi.fn(async () => delivered),
+      deliver: vi.fn(async () => { delivered = true; return true; }),
+      load: vi.fn(async () => ({ entries: [{ ...code, delivery: delivered ? "delivered" as const : "accepted" as const }], revision: 1 }))
+    };
+    const run = start({ followups });
+    const result = await events(run.response);
+    expect(result.at(-1)).toMatchObject({ data: { status: "complete" }, type: "done" });
+    expect(handoffResult(run.model.requests)).toMatchObject({ outcome: "replied" });
+    const history = run.model.requests[1]!.history!;
+    const toolResult = history.findIndex((entry) => entry.type === "tool_result");
+    const message = history.findIndex((entry) => JSON.stringify(entry).includes("482913"));
+    expect(toolResult).toBeGreaterThanOrEqual(0);
+    expect(message).toBeGreaterThan(toolResult);
+  });
+
+  // Review 2026-11-20: a foreground sub-agent reads the user's messages at its own rounds while the row still waits for the
+  // main agent's, so a row waiting there may be one it has read; only a message written while it waits answers its card.
+  it("keeps a foreground sub-agent's card for a message still waiting for the main agent's round", async () => {
+    let delivered = false;
+    const code = { author: "User", createdAt: "2026-11-20T10:00:00.000Z", id: "f1", ordinal: 1, origin: "user" as const, text: "482913" };
+    const followups = {
+      accept: vi.fn(),
+      close: vi.fn(async () => delivered),
+      deliver: vi.fn(async () => { delivered = true; return true; }),
+      load: vi.fn(async () => ({ entries: [{ ...code, delivery: delivered ? "delivered" as const : "accepted" as const }], revision: 1 }))
+    };
+    const lab = { arguments: { message: "Sign in to the shop.", name: "lab" }, id: "call-lab", name: CALL_SUBAGENT_TOOL_NAME };
+    const run = start({ chosen: false, followups, research: { gates: [] },
+      steps: [{ calls: [lab] }, { calls: [handoffCall] }, { text: "Outcome: done\n\nSigned in." }, { text: "Done." }] });
+    const reading = events(run.response);
+    const panel = await openPanel(run.chatId);
+    expect(panel.handoff.agent).toMatchObject({ id: "thread-lab" });
+    // Still waiting a moment later: the row waiting for the main agent did not answer it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(panel.view.answerHandoff(owner, { action: "done", handoffId: panel.handoff.id })).toBeNull();
+    await reading;
+    const output = run.model.requests.flatMap((request) => request.history ?? [])
+      .find((item) => item.type === "tool_result" && item.name === BROWSER_HANDOFF_TOOL_NAME);
+    if (output?.type !== "tool_result") throw new Error("Expected the handoff result in a later model request.");
+    expect(JSON.parse(output.output)).toMatchObject({ outcome: "completed" });
   });
 
   it("returns not_answered when nobody comes, long before the wait capped at the turn's tool time", async () => {

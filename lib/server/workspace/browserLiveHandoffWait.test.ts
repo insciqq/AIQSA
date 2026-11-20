@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserLiveStreamPath, type BrowserLiveStateEvent } from "@/lib/contracts/browserLive";
 import type { AuthenticatedSession } from "../auth/requestAuth";
+import { notifyRunFollowup, subscribeRunFollowups } from "../runs/runFollowupRegistry";
 import { BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
 import { BROWSER_HANDOFF_IDLE_MS, BrowserLiveRelay } from "./browserLive";
 import { createBrowserLiveHandlers } from "./browserLiveHandlers";
@@ -22,7 +23,7 @@ afterEach(async () => {
 });
 
 /** A handoff asked at t0 = 0; `at(ms)` moves the clock to t0 + ms. */
-async function asked(waitMs = BROWSER_HANDOFF_WAIT_MS) {
+async function asked(waitMs = BROWSER_HANDOFF_WAIT_MS, userWrote?: (listener: () => void) => () => void) {
   vi.useFakeTimers();
   const relay = new BrowserLiveRelay();
   const guest = fakeLiveGuest();
@@ -32,13 +33,18 @@ async function asked(waitMs = BROWSER_HANDOFF_WAIT_MS) {
   const view = relay.find("chat-1", "user-1")!;
   const t0 = Date.now();
   let outcome: string | null = null;
-  void handle.handoff({ message: "Sign in", reason: "sign_in", signal: new AbortController().signal, waitMs })
-    .then((result) => { outcome = result.kind === "ended" ? result.outcome : result.kind; });
+  let saved: string | null = null;
+  void handle.handoff({ message: "Sign in", reason: "sign_in", signal: new AbortController().signal,
+    ...(userWrote ? { userWrote } : {}), waitMs })
+    .then((result) => {
+      outcome = result.kind === "ended" ? result.outcome : result.kind;
+      saved = result.kind === "ended" ? result.saved : null;
+    });
   const at = async (ms: number) => { await vi.advanceTimersByTimeAsync(t0 + ms - Date.now()); };
   await at(100);
   expect(guest.guest.handoff).toBe(true);
   const tab = recordingWriter();
-  return { at, guest, handle, outcome: () => outcome, relay, tab, t0, view };
+  return { at, guest, handle, outcome: () => outcome, relay, saved: () => saved, tab, t0, view };
 }
 
 describe("a handoff's wait for the user", () => {
@@ -166,6 +172,77 @@ describe("a handoff's wait for the user", () => {
     expect(opened.outcome()).toBeNull();
     await opened.at(100_000 + BROWSER_HANDOFF_IDLE_MS + 1_000);
     expect(opened.outcome()).toBe("timed_out");
+  });
+
+  // Production 2026-11-20: a user sent the OTP in the chat while the card waited, and the code was useless by the time
+  // the agent read it. Operator decision the same day: writing in the chat answers the handoff at once.
+  it("ends at once as replied when the user writes in the chat, saving nothing and listening no more", async () => {
+    let listening = 0;
+    const userWrote = (listener: () => void) => {
+      listening += 1;
+      const stop = subscribeRunFollowups("run-1", listener);
+      return () => { listening -= 1; stop(); };
+    };
+    const { at, guest, outcome, saved, tab, view } = await asked(BROWSER_HANDOFF_WAIT_MS, userWrote);
+    await view.watch(owner, tab.writer, { presence: true });
+    await at(20_000);
+    // Another answer's follow-up is not this one's.
+    notifyRunFollowup("run-other", 1);
+    await at(21_000);
+    expect(outcome()).toBeNull();
+    expect(listening).toBe(1);
+    notifyRunFollowup("run-1", 1);
+    await at(22_000);
+    expect(outcome()).toBe("replied");
+    expect(saved()).toBeNull();
+    expect(guest.guest.handoff).toBe(false);
+    expect(guest.guest.controller).toBe("agent");
+    expect(listening).toBe(0);
+    // The card leaves without an "ended" line: the user answered.
+    expect(tab.last<BrowserLiveStateEvent>("state")).toMatchObject({ controller: "agent", handoff: null });
+    expect(tab.last<BrowserLiveStateEvent>("state")?.ended).toBeUndefined();
+  });
+
+  // Review 2026-11-20: two agents signing in to two sites; a password the user sends answers the card they see only.
+  it("ends only the request whose card is shown, and the next one hears the next message", async () => {
+    vi.useFakeTimers();
+    const relay = new BrowserLiveRelay();
+    const guest = fakeLiveGuest();
+    const handle = relay.register({ channel: guest.channel, chatId: "chat-1", runId: "run-1", signInRemembered: async () => true,
+      userId: "user-1" });
+    handles.push(() => handle.end());
+    const outcomes: Record<string, string> = {};
+    const ask = (id: string, name: string | null) => void handle.handoff({ ...(name ? { agent: { id, name } } : {}), message: name ?? "main",
+      reason: "sign_in", signal: new AbortController().signal, userWrote: (listener) => subscribeRunFollowups("run-1", listener),
+      waitMs: BROWSER_HANDOFF_WAIT_MS }).then((result) => { outcomes[id] = result.kind === "ended" ? result.outcome : result.kind; });
+    ask("main", null);
+    await vi.advanceTimersByTimeAsync(100);
+    ask("thread-shop", "shop");
+    await vi.advanceTimersByTimeAsync(100);
+    notifyRunFollowup("run-1", 1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(outcomes).toEqual({ main: "replied" });
+    notifyRunFollowup("run-1", 2);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(outcomes).toEqual({ main: "replied", "thread-shop": "replied" });
+  });
+
+  it("stops listening for the chat when Done ends the wait", async () => {
+    let listening = 0;
+    const { at, outcome, tab, view } = await asked(BROWSER_HANDOFF_WAIT_MS, (listener) => {
+      listening += 1;
+      const stop = subscribeRunFollowups("run-1", listener);
+      return () => { listening -= 1; stop(); };
+    });
+    await view.watch(owner, tab.writer, { presence: true });
+    const shown = tab.last<BrowserLiveStateEvent>("state")!.handoff!;
+    expect(view.answerHandoff(owner, { action: "done", handoffId: shown.id })).toBeNull();
+    await at(1_000);
+    expect(outcome()).toBe("completed");
+    expect(listening).toBe(0);
+    notifyRunFollowup("run-1", 2);
+    await at(2_000);
+    expect(outcome()).toBe("completed");
   });
 
   it("forgets an agent's unanswered request once it asks again", async () => {

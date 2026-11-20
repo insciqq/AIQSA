@@ -818,11 +818,12 @@ describe("sub-agent runner", () => {
       expect(plain).toContain(WORKSPACE_CHECKPOINT_GUIDANCE);
       expect(plain).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
       // The texts of 2026-11-16 before that change, with the approval line naming the card's buttons and the 401/403 and browser
-      // lines (2026-11-20): a change here is a deliberate rewording, never a side effect.
+      // lines (2026-11-20) and the Secrets guide letting the user send a password or a code in the chat (operator decision
+      // 2026-11-20): a change here is a deliberate rewording, never a side effect.
       expect([sha(plain), sha(await systemOf({}, childHost())), sha(await systemOf({ parentAgent }))]).toEqual([
-        "237941ae2160f543cf032d5561baa174bf6a480685d6e8e732eb9cebcf76eae2",
-        "e5c2b43f0a9f35d3024d7805f850bb99c85bd7fe92f42b3d1734ad14525c89ea",
-        "98819ec537de016bf645d25a7305e991abfd2e46584c4431b0ab9056b7823c41"
+        "9112d0a7ee4c3209401b68275ca9dbe79d3b5c2fb7ead6e6aba40602ccf0a17c",
+        "5e341b7f7ec39d6e92bc6c96f3c9ce54c518e555cdc6d8058eb520676ee553b0",
+        "2306ec0c9716fd8f5c93d175cdc644bc70c1b2b1ac5ac3cd9b717ba0f40542aa"
       ]);
       // A custom sub-agent with every tool, or whose groups name the Workspace (here with every other tool the run offers), reads the same.
       expect(await systemOf({ type: typed(null) })).toBe(plain);

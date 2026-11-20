@@ -149,8 +149,11 @@ function HandoffCardV2({ asker, claimScroll, handoff, host, live, onAnswer, onSh
         </p>
       ) : (
         <p className="v2-browser-live-handoff-hint">
-          This is the agent&apos;s own browser on the server, not yours, and nothing is taken from your browser. Sign in or
-          act in it below, then press Done to hand control back; the agent does not see what you type.
+          {/* One string: a translated page's text never leaves a node React must remove. A reply in the chat reaches the
+              main agent's request for sure; a sub-agent's may be one that cannot hear it (a background one). */}
+          {"This is the agent's own browser on the server, not yours, and nothing is taken from your browser. Sign in or act " +
+            "in it below, then press Done to hand control back; the agent does not see what you type there." +
+            (asker ? "" : " Or send the code, password or choice in the chat, and the agent enters it for you.")}
         </p>
       )}
       {remembered ? null : <p className="v2-browser-live-handoff-note" role="note">{BROWSER_SIGN_IN_NOT_REMEMBERED_V2}</p>}
