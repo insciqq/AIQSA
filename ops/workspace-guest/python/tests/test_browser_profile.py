@@ -29,9 +29,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in the slim gue
     _host = None  # type: ignore[assignment]
 
 
-def cookie(name: str, domain: str, value: str = "v", expires: float = -1) -> Dict[str, Any]:
-    return {"name": name, "value": value, "domain": domain, "path": "/", "expires": expires, "httpOnly": True,
-            "secure": True, "sameSite": "Lax"}
+def cookie(name: str, domain: str, value: str = "v", expires: float = -1, httpOnly: bool = True,  # noqa: N803
+           secure: bool = True) -> Dict[str, Any]:
+    return {"name": name, "value": value, "domain": domain, "path": "/", "expires": expires, "httpOnly": httpOnly,
+            "secure": secure, "sameSite": "Lax"}
 
 
 class ProfileTests(unittest.TestCase):
@@ -162,7 +163,8 @@ class ProfileTests(unittest.TestCase):
         again = _profile.ChatProfile(self.root, clock=lambda: 1_000.0)
         again.prepare("148.0.7000.0")
         self.assertEqual(again.applied(), applied)
-        self.assertEqual([entry["name"] for entry in again.cookies()], ["cart", "sid"], "an expired cookie is not restored")
+        self.assertEqual([entry["name"] for entry in again.session_cookies()], ["cart"],
+                         "only session cookies come from the copy: Chromium's own store has the persistent ones, maybe fresher")
         self.assertEqual(sorted(again.tabs()), [f"agent-{index}" for index in range(2, 10)], "the longest unused go first")
         self.assertEqual(again.tabs()["agent-9"], {"urls": ["https://site9.example/"], "current": 0, "used": 9})
         with mock.patch.object(_profile, "STATE_MAX_BYTES", 600):
@@ -172,7 +174,10 @@ class ProfileTests(unittest.TestCase):
         (self.root / _profile.STATE_FILE).write_text("{not json")
         broken = _profile.ChatProfile(self.root)
         broken.prepare("148.0.7000.0")
-        self.assertEqual((broken.applied(), broken.cookies(), broken.tabs()), ({}, [], {}))
+        self.assertEqual((broken.applied(), broken.session_cookies(), broken.tabs()), ({}, [], {}))
+        (self.root / f".{_profile.STATE_FILE}.0011aabbccdd.tmp").write_text("{}")
+        broken.prepare("148.0.7000.0")
+        self.assertEqual([name for name in os.listdir(self.root) if name.endswith(".tmp")], [], "a write a stop cut short goes")
 
     def test_saved_sign_ins_are_applied_when_the_profile_holds_no_newer_copy(self) -> None:
         files = {"new.example.json": {"aiqsa": {"savedAt": 50}}, "held.example.json": {"aiqsa": {"savedAt": 50}},
@@ -244,6 +249,7 @@ class FakeContext:
         self.pages: List[FakePage] = [FakePage()]
         self.added: List[List[Dict[str, Any]]] = []
         self.jar: List[Dict[str, Any]] = []
+        self.cleared: List[Optional[str]] = []
         self.listeners: Dict[str, Any] = {}
         self.closed = False
 
@@ -257,6 +263,12 @@ class FakeContext:
         if any(entry.get("name") == "refused" for entry in cookies):
             raise _host.PlaywrightError("invalid cookie")
         self.added.append(cookies)
+        keys = {(entry["name"], entry["domain"], entry["path"]) for entry in cookies}
+        self.jar = [entry for entry in self.jar if (entry["name"], entry["domain"], entry["path"]) not in keys] + list(cookies)
+
+    async def clear_cookies(self, domain: Any = None) -> None:
+        self.cleared.append(domain.pattern if domain is not None else None)
+        self.jar = [entry for entry in self.jar if domain is not None and not domain.search(entry["domain"])]
 
     async def cookies(self) -> List[Dict[str, Any]]:
         return list(self.jar)
@@ -412,6 +424,68 @@ class HostProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.host._reopen_tabs(sub))
         self.assertEqual([tab.url for tab in sub.tabs if not tab.is_closed()], ["https://shop.example/cart"])
 
+    async def test_a_first_command_that_opens_a_page_gets_the_list_and_nothing_loads_again(self) -> None:
+        await self.host._launch()
+        loaded: List[str] = []
+
+        async def goto(page: Any, url: str) -> int:
+            loaded.append(url)
+            return 200
+
+        self.host._goto = goto  # type: ignore[method-assign]
+        self.host.tab_records = {"main": {"urls": ["https://shop.example/cart", "https://mail.example/logout?confirm=1"],
+                                          "current": 0, "used": 5}}
+        main = self.host._state_for("main")
+        self.assertFalse(await self.host._reopen_tabs(main, opening=True))
+        self.assertEqual((loaded, main.tabs), ([], []))
+        self.assertIn("Your last turn ended with these tabs open: 1. shop.example/cart; 2. mail.example/logout. Not reopened", main.notes[-1])
+        self.assertFalse(await self.host._reopen_tabs(main), "once per browser")
+
+    async def test_a_tab_still_loading_is_stopped_so_no_late_load_interrupts_the_command(self) -> None:
+        await self.host._launch()
+        self.host._check_memory = lambda: None  # type: ignore[method-assign]
+        stalled = asyncio.Event()
+
+        async def route(page: Any, url: str, value: Any) -> None:
+            return None
+
+        async def goto(page: Any, url: str) -> int:
+            if "slow" in url:
+                stalled.set()
+                await asyncio.sleep(3600)
+            await page.goto(url)
+            return 200
+
+        self.host._route_navigation = route  # type: ignore[method-assign]
+        self.host._goto = goto  # type: ignore[method-assign]
+        self.host.tab_records = {"main": {"urls": ["https://slow.example/redirects", "https://shop.example/"], "current": 0, "used": 5}}
+        main = self.host._state_for("main")
+        with mock.patch.object(_host, "REOPEN_SECONDS", 0.2):
+            self.assertTrue(await self.host._reopen_tabs(main))
+        self.assertTrue(stalled.is_set())
+        slow, fast = main.tabs
+        self.assertIn("Page.stopLoading", main.cdp[slow].sent)
+        self.assertNotIn("Page.stopLoading", main.cdp[fast].sent)
+        self.assertIn("Tab 1 did not finish loading in time and was stopped", main.notes[-1])
+        loads = [task for task in asyncio.all_tasks() if getattr(task.get_coro(), "__qualname__", "").endswith("_reopen_tabs.<locals>.load")]
+        self.assertEqual(loads, [], "no reopen load goes on")
+
+    async def test_a_failed_navigation_waits_for_its_error_page_before_the_next_one(self) -> None:
+        waited: List[str] = []
+
+        class Failing:
+            url = "about:blank"
+
+            async def goto(self, url: str, **_: Any) -> None:
+                raise _host.PlaywrightError("net::ERR_TOO_MANY_REDIRECTS at https://shop.example/loop")
+
+            async def wait_for_url(self, pattern: str, timeout: float) -> None:
+                waited.append(pattern)
+
+        with self.assertRaises(_host.HostError):
+            await self.host._goto(Failing(), "https://shop.example/loop")
+        self.assertEqual(waited, ["chrome-error://**"])
+
     async def test_a_password_typed_in_the_live_view_saves_the_sign_in_once_the_site_sets_new_cookies(self) -> None:
         await self.host._launch()
         context = self.chromium.context
@@ -425,16 +499,98 @@ class HostProfileTests(unittest.IsolatedAsyncioTestCase):
         context.jar = [cookie("consent", ".shop.example", "yes"), cookie("sid", ".shop.example", "signed-in"),
                        cookie("other", "elsewhere.example")]
         await self.host._autosave()
+        self.assertFalse((self.sessions / "shop.example.json").exists(), "the form has not gone out: nothing is saved")
+        self.host.user_submitted_password("main")
+        await self.host._autosave()
         saved = json.loads((self.sessions / "shop.example.json").read_text())
         self.assertEqual(sorted(entry["name"] for entry in saved["cookies"]), ["consent", "sid"])
         self.assertEqual(self.host.store.tracked["shop.example.json"], {"shop.example"})
         main = self.host._state_for("main")
-        self.assertIn("The user signed in to shop.example in the live view", main.notes[-1])
+        self.assertIn("The user entered a password on accounts.shop.example in the live view and the site then set new sign-in "
+                      "cookies, so the session of shop.example was saved", main.notes[-1])
+        self.assertIn("The page shows whether the sign-in worked.", main.notes[-1])
         self.assertEqual([step["action"] for step in main.steps], ["save_session"])
         self.assertEqual(self.host._pending_sign_ins, {})
         # A site that already has a saved sign-in is kept current anyway: nothing waits for it.
         await self.host.user_typed_password("main", FakePage("https://www.shop.example/again"))
         self.assertEqual(self.host._pending_sign_ins, {})
+
+
+    async def test_a_live_view_password_alone_or_ordinary_cookie_churn_saves_nothing(self) -> None:
+        await self.host._launch()
+        context = self.chromium.context
+        context.jar = [cookie("csrftoken", ".shop.example", "1", httpOnly=False)]
+        await self.host.user_typed_password("main", FakePage("https://shop.example/login"))
+        self.host.user_submitted_password("main")
+        # A wrong password: the CSRF token turns over, analytics and consent arrive; none is what a sign-in sets.
+        context.jar = [cookie("csrftoken", ".shop.example", "2", httpOnly=False), cookie("_ga", ".shop.example", "x", httpOnly=False, secure=False),
+                       cookie("consent", "shop.example", "yes", httpOnly=False, expires=9_999_999_999)]
+        await self.host._autosave()
+        self.assertFalse((self.sessions / "shop.example.json").exists())
+        self.assertEqual(list(self.host._pending_sign_ins), ["shop.example"], "it still waits for a sign-in")
+
+    async def test_a_sign_in_through_an_identity_provider_saves_the_site_the_tab_came_back_to_as_well(self) -> None:
+        await self.host._launch()
+        context = self.chromium.context
+        main = self.host._state_for("main")
+        await self.host.user_typed_password("main", FakePage("https://login.idp.example/authorize"))
+        self.host.user_submitted_password("main")
+        main.current = FakePage("https://app.shop.example/home")
+        context.jar = [cookie("idp_session", ".idp.example", "s"), cookie("app_session", ".shop.example", "a")]
+        await self.host._autosave()
+        self.assertTrue((self.sessions / "idp.example.json").exists())
+        self.assertTrue((self.sessions / "shop.example.json").exists())
+        self.assertEqual([step["target"] for step in main.steps], ["idp.example", "shop.example"])
+
+    async def test_a_newer_saved_sign_in_replaces_its_account_in_the_profile_and_nothing_it_dropped_comes_back(self) -> None:
+        # The profile holds an old Google session with a flag the newer state no longer has; another site stays as it is.
+        profile = _profile.ChatProfile(_paths.profile_dir())
+        profile.prepare("148.0.7000.0")
+        (profile.root / "Default").mkdir()
+        profile.write("148.0.7000.0", {"google.com.json": {"savedAt": 10, "key": "old"}}, [], {})
+        self.write_session("google.com.json", {"cookies": [cookie("SID", ".google.com", "new")],
+                                               "origins": [{"origin": "https://mail.google.com", "localStorage": [{"name": "t", "value": "new"}]}],
+                                               "aiqsa": {"savedAt": 20}})
+        self.write_session("broken.example.json", {"cookies": [cookie("refused", "broken.example")], "origins": [], "aiqsa": {"savedAt": 20}})
+        self.host.store.load()
+        launch = self.chromium.launch_persistent_context
+
+        async def with_old_state(path: str, **options: Any) -> FakeContext:
+            context = await launch(path, **options)
+            context.jar = [cookie("SID", ".google.com", "old"), cookie("LOGGED_OUT", "mail.google.com", "1"),
+                           cookie("cart", "shop.example", "2")]
+            return context
+
+        self.chromium.launch_persistent_context = with_old_state  # type: ignore[method-assign]
+        applied = await self.host._launch()
+        context = self.chromium.context
+        self.assertEqual(applied, ["google.com.json"])
+        self.assertEqual(sorted((entry["name"], entry["value"]) for entry in context.jar), [("SID", "new"), ("cart", "2")])
+        self.assertEqual(context.cleared, ["^(?:\\.google\\.com|mail\\.google\\.com)$"])
+        self.assertEqual(context.pages[0].stored, {"https://mail.google.com/": [{"name": "t", "value": "new"}]})
+        # The next save writes what the browser holds: the dropped flag is gone for good.
+        self.host.store.track("google.com.json", {"google.com"})
+        await self.host._autosave()
+        saved = json.loads((self.sessions / "google.com.json").read_text())
+        self.assertEqual([(entry["name"], entry["value"]) for entry in saved["cookies"]], [("SID", "new")])
+        # One that could not be applied is not marked as held, so the next start tries it again.
+        written = json.loads((self.host.profile.root / _profile.STATE_FILE).read_text())
+        self.assertNotIn("broken.example.json", written["applied"])
+        self.assertIn("google.com.json", written["applied"])
+        self.assertIn("Saved sign-ins not applied in full: broken.example", self.host.profile.notes[-1])
+
+    async def test_every_action_checkpoints_the_tabs_and_session_cookies_with_no_saved_sign_ins(self) -> None:
+        await self.host._launch()
+        context = self.chromium.context
+        context.jar = [cookie("cart", "shop.example", "3"), cookie("pref", "shop.example", "x", expires=9_999_999_999)]
+        main = self.host._state_for("main")
+        tab = FakePage("https://shop.example/cart")
+        main.tabs, main.current = [tab], tab
+        self.assertEqual(self.host.store.tracked, {})
+        await self.host._autosave_in_time()
+        written = json.loads((self.host.profile.root / _profile.STATE_FILE).read_text())
+        self.assertEqual(written["tabs"]["main"]["urls"], ["https://shop.example/cart"])
+        self.assertEqual([entry["name"] for entry in written["cookies"]], ["cart"], "only session cookies are copied")
 
 
 if __name__ == "__main__":

@@ -84,11 +84,16 @@ REFUSAL_ERRORS = ("ERR_CONNECTION_REFUSED", "ERR_CONNECTION_RESET", "ERR_CONNECT
 #: Sign-in pages of the big identity providers: another site sending the browser here asks for a sign-in.
 SIGN_IN_HOSTS = frozenset({"accounts.google.com", "passport.yandex.ru", "passport.yandex.com", "id.yandex.ru",
                            "login.microsoftonline.com", "login.live.com"})
-#: How long an agent's first command waits for its remembered tabs to start loading; slower ones go on loading.
+#: How long an agent's first command waits for its remembered tabs to load; slower ones are stopped, so no late load of
+#: theirs interrupts the command.
 REOPEN_SECONDS = 10.0
+#: Commands that say which page they open: before one of them, remembered tabs are listed, not loaded again.
+OPENING_OPS = frozenset({"open", "new_tab"})
+#: A failed navigation's error page commits within this.
+ERROR_PAGE_WAIT_MS = 1000
 #: Sites the user typed a password into in the live view, waiting for the site's new cookies (`user_typed_password`).
 PENDING_SIGN_INS_MAX = 8
-SET_LOCAL_STORAGE = "items => { for (const item of items) localStorage.setItem(item.name, item.value); }"
+SET_LOCAL_STORAGE = "items => { localStorage.clear(); for (const item of items) localStorage.setItem(item.name, item.value); }"
 TEXT_MAX_CHARS = 20_000
 JS_MAX_CHARS = 8_000
 ACTION_TIMEOUT_MS = 10_000
@@ -161,6 +166,33 @@ class AgentState:
         self.reopened = False
         #: Its tabs are closing on a release or an expiry, remembered as they were before (`Host._close_agent_tabs`).
         self.leaving = False
+
+
+#: Cookie names a sign-in sets: a session, a token, a remembered user.
+_SIGN_IN_COOKIE = re.compile(r"sess|sid|auth|token|login|logged|user|account|remember|jwt", re.IGNORECASE)
+
+
+def _sign_in_cookies(cookies: Sequence[Any], account: str) -> Dict[Tuple[str, str, str], Dict[str, Any]]:
+    """An account's cookies by name, domain and path."""
+    return {(cookie["name"], cookie["domain"], cookie.get("path", "/")): cookie for cookie in cookies
+            if isinstance(cookie, dict) and isinstance(cookie.get("name"), str) and isinstance(cookie.get("domain"), str)
+            and _sessions.domain_matches(cookie["domain"], {account})}
+
+
+def _sign_in_cookies_changed(before: Mapping[Tuple[str, str, str], Mapping[str, Any]],
+                             after: Mapping[Tuple[str, str, str], Mapping[str, Any]]) -> bool:
+    """Whether a site set what a sign-in sets: a new cookie that is httpOnly, a secure session cookie or named like a
+    session or token, or a new value of an httpOnly cookie named so (a session id issued again at sign-in). Analytics,
+    consent and a CSRF token turned over after a wrong password are none of these."""
+    for key, cookie in after.items():
+        named = bool(_SIGN_IN_COOKIE.search(str(cookie.get("name", ""))))
+        old = before.get(key)
+        if old is None:
+            if cookie.get("httpOnly") is True or named or (cookie.get("secure") is True and cookie.get("expires") == -1):
+                return True
+        elif old.get("value") != cookie.get("value") and cookie.get("httpOnly") is True and named:
+            return True
+    return False
 
 
 def _first_line(error: BaseException, limit: int = 300) -> str:
@@ -246,8 +278,11 @@ class Host:
         self.profile = _profile.ChatProfile(_paths.profile_dir())
         #: Each agent's tabs as the profile remembers them, for the agent's first command of a later turn.
         self.tab_records: Dict[str, Dict[str, Any]] = {}
-        #: Sites the user typed a password into in the live view: the agent whose tab it was, the host and the cookies then.
+        #: Sites the user typed a password into in the live view: the agent whose tab it was, the host, whether the form went
+        #: out, and the site's cookies before.
         self._pending_sign_ins: Dict[str, Dict[str, Any]] = {}
+        #: Saved sign-ins that could not be applied over the profile at launch: never marked as held, so tried again.
+        self._unapplied: set = set()
         self.shots_dir = _paths.shots_dir()
         self.downloads_dir = _paths.downloads_dir()
         #: Pages the agent built, opened by their Workspace path (`_files`).
@@ -255,6 +290,8 @@ class Host:
         self.playwright = None
         #: The X server the headed browser runs on, this host's own.
         self.display = _display.Display()
+        #: Only under a test root on a machine without Xvfb (`start`): the guest image always runs headed.
+        self.headless = False
         #: The browser's one persistent context on the chat's profile (`_launch`).
         self.context = None
         self.version = ""
@@ -513,12 +550,15 @@ class Host:
         try:
             await self.display.start(self._on_disconnected)
         except _display.DisplayError as error:
-            raise HostError(error.code, error.message) from None
+            if _paths.current_test_root() is None:
+                raise HostError(error.code, error.message) from None
+            # Tests on a workstation without Xvfb drive the same build headless; `aiqsa-browser` never sets a test root.
+            self.headless = True
         self.playwright = await async_playwright().start()
         chromium = self.playwright.chromium
         env = {**_identity.launch_env(self.environ, self.locale, self.timezone), **self.display.env()}
         # The build's own user agent and client hints, read once without any override, headed like the browser itself.
-        probe = await chromium.launch(channel="chromium", headless=False, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
+        probe = await chromium.launch(channel="chromium", headless=self.headless, ignore_default_args=_identity.IGNORED_DEFAULT_ARGS,
                                       args=_identity.launch_args(self.locale), env=env)
         try:
             cdp = await probe.new_browser_cdp_session()
@@ -553,8 +593,8 @@ class Host:
         self.profile.notes = []
         if self.store.skipped:
             self.notes.append(f"Saved session files not loaded (invalid or over the limits): {', '.join(sorted(self.store.skipped))}.")
-        await self._reopen_tabs_quietly(started)
-        if not any(not tab.is_closed() for tab in started.tabs):
+        # Remembered tabs reopen at the agent's first command, which says whether it opens a page itself (`serve`).
+        if not (self.tab_records.get(started.agent_id) or {}).get("urls"):
             page = await self._new_page(started)
             await self._setup(page)
             started.current = page
@@ -562,7 +602,7 @@ class Host:
     def _launch_options(self) -> Dict[str, Any]:
         """How Chromium starts, in one place: headed on this host's display, the build's identity read in `start`
         (`_identity.py`) and the profile's bounds. Only the browser's environment names the display."""
-        return {"channel": "chromium", "headless": False, "ignore_default_args": _identity.IGNORED_DEFAULT_ARGS,
+        return {"channel": "chromium", "headless": self.headless, "ignore_default_args": _identity.IGNORED_DEFAULT_ARGS,
                 "args": [*_identity.launch_args(self.locale, self.user_agent, self.proxy_port), *_profile.LAUNCH_ARGS],
                 "env": {**_identity.launch_env(self.environ, self.locale, self.timezone), **self.display.env()},
                 "no_viewport": True, "accept_downloads": True}
@@ -597,19 +637,43 @@ class Host:
         return await self._apply_saved_state()
 
     async def _apply_saved_state(self) -> List[str]:
-        """The profile's own cookie copy (session cookies and the last half minute), then the saved sign-ins written after
-        the copy the profile holds (`_profile.sign_ins_to_apply`): key by key, so what only the profile has stays."""
-        await self._add_cookies(self.profile.cookies())
-        names = _profile.sign_ins_to_apply(self.store.files, self.store.keys, self.profile.applied(), _sessions.saved_at)
-        if not names:
-            return []
-        state = self.store.merge(names)
-        failed = await self._add_cookies(state["cookies"])
-        failed += await self._apply_local_storage(state["origins"])
-        if failed:
-            self.profile.notes.append(f"{failed} cookie{'s' if failed != 1 else ''} or stored item{'s' if failed != 1 else ''} of the "
-                                      "saved sign-ins could not be applied; a site may ask to sign in again.")
-        return names
+        """The session cookies of the profile's own copy, which Chromium drops when it closes (its own store keeps the
+        persistent ones, and fresher than the copy), then each saved sign-in written after the copy the profile holds
+        (`_profile.sign_ins_to_apply`), oldest first. Returns the sign-ins applied; one that could not be applied stays
+        unmarked (`_unapplied`), so the next browser start tries it again."""
+        await self._add_cookies(self.profile.session_cookies())
+        now = int(time.time() * 1000)
+        stamp = lambda value: _sessions.trusted_stamp(value, now)  # noqa: E731
+        names = _profile.sign_ins_to_apply(self.store.files, self.store.keys, self.profile.applied(), stamp)
+        applied: List[str] = []
+        for name in sorted(names, key=lambda entry: (stamp(self.store.files[entry]), entry)):
+            if await self._apply_sign_in(name):
+                applied.append(name)
+            else:
+                self._unapplied.add(name)
+        if self._unapplied:
+            listed = ", ".join(name[: -len(".json")] for name in sorted(self._unapplied))
+            self.profile.notes.append(f"Saved sign-ins not applied in full: {listed}; a site may ask to sign in again, and the next "
+                                      "browser start tries again.")
+        return applied
+
+    async def _apply_sign_in(self, name: str) -> bool:
+        """One saved sign-in replaces its account's state in the profile: the account's cookies go first, then its own go
+        in, and each of its origins' local storage is replaced. What the newer state dropped (a sign-out, a renamed
+        session cookie, a token) does not come back; other accounts stay as they are. Returns whether all of it applied."""
+        value = self.store.files[name]
+        sites = self.store.tracked.get(name) or _sessions.domains_of(value)
+        try:
+            held = await self.context.cookies()
+            domains = sorted({cookie["domain"] for cookie in held
+                              if isinstance(cookie.get("domain"), str) and _sessions.domain_matches(cookie["domain"], sites)})
+            if domains:
+                await self.context.clear_cookies(domain=re.compile("^(?:" + "|".join(re.escape(domain) for domain in domains) + ")$"))
+        except PlaywrightError:
+            return False
+        failed = await self._add_cookies(value["cookies"])
+        failed += await self._apply_local_storage(value["origins"])
+        return failed == 0
 
     async def _add_cookies(self, cookies: List[Dict[str, Any]]) -> int:
         """Cookies over the profile's, same name, domain and path replaced; returns how many the browser refused."""
@@ -629,8 +693,8 @@ class Host:
         return failed
 
     async def _apply_local_storage(self, origins: List[Dict[str, Any]]) -> int:
-        """Each origin's saved items into the profile's local storage, as Playwright restores a storage state: on a page no
-        agent owns, whose requests are answered inside the browser. A service worker the profile keeps for that origin is
+        """Each origin's saved items in place of what the profile's local storage holds for it, as Playwright restores a
+        storage state: on a page no agent owns, whose requests are answered inside the browser. A service worker the profile keeps for that origin is
         bypassed, so no site code runs there. Returns the origins that could not be written."""
         origins = [origin for origin in origins if origin.get("localStorage")]
         if not origins:
@@ -892,6 +956,8 @@ class Host:
             tabs = [tab for tab in state.tabs if not tab.is_closed()]
             if not tabs:
                 continue
+            # They stay remembered for the agent's next turn, as at any other end of its tabs.
+            self._remember_tabs(state)
             addresses = ", ".join(state.hidden.text(_format.where(tab.url) or "blank page") for tab in tabs)
             for tab in tabs:
                 try:
@@ -1041,11 +1107,6 @@ class Host:
         if self.proxy_port is None:
             return None
         text = self._error_text(error)
-        # Its error page commits a moment later and would interrupt the next address tried, which is what this failure suggests.
-        try:
-            await page.wait_for_url("chrome-error://**", timeout=1000)
-        except PlaywrightError:
-            pass
         if "ERR_PROXY_CONNECTION_FAILED" in text:
             return HostError(_proxy.UNAVAILABLE, "The local proxy forwarder did not answer, so nothing was sent. Try again; the next command restarts it.")
         host = urlsplit(url).hostname or ""
@@ -1065,6 +1126,7 @@ class Host:
         except PlaywrightTimeoutError:
             raise
         except PlaywrightError as error:
+            await self._error_page_committed(page)
             failure = await self._proxy_navigation_failure(page, url, error)
             if failure is not None:
                 raise failure from None
@@ -1081,6 +1143,14 @@ class Host:
             if failure is not None:
                 raise failure
         return response.status
+
+    async def _error_page_committed(self, page: Any) -> None:
+        """A failed navigation's error page commits a moment after the failure is reported, and would interrupt the next
+        navigation of the tab (after a redirect loop, the agent's next address): wait for it, briefly."""
+        try:
+            await page.wait_for_url("chrome-error://**", timeout=ERROR_PAGE_WAIT_MS)
+        except PlaywrightError:
+            pass
 
     def _saved_sign_ins(self, host: str) -> List[str]:
         """The saved sign-ins this browser restored or keeps for a host."""
@@ -1133,12 +1203,13 @@ class Host:
 
     # Waiting ---------------------------------------------------------------------------------------------------
 
-    async def _settle(self, page: Any, quiet_seconds: float = 0.4, budget: float = 2.0) -> None:
-        """Wait for what an action started: a document load, then a short network quiet, leaving the command time to answer."""
+    async def _settle(self, page: Any, quiet_seconds: float = 0.4, budget: float = 2.0, *, lifecycle: bool = True) -> None:
+        """Wait for what an action started: a document load, then a short network quiet, leaving the command time to answer.
+        Without `lifecycle`, the load is known otherwise (`_history`) and only the network quiet is waited for."""
         await asyncio.sleep(_left(0.25, AFTER_SETTLE_SECONDS))
         if page.is_closed():
             return
-        for state, timeout in (("domcontentloaded", 15.0), ("load", 5.0)):
+        for state, timeout in (("domcontentloaded", 15.0), ("load", 5.0)) if lifecycle else ():
             left = _left(timeout, AFTER_SETTLE_SECONDS)
             if left < 0.05:
                 # Playwright reads a zero timeout as none at all.
@@ -1437,7 +1508,7 @@ class Host:
         if page is not None and not page.is_closed():
             step["url"] = _format.page_address(page.url)
 
-    async def _storage_state(self) -> Dict[str, Any]:
+    async def _storage_state(self, cookies: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Cookies of the whole browser, and the kept sites' local storage read from their open documents.
 
         Unlike Playwright's own `storage_state()`, this never opens hidden pages on
@@ -1445,7 +1516,8 @@ class Host:
         are kept, so it stays cheap enough to run after every action. Origins not
         open now keep what was restored or last read.
         """
-        cookies = await self.context.cookies()
+        if cookies is None:
+            cookies = await self.context.cookies()
         sites = self.store.sites()
         for page in [tab for tab in self._pages if not tab.is_closed()]:
             for frame in page.frames:
@@ -1465,16 +1537,26 @@ class Host:
                                                 for origin, entries in self.local_storage.items() if entries]}
 
     async def _autosave(self) -> List[str]:
-        """Rewrite the saved sessions whose cookies or local storage changed, save a sign-in the user made in the live view,
-        and keep the profile's bookkeeping; the turn may end at any moment.
+        """Checkpoint the profile, then rewrite the saved sessions whose cookies or local storage changed and save a sign-in
+        the user made in the live view; the turn may end at any moment.
 
-        One at a time: two agents' actions end together, and a state read earlier must never be written after a later one.
+        The checkpoint (each agent's tabs, the session cookies Chromium drops when it closes) reads only the browser's
+        cookies, so it is written after every action even when a page is too busy to read; the saved sessions also read
+        the kept sites' open pages. One at a time: two agents' actions end together, and a state read earlier must
+        never be written after a later one.
         """
         async with self._session_lock:
             if self.context is None:
                 return []
             try:
-                state = await self._storage_state()
+                cookies = await self.context.cookies()
+            except PlaywrightError:
+                return []
+            await self._keep_profile(cookies)
+            if not self.store.tracked and not self._pending_sign_ins:
+                return []
+            try:
+                state = await self._storage_state(cookies)
                 if self._pending_sign_ins and await self._save_live_sign_ins(state):
                     # The new file's site is kept now: read its open pages' local storage too.
                     state = await self._storage_state()
@@ -1482,23 +1564,28 @@ class Host:
                 return []
             saved = []
             for name in self.store.changed(state):
+                if name in self._unapplied:
+                    # The browser does not hold that newer sign-in: its state would overwrite it with an older one.
+                    continue
                 try:
                     if self.store.save(name, state)["changed"]:
                         saved.append(name)
                 except _sessions.SessionError as error:
                     self.notes.append(f"The session {name} was not saved: {error.message}")
-            await self._keep_profile(state)
+            if saved:
+                await self._keep_profile(cookies)
             return saved
 
-    async def _keep_profile(self, state: Mapping[str, Any]) -> None:
-        """The profile's bookkeeping as of now: the saved sign-ins it holds, its cookies and each browsing agent's tabs."""
+    async def _keep_profile(self, cookies: List[Dict[str, Any]]) -> None:
+        """The profile's bookkeeping as of now: the saved sign-ins it holds (not one that failed to apply), its session
+        cookies and each browsing agent's tabs."""
         for agent in self._states.values():
             if not agent.leaving and any(not tab.is_closed() for tab in agent.tabs):
                 self._remember_tabs(agent)
         applied = {name: {"savedAt": _sessions.saved_at(value), "key": self.store.keys.get(name, "")}
-                   for name, value in self.store.files.items()}
-        cookies = [cookie for cookie in state.get("cookies") or [] if isinstance(cookie, dict)]
-        await asyncio.to_thread(self.profile.write, self.version, applied, cookies, dict(self.tab_records))
+                   for name, value in self.store.files.items() if name not in self._unapplied}
+        session = [cookie for cookie in cookies if isinstance(cookie, dict) and cookie.get("expires") == -1]
+        await asyncio.to_thread(self.profile.write, self.version, applied, session, dict(self.tab_records))
 
     def _remember_tabs(self, state: AgentState) -> None:
         """An agent's open tabs, for its first command of a later turn (`_reopen_tabs`)."""
@@ -1513,15 +1600,27 @@ class Host:
                 task.exception()
         asyncio.ensure_future(self._autosave()).add_done_callback(done)
 
-    async def _reopen_tabs(self, state: AgentState) -> bool:
+    async def _reopen_tabs(self, state: AgentState, opening: bool = False) -> bool:
         """At an agent's first command in this browser, the tabs it had open at the end of its last turn open again, the
-        current one current, and the page summary says which. Pages slower than `REOPEN_SECONDS` go on loading."""
+        current one current, and the page summary says which.
+
+        A first command that opens a page itself (`open`, `new_tab`) gets the list instead: it goes elsewhere, and loading
+        the remembered addresses again would only send their requests once more (a sign-out or confirmation link acts on
+        each load). No load of a reopened tab outlives this call: one still loading after `REOPEN_SECONDS` is stopped, and
+        a failed one has its error page in place, so neither interrupts the command that follows.
+        """
         if state.reopened:
             return False
         state.reopened = True
         record = self.tab_records.get(state.agent_id) or {}
         urls = list(record.get("urls") or [])[:MAX_AGENT_TABS]
         if not urls or any(not tab.is_closed() for tab in state.tabs):
+            return False
+        where = lambda url: state.hidden.text(_format.where(url) or "a page")  # noqa: E731
+        if opening:
+            state.notes.append(f"Your last turn ended with {'these tabs' if len(urls) != 1 else 'this tab'} open: "
+                               f"{_profile.describe(urls, where)}. Not reopened, since this command opens a page itself; "
+                               "`new-tab ADDRESS` opens one of them again.")
             return False
         pages: List[Tuple[Any, str]] = []
         for url in urls:
@@ -1546,20 +1645,22 @@ class Host:
                 return self._error_text(error, 160)
 
         tasks = [asyncio.ensure_future(load(page, url)) for page, url in pages]
-        done, _ = await asyncio.wait(tasks, timeout=REOPEN_SECONDS)
-        for task in tasks:
-            if task not in done:
-                task.add_done_callback(lambda finished: finished.cancelled() or finished.exception())
+        done, pending = await asyncio.wait(tasks, timeout=REOPEN_SECONDS)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for (page, _url), task in zip(pages, tasks):
+            if task in pending:
+                await self._stop_loading(state, page)
         chosen = record.get("current")
         chosen = chosen if isinstance(chosen, int) and 0 <= chosen < len(pages) else len(pages) - 1
         state.current = pages[chosen][0]
-        where = lambda url: state.hidden.text(_format.where(url) or "a page")  # noqa: E731
         listing = _profile.describe([url for _, url in pages], where)
         lines = [f"Reopened the tab{'s' if len(pages) != 1 else ''} you had open at the end of your last turn: {listing}. "
                  f"The current tab is {chosen + 1}."]
         for index, task in enumerate(tasks, start=1):
-            if task not in done:
-                lines.append(f"Tab {index} is still loading.")
+            if task in pending:
+                lines.append(f"Tab {index} did not finish loading in time and was stopped; `reload` loads it again.")
             elif task.result():
                 lines.append(f"Tab {index} did not load again: {_format.clean(state.hidden.text(task.result()), 200)}")
         if len(pages) < len(urls):
@@ -1567,70 +1668,103 @@ class Host:
         state.notes.append(" ".join(lines))
         return True
 
-    async def _reopen_tabs_quietly(self, state: AgentState) -> None:
+    async def _stop_loading(self, state: AgentState, page: Any) -> None:
+        """End a tab's load in progress, as a person's Stop button does."""
+        session = state.cdp.get(page)
+        if session is None or page.is_closed():
+            return
+        try:
+            await asyncio.wait_for(session.send("Page.stopLoading"), 5)
+        except Exception:  # noqa: BLE001 - a tab that went away has nothing loading
+            pass
+
+    async def _reopen_tabs_quietly(self, state: AgentState, opening: bool = False) -> None:
         """Reopening never fails the command it comes before; what went wrong is a line in the page summary."""
         try:
-            await self._reopen_tabs(state)
+            await self._reopen_tabs(state, opening)
         except Exception as error:  # noqa: BLE001 - the command goes on in a fresh tab
             state.notes.append(f"The tabs of your last turn did not reopen ({self._error_text(error, 160)}).")
 
     async def user_typed_password(self, agent: str, page: Any) -> None:
-        """The user typed into a password field of this tab in the live view (`_livehub.py`). Once the site answers with
-        new cookies, its sign-in is saved to the user's saved sign-ins like a sign-in handoff's (`_save_live_sign_ins`)."""
+        """The user typed into a password field of this tab in the live view (`_livehub.py`). Once the form went out
+        (`user_submitted_password`) and the site set new sign-in cookies, its session is saved to the user's saved
+        sign-ins like a sign-in handoff's (`_save_live_sign_ins`)."""
         try:
             host = urlsplit(page.url or "").hostname or ""
         except ValueError:
             return
         account = _sessions.account_of(host)
         if account is None or account in self._pending_sign_ins or len(self._pending_sign_ins) >= PENDING_SIGN_INS_MAX \
-                or self.context is None or any(account in sites for sites in self.store.tracked.values()):
+                or self.context is None or self._kept(account):
             return
         try:
             cookies = await asyncio.wait_for(self.context.cookies(), 2)
         except (PlaywrightError, asyncio.TimeoutError):
             return
-        self._pending_sign_ins[account] = {"agent": self._valid_agent_id(agent), "host": host, "url": page.url,
-                                           "digest": _sessions.state_digest({"cookies": cookies}, {account})}
+        self._pending_sign_ins[account] = {"agent": self._valid_agent_id(agent), "host": host, "url": page.url, "submitted": False,
+                                           "before": _sign_in_cookies(cookies, account)}
+
+    def user_submitted_password(self, agent: str) -> None:
+        """Focus left the password field the user typed into: the sign-in form is going out."""
+        for pending in self._pending_sign_ins.values():
+            if pending["agent"] == self._valid_agent_id(agent):
+                pending["submitted"] = True
+
+    def _kept(self, account: str) -> bool:
+        return any(account in sites for sites in self.store.tracked.values())
 
     async def _save_live_sign_ins(self, state: Mapping[str, Any]) -> bool:
-        """A site the user typed a password into that has set new cookies since is saved and kept current; returns whether
-        a file was added. A site that already has a saved sign-in needs nothing: it is kept current anyway."""
+        """A site the user entered a password on, whose form went out and that has set new sign-in cookies since
+        (`_sign_in_cookies_changed`), is saved and kept current, and so is the site the agent's tab is on then when that
+        is another (the password went to an identity provider's page). Returns whether a file was added. A site that
+        already has a saved sign-in needs nothing: it is kept current anyway."""
         added = False
+        cookies = state.get("cookies") or []
         for account, pending in list(self._pending_sign_ins.items()):
-            if any(account in sites for sites in self.store.tracked.values()):
+            if self._kept(account):
                 del self._pending_sign_ins[account]
                 continue
-            if _sessions.state_digest({"cookies": state.get("cookies") or []}, {account}) == pending["digest"]:
+            if not pending["submitted"] or not _sign_in_cookies_changed(pending["before"], _sign_in_cookies(cookies, account)):
                 continue
             del self._pending_sign_ins[account]
-            found = self.store.file_for(pending["host"])
-            if found is None:
-                continue
-            name, sites = found
             owner = self._states.get(pending["agent"]) or self._state_for(MAIN_AGENT_ID)
-            self.store.track(name, sites)
-            try:
-                self.store.save(name, state)
-            except _sessions.SessionError as error:
-                owner.notes.append(f"The user signed in to {account} in the live view, but the sign-in was not saved: {error.message}")
-                continue
-            added = True
-            self._record("save_session", name[: -len(".json")], pending["url"], state=owner)
-            owner.notes.append(f"The user signed in to {account} in the live view, so the sign-in was saved to their saved sign-ins "
-                               f"(/workspace/secrets/browser/{name}) and stays current.")
+            hosts = [pending["host"]]
+            tab = owner.current if owner.current is not None and not owner.current.is_closed() else None
+            landed = urlsplit(tab.url or "").hostname if tab is not None else None
+            if landed and _sessions.account_of(landed) not in (None, account) and not self._kept(_sessions.account_of(landed) or "") \
+                    and _sign_in_cookies(cookies, _sessions.account_of(landed) or ""):
+                hosts.append(landed)
+            for host in hosts:
+                found = self.store.file_for(host)
+                if found is None:
+                    continue
+                name, sites = found
+                self.store.track(name, sites)
+                try:
+                    self.store.save(name, state)
+                except _sessions.SessionError as error:
+                    owner.notes.append(f"The user entered a password on {pending['host']} in the live view, but the session of "
+                                       f"{host} was not saved: {error.message}")
+                    continue
+                added = True
+                self._record("save_session", name[: -len(".json")], pending["url"], state=owner)
+                owner.notes.append(f"The user entered a password on {pending['host']} in the live view and the site then set new "
+                                   f"sign-in cookies, so the session of {next(iter(sites))} was saved to their saved sign-ins "
+                                   f"(/workspace/secrets/browser/{name}) and stays current. The page shows whether the sign-in worked.")
         return added
 
     async def _autosave_in_time(self) -> None:
-        """`_autosave` after an action, leaving the summary its time; a page too busy to read is caught up after the next action."""
-        if not self.store.tracked:
-            return
+        """`_autosave` after an action, leaving the summary its time; a page too busy to read is caught up after the next
+        action. The profile's checkpoint comes first in it and reads no page, so it is written even then."""
         left = _left(AUTOSAVE_SECONDS, SUMMARY_MIN_SECONDS)
         try:
             if left <= 0:
                 raise asyncio.TimeoutError()
             await asyncio.wait_for(self._autosave(), left)
         except asyncio.TimeoutError:
-            self.notes.append("Saved sign-ins were not updated after this step: the page was too busy to read in time. The next step tries again.")
+            if self.store.tracked:
+                self.notes.append("Saved sign-ins were not updated after this step: the page was too busy to read in time. "
+                                  "The next step tries again.")
 
     # Request handling ------------------------------------------------------------------------------------------
 
@@ -1672,7 +1806,7 @@ class Host:
                     try:
                         self.last_used = time.monotonic()
                         if op not in CONTROL_FREE_OPS and op != "close" and not state.reopened:
-                            await self._reopen_tabs_quietly(state)
+                            await self._reopen_tabs_quietly(state, opening=op in OPENING_OPS)
                         if op == "close":
                             await self._begin_browser_close()
                             close_gate = True
@@ -1740,7 +1874,8 @@ class Host:
             _DEADLINE.reset(deadline)
             _SUMMARY.reset(summary)
 
-    async def _act(self, action: str, target: Optional[str], run: Any, *, settle: bool = True, info: bool = True) -> Dict[str, Any]:
+    async def _act(self, action: str, target: Optional[str], run: Any, *, settle: bool = True, info: bool = True,
+                   lifecycle: bool = True) -> Dict[str, Any]:
         """Run one agent action, record its step, keep sessions current and summarize the page."""
         page = await self._page()
         step = self._record(action, target, page.url)
@@ -1749,7 +1884,7 @@ class Host:
         try:
             await run(page)
             if settle:
-                await self._settle(page)
+                await self._settle(page, lifecycle=lifecycle)
         except BaseException:
             self._drop_step(step)
             raise
@@ -2265,17 +2400,31 @@ class Host:
 
         return await self._act("scroll", direction, run, settle=False)
 
+    async def _history(self, page: Any, back: bool) -> None:
+        """Back or forward. A page the back-forward cache restores fires no load events Patchright sees (it waited the whole
+        timeout), so the navigation is awaited until it commits and the document then by its own ready state."""
+        go = page.go_back if back else page.go_forward
+        await go(wait_until="commit", timeout=NAVIGATION_TIMEOUT_MS)
+        end = time.monotonic() + _left(15.0, AFTER_SETTLE_SECONDS)
+        while time.monotonic() < end and not page.is_closed():
+            try:
+                if await page.evaluate("document.readyState") in ("interactive", "complete"):
+                    return
+            except PlaywrightError:
+                pass  # The document is still being replaced.
+            await asyncio.sleep(0.1)
+
     async def op_back(self, args: Dict[str, Any]) -> Dict[str, Any]:
         async def run(page: Any) -> None:
-            await page.go_back(wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            await self._history(page, back=True)
 
-        return await self._act("back", None, run)
+        return await self._act("back", None, run, lifecycle=False)
 
     async def op_forward(self, args: Dict[str, Any]) -> Dict[str, Any]:
         async def run(page: Any) -> None:
-            await page.go_forward(wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+            await self._history(page, back=False)
 
-        return await self._act("forward", None, run)
+        return await self._act("forward", None, run, lifecycle=False)
 
     async def op_reload(self, args: Dict[str, Any]) -> Dict[str, Any]:
         status: Dict[str, Any] = {}
@@ -2550,6 +2699,7 @@ class Host:
         try:
             async with self._session_lock:
                 saved = self.store.save(name, await self._storage_state())
+                self._unapplied.discard(name)
         except _sessions.SessionError as error:
             raise HostError(error.code, error.message) from None
         step = self._record("save_session", name[: -len(".json")], page.url)
@@ -2584,6 +2734,7 @@ class Host:
             self.store.track(name, sites)
             async with self._session_lock:
                 self.store.save(name, await self._storage_state())
+                self._unapplied.discard(name)
             step = self._record("save_session", name[: -len(".json")], page.url)
             await self._finish_step(step, page)
             return name[: -len(".json")]

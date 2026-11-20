@@ -488,6 +488,31 @@ class LiveSignInTests(unittest.TestCase):
             return calls
         self.assertEqual(run(scenario()), [("main", "https://main.example/login")])
 
+    def test_focus_leaving_a_password_field_tells_the_host_the_form_went_out(self) -> None:
+        async def scenario() -> List[str]:
+            host = AgentHost()
+            submitted: List[str] = []
+
+            async def typed(agent: str, page: Any) -> None:
+                return None
+
+            host.user_typed_password = typed  # type: ignore[attr-defined]
+            host.user_submitted_password = submitted.append  # type: ignore[attr-defined]
+            page = host.add("main", None, "https://main.example/login", "Sign in")
+            page.main_frame = FocusedFrame(True)
+            page.frames = [page.main_frame]
+            hub = _livehub.LiveHub(host)
+            live = hub.control_of("main")
+            live.typed_new = True
+            await live.capture_now()
+            self.assertEqual(submitted, [], "typing alone sends nothing")
+            # A pause captured the field already: the click on Sign in (focus moves) is what sends the form.
+            await live.capture_now(focus_moves=True)
+            await live.capture_now(focus_moves=True)
+            await hub.close()
+            return submitted
+        self.assertEqual(run(scenario()), ["main"])
+
     def test_a_host_without_the_hook_is_left_alone(self) -> None:
         async def scenario() -> None:
             host = LegacyHost()

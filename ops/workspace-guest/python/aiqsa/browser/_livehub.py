@@ -210,6 +210,8 @@ class AgentLive:
         #: The user typed or deleted since the last capture.
         self.typed_new = False
         self.capture: Optional[asyncio.TimerHandle] = None
+        #: A password went into a field of this tab and focus has not moved on since (`Host.user_submitted_password`).
+        self.password_typed = False
 
         #: Where what the user typed is hidden once the agent has no tab any more (its slot went meanwhile).
         self.spare_hidden = _format.HiddenValues()
@@ -483,7 +485,14 @@ class AgentLive:
     async def capture_now(self, focus_moves: bool = False) -> None:
         """Hides what the focused field holds (read from the page) and marks that field hidden; the value being typed
         is hidden already. With `focus_moves` (a Tab, an Enter or a click is about to go out, or the user's control
-        ends) that value is kept for good and the next one starts empty."""
+        ends) that value is kept for good and the next one starts empty. Focus moving on after a password was typed is
+        when a sign-in form goes out: the host hears of it (`LiveHub.password_submitted`)."""
+        await self._capture(focus_moves)
+        if focus_moves and self.password_typed:
+            self.password_typed = False
+            await self.hub.password_submitted(self.agent)
+
+    async def _capture(self, focus_moves: bool) -> None:
         if self.capture is not None:
             self.capture.cancel()
             self.capture = None
@@ -505,7 +514,8 @@ class AgentLive:
             value = ""
         if isinstance(value, str) and value:
             self.hidden.add(value)
-            await self.hub.typed_into(self.agent, page, element)
+            if await self.hub.typed_into(self.agent, page, element):
+                self.password_typed = True
         fields = self.masked.setdefault(frame, [])
         fields.append((frame.url, element))
         del fields[:-MASKED_PER_FRAME]
@@ -620,17 +630,29 @@ class LiveHub:
             return await self.host.save_site_session() if agent == MAIN else None
         return await self.host.save_site_session(agent)
 
-    async def typed_into(self, agent: str, page: Any, element: Any) -> None:
-        """The user typed a value into a field of the agent's tab: a password field makes it a sign-in, which the host
-        saves once the site answers it with new cookies (`Host.user_typed_password`), handoff or not."""
+    async def typed_into(self, agent: str, page: Any, element: Any) -> bool:
+        """The user typed a value into a field of the agent's tab; returns whether it was a password field. That makes it
+        a sign-in, which the host saves once the form went out and the site answered with new sign-in cookies
+        (`Host.user_typed_password`), handoff or not."""
         note = getattr(self.host, "user_typed_password", None)
         if note is None:
-            return
+            return False
         try:
-            if await asyncio.wait_for(element.evaluate(PASSWORD_FIELD), 2.0) is True:
-                await asyncio.wait_for(note(agent, page), 3.0)
+            if await asyncio.wait_for(element.evaluate(PASSWORD_FIELD), 2.0) is not True:
+                return False
+            await asyncio.wait_for(note(agent, page), 3.0)
+            return True
         except Exception:  # noqa: BLE001 - the field went away, or the browser is busy: the sign-in stays the user's to save
-            pass
+            return False
+
+    async def password_submitted(self, agent: str) -> None:
+        """Focus left a password field the user typed into: the form is going out (`Host.user_submitted_password`)."""
+        note = getattr(self.host, "user_submitted_password", None)
+        if note is not None:
+            try:
+                note(agent)
+            except Exception:  # noqa: BLE001 - a host without sign-in saving has nothing to mark
+                pass
 
     # Agent side --------------------------------------------------------------------------------------------------
 
