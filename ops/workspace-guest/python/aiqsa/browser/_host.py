@@ -121,10 +121,16 @@ _BACKGROUND: set = set()
 #: them. Past either bound the agent hands the check over or reports it: never a loop.
 CAPTCHA_ATTEMPTS = 3
 CAPTCHA_INPUTS = 50
+#: Time on one site's check per agent and turn, from its first try: a model without direct vision once spent 35 minutes
+#: on one drag puzzle within the bounds above, analyzing its pixels with scripts (integrator, 2026-11-20).
+CAPTCHA_SECONDS = 240
 CAPTCHA_WAIT_SECONDS = 20
-CAPTCHA_EXHAUSTED = ("You have tried the check on {site} {count} times in this turn without passing it. Stop trying: in a web chat "
-                     "call browser_handoff with reason captcha so the user can pass it; where nobody can take over (Telegram, "
-                     "Discord, an unattended run) or in research, say that the site's check stopped you and go on with what you have.")
+_CAPTCHA_NEXT = ("Stop trying: in a web chat call browser_handoff with reason captcha so the user can pass it; where nobody can "
+                 "take over (Telegram, Discord, an unattended run) or in research, say that the site's check stopped you and go "
+                 "on with what you have.")
+CAPTCHA_EXHAUSTED = "You have tried the check on {site} {count} times in this turn without passing it. " + _CAPTCHA_NEXT
+CAPTCHA_TIMED_OUT = ("Time ran out for the check on {site}: you have worked on it for over {minutes} minutes in this turn "
+                     "without passing it. " + _CAPTCHA_NEXT)
 #: False for a request that asked for no page summary (`page: false`, a quiet or chained command): the action is
 #: done and recorded, and the next summary shows its notes.
 _SUMMARY: contextvars.ContextVar[bool] = contextvars.ContextVar("browser_summary", default=True)
@@ -185,6 +191,11 @@ def _boot_id() -> str:
         return Path("/proc/sys/kernel/random/boot_id").read_text("utf-8").strip()[:64]
     except OSError:
         return ""
+
+
+def _clock() -> float:
+    """Seconds on the boot's monotonic clock, which every host process of the boot shares: when a check's tries began."""
+    return time.monotonic()
 
 
 #: Cookie names a sign-in sets: a session, a token, a remembered user.
@@ -2121,22 +2132,24 @@ class Host:
         key = [_boot_id(), state.turn or "", state.agent_id, site]
         try:
             stored = json.loads((_paths.run_dir() / CAPTCHA_TRIES_FILE).read_text("utf-8"))
-            entries = [entry for entry in stored if isinstance(entry, list) and len(entry) == 6 and entry[0] == key[0] and
+            # [boot, turn, agent, site, failed calls, failed inputs, when the first try began (_clock, 0: none yet)]
+            entries = [entry for entry in stored if isinstance(entry, list) and len(entry) == 7 and entry[0] == key[0] and
                        all(isinstance(value, str) for value in entry[:4]) and
                        all(isinstance(value, int) and not isinstance(value, bool) for value in entry[4:])]
         except (OSError, ValueError, TypeError):
             entries = []
         entry = next((entry for entry in entries if entry[:4] == key), None)
         if entry is None:
-            entry = [*key, 0, 0]
+            entry = [*key, 0, 0, 0]
             entries.append(entry)
         # This browser's own count stands where the file was lost or could not be written.
-        known = self._captcha_tries.get(tuple(key), [0, 0])
+        known = self._captcha_tries.get(tuple(key), [0, 0, 0])
         entry[4], entry[5] = max(entry[4], known[0]), max(entry[5], known[1])
+        entry[6] = min(value for value in (entry[6], known[2]) if value) if entry[6] or known[2] else 0
         return key, entries, entry, site
 
     def _store_tries(self, key: List[Any], entries: List[List[Any]], entry: List[Any]) -> None:
-        self._captcha_tries[tuple(key)] = [entry[4], entry[5]]
+        self._captcha_tries[tuple(key)] = [entry[4], entry[5], entry[6]]
         path = _paths.run_dir() / CAPTCHA_TRIES_FILE
         try:
             temporary = path.with_name(f".{CAPTCHA_TRIES_FILE}.{os.getpid()}")
@@ -2153,20 +2166,26 @@ class Host:
         and reopening the browser keeps them, and a later turn of the same agent on a VM that stayed up (a background
         sub-agent holds it) starts afresh. A turn is known by the run's code bearer when the run has one (`_client.py`);
         without one, by this boot. A check that passes clears them (`_captcha_passed`).
+
+        Time is bounded too: from the first try at the check, at most `CAPTCHA_SECONDS`, however few the tries.
         """
         key, entries, entry, site = self._tries(page)
+        now = int(_clock())
+        if entry[6] and now - entry[6] >= CAPTCHA_SECONDS:
+            raise HostError("captcha_attempts_exhausted", CAPTCHA_TIMED_OUT.format(site=site, minutes=CAPTCHA_SECONDS // 60))
         index = 4 if kind == "attempt" else 5
         if entry[index] >= (CAPTCHA_ATTEMPTS if kind == "attempt" else CAPTCHA_INPUTS):
             raise HostError("captcha_attempts_exhausted", CAPTCHA_EXHAUSTED.format(site=site, count=entry[index]))
         entry[index] += 1
+        entry[6] = entry[6] or max(1, now)
         self._store_tries(key, entries, entry)
         return entry[index], site
 
     def _captcha_passed(self, page: Any, url: Optional[str] = None) -> None:
-        """The site's check passed: the tries that led there were not failures, and the next check starts afresh."""
+        """The site's check passed: the tries and the time that led there were not failures; the next check starts afresh."""
         key, entries, entry, _site = self._tries(page, url)
-        if entry[4] or entry[5]:
-            entry[4] = entry[5] = 0
+        if entry[4] or entry[5] or entry[6]:
+            entry[4] = entry[5] = entry[6] = 0
             self._store_tries(key, entries, entry)
 
     async def _captcha_boxes(self, page: Any) -> List[Dict[str, float]]:
