@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import type { InstructionsChangeCard } from "../../../contracts/resourceChanges";
 import { createTelegramChangeGateway, type TelegramChangeRoutes } from "./gateway";
 import type { TelegramChangeOperation } from "./plan";
 
@@ -18,6 +19,7 @@ function routes(answer: () => Response) {
     users.push(userId);
     return {
       assistant: record("assistant"), assistantListing: record("assistantListing"), assistantPublication: record("assistantPublication"),
+      instructionPreset: record("instructionPreset"), instructions: record("instructions"),
       proxy: record("proxy"), scheduledTask: record("scheduledTask"), secrets: record("secrets"), skill: record("skill"),
       skillSaveUndo: record("skillSaveUndo"), subagent: record("subagent"), subagentDefaultUndo: record("subagentDefaultUndo"),
       subagentRestore: record("subagentRestore")
@@ -80,6 +82,35 @@ describe("a change button's request", () => {
     expect(await routes(refused("unauthorized", 401)).gateway.act({ operation: publish, userId: "u" })).toEqual({ kind: "failed" });
     const task: TelegramChangeOperation = { kind: "scheduled_task_delete", taskId: "t-1" };
     expect(await routes(refused("scheduled_task_not_found", 404)).gateway.act({ operation: task, userId: "u" })).toEqual({ kind: "missing" });
+  });
+
+  it("undoes an instructions change as the web card does: an update reads the preset, then writes the earlier text under the revision", async () => {
+    const card: InstructionsChangeCard = { version: 1, resource: "instructions", action: "updated", presetId: "p-1", revision: 2, name: "Work",
+      previousText: "Be brief.", diff: null };
+    const preset = { answerRules: null, id: "p-1", name: "Work", responseReminder: "Reply in English.", revision: 2, systemInstructions: "Use tables.",
+      updatedAt: "2026-11-20T09:00:00.000Z" };
+    const answers = [() => Response.json({ preset }), () => Response.json({ instructions: {} })];
+    const fake = routes(() => answers.shift()!());
+    expect(await fake.gateway.act({ operation: { card, kind: "instructions_undo" }, userId: "u" })).toEqual({ kind: "done" });
+    expect(fake.calls).toEqual([
+      { body: null, method: "GET", params: ["p-1"], path: "/api/me/instructions/p-1", route: "instructionPreset" },
+      { body: { action: "update", id: "p-1", revision: 2, value: { answerRules: null, name: "Work", responseReminder: "Reply in English.",
+        systemInstructions: "Be brief." } }, method: "POST", params: [], path: "/api/me/instructions", route: "instructions" }
+    ]);
+    // Changed since: nothing is sent.
+    const moved = routes(() => Response.json({ preset: { ...preset, revision: 3 } }));
+    expect(await moved.gateway.act({ operation: { card, kind: "instructions_undo" }, userId: "u" })).toEqual({ kind: "changed" });
+    expect(moved.calls).toHaveLength(1);
+    expect(await routes(refused("instruction_preset_not_found", 404)).gateway.act({ operation: { card, kind: "instructions_undo" }, userId: "u" }))
+      .toEqual({ kind: "missing" });
+    // A creation's Undo deletes its preset under the revision; the route's conflict reads as changed.
+    const created: InstructionsChangeCard = { ...card, action: "created", previousText: null, revision: 1 };
+    const deletion = routes(ok);
+    expect(await deletion.gateway.act({ operation: { card: created, kind: "instructions_undo" }, userId: "u" })).toEqual({ kind: "done" });
+    expect(deletion.calls).toEqual([{ body: { action: "delete", id: "p-1", revision: 1 }, method: "POST", params: [], path: "/api/me/instructions",
+      route: "instructions" }]);
+    expect(await routes(refused("instruction_preset_conflict", 409)).gateway.act({ operation: { card: created, kind: "instructions_undo" }, userId: "u" }))
+      .toEqual({ kind: "changed" });
   });
 
   it("reads a Skill save's Undo and a default sub-agent's Undo from their answers", async () => {

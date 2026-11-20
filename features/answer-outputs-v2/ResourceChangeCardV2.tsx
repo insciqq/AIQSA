@@ -12,11 +12,14 @@ import {
   type AssistantApiResult
 } from "@/components/assistants/assistantsApi";
 import {
+  INSTRUCTIONS_LIBRARY_PATH,
   SECRETS_LIBRARY_PATH,
   assistantLibraryPath,
+  instructionsUndoMutation,
   resourceChangeCardKey,
   type AssistantChangeCard,
   type AssistantChangeField,
+  type InstructionsChangeCard,
   type ProxyChangeCard,
   type ResourceChangeCard,
   type ResourceChangeDiff,
@@ -35,6 +38,7 @@ import {
   restoreSubagentRevision,
   undoSubagentDefaultChange
 } from "@/features/library-v2/subagents/subagentsApi";
+import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "@/features/settings-v2/instructionPresetsApi";
 import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import type { WorkspaceSecretKind } from "@/lib/contracts/workspaceSecrets";
@@ -659,6 +663,67 @@ function ProxyCardV2({ card, live }: Readonly<{ card: ProxyChangeCard; live: boo
   );
 }
 
+/** Whether the preset still has the revision a card names, through its Settings route. */
+async function readInstructionsRemote(presetId: string, revision: number, signal: AbortSignal): Promise<Remote> {
+  try {
+    return (await requestInstructionPreset(presetId, signal)).revision === revision ? "current" : "changed";
+  } catch (failure) {
+    if (failure instanceof InstructionPresetApiError && failure.code === "instruction_preset_not_found") return "missing";
+    throw failure;
+  }
+}
+
+/**
+ * The user's personal Instructions the agent changed: the preset's name, when it applies and the text's diff. Undo
+ * writes the earlier text back, or deletes a preset the change created, guarded by the revision the change left
+ * (`instructionsUndoMutation`).
+ */
+function InstructionsCardV2({ card, live }: Readonly<{ card: InstructionsChangeCard; live: boolean }>) {
+  const state = useCardState(card);
+  const { outcome, remote } = state;
+  const created = card.action === "created";
+  const read = useCallback((signal: AbortSignal) => readInstructionsRemote(card.presetId, card.revision, signal), [card.presetId, card.revision]);
+  useRemoteRead(!live && !outcome ? read : null, state.setRemote);
+
+  function undo() {
+    void state.run(async () => {
+      try {
+        const mutation = instructionsUndoMutation(card, created ? null : await requestInstructionPreset(card.presetId));
+        if (!mutation) {
+          state.setRemote("changed");
+          return;
+        }
+        await requestInstructionPresets(mutation);
+        state.finish(created ? { heading: "Instructions removed", message: "Undone: the preset is deleted." }
+          : { heading: "Change undone", message: "Your instructions are back to the previous text from your next message." });
+      } catch (failure) {
+        // The route refuses a revision that is no longer current, or a preset that is gone.
+        const code = failure instanceof InstructionPresetApiError ? failure.code : null;
+        if (code === "instruction_preset_not_found") state.setRemote("missing");
+        else if (code === "instruction_preset_conflict") state.setRemote("changed");
+        else state.setError("Undo failed. Try again.");
+      }
+    });
+  }
+
+  const settled = remote === "missing" || remote === "changed";
+  return (
+    <CardV2 error={state.error} heading={outcome?.heading ?? (created ? "Instructions saved" : "Instructions updated")} headingRef={state.headingRef}
+      icon="file-text" meta={created ? "now active" : "from your next message"}
+      detail={created ? "No preset was active, so this one now is. Your personal chats follow it from your next message." : null}
+      name={card.name} resource="instructions" state={outcome ? "done" : remote}
+      status={outcome?.message ?? (remote === "missing" ? "This preset no longer exists."
+        : remote === "changed" ? "Undo is not available: your instructions changed after this, and that change is kept." : null)}
+      actions={<>
+        {outcome || settled ? null
+          : <UndoButtonV2 busy={state.busy} label={created ? `Undo saving ${card.name}` : `Undo changes to ${card.name}`} onClick={undo} />}
+        {remote === "missing" || (created && outcome) ? null : <CardLinkV2 href={INSTRUCTIONS_LIBRARY_PATH} icon="file-text" label="Open Instructions" />}
+      </>}>
+      {card.diff ? <DiffV2 diff={card.diff} label={`Changes in the instructions of ${card.name}`} /> : null}
+    </CardV2>
+  );
+}
+
 function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCard; live: boolean }>) {
   switch (card.resource) {
     case "secret": return <SecretCardV2 card={card} live={live} />;
@@ -666,6 +731,7 @@ function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCar
     case "assistant": return <AssistantCardV2 card={card} live={live} />;
     case "subagent": return <SubagentCardV2 card={card} live={live} />;
     case "proxy": return <ProxyCardV2 card={card} live={live} />;
+    case "instructions": return <InstructionsCardV2 card={card} live={live} />;
   }
 }
 

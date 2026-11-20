@@ -24,6 +24,7 @@ import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { HarnessToolDescriptor } from "../tools/harnessTool";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../tools/manageAssistant";
+import { MANAGE_INSTRUCTIONS_TOOL_NAME } from "../tools/manageInstructions";
 import { MANAGE_PROXY_TOOL_NAME } from "../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME } from "../tools/manageSecret";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
@@ -349,7 +350,7 @@ export const SUBAGENT_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([
 /**
  * Tools a sub-agent is never offered from the run's registry, whatever its type
  * allows (operator decision 2026-10-29): agent-initiated changes of the user's
- * resources (secrets, Skills, Assistants, artifacts, scheduled tasks), the run's
+ * resources (secrets, proxies, Instructions, Skills, Assistants, artifacts, scheduled tasks), the run's
  * reserved report and exports, and the main agent's sub-agent tools; its own
  * children come only through `SUBAGENT_CHILD_TOOLS`, which its runner adds.
  * `load_skill`, `read_secret`, Workspace (`apply_patch` included),
@@ -359,7 +360,8 @@ export const SUBAGENT_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([
  */
 export const SUBAGENT_EXCLUDED_TOOL_NAMES: readonly string[] = Object.freeze([
   ...SUBAGENT_TOOLS.map((tool) => tool.name),
-  MANAGE_PROXY_TOOL_NAME, MANAGE_SECRET_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, SAVE_SKILL_TOOL_NAME, MANAGE_ASSISTANT_TOOL_NAME, ARTIFACT_TOOL_NAME,
+  MANAGE_PROXY_TOOL_NAME, MANAGE_INSTRUCTIONS_TOOL_NAME, MANAGE_SECRET_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, SAVE_SKILL_TOOL_NAME,
+  MANAGE_ASSISTANT_TOOL_NAME, ARTIFACT_TOOL_NAME,
   CREATE_SCHEDULED_TASK_TOOL_NAME, MANAGE_SCHEDULED_TASK_TOOL_NAME, MONITORING_VERDICT_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME,
   // A file attached from the user's computer goes on the answer, and only the main agent's run is shown there.
   COMPUTER_ATTACH_FILE_TOOL_NAME

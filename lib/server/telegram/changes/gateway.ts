@@ -1,3 +1,5 @@
+import { decodeInstructionPreset, type InstructionPreset } from "../../../contracts/instructionPresets";
+import { instructionsUndoMutation } from "../../../contracts/resourceChanges";
 import { decodeSkillSaveUndoState } from "../../../contracts/skillSaves";
 import { decodeSubagentDefaultUndoResponse } from "../../../contracts/subagentDefinitions";
 import type { TelegramChangeOperation, TelegramChangeOutcome } from "./plan";
@@ -36,6 +38,10 @@ export type TelegramChangeRoutes = Readonly<{
   subagentDefaultUndo(request: Request): Promise<Response>;
   /** `DELETE /api/me/scheduled-tasks/[taskId]` */
   scheduledTask(request: Request, taskId: string): Promise<Response>;
+  /** `POST /api/me/instructions` */
+  instructions(request: Request): Promise<Response>;
+  /** `GET /api/me/instructions/[presetId]` */
+  instructionPreset(request: Request, presetId: string): Promise<Response>;
 }>;
 
 export type TelegramChangeGateway = Readonly<{
@@ -43,7 +49,7 @@ export type TelegramChangeGateway = Readonly<{
   act(input: Readonly<{ operation: TelegramChangeOperation; userId: string }>): Promise<TelegramChangeOutcome>;
 }>;
 
-function request(path: string, method: "DELETE" | "PATCH" | "POST", body?: unknown): Request {
+function request(path: string, method: "DELETE" | "GET" | "PATCH" | "POST", body?: unknown): Request {
   return new Request(`http://localhost${path}`, body === undefined ? { method } : {
     body: JSON.stringify(body), headers: { "content-type": "application/json" }, method
   });
@@ -87,6 +93,7 @@ async function assistantSettled(response: Response): Promise<TelegramChangeOutco
 }
 
 const SUBAGENT = { changed: "subagent_definition_conflict", missing: "subagent_not_found" } as const;
+const INSTRUCTIONS = { changed: "instruction_preset_conflict", missing: "instruction_preset_not_found" } as const;
 
 export function createTelegramChangeGateway(routes: (userId: string) => TelegramChangeRoutes): TelegramChangeGateway {
   return Object.freeze({
@@ -138,6 +145,20 @@ export function createTelegramChangeGateway(routes: (userId: string) => Telegram
         case "scheduled_task_delete":
           return settled(await route.scheduledTask(request(`/api/me/scheduled-tasks/${segment(operation.taskId)}`, "DELETE"), operation.taskId),
             { missing: "scheduled_task_not_found" });
+        case "instructions_undo": {
+          // An update's Undo writes the earlier text over the preset as its route reads it now; the revision guards both steps.
+          const card = operation.card;
+          let current: InstructionPreset | null = null;
+          if (card.action === "updated") {
+            const read = await route.instructionPreset(request(`/api/me/instructions/${segment(card.presetId)}`, "GET"), card.presetId);
+            if (!read.ok) return settled(read, INSTRUCTIONS);
+            current = decodeInstructionPreset((await json(read))?.preset);
+            if (!current) return { kind: "failed" };
+          }
+          const mutation = instructionsUndoMutation(card, current);
+          if (!mutation) return { kind: "changed" };
+          return settled(await route.instructions(request("/api/me/instructions", "POST", mutation)), INSTRUCTIONS);
+        }
       }
     }
   } satisfies TelegramChangeGateway);

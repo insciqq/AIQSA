@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import type { ThreadArtifactSummary } from "../../../contracts/chats";
 import {
-  decodeResourceChangeCard, resourceChangeCardKey, type AssistantChangeCard, type AssistantChangeField, type ProxyChangeCard,
-  type ResourceChangeCard, type SecretChangeCard, type SkillDeleteProposalCard, type SubagentChangeCard, type SubagentChangeField,
-  type SubagentDefaultChange
+  decodeResourceChangeCard, resourceChangeCardKey, type AssistantChangeCard, type AssistantChangeField, type InstructionsChangeCard,
+  type ProxyChangeCard, type ResourceChangeCard, type SecretChangeCard, type SkillDeleteProposalCard, type SubagentChangeCard,
+  type SubagentChangeField, type SubagentDefaultChange
 } from "../../../contracts/resourceChanges";
 import { decodeScheduledTaskCard, type ScheduledTaskCard } from "../../../contracts/scheduledTasks";
 import { decodeSkillSaveCard, type SkillSaveCard } from "../../../contracts/skillSaves";
@@ -43,7 +43,9 @@ export type TelegramChangeOperation =
   | Readonly<{ kind: "subagent_delete"; definitionId: string; expectedVersion: number }>
   | Readonly<{ kind: "subagent_restore"; definitionId: string; expectedVersion: number; revisionId: string }>
   | Readonly<{ kind: "subagent_default_undo"; request: SubagentDefaultUndoRequest }>
-  | Readonly<{ kind: "scheduled_task_delete"; taskId: string }>;
+  | Readonly<{ kind: "scheduled_task_delete"; taskId: string }>
+  /** Reads the preset an update changed, then sends `instructionsUndoMutation`, as the web card does. */
+  | Readonly<{ kind: "instructions_undo"; card: InstructionsChangeCard }>;
 
 /** What the route answered, in the terms the card words. */
 export type TelegramChangeOutcome =
@@ -338,6 +340,32 @@ function proxyPlan(card: ProxyChangeCard): TelegramChangePlan {
       failure: "The proxy could not be deleted. Try again.", keepLabel: "Keep proxy", kept: "Proxy kept", operation: remove } };
 }
 
+/** Changed lines Telegram shows of an instructions diff; the web card's "Show changes" holds the rest. */
+const INSTRUCTIONS_DIFF_LINES = 12;
+const INSTRUCTIONS_CREATED_DETAIL = "No preset was active, so this one now is. Your personal chats follow it from your next message.";
+
+/** "+ added" and "− removed" lines of a diff, bounded, with a mark when there are more. */
+function instructionsDiffDetails(card: InstructionsChangeCard): string[] {
+  const changed = (card.diff?.lines ?? []).filter((line) => line.kind === "add" || line.kind === "del");
+  const shown = changed.slice(0, INSTRUCTIONS_DIFF_LINES).map((line) => `${line.kind === "add" ? "+" : "−"} ${line.text}`);
+  return changed.length > INSTRUCTIONS_DIFF_LINES || card.diff?.truncated ? [...shown, "⋯ more changes"] : shown;
+}
+
+function instructionsPlan(card: InstructionsChangeCard): TelegramChangePlan {
+  const created = card.action === "created";
+  return {
+    noun: "instructions", Noun: "Instructions", proposal: null, review: "Settings › Instructions",
+    undoMissing: "Undo is not available: this preset no longer exists.",
+    view: view(created ? "Instructions saved" : "Instructions updated", card.name, created ? "now active" : "from your next message",
+      [created ? INSTRUCTIONS_CREATED_DETAIL : null, ...instructionsDiffDetails(card)]),
+    undo: {
+      done: doneWith(created ? { heading: "Instructions removed", status: "Undone: the preset is deleted." }
+        : { heading: "Change undone", status: "Your instructions are back to the previous text from your next message." }),
+      failure: "Undo failed. Try again.", operation: { card, kind: "instructions_undo" }
+    }
+  };
+}
+
 function taskPlan(card: ScheduledTaskCard): TelegramChangePlan {
   return {
     missingIsDone: true, noun: "automation", Noun: "Automation", review: null, undo: null,
@@ -358,6 +386,7 @@ export function telegramChangePlan(change: TelegramChange): TelegramChangePlan {
     case "assistant": return assistantPlan(change.card);
     case "subagent": return subagentPlan(change.card);
     case "proxy": return proxyPlan(change.card);
+    case "instructions": return instructionsPlan(change.card);
   }
 }
 

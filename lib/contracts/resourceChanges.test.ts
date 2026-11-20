@@ -7,12 +7,15 @@ import {
   clipResourceChangeText,
   decodeResourceChangeCard,
   foldResourceChangeCards,
+  instructionsUndoMutation,
   resourceChangeCardKey,
   type AssistantChangeCard,
+  type InstructionsChangeCard,
   type ProxyChangeCard,
   type SecretChangeCard,
   type SkillDeleteProposalCard
 } from "./resourceChanges";
+import { SYSTEM_INSTRUCTIONS_MAX_LENGTH } from "./instructionPresets";
 
 const secret: SecretChangeCard = { action: "created", envNames: ["GITLAB_TOKEN"], kind: "env", name: "GitLab", previousName: null, proposalId: null,
   resource: "secret", secretId: "10000000-0000-4000-8000-000000000001", valueReplaced: false, version: 1,
@@ -28,7 +31,35 @@ const publishProposal: AssistantChangeCard = { ...assistant, action: "publish_pr
 const proxy: ProxyChangeCard = { action: "created", country: "KZ", domainHints: [".kz", "ozon.ru"], name: "Almaty", passwordChanged: false, previousName: null, proposalId: null,
   protocol: "socks5", proxyId: "10000000-0000-4000-8000-000000000002", proxyVersion: 1, resource: "proxy", version: 1 };
 
+const instructions: InstructionsChangeCard = { action: "updated", diff: { lines: [{ kind: "add", text: "Use tables." }], truncated: false }, name: "Work",
+  presetId: "10000000-0000-4000-8000-000000000003", previousText: "", resource: "instructions", revision: 2, version: 1 };
+
 describe("resource change cards", () => {
+  it("decode an instructions card with the text Undo restores, and refuse anything beside its fields", () => {
+    const created: InstructionsChangeCard = { ...instructions, action: "created", previousText: null, revision: 1 };
+    const long: InstructionsChangeCard = { ...instructions, diff: null, previousText: "a".repeat(SYSTEM_INSTRUCTIONS_MAX_LENGTH) };
+    for (const card of [instructions, created, long]) expect(decodeResourceChangeCard(JSON.parse(JSON.stringify(card)))).toEqual(card);
+    for (const card of [{ ...instructions, previousText: null }, { ...created, previousText: "Old." }, { ...instructions, revision: 0 },
+      { ...instructions, previousText: "a".repeat(SYSTEM_INSTRUCTIONS_MAX_LENGTH + 1) }, { ...instructions, previousText: "a\0" },
+      { ...instructions, name: "" }, { ...instructions, name: "a".repeat(RESOURCE_CHANGE_TEXT_LIMITS.instructionsName + 1) },
+      { ...instructions, action: "delete_proposed" }, { ...instructions, diff: { lines: [{ kind: "add" }], truncated: false } },
+      { ...instructions, responseReminder: "x" }, { ...instructions, presetId: "a b" }]) {
+      expect(decodeResourceChangeCard(card)).toBeNull();
+    }
+    expect(new Set([instructions, created, { ...instructions, revision: 3 }].map(resourceChangeCardKey)).size).toBe(3);
+  });
+
+  it("undo an instructions change with the Settings request guarded by the revision it left", () => {
+    const current = { answerRules: null, id: instructions.presetId, name: "Work", responseReminder: "Reply in English.", revision: 2,
+      systemInstructions: "Use tables.", updatedAt: "2026-11-20T09:00:00.000Z" };
+    expect(instructionsUndoMutation(instructions, current)).toEqual({ action: "update", id: instructions.presetId, revision: 2,
+      value: { answerRules: null, name: "Work", responseReminder: "Reply in English.", systemInstructions: "" } });
+    expect(instructionsUndoMutation(instructions, { ...current, revision: 3 })).toBeNull();
+    expect(instructionsUndoMutation(instructions, null)).toBeNull();
+    expect(instructionsUndoMutation({ ...instructions, action: "created", previousText: null, revision: 1 }, null))
+      .toEqual({ action: "delete", id: instructions.presetId, revision: 1 });
+  });
+
   it("decode a proxy's card and refuse anything beside its fields", () => {
     const updated: ProxyChangeCard = { ...proxy, action: "updated", passwordChanged: true, previousName: "Old", proxyVersion: 2 };
     const proposal: ProxyChangeCard = { ...proxy, action: "delete_proposed", proposalId: "proposal_9" };

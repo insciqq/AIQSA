@@ -2,8 +2,9 @@
 import { describe, expect, it } from "vitest";
 import type { ThreadArtifactSummary } from "../../../contracts/chats";
 import type {
-  AssistantChangeCard, ProxyChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard, SubagentChangeCard
+  AssistantChangeCard, InstructionsChangeCard, ProxyChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard, SubagentChangeCard
 } from "../../../contracts/resourceChanges";
+import { telegramChangeKeyboard, telegramChangeMessage } from "./index";
 import type { ScheduledTaskCard } from "../../../contracts/scheduledTasks";
 import type { SkillSaveCard } from "../../../contracts/skillSaves";
 import {
@@ -127,6 +128,38 @@ describe("what each change offers, as the web card does", () => {
       .toBe("Undo is not available: the default sub-agent changed after this, and that change is kept.");
     expect(telegramChangeResult(createdDefault, "undo", { kind: "default_undone", outcome: "restored" }).view)
       .toMatchObject({ heading: "Sub-agent removed", status: "Undone: the sub-agent is deleted. “helper” is the default again." });
+  });
+
+  it("an instructions change renders as a message with its changed lines and Undo, which restores the text through the Settings route", () => {
+    const card: InstructionsChangeCard = { version: 1, resource: "instructions", action: "updated", presetId: "preset-1", revision: 2, name: "Work",
+      previousText: "Be brief.", diff: { lines: [{ kind: "context", text: "Be brief." }, { kind: "add", text: "Use this table: | Item | Price |" }],
+        truncated: false } };
+    const plan = telegramChangePlan(resource(card));
+    expect(plan.view).toEqual({ details: ["+ Use this table: | Item | Price |"], heading: "Instructions updated", meta: "from your next message",
+      name: "Work", status: null });
+    expect(plan.undo?.operation).toEqual({ card, kind: "instructions_undo" });
+    expect(plan.proposal).toBeNull();
+    expect(telegramChangeMessage(plan.view)).toEqual({ blocks: [
+      { type: "paragraph", text: { type: "bold", text: "Instructions updated" } },
+      { type: "paragraph", text: "“Work” · from your next message" },
+      { type: "paragraph", text: "+ Use this table: | Item | Price |" }
+    ] });
+    const keyboard = telegramChangeKeyboard(plan, { change: "c".repeat(43), chatId: "chat-1", runId: "run-1" }, "group-1");
+    expect(keyboard).toEqual([[expect.objectContaining({ callback: expect.objectContaining({ kind: "change_undo" }), text: "Undo" })]]);
+    expect(telegramChangeResult(plan, "undo", { kind: "done" }).view).toMatchObject({ details: [], heading: "Change undone",
+      status: "Your instructions are back to the previous text from your next message." });
+    // A stale Undo says so and keeps the newer text.
+    expect(telegramChangeResult(plan, "undo", { kind: "changed" })).toMatchObject({ retry: false, view: { heading: "Instructions updated",
+      status: "Undo is not available: the instructions changed after this, and that change is kept." } });
+    expect(telegramChangeResult(plan, "undo", { kind: "missing" }).view.status).toBe("Undo is not available: this preset no longer exists.");
+
+    const created = telegramChangePlan(resource({ ...card, action: "created", previousText: null, revision: 1,
+      diff: { lines: Array.from({ length: 14 }, (_, index) => ({ kind: "add" as const, text: `Line ${index}` })), truncated: false } }));
+    expect(created.view).toMatchObject({ heading: "Instructions saved", meta: "now active" });
+    expect(created.view.details).toEqual(["No preset was active, so this one now is. Your personal chats follow it from your next message.",
+      ...Array.from({ length: 12 }, (_, index) => `+ Line ${index}`), "⋯ more changes"]);
+    expect(telegramChangeResult(created, "undo", { kind: "done" }).view).toMatchObject({ heading: "Instructions removed",
+      status: "Undone: the preset is deleted." });
   });
 
   it("a proxy shows no address, offers Undo on creation and asks before deleting; an automation deletion asks", () => {

@@ -4,6 +4,8 @@ import { defaultAssistantListingService, defaultListedAssistantService } from ".
 import { createDeleteAssistantHandler } from "../../assistants/deletionHandlers";
 import { createPublishAssistantHandler, createUpdateAssistantHandler } from "../../assistants/handlers";
 import { createAssistantListingHandlers } from "../../assistants/listingHandlers";
+import { createInstructionPresetHandlers } from "../../instructions/handlers";
+import { createInstructionPresetStore } from "../../instructions/store";
 import { prisma } from "../../prisma";
 import { createProxyHandlers } from "../../proxies/handlers";
 import { createProxyStore } from "../../proxies/store";
@@ -30,10 +32,12 @@ import { createTelegramChangeGateway, type TelegramChangeGateway, type TelegramC
 export function createDefaultTelegramChangeGateway(deps: Readonly<{ access: Pick<TelegramAccessResolver, "resolveTelegramAccess"> }>): TelegramChangeGateway {
   const secretStore = createWorkspaceSecretStore(prisma);
   const proxyStore = createProxyStore(prisma);
+  const instructionStore = createInstructionPresetStore(prisma);
   const skillSaves = () => createSkillSaveUndoService(prisma);
   return createTelegramChangeGateway((userId): TelegramChangeRoutes => {
     const resolveAuth = telegramRequestAuth(deps.access, userId);
     const subagents = createSubagentDefinitionHandlers({ resolveAuth, service: defaultSubagentDefinitionService });
+    const instructions = createInstructionPresetHandlers({ resolveAuth, store: instructionStore });
     return {
       secrets: (request) => createWorkspaceSecretHandlers({ resolveAuth, store: secretStore }).POST(request),
       proxy: (request, proxyId) => createProxyHandlers({ resolveAuth, store: proxyStore })(request, "delete", "personal", proxyId),
@@ -51,7 +55,9 @@ export function createDefaultTelegramChangeGateway(deps: Readonly<{ access: Pick
       subagent: (request, definitionId) => subagents.detailDELETE(request, { params: { definitionId } }),
       subagentRestore: (request, definitionId) => subagents.restorePOST(request, { params: { definitionId } }),
       subagentDefaultUndo: (request) => subagents.defaultUndoPOST(request),
-      scheduledTask: (request, taskId) => createScheduledTaskHandlers({ ...defaultScheduledTaskHandlerDeps, resolveAuth }).remove(request, taskId)
+      scheduledTask: (request, taskId) => createScheduledTaskHandlers({ ...defaultScheduledTaskHandlerDeps, resolveAuth }).remove(request, taskId),
+      instructions: (request) => instructions.POST(request),
+      instructionPreset: (request, presetId) => instructions.detail(request, presetId)
     };
   });
 }

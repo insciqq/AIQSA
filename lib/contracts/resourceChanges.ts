@@ -1,11 +1,14 @@
+import {
+  INSTRUCTION_PRESET_NAME_MAX_LENGTH, SYSTEM_INSTRUCTIONS_MAX_LENGTH, type InstructionPreset, type InstructionPresetMutation
+} from "./instructionPresets";
 import { PROXY_LIMITS, isProxyCountry, isProxyProtocol, type ProxyProtocol } from "./proxies";
 import { WORKSPACE_SECRET_KINDS, isWorkspaceEnvName, isWorkspaceSecretId, type WorkspaceSecretKind } from "./workspaceSecrets";
 
 /**
  * Client-safe contract of the answer cards for changes the agent made, or
- * proposed, to the user's own secrets, Skills, Assistants, custom sub-agents
- * and proxies (`manage_secret`, `manage_skill`, `manage_assistant`,
- * `create_subagent`, `edit_subagent`, `delete_subagent`, `manage_proxy`). A Skill save keeps
+ * proposed, to the user's own secrets, Skills, Assistants, custom sub-agents,
+ * proxies and personal Instructions (`manage_secret`, `manage_skill`, `manage_assistant`,
+ * `create_subagent`, `edit_subagent`, `delete_subagent`, `manage_proxy`, `manage_instructions`). A Skill save keeps
  * its own card (`skillSaves.ts`). A change already happened when its card
  * shows. A proposal (`delete_proposed`, `publish_proposed`) changed nothing:
  * only the user's click in the card performs it, through the same owner
@@ -23,9 +26,11 @@ export const RESOURCE_CHANGE_TASKS_LIMIT = 5;
 export const RESOURCE_CHANGE_NAMES_LIMIT = 16;
 /** UTF-16 lengths the decoder accepts; producers clip with `clipResourceChangeText`. */
 export const RESOURCE_CHANGE_TEXT_LIMITS = Object.freeze({
-  assistantName: 80, groupName: 200, proxyName: PROXY_LIMITS.nameMaxLength, secretName: 120, skillName: 256, subagentName: 48, summary: 300, taskTitle: 120
+  assistantName: 80, groupName: 200, instructionsName: INSTRUCTION_PRESET_NAME_MAX_LENGTH, proxyName: PROXY_LIMITS.nameMaxLength, secretName: 120,
+  skillName: 256, subagentName: 48, summary: 300, taskTitle: 120
 });
 export const SECRETS_LIBRARY_PATH = "/?library=secrets";
+export const INSTRUCTIONS_LIBRARY_PATH = "/?library=instructions";
 export const ASSISTANTS_LIBRARY_PATH = "/?library=assistants";
 
 export function assistantLibraryPath(assistantId: string): string {
@@ -186,7 +191,32 @@ export type ProxyChangeCard = Readonly<{
   proposalId: string | null;
 }>;
 
-export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard | ProxyChangeCard;
+/**
+ * The user's personal Instructions the agent changed (`manage_instructions`): the main text of the active preset, which
+ * personal and temporary chats follow from the next message. `created`: no preset was active, so the change saved a new
+ * one and made it active, as the user would in Settings; its Undo deletes that preset, which returns those chats to the
+ * AIQSA default instructions. `updated`: the active preset's text changed; its Undo writes `previousText` back. Both are
+ * guarded by `revision`, the one the change left, so Undo refuses once anything changed the preset since. Presets keep
+ * no earlier versions, so the card itself carries the text Undo restores; it travels only with its owner's answer
+ * (shares and exports leave cards out).
+ */
+export type InstructionsChangeCard = Readonly<{
+  version: 1;
+  resource: "instructions";
+  action: "created" | "updated";
+  presetId: string;
+  /** The preset's revision the change left. */
+  revision: number;
+  /** The preset's name. */
+  name: string;
+  /** Before → after as a bounded line diff; null when the texts are too large or too different to diff cheaply. */
+  diff: ResourceChangeDiff | null;
+  /** `updated` only: the whole text before the change, which Undo writes back. */
+  previousText: string | null;
+}>;
+
+export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard | ProxyChangeCard |
+  InstructionsChangeCard;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -349,6 +379,20 @@ function decodeProxyCard(value: Record<string, unknown>): ProxyChangeCard | null
     proposalId: value.proposalId };
 }
 
+function decodeInstructionsCard(value: Record<string, unknown>): InstructionsChangeCard | null {
+  if (!exact(value, ["version", "resource", "action", "presetId", "revision", "name", "diff", "previousText"]) ||
+    (value.action !== "created" && value.action !== "updated") || !id(value.presetId) || !positive(value.revision) ||
+    !text(value.name, limits.instructionsName)) return null;
+  const diff = value.diff === null ? null : decodeResourceChangeDiff(value.diff);
+  // The earlier text may be empty; only an update has one.
+  const previous = value.previousText;
+  if ((value.diff !== null && !diff) || (value.action === "updated"
+    ? typeof previous !== "string" || previous.length > SYSTEM_INSTRUCTIONS_MAX_LENGTH || previous.includes("\0")
+    : previous !== null)) return null;
+  return { version: 1, resource: "instructions", action: value.action, presetId: value.presetId, revision: value.revision, name: value.name, diff,
+    previousText: previous as string | null };
+}
+
 export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | null {
   if (!record(value) || value.version !== 1) return null;
   if (value.resource === "secret") return decodeSecretCard(value);
@@ -356,6 +400,7 @@ export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | n
   if (value.resource === "assistant") return decodeAssistantCard(value);
   if (value.resource === "subagent") return decodeSubagentCard(value);
   if (value.resource === "proxy") return decodeProxyCard(value);
+  if (value.resource === "instructions") return decodeInstructionsCard(value);
   return null;
 }
 
@@ -373,7 +418,23 @@ export function resourceChangeCardKey(card: ResourceChangeCard): string {
     case "subagent": return card.proposalId ? `subagent:${card.definitionId}:proposal:${card.proposalId}`
       : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}${card.defaultChange ? `:default:${card.defaultChange.changeId}` : ""}`;
     case "proxy": return card.proposalId ? `proxy:${card.proxyId}:proposal:${card.proposalId}` : `proxy:${card.proxyId}:${card.action}:${card.proxyVersion}`;
+    case "instructions": return `instructions:${card.presetId}:${card.action}:${card.revision}`;
   }
+}
+
+/**
+ * The Settings request an instructions card's Undo sends (`POST /api/me/instructions`), on the web and in Telegram
+ * alike. A creation deletes its preset. An update writes the earlier text back over the preset as its Settings route
+ * reads it now (`current`), keeping its name, reminder and answer rules. Both are guarded by the revision the change
+ * left; null when the preset has changed since, so Undo sends nothing.
+ */
+export function instructionsUndoMutation(card: InstructionsChangeCard, current: InstructionPreset | null): InstructionPresetMutation | null {
+  if (card.action === "created") return { action: "delete", id: card.presetId, revision: card.revision };
+  if (!current || current.id !== card.presetId || current.revision !== card.revision || card.previousText === null) return null;
+  return { action: "update", id: card.presetId, revision: card.revision, value: {
+    name: current.name, responseReminder: current.responseReminder, systemInstructions: card.previousText,
+    ...("answerRules" in current ? { answerRules: current.answerRules ?? null } : {})
+  } };
 }
 
 /** An answer's cards from its artifact payloads: decoded, in order, each once, bounded. */

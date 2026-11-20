@@ -1,8 +1,11 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { prisma } from "../prisma";
 import { Prisma } from "@prisma/client";
+import type { SelfServiceCallStore } from "../tools/selfServiceCall";
+import type { ToolExecutionResult } from "../tools/types";
+import { createAgentInstructionsService } from "./agentInstructions";
 import { createInstructionPresetStore, assertInstructionPresetSelection } from "./store";
 import { admitPreparingRunWithClient } from "../runs/prismaRepositoryPreparation";
 import type { PreparingRunAdmissionInput } from "../runs/runRepositoryContract";
@@ -120,5 +123,49 @@ describe("persisted owner instructions", () => {
     await ready;
     await store.mutate(userId, { action: "update", id: row.id, revision: 1, value: { ...draft, responseReminder: "new reminder" } });
     release(); expect(await outcome).toBe("rejected");
+  });
+});
+
+describe("the agent's instructions changes on PostgreSQL", () => {
+  const calls = (settle: SelfServiceCallStore["settle"] = async () => undefined): SelfServiceCallStore => ({ claim: async () => ({ kind: "open" }), settle });
+  const agent = (userId: string, callStore = calls()) =>
+    createAgentInstructionsService({ db: prisma, scope: { callId: "call", chatId: "chat", runId: "run", userId }, store: callStore });
+  const result = (): ToolExecutionResult => ({ callId: "call", content: [{ text: "ok", type: "text" }], name: "manage_instructions", status: "complete" });
+
+  it("saves and selects a preset when none is active, then edits the active one through Settings' rules", async () => {
+    const userId = await owner();
+    expect(await agent(userId).read()).toBeNull();
+    expect(await agent(userId).change({ kind: "add", text: "Use tables." }, result))
+      .toMatchObject({ kind: "changed", value: { action: "created", name: "My instructions", revision: 1 } });
+    expect(await store.resolveForRun(userId)).toMatchObject({ revision: 1, selectionVersion: 1, systemInstructions: "Use tables.", responseReminder: "" });
+    expect(await agent(userId).change({ find: "tables", kind: "replace", text: "numbered tables" }, result))
+      .toMatchObject({ kind: "changed", value: { action: "updated", after: "Use numbered tables.", before: "Use tables.", revision: 2 } });
+    expect(await store.resolveForRun(userId)).toMatchObject({ answerRules: null, revision: 2, selectionVersion: 1, systemInstructions: "Use numbered tables." });
+    expect(await agent(userId).read()).toMatchObject({ name: "My instructions", revision: 2, systemInstructions: "Use numbered tables." });
+  });
+
+  it("keeps the preset's other fields, and writes nothing when the call cannot settle", async () => {
+    const userId = await owner(), row = await preset(userId);
+    await store.mutate(userId, { action: "select", id: row.id, selectionVersion: 0 });
+    await expect(agent(userId, calls(vi.fn(async () => { throw new Error("synthetic_settle_failed"); })))
+      .change({ kind: "add", text: "More." }, result)).rejects.toThrow("synthetic_settle_failed");
+    expect(await store.get(userId, row.id)).toMatchObject({ ...draft, revision: 1 });
+    await agent(userId).change({ kind: "add", text: "More." }, result);
+    expect(await store.get(userId, row.id)).toMatchObject({ ...draft, answerRules: null, revision: 2,
+      systemInstructions: `${draft.systemInstructions}\n\nMore.` });
+  });
+
+  it("serializes with a Settings edit under the owner lock: neither overwrites the other", async () => {
+    const userId = await owner(), row = await preset(userId);
+    await store.mutate(userId, { action: "select", id: row.id, selectionVersion: 0 });
+    const [change, edit] = await Promise.allSettled([
+      agent(userId).change({ kind: "add", text: "Agent line." }, result),
+      store.mutate(userId, { action: "update", id: row.id, revision: 1, value: { ...draft, systemInstructions: "Settings text." } })
+    ]);
+    expect(change).toMatchObject({ status: "fulfilled", value: { kind: "changed" } });
+    const text = (await store.get(userId, row.id))!.systemInstructions;
+    // Settings first: the agent appends to its text. The agent first: Settings' stale revision is refused.
+    if (edit.status === "fulfilled") expect(text).toBe("Settings text.\n\nAgent line.");
+    else expect([String(edit.reason), text]).toEqual(["InstructionPresetError: instruction_preset_conflict", `${draft.systemInstructions}\n\nAgent line.`]);
   });
 });
