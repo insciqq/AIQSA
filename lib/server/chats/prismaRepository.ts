@@ -143,6 +143,7 @@ import { workspaceModelSupportsTools } from "../workspace/availability";
 import { activityName, mcpDiscoveryActivityFacts, toolActivityDescriptors, skillToolActivityFacts, memorySearchActivityFacts } from "../tools/activityDescriptors";
 import { computerActivityFacts } from "../tools/computerTools";
 import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
+import { browserHandoffActivityFacts } from "../tools/browserHandoffActivity";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
@@ -1399,6 +1400,8 @@ export function summarizeMessageRunToolActivity(
       ...skillToolActivityFacts(run.normalizedRequest, call.toolName, call.arguments),
       ...(descriptor.origin === "web_fetch" ? fetchUrlActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...(descriptor.origin === "computer" ? computerActivityFacts(call.toolName, call.arguments, call.result) : {}),
+      // The answer's Sign in again names the site a sign-in handoff ended on; only the run's owner reads it.
+      ...(viewerUserId && viewerUserId === run.userId ? browserHandoffActivityFacts(call.toolName, call.arguments, call.result) : {}),
       ...memorySearch,
       ...(duration !== null && duration >= 0 ? { durationMs: duration } : {}),
       origin: descriptor.origin,

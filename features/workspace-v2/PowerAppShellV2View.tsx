@@ -139,6 +139,7 @@ import {
   ArtifactGenerationCardsV2
 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import { McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
+import { BrowserSignInAgainRowsV2, BrowserSignInTurnV2 } from "@/features/answer-outputs-v2/BrowserSignInAgainV2";
 import {
   AnswerIdentityChipV2,
   answerIdentityV2,
@@ -1311,6 +1312,10 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       // The server-written turn after an approval is not the user's speech.
       return <McpApprovalContinuationTurnV2 anchorId={source.id} content={messageText(source)} />;
     }
+    if (source.role === "user" && source.systemTurnKind === "browser_sign_in_request") {
+      // Nor is the request a Sign in again button sends; the server wrote its text.
+      return <BrowserSignInTurnV2 anchorId={source.id} content={messageText(source)} />;
+    }
     if (source.role === "user" && source.systemTurnKind === "subagent_callback") {
       // Neither is the turn that wakes the main agent with sub-agent results.
       return <SubagentCallbackTurnV2 anchorId={source.id} names={source.subagentCallback?.names ?? []} />;
@@ -1437,6 +1442,8 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}
               <SubagentAnswerRowsV2 chatId={session.activeChatId} live={!settled} messageId={source.id} toolActivity={toolActivity} onOpen={openSubagent} />
+              {settled && source.id === latestMessage?.id ? <BrowserSignInAgainRowsV2 disabled={thread.activeChatStreaming}
+                toolActivity={toolActivity} onSignIn={thread.sendBrowserSignIn} /> : null}
               <AnswerOutputsV2
                 artifact={artifact}
                 live={!settled}

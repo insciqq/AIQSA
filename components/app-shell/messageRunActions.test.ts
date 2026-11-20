@@ -4749,3 +4749,71 @@ describe("Continue on an interrupted answer", () => {
       .toEqual(["user-original", "assistant-original"]);
   });
 });
+
+describe("Sign in again", () => {
+  beforeEach(() => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+  });
+
+  it("sends the server's turn for the site after the latest answer, shown as that turn, and keeps the draft", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "Kept draft" });
+    prepareRegenerationThread();
+
+    await actions.sendBrowserSignInRequest("mail.example.com");
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/chats/chat-a/messages");
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({ expectedActiveLeafId: "assistant-original",
+      systemTurn: { host: "mail.example.com", kind: "browser_sign_in_request" } });
+    expect(body).not.toHaveProperty("content");
+    expect(actions.session(actions.sourceSessionKey)).toMatchObject({ draft: "Kept draft" });
+    expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a").messages)
+      .toContainEqual(expect.objectContaining({ role: "user", systemTurnKind: "browser_sign_in_request" }));
+  });
+
+  it("says why it did not start while another answer runs, and sends nothing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const actions = useMessageRunActionsForTest({ attachments: [], draft: "" });
+    prepareRegenerationThread();
+    useRunLifecycleStore.getState().streamStarted({ assistantMessageId: "assistant-other", chatId: "chat-a" });
+
+    await actions.sendBrowserSignInRequest("mail.example.com");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenCalledWith({ chatId: "chat-a", kind: "error",
+      text: "Another answer is still running in this chat. The sign-in request was not sent. Use Sign in again to try again." });
+  });
+
+  it("starts a new chat with it as the first message, and waits for a clean composer there", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const created = { ...chat(), id: "chat-new", pendingPersonalDraft: { folderId: null, memoryMode: "NORMAL" as const } };
+    const createChat = vi.fn(async () => {
+      useWorkspaceStore.setState({ chats: [chat(), created] });
+      return created;
+    });
+    const actions = useMessageRunActionsForTest({ attachments: [], createChat, draft: "" });
+    actions.activeChatIdRef.current = null;
+    useWorkspaceStore.getState().setActiveChatId(null);
+    const blank = composerSessionKey(null, null);
+    useComposerSessionStore.getState().activateSession(blank);
+    useComposerSessionStore.getState().updateSession(blank, { draft: "Unsent words" });
+
+    await actions.sendBrowserSignInRequest("portal.example.org");
+    expect(createChat).not.toHaveBeenCalled();
+    expect(actions.setNotice).toHaveBeenLastCalledWith({ kind: "error",
+      text: "Send or clear the message in the composer first. The sign-in request was not sent. Use Sign in again to try again." });
+
+    useComposerSessionStore.getState().updateSession(blank, { draft: "" });
+    await actions.sendBrowserSignInRequest("portal.example.org");
+    expect(createChat).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/chats/chat-new/messages");
+    expect(JSON.parse(String(init.body))).toMatchObject({ personalDraft: { folderId: null, memoryMode: "NORMAL" },
+      systemTurn: { host: "portal.example.org", kind: "browser_sign_in_request" } });
+  });
+});

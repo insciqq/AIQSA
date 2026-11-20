@@ -7,6 +7,7 @@ import {
   isScheduledTaskRunIncomplete,
   scheduledTaskErrorMessage,
   scheduledTaskReasonMessage,
+  scheduledTaskSignInHost,
   scheduledTaskSkillUnavailableReason,
   scheduledTaskSourceMessage,
   type ScheduledTask,
@@ -258,7 +259,11 @@ function clause(sentence: string): string {
   return sentence.endsWith(".") ? sentence.slice(0, -1) : sentence;
 }
 
-function outcomeText(state: ScheduledTaskRun["state"], reasonCode: string | null): string {
+function outcomeText(run: Pick<ScheduledTaskRun, "reasonCode" | "signInHost" | "state">): string {
+  const { reasonCode, state } = run;
+  const signInHost = scheduledTaskSignInHost(run);
+  // The row's Sign in again opens that site; the clause names it instead of asking the user to go to the chat.
+  if (signInHost) return `Failed: ${signInHost} needs you to sign in again`;
   switch (state) {
     case "completed": return isScheduledTaskCheckOutcome(reasonCode) ? CHECK_OUTCOME_LABELS[reasonCode] : "Answered";
     case "failed": return `Failed: ${scheduledTaskRunReasonText("failed", reasonCode)}`;
@@ -277,7 +282,7 @@ function lastRunNeedsAttention(task: Pick<ScheduledTask, "lastRun">): boolean {
 /** "Last run Mon 5 Oct, 09:00 · Answered", or null before the first settled run. */
 export function scheduledTaskLastRunLine(task: ScheduledTask, now: Date = new Date()): string | null {
   if (!task.lastRun) return null;
-  return `Last run ${formatScheduledInstant(task.lastRun.scheduledFor, task.timeZone, now)} · ${outcomeText(task.lastRun.state, task.lastRun.reasonCode)}`;
+  return `Last run ${formatScheduledInstant(task.lastRun.scheduledFor, task.timeZone, now)} · ${outcomeText(task.lastRun)}`;
 }
 
 export type ScheduledTaskResultNotice = Readonly<{
@@ -347,7 +352,7 @@ export function scheduledTaskRunRow(run: ScheduledTaskRun, timeZone: string, now
   const check = run.state === "completed" && isScheduledTaskCheckOutcome(run.reasonCode)
     ? scheduledTaskReasonMessage(run.reasonCode) : null;
   return {
-    outcome: check ? clause(check) : outcomeText(run.state, run.reasonCode),
+    outcome: check ? clause(check) : outcomeText(run),
     sources: run.unavailableSources.map(scheduledTaskSourceMessage),
     skills: run.skills.length > 0
       ? `Skills: ${run.skills.map((skill) => `${skill.name} v${skill.version}`).join(", ")}` : null,

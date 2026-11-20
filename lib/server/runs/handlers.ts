@@ -14,6 +14,7 @@ import {
   mcpApprovalContinuationText
 } from "../../contracts/mcpApprovals";
 import { SUBAGENT_CALLBACK_TURN_KIND } from "../../contracts/subagents";
+import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText, normalizeBrowserSignInHost } from "../../contracts/browserSignIn";
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { isChatPdfPolicyUnavailableError, chatPdfFingerprint } from "../uploads/chatPdfAdmission";
@@ -252,7 +253,7 @@ async function approvalContinuationBody(
   chatId: string,
   userId: string
 ): Promise<Readonly<{ body: Record<string, unknown>; computer: FrozenComputerBinding | null }> | "invalid" | "unavailable" | null> {
-  if (!body || !Object.hasOwn(body, "systemTurn")) return null;
+  if (!body || !Object.hasOwn(body, "systemTurn") || browserSignInTurn(body)) return null;
   const turn = body.systemTurn;
   if (!turn || typeof turn !== "object" || Array.isArray(turn)) return "invalid";
   const { approvalId, kind } = turn as Record<string, unknown>;
@@ -273,6 +274,36 @@ async function approvalContinuationBody(
   } = body;
   return { body: { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } },
     computer: approval.computer ?? null };
+}
+
+function browserSignInTurn(body: Record<string, unknown>): boolean {
+  const turn = body.systemTurn;
+  return Boolean(turn) && typeof turn === "object" && !Array.isArray(turn) &&
+    (turn as Record<string, unknown>).kind === BROWSER_SIGN_IN_TURN_KIND;
+}
+
+/**
+ * A Sign in again request (`systemTurn` of `BROWSER_SIGN_IN_TURN_KIND`): the turn's text is the server's, written from the
+ * site's host alone, and the body's text, attachments and Deep research are ignored. Otherwise it is an ordinary send of
+ * the chat with its controls and computer: it names only a site the user could name themselves and authorizes nothing
+ * beyond opening it and handing the browser over. Null for any other send.
+ */
+function browserSignInBody(body: Record<string, unknown> | null): Readonly<{ body: Record<string, unknown> }> | "invalid" | null {
+  if (!body || !browserSignInTurn(body)) return null;
+  const turn = body.systemTurn as Record<string, unknown>;
+  const host = normalizeBrowserSignInHost(turn.host);
+  if (Object.keys(turn).sort().join(",") !== "host,kind" || !host || host !== turn.host) return "invalid";
+  const {
+    artifactEdit: _artifactEdit,
+    artifactIntent: _artifactIntent,
+    attachmentIds: _attachmentIds,
+    content: _content,
+    deepResearch: _deepResearch,
+    systemTurn: _systemTurn,
+    text: _text,
+    ...rest
+  } = body;
+  return { body: { ...rest, content: { blocks: [{ type: "text", text: browserSignInRequestText(host) }] } } };
 }
 
 function runPreparationFailureResponse(failure: RunPreparationFailure): Response {
@@ -663,7 +694,13 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     if (continuationBody === "unavailable") {
       return Response.json({ error: MCP_APPROVAL_CONTINUATION_UNAVAILABLE }, { status: 409 });
     }
-    const sendBody = wakeUp ? { ...body, content: { blocks: [{ text: wakeUp.text, type: "text" }] } } : continuationBody?.body ?? body;
+    // A Sign in again request is the web owner's own: a connector or a scheduled send never carries one.
+    const signInBody = browserSignInBody(body);
+    if (signInBody === "invalid" || (signInBody && (deps.connectorTurn || deps.scheduledOccurrence))) {
+      return Response.json({ error: "system_turn_invalid" }, { status: 400 });
+    }
+    const sendBody = wakeUp ? { ...body, content: { blocks: [{ text: wakeUp.text, type: "text" }] } }
+      : continuationBody?.body ?? signInBody?.body ?? body;
 
     // One active run per thread of the chat: background sub-agents run beside the main agent's answer and never hold
     // off the user's next message (`findRecentActiveRunForChat` reads only the main agent's runs).
@@ -697,7 +734,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       body: sendBody,
       // Neither a connector turn nor a wake-up turn is the owner's own web message, so neither takes a computer (D-07).
       ...(deps.connectorTurn ? { origin: deps.connectorTurn } : wakeUp ? { origin: "wake_up" as const } : {}),
-      serverAuthoredInput: Boolean(continuationBody) || Boolean(wakeUp),
+      serverAuthoredInput: Boolean(continuationBody) || Boolean(signInBody) || Boolean(wakeUp),
       ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
         typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
         ? { mcpApprovalId: (body.systemTurn as { approvalId: string }).approvalId } : {}),
@@ -794,6 +831,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         } : {}),
         signal: request.signal,
         ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND } : {}),
+        ...(signInBody ? { systemTurnKind: BROWSER_SIGN_IN_TURN_KIND } : {}),
         ...(wakeUp ? { subagentCallbackClaim: { turns: wakeUp.turns }, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
         ...(messageLimits ? {} : { messageLimitExempt: true as const }),
         userId: auth.userId

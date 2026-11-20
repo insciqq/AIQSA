@@ -19,6 +19,7 @@ import {
   type WorkspaceBrowserAutosaveReport, type WorkspaceSecretKind, type WorkspaceSecretMutation,
   type WorkspaceSecretRevealedValue, type WorkspaceSecretSummary, type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
+import { browserSessionSignInHost } from "@/lib/contracts/browserSignIn";
 import { requestWorkspaceSecrets, revealWorkspaceSecret } from "./workspaceSecretsApi";
 
 const fileLimit = formatWorkspaceSecretLimit(WORKSPACE_SECRET_FILE_MAX_BYTES);
@@ -98,7 +99,14 @@ function sameDraft(left: Draft, right: Draft | null) {
   }
 }
 
-export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?(busy: boolean): void }>) {
+export function WorkspaceSecretsPanel({ onBusyChange, onSignInAgain }: Readonly<{
+  onBusyChange?(busy: boolean): void;
+  /**
+   * Sign in again on a saved sign-in whose file names its site: leaves Settings for a new chat that asks the agent to
+   * open the site and hand the browser over; the sign-in it saves replaces this one.
+   */
+  onSignInAgain?(host: string): Promise<void>;
+}>) {
   const [secrets, setSecrets] = useState<readonly WorkspaceSecretSummary[]>([]);
   const [browserAutosave, setBrowserAutosave] = useState<WorkspaceBrowserAutosaveReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -142,6 +150,21 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     };
   }, []);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
+  /** The site a saved sign-in's Sign in again opens, from its file name; none without the action or a host. */
+  const signInHost = (secret: WorkspaceSecretSummary): string | null =>
+    onSignInAgain && secret.kind === "browser_session" ? browserSessionSignInHost(secret.originalName) : null;
+  /** Leaves Settings like opening a chat: never busy, since Settings refuses to close while it is. */
+  const signInAgain = async (host: string) => {
+    if (!onSignInAgain || pending.current) return;
+    pending.current = true; setError(null); setNotice(null);
+    try {
+      await onSignInAgain(host);
+    } catch (failure) {
+      if (active.current) setError(failure instanceof Error ? failure.message : "The new chat could not be opened. Try again.");
+    } finally {
+      pending.current = false;
+    }
+  };
   useEffect(() => {
     const target = formId ? nameInput.current : null;
     if (!target) return;
@@ -299,7 +322,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
       <summary className="v2-focusable">How secrets work</summary>
       <div className="v2-settings-disclosure-body">
         <p>Saving a secret makes it available automatically when Workspace is on. Changes apply to the next accepted request.</p>
-        <p>Browser sessions keep you signed in to the websites the agent uses in Workspace; they hold sign-in cookies, never passwords. When a site needs you, the agent asks in the chat: sign in in the live browser there and press Done, and the session is saved here after the answer. Delete a session to remove that saved sign-in from your next Workspace request. Advanced: you can also import a Playwright storage_state JSON file.</p>
+        <p>Browser sessions keep you signed in to the websites the agent uses in Workspace; they hold sign-in cookies, never passwords. When a site needs you, the agent asks in the chat: sign in in the live browser there and press Done, and the session is saved here after the answer. When a site has signed you out, use Sign in again on its session: a new chat opens the site for you. Delete a session to remove that saved sign-in from your next Workspace request. Advanced: you can also import a Playwright storage_state JSON file.</p>
       </div>
     </details>
     {autosave ? <p className={`mt-3 break-words text-xs leading-5 ${autosave.attention ? "text-caution" : "text-ink-muted"}`} data-testid="workspace-browser-autosave">{autosave.text}</p> : null}
@@ -310,6 +333,7 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
     <ul className="v2-secret-list" aria-label="Saved Workspace secrets">
       {secrets.map(secret => { const shown = revealed[secret.id]?.versionId === secret.versionId ? revealed[secret.id] : undefined;
         const valuesId = `${valuesIdBase}-${secret.id}`;
+        const host = signInHost(secret);
         return <li className="v2-secret-row" key={secret.id}>
         <span className="v2-secret-type-icon"><UiV2Icon name={kinds[secret.kind].icon} /></span>
         <div className="min-w-0 flex-1"><h4 className="break-words text-sm font-semibold text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus" tabIndex={-1} ref={node => { if (node) headings.current.set(secret.id, node); else headings.current.delete(secret.id); }}>{secret.name}</h4>
@@ -323,6 +347,8 @@ export function WorkspaceSecretsPanel({ onBusyChange }: Readonly<{ onBusyChange?
           : <div className="v2-secret-actions flex flex-wrap items-center gap-2">
             {secret.kind !== "browser_session" ? <UiV2Button type="button" icon="eye" disabled={busy && !shown} aria-expanded={Boolean(shown)} aria-controls={shown ? valuesId : undefined}
               aria-label={`${shown ? "Hide" : "Show"} values of ${secret.name}`} onClick={() => shown ? hideValues(secret.id) : void revealValues(secret)}>{shown ? "Hide values" : "Show values"}</UiV2Button> : null}
+            {host ? <UiV2Button type="button" icon="key" disabled={busy}
+              aria-label={`Sign in again to ${host}`} onClick={() => void signInAgain(host)}>Sign in again</UiV2Button> : null}
             <UiV2Button type="button" disabled={busy} aria-label={`Edit ${secret.name}`} onClick={() => open(secret)}>Edit</UiV2Button><SecretMenu name={secret.name} busy={busy} onDelete={() => setDeleting(secret.id)} /></div>}
         {shown ? <SecretValues id={valuesId} name={secret.name} revealed={shown} copied={copied} keyPrefix={`${secret.id}:`}
           onCopy={(key, text) => void copyValue(key, text)} onRetry={() => void revealValues(secret)} /> : null}

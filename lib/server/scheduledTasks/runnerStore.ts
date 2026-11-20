@@ -17,7 +17,7 @@ import type { ScheduledResultCopy } from "../runs/runRepositoryContract";
 import { recordTelegramScheduledDelivery } from "../telegram/scheduledDeliveryOutbox";
 import { SCHEDULED_TASK_EMAIL_RECIPIENT } from "./emailRecipient";
 import { SCHEDULED_TASK_EMAIL_WINDOW_MS, type ScheduledTaskNotification } from "./notifications";
-import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
+import { runBrowserSignIn } from "./browserSignIn";
 import {
   SCHEDULED_TASK_LATENESS_MS,
   SCHEDULED_TASK_RETRY_WINDOW_MS,
@@ -358,6 +358,7 @@ async function applySettlement(
   await tx.scheduledTaskOccurrence.update({
     data: {
       finishedAt: now, leaseExpiresAt: null, reasonCode: outcome.reasonCode, state: outcome.state,
+      ...(outcome.signInHost ? { signInHost: outcome.signInHost } : {}),
       unseenAt: plan.notifies ? now : null
     },
     where: { id: occurrence.id }
@@ -616,20 +617,9 @@ async function claimWebhookEvents(prisma: PrismaClient, limit: number): Promise<
   }, { maxWait: 10_000, timeout: 60_000 });
 }
 
-/**
- * Whether the run's agent needed its owner to sign in to a site and nobody could take over
- * (`browserHandoffNeededSignIn`). Every handoff call asking for a sign-in, a code or a check is read, however many
- * other calls the run made.
- */
+/** Whether the run's agent needed its owner to sign in to a site and nobody could take over (`runBrowserSignIn`). */
 export async function runNeededBrowserSignIn(tx: Pick<Prisma.TransactionClient, "modelRunToolCall">, runId: string): Promise<boolean> {
-  const calls = await tx.modelRunToolCall.findMany({
-    select: { arguments: true, result: true },
-    where: {
-      modelRunId: runId, state: "error", toolName: BROWSER_HANDOFF_TOOL_NAME,
-      OR: BROWSER_HANDOFF_SIGN_IN_REASONS.map((reason) => ({ arguments: { equals: reason, path: ["reason"] } }))
-    }
-  });
-  return calls.some(browserHandoffNeededSignIn);
+  return await runBrowserSignIn(tx, runId) !== null;
 }
 
 export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): ScheduledTaskRunnerStore {
@@ -647,9 +637,12 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
       if (!linked) return null;
       // Its agent needed the user to sign in to a site (an expired sign-in, a code, a check) and nobody could take
       // over an unattended run: it fails visibly, its answer kept, and its owner signs in again in a chat. Any other
-      // handoff call (malformed, refused, a consent or a choice) leaves the run's own outcome.
-      const outcome = linked.state === "COMPLETED" && observed.occurrence.runId && await runNeededBrowserSignIn(tx, observed.occurrence.runId)
-        ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, state: "FAILED" as const } : linked;
+      // handoff call (malformed, refused, a consent or a choice) leaves the run's own outcome. The failure keeps the
+      // site the browser showed, which its Sign in again opens.
+      const signIn = linked.state === "COMPLETED" && observed.occurrence.runId
+        ? await runBrowserSignIn(tx, observed.occurrence.runId) : null;
+      const outcome: ScheduledTaskOutcome = signIn
+        ? { reasonCode: SCHEDULED_TASK_BROWSER_SIGN_IN_CODE, signInHost: signIn.host, state: "FAILED" } : linked;
       const locked = await withCodeCallSourceHealth(tx, observed);
       // A completed monitoring check settles with its outcome as the reason.
       const check = outcome.state === "COMPLETED" ? await monitoringSettlementOf(tx, locked) : null;

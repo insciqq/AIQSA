@@ -10,6 +10,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
 import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText } from "../../contracts/browserSignIn";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import {
   ProviderAdmissionError,
@@ -2034,6 +2035,37 @@ describe("model run route handlers", () => {
       userId: config.bootstrapUserId });
     expect(state.created).toMatchObject({ systemTurnKind: "mcp_approval_continuation",
       content: { blocks: [{ type: "text", text: "The user approved `delete_record` on `Records`. Continue the task." }] } });
+  });
+
+  it("writes a Sign in again request from the site's host alone, never from the body, and only for the web owner", async () => {
+    const { repository, state } = createMemoryRepository();
+    const loadMcpApprovalContinuation = vi.fn(async () => null);
+    repository.loadMcpApprovalContinuation = loadMcpApprovalContinuation;
+    const send = (systemTurn: unknown, deps: Partial<TestRunHandlerDeps> = {}) => createSendMessageHandler({ ...authDeps,
+      providers: { fake: createFakeProviderAdapter() }, repository, ...deps })(new Request("http://app.local/api/chats/chat-1/messages", {
+      body: JSON.stringify({ attachmentIds: ["attachment-1"], deepResearch: true, modelId: "fake-qsa", provider: "fake",
+        searchPlan: { mode: "all_selected", optionIds: [] }, systemTurn, text: "Text the browser must not decide" }),
+      headers: { cookie: authCookie() },
+      method: "POST"
+    }), { params: { chatId: "chat-1" } });
+
+    for (const malformed of [{ host: "https://mail.example.com", kind: BROWSER_SIGN_IN_TURN_KIND },
+      { host: "Mail.Example.com", kind: BROWSER_SIGN_IN_TURN_KIND }, { host: "localhost", kind: BROWSER_SIGN_IN_TURN_KIND },
+      { host: "mail.example.com/login", kind: BROWSER_SIGN_IN_TURN_KIND }, { kind: BROWSER_SIGN_IN_TURN_KIND },
+      { extra: true, host: "mail.example.com", kind: BROWSER_SIGN_IN_TURN_KIND }]) {
+      expect((await send(malformed)).status, JSON.stringify(malformed)).toBe(400);
+    }
+    expect((await send({ host: "mail.example.com", kind: BROWSER_SIGN_IN_TURN_KIND }, { connectorTurn: "telegram" })).status).toBe(400);
+    expect(state.created).toBeNull();
+
+    const accepted = await send({ host: "mail.example.com", kind: BROWSER_SIGN_IN_TURN_KIND });
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(loadMcpApprovalContinuation).not.toHaveBeenCalled();
+    expect(state.created).toMatchObject({ systemTurnKind: BROWSER_SIGN_IN_TURN_KIND,
+      content: { blocks: [{ type: "text", text: browserSignInRequestText("mail.example.com") }] } });
+    expect(state.created?.normalizedRequest.deepResearch).toBeUndefined();
+    expect(JSON.stringify(state.created?.content)).not.toContain("attachment-1");
   });
 
   it("refuses a message sent with Deep research where research cannot run, with a stable code and before anything is accepted", async () => {

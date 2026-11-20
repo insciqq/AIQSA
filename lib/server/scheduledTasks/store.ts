@@ -8,7 +8,9 @@ import {
   type ScheduledTaskScheduleKind as ScheduleKindColumn,
   type ScheduledTaskStatus as StatusColumn
 } from "@prisma/client";
+import { normalizeBrowserSignInHost } from "../../contracts/browserSignIn";
 import {
+  SCHEDULED_TASK_BROWSER_SIGN_IN_CODE,
   SCHEDULED_TASK_MAX_ACTIVE,
   SCHEDULED_TASK_MAX_ACTIVE_HOURLY,
   SCHEDULED_TASK_MAX_PINNED_SKILLS,
@@ -163,7 +165,7 @@ export type ScheduledTaskRow = Prisma.ScheduledTaskGetPayload<{ select: typeof s
 
 const runSelect = {
   id: true, scheduledFor: true, trigger: true, state: true, reasonCode: true, startedAt: true, finishedAt: true, chatId: true,
-  runId: true, unseenAt: true, unavailableSources: true, chat: { select: { permanentDeletionAt: true } }
+  runId: true, unseenAt: true, unavailableSources: true, signInHost: true, chat: { select: { permanentDeletionAt: true } }
 } satisfies Prisma.ScheduledTaskOccurrenceSelect;
 type RunRow = Prisma.ScheduledTaskOccurrenceGetPayload<{ select: typeof runSelect }>;
 
@@ -262,13 +264,21 @@ function toScheduledTaskRun(row: RunRow, skills: ReadonlyMap<string, ScheduledTa
     finishedAt: row.finishedAt?.toISOString() ?? null, chatId: usableChatId(row.chatId, row.chat),
     unseen: scheduledTaskRunUnseen(row),
     unavailableSources: unavailableSourcesWire(row.unavailableSources),
-    skills: row.runId ? (skills.get(row.runId) ?? []).slice(0, SCHEDULED_TASK_MAX_PINNED_SKILLS) : []
+    skills: row.runId ? (skills.get(row.runId) ?? []).slice(0, SCHEDULED_TASK_MAX_PINNED_SKILLS) : [],
+    ...signInHostWire(row)
   };
+}
+
+/** A sign-in failure's recorded site, for its Sign in again; nothing for any other run or a host that no longer reads as one. */
+function signInHostWire(row: Readonly<{ reasonCode: string | null; signInHost: string | null; state: string }>): { signInHost?: string } {
+  const host = row.state === "FAILED" && row.reasonCode === SCHEDULED_TASK_BROWSER_SIGN_IN_CODE
+    ? normalizeBrowserSignInHost(row.signInHost) : null;
+  return host ? { signInHost: host } : {};
 }
 
 type SettledRow = {
   taskId: string; scheduledFor: Date; state: "COMPLETED" | "FAILED" | "SKIPPED"; reasonCode: string | null; finishedAt: Date;
-  unseenAt: Date | null;
+  unseenAt: Date | null; signInHost: string | null;
 };
 
 /**
@@ -288,10 +298,11 @@ export async function loadScheduledTaskActivity(
   if (taskIds.length === 0) return activity;
   const settled = await client.$queryRaw<SettledRow[]>`
     SELECT task_row."id" AS "taskId", latest."scheduledFor", latest."state"::text AS "state", latest."reasonCode", latest."finishedAt",
-      latest."unseenAt"
+      latest."unseenAt", latest."signInHost"
     FROM unnest(${[...taskIds]}::text[]) AS task_row("id")
     CROSS JOIN LATERAL (
-      SELECT occurrence."scheduledFor", occurrence."state", occurrence."reasonCode", occurrence."finishedAt", occurrence."unseenAt"
+      SELECT occurrence."scheduledFor", occurrence."state", occurrence."reasonCode", occurrence."finishedAt", occurrence."unseenAt",
+        occurrence."signInHost"
       FROM "ScheduledTaskOccurrence" AS occurrence
       WHERE occurrence."taskId" = task_row."id" AND occurrence."userId" = ${userId}
         AND occurrence."state" IN ('COMPLETED', 'FAILED', 'SKIPPED')
@@ -319,7 +330,7 @@ export async function loadScheduledTaskActivity(
       ...activity.get(row.taskId)!,
       lastRun: {
         scheduledFor: row.scheduledFor.toISOString(), state, reasonCode: row.reasonCode, finishedAt: row.finishedAt.toISOString(),
-        unseen: scheduledTaskRunUnseen(row)
+        unseen: scheduledTaskRunUnseen(row), ...signInHostWire(row)
       }
     });
   }
