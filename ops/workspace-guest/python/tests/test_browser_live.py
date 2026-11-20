@@ -93,10 +93,12 @@ setInterval(() => {
 setInterval(() => { const end = performance.now() + 250; while (performance.now() < end) {} }, 300);
 </script></body></html>"""
 
-#: A page whose main thread does not answer for 24 seconds once it has loaded, longer than a summary may take.
+#: How long the busy page's main thread does not answer once it has loaded: longer than everything `open` may spend after
+#: navigating (waiting for the load, saving sign-ins, the summary), so the summary is always cut (`test_6c` checks the sum).
+BUSY_SECONDS = 45
 BUSY = ("<!doctype html><title>Busy</title><button>After the wait</button><script>"
-        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 24000; while (Date.now() < end) {} }, 0));"
-        "</script>")
+        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + " + str(BUSY_SECONDS * 1000) +
+        "; while (Date.now() < end) {} }, 0));</script>")
 
 PAGES = {
     "/heavy": HEAVY,
@@ -568,7 +570,13 @@ class LiveBrowserTests(unittest.TestCase):
 
     def test_6c_a_page_too_busy_to_list_is_listed_in_part_and_then_in_full(self) -> None:
         from aiqsa import browser
+        from aiqsa.browser import _host
 
+        # The page must stay busy past the end of the summary in every case: after navigating, open waits for the load
+        # (DOMContentLoaded has fired by then: at most 0.25 s, 5 s for the load and 2 s of network quiet), then saves
+        # sign-ins (the session test_3 saved is tracked), then lists. A shorter wait let the summary find the page free.
+        after_navigation = 0.25 + 5 + 2 + _host.AUTOSAVE_SECONDS + _host.SUMMARY_SECONDS
+        self.assertGreater(BUSY_SECONDS, after_navigation + 5)
         started = time.monotonic()
         page = self.quiet(browser.open, self.base + "/busy")
         self.assertLess(time.monotonic() - started, 75)
