@@ -26,6 +26,8 @@ import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import { renderCallbackFollowup, renderWakeUp } from "../../runs/subagentBackground/render";
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
+import { TOOLS_CLOSED_INSTRUCTIONS } from "../loop";
+import { MODEL_CALL_RESEARCH_RETRY } from "../modelCall";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
 import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION, subagentRoleSection } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
@@ -855,11 +857,12 @@ describe("sub-agent runner", () => {
       expect(plain).toContain(workspaceContract.stable);
       expect(plain).toContain(WORKSPACE_CHECKPOINT_GUIDANCE);
       expect(plain).toContain("After a secret's kind come the environment variables every Workspace command gets from it.");
-      // The texts of 2026-11-16 before that change: a change here is a deliberate rewording, never a side effect.
+      // The texts of 2026-11-16 before that change, with the approval line naming the card's buttons (2026-11-20): a change
+      // here is a deliberate rewording, never a side effect.
       expect([sha(plain), sha(await systemOf({}, childHost())), sha(await systemOf({ parentAgent }))]).toEqual([
-        "1586329ed9471d2c111534ba9758f1998e06bb931100441247f64c436a56bb09",
-        "5d0fed6b1da34fb27576c579404b49b61a51619d6d6927a34fc170de9ff1694e",
-        "5157b543d7465f77652fd66d1aafd0b79e71b8152d1dd65712d5c9c5b92861e1"
+        "25c55314ae9a71afc35a797b473a51541df162d61676b4dc99a68b6cad7f12ac",
+        "b97d24ad6e777102993877840943effe79023bb02ba2371a2aadc86ca2d743ed",
+        "d074667612ae9e0fec72734d50802569ca1269024b8cb93cf5c0771ac22111f1"
       ]);
       // A custom sub-agent with every tool, or whose groups name the Workspace (here with every other tool the run offers), reads the same.
       expect(await systemOf({ type: typed(null) })).toBe(plain);
@@ -1042,8 +1045,26 @@ describe("sub-agent runner", () => {
       expect(result).toMatchObject({ outcome: "blocked", question: "Which size?", reason: "needs_answer", state: "done" });
       expect(decodeSubagentCallResult(result)).toEqual(result);
       expect(ctx.requests[1]!.toolChoice).toBe("none");
+      // A question closed tools, not the tool time: nothing tells the agent its time ran out.
+      expect(userTexts(ctx.requests[1]!).some((text) => Object.values(TOOLS_CLOSED_INSTRUCTIONS.parent).includes(text))).toBe(false);
       expect(outputs(ctx)[0]).toContain("Outcome: blocked (needs_answer)");
       expect(ctx.host.setTurnState).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a sub-agent hears to report to its parent", undefined, TOOLS_CLOSED_INSTRUCTIONS.parent.time],
+      ["a research run's turn keeps its own texts", MODEL_CALL_RESEARCH_RETRY, null]
+    ] as const)("past its tool time %s, on the request only", async (_name, modelRetry, told) => {
+      let rounds = 0;
+      const ctx = setup([{ calls: [{ arguments: { key: "A-1" }, id: "c1", name: "mcp_jira_get_issue" }] }, { text: "Outcome: partial\nA-1 read." }],
+        { ...(modelRetry ? { modelRetry } : {}), toolTimeLeft: () => rounds++ === 0 });
+      await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(ctx.requests.map((request) => request.toolChoice)).toEqual(["auto", "none"]);
+      const texts = userTexts(ctx.requests[1]!);
+      if (told) expect(texts.filter((text) => text === told)).toHaveLength(1);
+      else expect(texts.some((text) => /time for tools/u.test(text))).toBe(false);
+      expect(userTexts(ctx.requests[0]!).some((text) => /time for tools/u.test(text))).toBe(false);
+      expect(JSON.stringify(ctx.appended)).not.toContain("time for tools has run out, so tools are closed");
     });
 
     it("keeps the question when the last round says nothing, and the reason the report gives", async () => {

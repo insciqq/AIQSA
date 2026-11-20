@@ -14,7 +14,7 @@ import type { TelegramAccessResolver } from "./control/access";
 import { reachTelegramChat, type TelegramChatBinding } from "./control/reach";
 import type { TelegramSessionProvider } from "./control/session";
 import {
-  TELEGRAM_APPROVAL_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramApprovalTitle
+  TELEGRAM_APPROVAL_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramApprovalTitle
 } from "./copy";
 import type { TelegramBotSession, TelegramCallbackHandler, TelegramHandlerRegistry } from "./dispatcher";
 import type { TelegramKeyboard } from "./outbound";
@@ -27,7 +27,7 @@ import type { TelegramFailure } from "./transport";
  * run (live, or found pending in the settled answer when the live event was
  * missed) becomes one message: "<server> · <tool>", what happens on Allow,
  * the call's redacted request (at most 1 500 characters) and Allow once,
- * Always allow <server> and Deny. A press decides as the run's initiator with
+ * Always allow for this server and Deny. A press decides as the run's initiator with
  * the button's id as nonce, while the run still settles retrying for 30 s
  * before asking to try again; the message then shows the decision actually
  * stored, whoever made it. An Allow starts nothing by itself: the bot sends
@@ -182,7 +182,11 @@ export function telegramApprovalMessage(input: Readonly<{
   return { blocks };
 }
 
-/** Allow once and Deny, then Always allow <server>; a button offered again keeps its first press's nonce. */
+/**
+ * Allow once and Deny, then Always allow for this server: the web card's labels (`TELEGRAM_COPY`), since the
+ * model names them and never knows which surface shows the card; the message's title names the server. A button offered
+ * again keeps its first press's nonce.
+ */
 export function telegramApprovalKeyboard(
   card: McpApprovalCard, payload: Omit<ApprovalPayload, "nonce">, nonces: Partial<Record<McpApprovalDecision, string>> = {}
 ): TelegramKeyboard {
@@ -192,7 +196,7 @@ export function telegramApprovalKeyboard(
   };
   return [
     [button("allow_once", TELEGRAM_COPY.allowOnce), button("deny", TELEGRAM_COPY.deny)],
-    [button("allow_server", telegramAlwaysAllowLabel(card.serverName))]
+    [button("allow_server", TELEGRAM_COPY.alwaysAllow)]
   ];
 }
 

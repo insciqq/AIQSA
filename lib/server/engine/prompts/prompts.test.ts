@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import { MCP_APPROVAL_BUTTON_LABELS } from "../../../contracts/mcpApprovals";
 import { MCP_FIND_TOOLS_NAME } from "../../mcp/discovery";
 import type { NormalizedSearchPlanOption } from "../../providers/types";
 import { createSearchPlanToolRouter } from "../../search/toolExecutor";
@@ -67,6 +68,18 @@ describe("system prompt", () => {
     const full = systemPromptFor({ modelId: "gemini-3-pro", provider: "gemini" }, { environment, tools: allTools, workspace: true }).stable;
     for (const name of allTools) expect(full).toContain(`\`${name}\``);
     expect(full).toContain("# Workspace\nThis chat has a private Linux sandbox");
+  });
+
+  it("names the approval card's buttons exactly as the user sees them, on the web and in Telegram", () => {
+    const stable = systemPromptFor({ modelId: "gpt-5.5", provider: "openai" }, { environment, tools: [], workspace: false }).stable;
+    const line = stable.split("\n").find((text) => text.startsWith("- Calls that may change data in other systems"));
+    expect(line).toBe("- Calls that may change data in other systems (MCP tools that are not read-only) are sent only after the " +
+      "user approves them on a card in the chat; the turn waits for that decision. Before such a call, say in one short sentence " +
+      "what it will do. The card's buttons read \"Allow once\", \"Always allow for this server\" and \"Deny\": when you mention " +
+      "them, quote these labels exactly as written, in English, and never translate them or name a button that is not there. " +
+      "When the user has already allowed calls of the same server in this chat, or you make several such calls at once, " +
+      "mention that \"Always allow for this server\" stops further cards for that server. Do not ask for the same approval in text.");
+    for (const label of Object.values(MCP_APPROVAL_BUTTON_LABELS)) expect(line).toContain(`"${label}"`);
   });
 
   it("has a slot for the AIQSA self-description", () => {

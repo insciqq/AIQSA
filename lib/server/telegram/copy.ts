@@ -1,3 +1,4 @@
+import { MCP_APPROVAL_BUTTON_LABELS } from "../../contracts/mcpApprovals";
 import type { TelegramReasonCode } from "../../contracts/telegram";
 import type { ThreadWorkspaceActivityEntry } from "../../contracts/workspace";
 import type { TelegramBotCommand } from "./botApi";
@@ -40,8 +41,10 @@ export const TELEGRAM_COPY = {
   stopped: "Stopped",
   buttonExpired: "This button has expired",
   buttonFailed: "Something went wrong. Try again.",
-  allowOnce: "Allow once",
-  deny: "Deny",
+  // The approval buttons say what the web card's say, since the model names them (`MCP_APPROVAL_BUTTON_LABELS`).
+  allowOnce: MCP_APPROVAL_BUTTON_LABELS.allow_once,
+  alwaysAllow: MCP_APPROVAL_BUTTON_LABELS.allow_server,
+  deny: MCP_APPROVAL_BUTTON_LABELS.deny,
   allowedOnce: "Allowed once",
   denied: "Denied",
   approvalExpired: "This approval expired. Ask again.",
@@ -243,10 +246,6 @@ export function telegramWorkActivityText(entry: ThreadWorkspaceActivityEntry): s
 
 export function telegramApprovalTitle(serverName: string, toolName: string): string {
   return `${bounded(serverName)} · ${bounded(toolName)}`;
-}
-
-export function telegramAlwaysAllowLabel(serverName: string): string {
-  return `Always allow ${bounded(serverName, 48)}`;
 }
 
 export function telegramAlwaysAllowedText(serverName: string): string {

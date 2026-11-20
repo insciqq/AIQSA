@@ -60,8 +60,10 @@ import { turnContextItem } from "../conversation";
 import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
 import { createHostedSearchEvidence, type HostedSearchEvidenceRow } from "./hostedSearchEvidence";
-import { ANSWER_NOW_INSTRUCTION, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type LoopToolChoice } from "../loop";
-import { callModel, type ModelCallRetryPolicy } from "../modelCall";
+import {
+  ANSWER_NOW_INSTRUCTION, isNoMoreToolsOutput, runAgentLoop, toolsClosedInstruction, type LoopToolChoice, type ToolsClosedBy
+} from "../loop";
+import { callModel, MODEL_CALL_RESEARCH_RETRY, type ModelCallRetryPolicy } from "../modelCall";
 import {
   subagentAgentMessageText,
   subagentChildQuestionText,
@@ -77,7 +79,8 @@ import {
   ToolBatchInactiveError,
   transcriptRecord,
   type ToolBatchDeps,
-  type ToolBatchState
+  type ToolBatchState,
+  type ToolsClosedReader
 } from "../toolBatch";
 import type { ToolCallStore } from "../toolCallStore";
 import type { ToolRegistry } from "../toolRegistry";
@@ -371,10 +374,11 @@ export function subagentStep(registry: ToolRegistry, call: ModelToolCall, result
   const name = activity?.toolName ?? call.name;
   const tool = boundLine(activity?.serverName && activity.serverName !== name ? `${activity.serverName}: ${name}` : name,
     SUBAGENT_LIMITS.stepToolCharacters) || "tool";
-  const refused = result.output === SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT || result.output === NO_MORE_TOOLS_OUTPUT;
+  const notRun = isNoMoreToolsOutput(result.output);
+  const refused = result.output === SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT || notRun;
   const outcome: SubagentStep["outcome"] = refused ? "refused" : result.outcome;
   const browser = BROWSER_STEP_LINE.exec(result.output)?.[0];
-  const summary = browser ?? (refused ? (result.output === NO_MORE_TOOLS_OUTPUT ? "not run" : SUBAGENT_BLOCKED_REASONS.needsApproval)
+  const summary = browser ?? (refused ? (notRun ? "not run" : SUBAGENT_BLOCKED_REASONS.needsApproval)
     : outcome === "complete" ? "" : (result.output.split("\n").find((line) => line.trim()) ?? ""));
   return { outcome, summary: boundLine(summary, SUBAGENT_LIMITS.stepSummaryCharacters), tool };
 }
@@ -895,6 +899,9 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
       const recordUsage = (usage: ModelRunUsage, costUsd: number | undefined) => host.usage({ ...reportedAnswerCost(costUsd),
         modelId: route.request.modelId, operationCount: 1, provider: route.request.provider, providerModelId: route.snapshot.providerModelId,
         purpose: SUBAGENT_USAGE_PURPOSE, usage } satisfies RunUsageAttribution);
+      // A sub-agent reports to its parent, never to the user; a research run's turns (researchers and gates, which alone retry
+      // as `MODEL_CALL_RESEARCH_RETRY`) keep the research method's own texts.
+      const toolsClosedReader: ToolsClosedReader = host.modelRetry === MODEL_CALL_RESEARCH_RETRY ? "research" : "parent";
       const batchDeps: ToolBatchDeps = {
         approvalHandBack: (call, approval) => {
           const handed = handedBackApproval(call, approval);
@@ -913,6 +920,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         store: host.toolCalls,
         thread,
         toolTimeLeft: host.callTimeLeft,
+        toolsClosedReader,
         // Made with the turn, so each turn of a thread starts its own count.
         ...(host.turnToolCalls !== undefined ? { turnBudget: { exempt: TURN_BUDGET_EXEMPT, limit: host.turnToolCalls, spent: { calls: 0 } } } : {}),
         unknownEffects,
@@ -1020,11 +1028,15 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           return delivered;
         },
         maxToolRounds: host.maxToolRounds,
-        prepareRequest: async ({ answerNow, toolChoice }: Readonly<{ answerNow?: true; round: number; toolChoice: LoopToolChoice }>) => {
+        prepareRequest: async ({ answerNow, toolChoice, toolsClosedBy }: Readonly<{ answerNow?: true; round: number;
+          toolChoice: LoopToolChoice; toolsClosedBy?: ToolsClosedBy }>) => {
           const prepared = await activeContext.prepare({ ...base, history: projectTranscript(items, target, projection),
             parallelToolCalls: true, previousProviderResponseId: undefined, providerToolMessages: undefined, toolChoice,
             tools: [...registry.definitions()] });
-          return answerNow ? { ...prepared, history: [...(prepared.history ?? []), { text: ANSWER_NOW_INSTRUCTION, type: "user" as const }] }
+          // A handed-back question closes tools too, and its report needs no word on tool time.
+          const instruction = answerNow ? ANSWER_NOW_INSTRUCTION
+            : toolsClosedBy && handBack.question === null ? toolsClosedInstruction(toolsClosedReader, toolsClosedBy) : null;
+          return instruction ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
             : prepared;
         },
         responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
@@ -1052,7 +1064,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         },
         signal,
         // A handed-back question closes tools: the next round is the report its parent is waiting for.
-        toolTimeLeft: () => handBack.question === null && host.toolTimeLeft()
+        toolTimeLeft: () => handBack.question === null && host.toolTimeLeft(),
+        toolsClosedReader
       });
       await activeContext.afterAnswer();
       await activeWriter.flush();

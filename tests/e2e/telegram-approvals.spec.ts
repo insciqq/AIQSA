@@ -5,7 +5,7 @@ import type { AdminMcpServer } from "../../lib/contracts/mcp";
 import { providerTemplateIds } from "../../lib/domain/providerTemplates";
 import type { TelegramAdminCommand, TelegramAdminState, TelegramLinkCodeResponse } from "../../lib/contracts/telegram";
 import {
-  TELEGRAM_APPROVAL_COPY, TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramAlwaysAllowLabel, telegramConnectedText
+  TELEGRAM_APPROVAL_COPY, TELEGRAM_BRIDGE_COPY, TELEGRAM_COPY, telegramAlwaysAllowedText, telegramConnectedText
 } from "../../lib/server/telegram/copy";
 import { createFakeTelegramBotApi, type FakeTelegramCall, type FakeTelegramMessage, type FakeTelegramUser } from "../support/fakeTelegramBotApi";
 import { createWriteApprovalFixture, startMutableMcpEndpoint, type MutableMcpEndpoint } from "./support/mutableMcpEndpoint";
@@ -288,7 +288,7 @@ test("a write tool asks in Telegram and sends nothing; Deny records the decision
   expect(String(request?.text)).toContain("\"id\": \"r-1\"");
   expect(String(request?.text).length).toBeLessThanOrEqual(1_500);
   expect(buttonRows(approval).map((row) => row.map((button) => button.text))).toEqual([
-    [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [telegramAlwaysAllowLabel(serverName)]
+    [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [TELEGRAM_COPY.alwaysAllow]
   ]);
   const chatId = await currentChatId();
   const pending = await latestApproval(chatId);
@@ -345,7 +345,7 @@ test("Always allow records the server's consent: the next call in a new chat run
   await newChat();
   const approval = await askToDelete("r-3");
   const since = bot.calls().length;
-  press(approval, telegramAlwaysAllowLabel(serverName));
+  press(approval, TELEGRAM_COPY.alwaysAllow);
   await expect.poll(() => shown(botMessage(approval.message_id)), { timeout: REPLY_TIMEOUT_MS })
     .toContain(telegramAlwaysAllowedText(serverName));
   await expectAnswer(since, "MCP call finished: done.");
@@ -466,7 +466,7 @@ test("a guard refusal retains Telegram's approval buttons and shows the reason",
   const message = await askToDelete("guard-ask");
   expect(shown(message)).toContain(FAKE_MCP_GUARD_REASON);
   expect(buttonRows(message).map(row => row.map(button => button.text))).toEqual([
-    [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [telegramAlwaysAllowLabel(serverName)]
+    [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [TELEGRAM_COPY.alwaysAllow]
   ]);
   expect(guard!.calls()).toBe(before + 1);
   expect(endpoint!.dispatches("delete_record", { id: "guard-ask" })).toBe(0);
@@ -490,6 +490,6 @@ test("a guard allow dispatches once without any Telegram approval buttons", asyn
   expect(approval).toMatchObject({ decision: null, guardDecision: "allow" });
   for (const call of bot.calls().slice(since).filter(call => call.params.chat_id === tgAlice.id)) {
     const labels = buttonRows({ reply_markup: call.params.reply_markup } as FakeTelegramMessage).flat().map(button => button.text);
-    for (const label of [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny, telegramAlwaysAllowLabel(serverName)]) expect(labels).not.toContain(label);
+    for (const label of [TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny, TELEGRAM_COPY.alwaysAllow]) expect(labels).not.toContain(label);
   }
 });

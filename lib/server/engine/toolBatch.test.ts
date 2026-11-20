@@ -13,6 +13,7 @@ import {
   AUTO_TOOL_NOT_LOADED_OUTPUT,
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
+  SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT,
   TOOL_BATCH_LIMITS,
   TOOL_BINDING_UNAVAILABLE_OUTPUT,
   TOOL_CALL_LIMIT_OUTPUT,
@@ -22,7 +23,8 @@ import {
   TURN_TOOL_CALL_LIMIT_OUTPUT,
   UNKNOWN_OUTCOME_APPROVAL_OUTPUT,
   UNKNOWN_OUTCOME_REPEAT_OUTPUT,
-  type ToolBatchDeps
+  type ToolBatchDeps,
+  type ToolsClosedReader
 } from "./toolBatch";
 import { createToolCallStore, type ToolCallBeginResult, type ToolCallRow, type ToolCallStore } from "./toolCallStore";
 import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry";
@@ -34,6 +36,7 @@ import { createTranscriptRepository } from "./transcriptRepository";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
 import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
+import { MCP_APPROVAL_BUTTON_LABELS } from "../../contracts/mcpApprovals";
 import { ImageInputError, ImageToolError, markImageFailureNotSent } from "../images/inputError";
 import { ImageGenerationError } from "../providers/imageGeneration";
 import { imageFailureDiagnostic } from "../providers/imageFailure";
@@ -178,6 +181,24 @@ describe("native tool batch", () => {
     expect(create).not.toHaveBeenCalled();
     expect(outcome.approvals).toEqual(["approval-1"]);
     expect(outcome.results[0]).toMatchObject({ outcome: "error", output: APPROVAL_PENDING_OUTPUT });
+  });
+
+  it("names the approval card's buttons as the user sees them, on the web and in Telegram", () => {
+    // A model told a user to press a button that does not exist; the card is English-only and the model never sees it.
+    expect(APPROVAL_PENDING_OUTPUT).toBe("Not sent: this call can change data, so it waits for the user's decision on an " +
+      "approval card in the chat, whose buttons read \"Allow once\", \"Always allow for this server\" and \"Deny\". If the " +
+      "user allows it, it runs and you continue from its result; do not call it again meanwhile. When you mention the card, " +
+      "say in one short sentence what the call will do and quote those labels exactly as written, in English: never " +
+      "translate them or name a button that is not there. If the user has already allowed calls of this server in this " +
+      "chat, or several cards wait at once, add that \"Always allow for this server\" stops further cards for this server.");
+    expect(UNKNOWN_OUTCOME_APPROVAL_OUTPUT).toBe("Not sent: an identical earlier call failed after it may have been sent, so " +
+      "its effect is unknown. Check the current state if you can and tell the user what you found; the user decides on the " +
+      "approval card in the chat whether to send it again, with the buttons \"Allow once\", \"Always allow for this server\" " +
+      "and \"Deny\" (quote these labels exactly as written, in English). Do not call it again meanwhile.");
+    for (const label of Object.values(MCP_APPROVAL_BUTTON_LABELS)) {
+      expect(APPROVAL_PENDING_OUTPUT).toContain(`"${label}"`);
+      expect(UNKNOWN_OUTCOME_APPROVAL_OUTPUT).toContain(`"${label}"`);
+    }
   });
 
   it("retries a read-only call that failed in transport but never re-sends an external one", async () => {
@@ -604,9 +625,29 @@ describe("native tool batch", () => {
     ] });
     expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["s1", "error"], ["f1", "complete"]]);
     expect(outcome.results[0]!.output).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
-    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 1 });
+    expect(outcome).toMatchObject({ budgetExhausted: true, executed: 1, timeExhausted: true });
     expect(slow).not.toHaveBeenCalled();
     expect(fast).toHaveBeenCalledOnce();
+  });
+
+  it("tells whoever reads the turn how to go on past the tool time, and keeps a research run's words", async () => {
+    const lookup = vi.fn(async ({ call }: { call: ModelToolCall }) => ok(call));
+    const past = async (reader?: ToolsClosedReader) => {
+      const batch = deps({ lookup: tool("lookup", "none", lookup) }, fakeStore().store,
+        { maxToolCalls: null, toolTimeLeft: () => false, ...(reader ? { toolsClosedReader: reader } : {}) });
+      return (await runToolBatch(batch, { calls: 0 }, { calls: [{ arguments: {}, id: "c1", name: "lookup" }], round: 1 })).results[0]!.output;
+    };
+    expect(await past()).toBe(TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(TOOL_TIME_EXHAUSTED_OUTPUT).toBe("Not run: this answer's time for tools has run out; the tools themselves still " +
+      "work. Answer with what you have, say plainly what is left undone, and tell the user they can send a message such as " +
+      "\"continue\" to go on: a new message starts a new answer with fresh time for tools.");
+    // A sub-agent reports to its parent: no word to the user.
+    expect(await past("parent")).toBe(SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT);
+    expect(SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT).toMatch(/report/u);
+    expect(SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT).not.toMatch(/user|continue/u);
+    expect(await past("research")).toBe("Not run: this answer's time for tools has run out. Answer with what you have and say " +
+      "what you could not check.");
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it("runs the reserved report's first call outside the call budget, and counts a repeated one", async () => {

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { ModelToolCall } from "../tools/types";
-import { MAX_CORRECTION_ROUNDS, NO_MORE_TOOLS_OUTPUT, runAgentLoop, type AgentLoopPorts } from "./loop";
-import type { ToolBatchOutcome } from "./toolBatch";
+import {
+  MAX_CORRECTION_ROUNDS, NO_MORE_TOOLS_OUTPUT, runAgentLoop, SUBAGENT_NO_MORE_TOOLS_OUTPUT, TOOLS_CLOSED_INSTRUCTIONS,
+  toolsClosedInstruction, type AgentLoopPorts, type ToolsClosedBy
+} from "./loop";
+import type { ToolBatchOutcome, ToolsClosedReader } from "./toolBatch";
 import type { TranscriptItem, TranscriptUserItem } from "./transcript";
 
 function response(text: string, calls: readonly ModelToolCall[] = []): ProviderRunResult {
@@ -580,5 +583,107 @@ describe("the run's reserved report", () => {
       let asks = 0;
       await expect(runAgentLoop({ ...ports, draft: { answerTaken: () => asks++ > 1, responseCompleted: () => undefined, responseEnded: async () => null } })).resolves.toMatchObject({ kind: "answered" });
     });
+  });
+});
+
+describe("why tools closed", () => {
+  /** Renders the request as the engine's ports do: the instruction rides on the request's history only. */
+  function telling(ports: AgentLoopPorts, reader: ToolsClosedReader = "user") {
+    const requests: ProviderRunRequest[] = [];
+    const told: (ToolsClosedBy | undefined)[] = [];
+    const prepareRequest: AgentLoopPorts["prepareRequest"] = async (input) => {
+      await ports.prepareRequest(input);
+      told.push(input.toolsClosedBy);
+      const instruction = input.toolsClosedBy ? toolsClosedInstruction(reader, input.toolsClosedBy) : null;
+      const request = { history: [{ text: "question", type: "user" as const },
+        ...(instruction ? [{ text: instruction, type: "user" as const }] : [])], toolChoice: input.toolChoice } as ProviderRunRequest;
+      requests.push(request);
+      return request;
+    };
+    return { ports: { ...ports, prepareRequest, toolsClosedReader: reader }, requests, told };
+  }
+  const carries = (request: ProviderRunRequest, text: string) =>
+    request.history?.filter((item) => item.type === "user" && item.text === text).length ?? 0;
+  /** The tool round ends past the tool time; the tool-free round answers only with a call, so one more round asks for the answer. */
+  const pastToolTime = (last: string) => {
+    let timeLeft = true;
+    return harness([response("", [call("c1")]), response("", [call("c2")]), response(last)],
+      { batch: () => { timeLeft = false; return {}; }, maxToolRounds: null, toolTimeLeft: () => timeLeft });
+  };
+
+  it("tells the model once, on the request only, that the answer's tool time ran out and how the user goes on", async () => {
+    const { items, ports: base } = pastToolTime("Partial answer");
+    const { ports, requests, told } = telling(base);
+    await expect(runAgentLoop(ports)).resolves.toEqual({ kind: "answered", rounds: 3 });
+    const instruction = TOOLS_CLOSED_INSTRUCTIONS.user.time;
+    expect(told).toEqual([undefined, "time", undefined]);
+    expect(requests.map((request) => carries(request, instruction))).toEqual([0, 1, 0]);
+    // Never recorded: the transcript, and so the cached prefix, stays as it was.
+    expect(JSON.stringify(items)).not.toContain(instruction);
+    expect(instruction).toMatch(/"continue"/u);
+    expect(instruction).toMatch(/still work/u);
+    expect(instruction).not.toMatch(/broken|not available/u);
+    // A call made anyway hears the same about going on.
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: NO_MORE_TOOLS_OUTPUT });
+    expect(NO_MORE_TOOLS_OUTPUT).toMatch(/"continue"/u);
+  });
+
+  it.each([
+    ["the call budget", { batch: () => ({ budgetExhausted: true }) }],
+    ["the tool rounds", { maxToolRounds: 1 }]
+  ] as const)("says the answer's tool calls are spent once %s an administrator set ran out", async (_name, options) => {
+    const { ports: base } = harness([response("", [call("c1")]), response("Done")], options);
+    const { ports, requests, told } = telling(base);
+    await runAgentLoop(ports);
+    expect(told).toEqual([undefined, "limits"]);
+    expect(carries(requests[1]!, TOOLS_CLOSED_INSTRUCTIONS.user.limits)).toBe(1);
+  });
+
+  it("names the time when a call was refused for it before the round's own check saw it run out", async () => {
+    const { ports: base } = harness([response("", [call("c1")]), response("Done")],
+      { batch: () => ({ budgetExhausted: true, executed: 0, timeExhausted: true }) });
+    const { ports, told } = telling(base);
+    await runAgentLoop(ports);
+    expect(told).toEqual([undefined, "time"]);
+  });
+
+  it("says nothing when tools closed only because a batch ran nothing", async () => {
+    const { ports: base } = harness([response("", [call("c1")]), response("Done")], { batch: () => ({ executed: 0 }) });
+    const { ports, told } = telling(base);
+    await runAgentLoop(ports);
+    expect(told).toEqual([undefined, undefined]);
+  });
+
+  it("tells a sub-agent to report to its parent, not to address the user", async () => {
+    const { items, ports: base } = pastToolTime("Outcome: partial");
+    const { ports, requests } = telling(base, "parent");
+    await runAgentLoop(ports);
+    const instruction = TOOLS_CLOSED_INSTRUCTIONS.parent.time;
+    expect(carries(requests[1]!, instruction)).toBe(1);
+    expect(instruction).not.toBe(TOOLS_CLOSED_INSTRUCTIONS.user.time);
+    expect(instruction).toMatch(/report/u);
+    for (const text of [instruction, TOOLS_CLOSED_INSTRUCTIONS.parent.limits, SUBAGENT_NO_MORE_TOOLS_OUTPUT]) {
+      expect(text).not.toMatch(/user|continue/u);
+    }
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2")).toMatchObject({ output: SUBAGENT_NO_MORE_TOOLS_OUTPUT });
+  });
+
+  it("keeps a research run's texts: no instruction, and its refusals as before", async () => {
+    const { items, ports: base } = pastToolTime("Report");
+    const { ports, told } = telling(base, "research");
+    await runAgentLoop(ports);
+    expect(told.every((by) => by === undefined)).toBe(true);
+    expect(toolsClosedInstruction("research", "time")).toBeNull();
+    expect(items.find((item) => item.kind === "tool_result" && item.callId === "c2"))
+      .toMatchObject({ output: "Not run: this answer may call no more tools. Answer with what you have." });
+  });
+
+  it("tells it again after the user's follow-up starts the answer over", async () => {
+    const followup: TranscriptUserItem = { followup: true, id: "f1", kind: "user", text: "And the rest?" };
+    const { ports: base } = harness([response("Part one"), response("Part two")],
+      { closes: [false, true], followups: [[followup]], maxToolRounds: null, toolTimeLeft: () => false });
+    const { ports, told } = telling(base);
+    await runAgentLoop(ports);
+    expect(told).toEqual(["time", "time"]);
   });
 });
