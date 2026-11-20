@@ -17,7 +17,8 @@ KEY = b"synthetic-browser-fixture-signing-key"
 
 
 #: A heavy single-page app for the browser's time budgets: tens of thousands of nodes, deep open shadow roots,
-#: many frames, constant DOM changes and long tasks (`/heavy`), and a page that stops answering for 24 s (`/busy`).
+#: many frames, constant DOM changes and long tasks (`/heavy`), and a page that stops answering for 45 s once loaded (`/busy`),
+#: longer than `open` may spend after navigating, so its summary is always cut.
 HEAVY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Heavy board</title></head><body><main id="app"></main><script>
 const app = document.getElementById('app');
 let rows = '';
@@ -50,7 +51,7 @@ setInterval(() => {
 setInterval(() => { const end = performance.now() + 250; while (performance.now() < end) {} }, 300);
 </script></body></html>"""
 BUSY = ("<!doctype html><title>Busy</title><button>After the wait</button><script>"
-        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 24000; while (Date.now() < end) {} }, 0));"
+        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 45000; while (Date.now() < end) {} }, 0));"
         "</script>")
 
 
