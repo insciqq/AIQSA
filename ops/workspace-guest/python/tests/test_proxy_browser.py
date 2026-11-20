@@ -192,20 +192,18 @@ class Tab:
         self.closed = True
 
 
-class Browser:
+class Context:
+    """The browser's persistent context on the chat's profile, which keeps every sign-in across a restart."""
+
     def __init__(self) -> None:
         self.closed = False
+        self.removed: List[str] = []
 
-    def remove_listener(self, *_: Any) -> None:
-        pass
+    def remove_listener(self, event: str, *_: Any) -> None:
+        self.removed.append(event)
 
     async def close(self) -> None:
         self.closed = True
-
-
-class Context:
-    async def storage_state(self) -> Dict[str, Any]:
-        return {"cookies": [{"name": "untracked-sign-in"}], "origins": [{"origin": "https://shop.example", "localStorage": []}]}
 
     async def cookies(self) -> List[Any]:
         return []
@@ -222,11 +220,12 @@ class WithoutForwarder(unittest.TestCase):
         _paths.use_test_root(root, sys.executable)
         self.addCleanup(_paths.use_test_root, None)
         self.host = _host.Host({})
-        self.host.browser, self.host.context = Browser(), Context()
+        self.host.context = Context()
         self.launched: List[Any] = []
 
-        async def launch(state: Dict[str, Any]) -> None:
-            self.launched.append((state, self.host.proxy_port))
+        async def launch(restart: bool = False) -> List[str]:
+            self.launched.append((restart, self.host.proxy_port))
+            return []
 
         self.host._launch = launch  # type: ignore[method-assign]
         self.main = self.host._state_for("main")
@@ -263,12 +262,14 @@ class WithoutForwarder(unittest.TestCase):
         with self.assertRaises(_host.HostError):
             asyncio.run(self.host._ensure_proxied())
         self.held.clear()
-        previous = self.host.browser
+        previous = self.host.context
         asyncio.run(self.host._ensure_proxied())
+        # Closed on purpose, so not as a crash; the same profile opens again through the forwarder, with every sign-in.
         self.assertTrue(previous.closed)
+        self.assertEqual(previous.removed, ["close"])
+        self.assertFalse(self.host.crashed)
         self.assertTrue(self.other_tab.closed)
-        self.assertEqual(self.launched[0][1], 4321)
-        self.assertEqual(self.launched[0][0]["cookies"], [{"name": "untracked-sign-in"}])
+        self.assertEqual(self.launched, [(True, 4321)])
         self.assertIn("user.example/sign-in", self.other.notes[-1])
         self.assertEqual((self.other.tabs, self.other.current, self.host._closing), ([], None, False))
         asyncio.run(self.host._ensure_proxied())
@@ -283,8 +284,9 @@ class WithoutForwarder(unittest.TestCase):
         self.held.clear()
         seen: List[bool] = []
 
-        async def launch(state: Dict[str, Any]) -> None:
+        async def launch(restart: bool = False) -> List[str]:
             seen.append(self.host._closing)
+            return []
 
         self.host._launch = launch  # type: ignore[method-assign]
         asyncio.run(self.host._ensure_proxied())

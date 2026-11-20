@@ -231,8 +231,9 @@ class SessionStore:
         self.tracked: Dict[str, Set[str]] = {}
         self.digests: Dict[str, str] = {}
         self.skipped: List[str] = []
-        #: file name -> its state as loaded or last written (with its stamp)
+        #: file name -> its state as loaded or last written (with its stamp), and that state's `content_key`
         self.files: Dict[str, Dict[str, Any]] = {}
+        self.keys: Dict[str, str] = {}
 
     def _usable_root(self, create: bool) -> bool:
         for parent in [self.root.parent.parent, self.root.parent, self.root]:
@@ -266,7 +267,7 @@ class SessionStore:
 
     def load(self) -> Dict[str, Any]:
         """Every valid saved session merged into one storage_state (`merge`); others are skipped and reported."""
-        self.tracked, self.digests, self.skipped, self.files = {}, {}, [], {}
+        self.tracked, self.digests, self.skipped, self.files, self.keys = {}, {}, [], {}, {}
         if not self._usable_root(create=False):
             return {"cookies": [], "origins": []}
         self._remove_stale_staging()
@@ -293,6 +294,7 @@ class SessionStore:
             if own:
                 sites.add(own)
             self.files[name] = value
+            self.keys[name] = content_key(value)
             self.tracked[name] = sites
             self.digests[name] = state_digest(value, sites)
         return self.merge(self.files)
@@ -364,9 +366,10 @@ class SessionStore:
         found = self._current(target) if self._usable_root(create=False) else None
         current = found[0] if found is not None else None
         digest = state_digest(part, sites)
-        if found is not None and content_key(found[0]) == content_key(part):
+        key = content_key(part)
+        if found is not None and content_key(found[0]) == key:
             self.digests[name] = digest
-            self.files[name] = found[0]
+            self.files[name], self.keys[name] = found[0], key
             return {"file": name, "bytes": found[1], "changed": False, "savedAt": saved_at(found[0])}
         # Newer than what it replaces even if this clock is behind the one that wrote that.
         stamp = max(int(self.clock() * 1000), (saved_at(current) if current is not None else 0) + 1)
@@ -407,5 +410,5 @@ class SessionStore:
             except OSError:
                 pass
         self.digests[name] = digest
-        self.files[name] = written
+        self.files[name], self.keys[name] = written, key
         return {"file": name, "bytes": len(data), "changed": True, "savedAt": stamp}

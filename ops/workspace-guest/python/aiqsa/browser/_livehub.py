@@ -27,7 +27,8 @@ What the user typed never reaches the agent: the whole value typed since the use
 split it) and the focused field's value join the host's hidden values before a key or click that can submit or
 navigate goes out, and the field reads as a hidden value, as for values typed from the environment. The panel's
 own address line masks only those (`Host.env_hidden`): the user sees their own input. Best effort: agent code in
-the same VM can read the page itself.
+the same VM can read the page itself. A value typed into a password field tells the host the user is signing in, and
+the host saves the site's sign-in once the site sets new cookies, with or without a handoff (`Host.user_typed_password`).
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ FOCUSED_FIELD = r"""
 FIELD_VALUE = r"""
 (el) => String(el.value !== undefined && el.value !== null ? el.value : (el.isContentEditable ? el.innerText : '')).slice(0, 2000)
 """
+PASSWORD_FIELD = "(el) => el instanceof HTMLInputElement && el.type === 'password'"
 #: Fields the user typed into that one frame keeps marked: older ones go first.
 MASKED_PER_FRAME = 64
 #: Typing settles this long before its field is read and marked.
@@ -503,6 +505,7 @@ class AgentLive:
             value = ""
         if isinstance(value, str) and value:
             self.hidden.add(value)
+            await self.hub.typed_into(self.agent, page, element)
         fields = self.masked.setdefault(frame, [])
         fields.append((frame.url, element))
         del fields[:-MASKED_PER_FRAME]
@@ -616,6 +619,18 @@ class LiveHub:
         if getattr(self.host, "live_targets", None) is None:
             return await self.host.save_site_session() if agent == MAIN else None
         return await self.host.save_site_session(agent)
+
+    async def typed_into(self, agent: str, page: Any, element: Any) -> None:
+        """The user typed a value into a field of the agent's tab: a password field makes it a sign-in, which the host
+        saves once the site answers it with new cookies (`Host.user_typed_password`), handoff or not."""
+        note = getattr(self.host, "user_typed_password", None)
+        if note is None:
+            return
+        try:
+            if await asyncio.wait_for(element.evaluate(PASSWORD_FIELD), 2.0) is True:
+                await asyncio.wait_for(note(agent, page), 3.0)
+        except Exception:  # noqa: BLE001 - the field went away, or the browser is busy: the sign-in stays the user's to save
+            pass
 
     # Agent side --------------------------------------------------------------------------------------------------
 

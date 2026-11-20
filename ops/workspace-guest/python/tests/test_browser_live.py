@@ -14,6 +14,7 @@ import io
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -110,6 +111,12 @@ class Fixture(BaseHTTPRequestHandler):
         if self.path == "/account":
             signed = "sid=" in (self.headers.get("cookie") or "")
             return self.reply(f"<!doctype html><title>Account</title><h1>{'Signed in' if signed else 'Signed out'}</h1>")
+        if self.path in ("/cart", "/cart?add"):
+            # An anonymous cart in a session cookie, as shops keep one before any sign-in.
+            if self.path == "/cart?add":
+                return self.reply("<!doctype html><title>Cart</title><h1>Added</h1>", headers={"set-cookie": "cart=2; Path=/"})
+            cart = re.search(r"(?:^|; )cart=(\d+)", self.headers.get("cookie") or "")
+            return self.reply(f"<!doctype html><title>Cart</title><h1>Cart: {cart.group(1) if cart else 'empty'}</h1>")
         if self.path == "/rotate":
             return self.reply("<!doctype html><title>Rotated</title><p>rotated</p>", headers={"set-cookie": "sid=rotated; Path=/; HttpOnly"})
         if self.path == "/report.txt":
@@ -242,6 +249,8 @@ class LiveBrowserTests(unittest.TestCase):
             except browser.BrowserError:
                 pass
             self.wait_for_host_exit()
+            # The tests below start like a new chat: no profile, so no tabs of this test reopen.
+            shutil.rmtree(self.workspace / "secrets" / ".browser-profile", ignore_errors=True)
 
     def test_1_numbered_elements_describe_the_page(self) -> None:
         from aiqsa import browser
@@ -317,9 +326,30 @@ class LiveBrowserTests(unittest.TestCase):
             self.assertIsNotNone(process.wait(timeout=30))
         self.assertEqual(self.chromium_processes(), [], "a closed browser leaves no Chromium process")
         restored = self.quiet(browser.open, self.base + "/account")
-        self.assertIn("saved sign-ins restored: 127.0.0.1", str(restored))
+        # The chat's profile carries the sign-in (a session cookie, kept by the profile's own copy) into the next browser.
+        self.assertIn("Started the browser again", str(restored))
+        self.assertIn("saved sign-ins kept current: 127.0.0.1", str(restored))
         self.assertIn("Signed in", browser.text())
         self.assertEqual(browser.status()["sessions"], ["127.0.0.1.json"])
+
+    def test_3b_the_next_turn_continues_in_its_tab_with_an_anonymous_cart(self) -> None:
+        from aiqsa import browser
+        from aiqsa.browser import _client
+
+        self.quiet(browser.open, self.base + "/cart?add")
+        self.quiet(browser.open, self.base + "/cart")
+        self.assertIn("Cart: 2", browser.text())
+        # The turn ends: the browser closes with the VM, and the next message starts a new one.
+        browser.close()
+        self.wait_for_host_exit()
+        for process in _client._STARTED:
+            self.assertIsNotNone(process.wait(timeout=30))
+        page = self.quiet(browser.page_info)
+        self.assertIn("Reopened the tab you had open at the end of your last turn: 1. 127.0.0.1:", str(page))
+        self.assertIn("/cart. The current tab is 1.", str(page))
+        self.assertIn("Cart: 2", browser.text(), "a cookie no saved sign-in holds survives the restart")
+        state = json.loads((self.workspace / "secrets" / ".browser-profile" / "aiqsa-state.json").read_text("utf-8"))
+        self.assertEqual(state["tabs"]["main"]["urls"], [self.base + "/cart"])
 
     def test_4_errors_name_the_next_step(self) -> None:
         from aiqsa import browser

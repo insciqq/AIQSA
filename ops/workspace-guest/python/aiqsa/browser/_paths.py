@@ -55,6 +55,11 @@ def sessions_dir() -> Path:
     return _at("/workspace/secrets/browser")
 
 
+def profile_dir() -> Path:
+    """The chat's browser profile (`_profile.py`): beside the saved sign-ins, never collected, exported or captured."""
+    return _at("/workspace/secrets/.browser-profile")
+
+
 def proxy_plan_path() -> Path:
     """The VM's proxies with their credentials, a managed file an install renames into place (`WORKSPACE_PROXY_PLAN_PATH`)."""
     return _at("/workspace/secrets/.proxy-plan.json")

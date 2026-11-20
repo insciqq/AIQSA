@@ -147,9 +147,11 @@ async function browser(run: Run, mode: "login" | "restored" | "expired" | "delet
   step = "browser_open";
   let page = await aiqsaBrowser(run, 'open "$SHOP_URL"');
   assert.match(page, /^\[browser #1\] open @ 127\.0\.0\.1:18765\/$/mu);
-  // The run's admitted language and zone reached the guest browser through the run environment.
-  assert.match(page, new RegExp(`Started a new browser \\(Chromium [0-9.]+, language ${BROWSER_BINDING.locale}, time zone ` +
-    `${BROWSER_BINDING.timeZone}\\); saved sign-ins restored: ${saved ? "shop\\.example" : "none"}\\.`, "u"));
+  // The run's admitted language and zone reached the guest browser through the run environment. A chat's later turn
+  // starts its browser again on the chat's profile (`ops/workspace-guest/python/aiqsa/browser/_profile.py`).
+  assert.match(page, new RegExp(`Started (?:a new browser|the browser again) \\(Chromium [0-9.]+, language ${BROWSER_BINDING.locale}, ` +
+    `time zone ${BROWSER_BINDING.timeZone}\\)`, "u"));
+  assert.match(page, new RegExp(`saved sign-ins (?:restored|kept current): ${saved ? "shop\\.example" : "none"}[.;]`, "u"));
   if (mode === "restored") {
     assert.match(page, /^Title: Синтетический магазин$/mu);
   } else {
@@ -267,7 +269,8 @@ async function main() {
     assert.notEqual(renewed.saved.versionId, restored.saved.versionId);
     await secrets.mutate(userId, { action: "delete", id: renewed.saved.id, expectedVersionId: renewed.saved.versionId });
     phase = "manual_deletion_relogin";
-    const fifth = await admit(third.chatId); await startSite(fifth); await browser(fifth, "deleted"); const recreated = await finish(fifth);
+    // A deleted saved sign-in reaches no new chat; the chat whose profile holds the site stays signed in until Reset.
+    const fifth = await admit(); await startSite(fifth); await browser(fifth, "deleted"); const recreated = await finish(fifth);
     assert.notEqual(recreated.saved.id, renewed.saved.id);
     process.stdout.write(JSON.stringify({ ok: true, realKvm: true, fullChromium: true, chromiumMatchesPin: true, guestRoot: true,
       guestMemoryMiB: config.memoryMiB, pythonPlaywright: "1.60.0", pyotp: "2.10.0", oneBrowserAcrossCalls: true,
