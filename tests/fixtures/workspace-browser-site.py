@@ -16,6 +16,44 @@ LOGINS = 0
 KEY = b"synthetic-browser-fixture-signing-key"
 
 
+#: A heavy single-page app for the browser's time budgets: tens of thousands of nodes, deep open shadow roots,
+#: many frames, constant DOM changes and long tasks (`/heavy`), and a page that stops answering for 24 s (`/busy`).
+HEAVY = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Heavy board</title></head><body><main id="app"></main><script>
+const app = document.getElementById('app');
+let rows = '';
+for (let r = 0; r < 600; r++) {
+  rows += '<div class="row">';
+  for (let c = 0; c < 50; c++) rows += c % 10 === 0 ? '<button>Card ' + r + '.' + c + '</button>' : '<span tabindex="0">' + r + '.' + c + '</span>';
+  rows += '</div>';
+}
+app.innerHTML = rows;
+let deep = document.body;
+for (let d = 0; d < 40; d++) {
+  const host = document.createElement('div');
+  deep.appendChild(host);
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = '<button>Deep ' + d + '</button><div></div>';
+  deep = root.lastChild;
+}
+for (let i = 0; i < 30; i++) {
+  const frame = document.createElement('iframe');
+  frame.srcdoc = '<button>Frame ' + i + '</button>' + '<p>filler</p>'.repeat(300);
+  frame.style.cssText = i % 3 ? 'width:160px;height:80px' : 'display:none';
+  document.body.appendChild(frame);
+}
+setInterval(() => {
+  const note = document.createElement('span');
+  note.textContent = String(Date.now());
+  app.appendChild(note);
+  if (app.childElementCount > 700) app.removeChild(app.children[600]);
+}, 5);
+setInterval(() => { const end = performance.now() + 250; while (performance.now() < end) {} }, 300);
+</script></body></html>"""
+BUSY = ("<!doctype html><title>Busy</title><button>After the wait</button><script>"
+        "addEventListener('load', () => setTimeout(() => { const end = Date.now() + 24000; while (Date.now() < end) {} }, 0));"
+        "</script>")
+
+
 def token(items):
     payload = base64.urlsafe_b64encode(json.dumps({"generation": GENERATION, "items": items}).encode()).decode()
     return payload + "." + hmac.new(KEY, payload.encode(), hashlib.sha256).hexdigest()
@@ -34,6 +72,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", "session=" + cookie + "; HttpOnly; SameSite=Lax; Path=/")
         self.end_headers()
         self.wfile.write(body)
+
+    def redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def session(self):
         try:
@@ -54,6 +98,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/expire":
             GENERATION += 1
             self.send("expired")
+            return
+        if self.path in ("/heavy", "/busy"):
+            self.send(HEAVY if self.path == "/heavy" else BUSY)
+            return
+        # Sign-in walls: a redirect loop, the site's own sign-in page, and another host's (localhost is another host than 127.0.0.1).
+        if self.path in ("/loop", "/private", "/sso"):
+            port = self.server.server_address[1]
+            self.redirect({"/loop": "/loop", "/private": "/?next=/private", "/sso": f"http://localhost:{port}/"}[self.path])
             return
         session = self.session()
         if session:

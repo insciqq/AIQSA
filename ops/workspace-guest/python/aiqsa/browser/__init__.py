@@ -56,7 +56,8 @@ def _page(result: Dict[str, Any]) -> Page:
 
 
 def open(url: str, proxy: Optional[str] = None) -> Page:  # noqa: A001 - the helper's verb
-    """Open a web address in the current tab; `proxy` names a proxy, `direct`, or `auto` to follow hints again."""
+    """Open a web address, or a page built in the Workspace by its path, in the current tab; `proxy` names a proxy,
+    `direct`, or `auto` to follow hints again."""
     return _page(_run("open", url=url, proxy=proxy))
 
 

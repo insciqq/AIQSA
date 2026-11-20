@@ -77,7 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
     quiet = argparse.ArgumentParser(add_help=False)
     quiet.add_argument("--quiet", action="store_true", help="Print only the step line, not the page.")
-    command = commands.add_parser("open", parents=[quiet], help="Open a web address in the current tab.")
+    command = commands.add_parser("open", parents=[quiet], help="Open a web address, or a page you built by its Workspace path, in the current tab.")
     command.add_argument("url")
     command.add_argument("--proxy", metavar="NAME", help=_PROXY_HELP)
     command = commands.add_parser("info", help="The page: URL, title and numbered elements on screen.")
