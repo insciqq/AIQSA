@@ -5,7 +5,7 @@ import type { WorkspaceSecretSummary } from "../../lib/contracts/workspaceSecret
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
-import { expectSignInRequestSent, recordMessagePosts } from "./support/browserSignInFixture";
+import { expectSignInRequestSent, messagePosts, recordMessagePosts } from "./support/browserSignInFixture";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectCenterUnobscured, expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
@@ -255,7 +255,7 @@ for (const viewport of viewports) {
     test(`a saved sign-in's Sign in again in Secrets starts a new chat at ${viewport.width}x${viewport.height} ${viewport.theme}`,
       async ({ page }, testInfo) => {
         test.setTimeout(120_000);
-        const { creates, newStream } = await prepare(page, testInfo, viewport.theme);
+        const { creates } = await prepare(page, testInfo, viewport.theme);
         await runAccountMenuAction(page, "Secrets");
         const panel = page.getByTestId("workspace-secrets-panel");
         const list = panel.getByRole("list", { name: "Saved Workspace secrets" });
@@ -277,12 +277,15 @@ for (const viewport of viewports) {
 
         await signIn.click();
         await expect(page.getByTestId("library-v2")).toBeHidden();
-        await expect.poll(() => creates.length).toBe(1);
-        await newStream.waitForRequestCount(page, 1);
-        await expectSignInRequestSent(page, newChatId, "mail.example.com");
+        // A personal chat is made on the client and exists on the server from its first message, so the request is
+        // the new chat's first send: a chat id of its own, never the automation's, naming the site and the turn's kind.
+        await expect.poll(async () => (await messagePosts(page)).length).toBe(1);
+        const [post] = await messagePosts(page);
+        expect(post!.path).toMatch(/^\/api\/chats\/[0-9a-f-]{36}\/messages$/u);
+        expect(post!.path).not.toContain(taskChatId);
+        expect(post!.body.systemTurn).toEqual({ host: "mail.example.com", kind: "browser_sign_in_request" });
+        expect(creates).toHaveLength(0);
         await expectNoHorizontalOverflow(page);
-        await shot(page, testInfo, `wave-sign-in-secrets-sent-${viewport.name}`,
-          page.getByRole("article", { name: "Sign in again", exact: true }).last());
       });
   });
 }
