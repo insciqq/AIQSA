@@ -4,7 +4,7 @@ import { canAccessSearchStrategy } from "../auth/entitlements";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createSkillCatalogRepository } from "../skills/catalogRepository";
-import { turnMainRunId } from "../subagents/nesting";
+import { mcpBindingRunIds } from "../subagents/nesting";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { parsePersistedToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { snapshotToolLoopJson, toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
@@ -38,11 +38,10 @@ export function createObservationSourceOwners() {
             runtimeGeneration: { select: { revisionId: true, revision: { select: { serverId: true } } } } } }
         } });
         const accepted = call?.mcpRunBinding;
-        // A background sub-agent's run holds no MCP bindings of its own: its calls use those of the main-agent run behind
-        // its turn (integrator decision 2026-10-30, `lib/server/runs/subagentBackground/store.ts`), so a result it saved
-        // belongs to that run's binding. Only that run qualifies, never another run of the chat.
-        const bindingRunId = run.subagentTurn ? turnMainRunId(run.subagentTurn.parentRunId, run.subagentTurn.parentRun) : run.id;
-        if (!accepted || accepted.modelRunId !== bindingRunId || accepted.runtimeGenerationFingerprint !== binding.fingerprint ||
+        // A background sub-agent's calls use the bindings of the main-agent run behind its turn (integrator decision
+        // 2026-10-30), and those its own run's `find_tools` bound on it: a result it saved belongs to either. Only those
+        // runs qualify, never another run of the chat (`mcpBindingRunIds`).
+        if (!accepted || !mcpBindingRunIds(run).includes(accepted.modelRunId) || accepted.runtimeGenerationFingerprint !== binding.fingerprint ||
           accepted.runtimeGeneration && (accepted.runtimeGeneration.revisionId !== binding.revisionId ||
             accepted.runtimeGeneration.revision.serverId !== binding.serverId) ||
           !accepted.runtimeGeneration && source.state !== "READY") throw unavailable();

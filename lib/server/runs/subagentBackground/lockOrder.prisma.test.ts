@@ -11,6 +11,7 @@ import { endedSubagentResult } from "../../../../tests/support/subagentPorts";
 import { createChatTitleRepository } from "../../chats/titleGenerationRepository";
 import { SUBAGENT_RUN_NO_ANSWER, createNativeRunStore } from "../../engine/runStore";
 import { hashCanonicalMcpValue } from "../../mcp/definitions";
+import { namespacedMcpToolName } from "../../mcp/runPlan";
 import { requireMemoryCommandSource } from "../../memory/commands/sourceAuthority";
 import { memorySha256 } from "../../memory/persistence/lexical";
 import { withLockedMemoryTransaction } from "../../memory/persistence/transaction";
@@ -19,13 +20,15 @@ import type { SubagentBinding } from "../../subagents/ports";
 import { getWorkspaceConfig } from "../../workspace/config";
 import { createPrismaWorkspaceExecutionRegistry, workspaceSyncCleanupId } from "../../workspace/executionRegistry";
 import { namespacedWorkspaceToolName } from "../../workspace/toolCatalog";
+import { createPrismaMcpDiscoveryOperations } from "../prismaRepositoryMcpDiscovery";
 import type { RunUsageAttribution } from "../runRepositoryContract";
 import { createPrismaSubagentBackgroundStore } from "./store";
 
 /**
  * The row-lock order of the transactions that met in production deadlocks, on a disposable database: a background
  * sub-agent's admission against a Workspace registration of its parent run, a sub-agent's settlement against its
- * usage totals, Memory's source check against usage totals, and a chat title's usage against its answer's totals. Each
+ * usage totals, Memory's source check against usage totals, a chat title's usage against its answer's totals, and MCP
+ * discovery of a main-agent run against its background sub-agent's (a design reviewers deadlocked before it shipped). Each
  * test holds one transaction at the point where the old order deadlocked, lets the other one run into it, and checks
  * what the waiting one holds before it lets the first go on: with the order fixed, the waiter holds nothing the holder
  * needs next, so both finish and none is a deadlock victim. No timing decides a test: every wait is observed through
@@ -42,6 +45,8 @@ const usage = (inputTokens: number): RunUsageAttribution => ({ estimatedCostMicr
 /** What the title model reported, as the title worker hands it over. */
 const titleUsage = { inputTokens: 10, outputTokens: 5 };
 const owners: string[] = [];
+/** Installation MCP servers a test created, removed after their users. */
+const mcpServers: string[] = [];
 
 function barrier<T = void>() {
   let release!: (value: T) => void;
@@ -245,6 +250,90 @@ async function titledAnswer() {
     usageScope: { assistantMessageId: answer.id, chatId: chat.id, runId: run.id, userId } };
 }
 
+type ServerKey = "tracker" | "wiki";
+
+/**
+ * Two installation MCP servers `userId` may use, each with the ready runtime generation its preference desires, as an
+ * epoch's guarded insert reads them (`insertAcceptedMcpRunBindings`): what one server adds to a snapshot and binds.
+ */
+async function readyServers(userId: string): Promise<Record<ServerKey, Awaited<ReturnType<typeof readyServer>>>> {
+  return { tracker: await readyServer(userId, "tracker"), wiki: await readyServer(userId, "wiki") };
+}
+
+async function readyServer(userId: string, key: ServerKey) {
+  const suffix = randomUUID().replaceAll("-", "");
+  const server = await prisma.mcpServer.create({ data: { description: `Synthetic ${key}`, displayName: `Synthetic ${key}`, enabled: true,
+    namespace: `lock_${key}_${suffix.slice(0, 12)}` } });
+  mcpServers.push(server.id);
+  const revision = await prisma.mcpRevision.create({ data: { configuration: {}, draftHash: `draft-${suffix}`, identityHash: `identity-${suffix}`,
+    revisionNumber: 1, serverId: server.id, validationEvidence: {} } });
+  await prisma.mcpServer.update({ data: { activeRevisionId: revision.id }, where: { id: server.id } });
+  await prisma.mcpGrant.create({ data: { canUse: true, serverId: server.id, userId } });
+  const preference = await prisma.mcpUserServer.create({ data: { enabled: true, serverId: server.id, userId } });
+  const generation = await prisma.mcpRuntimeGeneration.create({ data: { fingerprint: suffix.repeat(2), inventory: { tools: [{
+    definitionHash: "a".repeat(64), description: "Read", inputSchema: { type: "object" }, name: "read" }], version: 1 },
+  inventoryUpdatedAt: new Date(), revisionId: revision.id, state: "ready", userServerId: preference.id } });
+  await prisma.mcpUserServer.update({ data: { desiredRuntimeGenerationId: generation.id }, where: { id: preference.id } });
+  const namespacedName = namespacedMcpToolName(server.namespace, "read");
+  return {
+    binding: { fingerprint: generation.fingerprint, runtimeGenerationId: generation.id, serverId: server.id },
+    catalog: { description: server.description, namespace: server.namespace, revisionId: revision.id, serverId: server.id,
+      serverName: server.displayName, tools: [{ description: "Read", namespacedName, originalName: "read" }] },
+    server: { fingerprint: generation.fingerprint, revisionId: revision.id, serverId: server.id, serverName: server.displayName },
+    tool: { definitionHash: "a".repeat(64), description: "Read", inputSchema: { type: "object" }, name: "read", namespacedName,
+      originalName: "read", serverId: server.id, serverName: server.displayName }
+  };
+}
+
+/**
+ * A chat whose main-agent run offers both servers under Auto and has admitted a background sub-agent, which copied that
+ * request, with `find_tools` call rows of any agent and the epochs they append through a client a test observes.
+ */
+async function discoveringAgents() {
+  const f = await chatWithMainRun({ workspace: false });
+  const servers = await readyServers(f.userId);
+  await prisma.modelRun.update({ data: { normalizedRequest: { mcpDiscovery: { catalog: { servers: [servers.tracker.catalog, servers.wiki.catalog],
+    version: 1 }, epochs: [], version: 2 } } }, where: { id: f.mainRunId } });
+  const admitted = await createPrismaSubagentBackgroundStore(prisma).admit(f.admission());
+  if (admitted.kind !== "admitted") throw new Error("subagent_fixture_not_admitted");
+  const { threadId } = await prisma.subagentTurn.findUniqueOrThrow({ select: { threadId: true }, where: { id: admitted.turnId } });
+  const backgroundAgent = { threadId, turnId: admitted.turnId };
+  let ordinal = 10;
+  /** A `find_tools` call row on `runId` of the sub-agent `agent` names; absent, the main agent's. */
+  const findTools = async (runId: string, agent?: Readonly<{ threadId: string; turnId: string }>) => {
+    ordinal += 1;
+    return (await prisma.modelRunToolCall.create({ data: { arguments: { query: "records" }, modelRunId: runId, ordinal,
+      providerCallId: `find-${ordinal}`, roundIndex: 1, startedAt: new Date(), state: "running", toolName: "find_tools",
+      ...(agent ? { subagentThreadId: agent.threadId, subagentTurnId: agent.turnId } : {}) } })).id;
+  };
+  /** A foreground child of the background sub-agent: its turn runs in the sub-agent's own run. */
+  const foregroundChild = async (name: string) => {
+    ordinal += 1;
+    const call = await prisma.modelRunToolCall.create({ data: { arguments: { message: "Brief", name }, modelRunId: admitted.runId, ordinal,
+      providerCallId: `agent-${ordinal}`, roundIndex: 1, state: "running", subagentThreadId: threadId, subagentTurnId: admitted.turnId,
+      toolName: "call_subagent" } });
+    const thread = await prisma.subagentThread.create({ data: { anchorRunId: f.mainRunId, chatId: f.chatId, name, parentThreadId: threadId,
+      userId: f.userId } });
+    const turn = await prisma.subagentTurn.create({ data: { chatId: f.chatId, mode: "foreground", modelId: "fake-qsa", parentRunId: admitted.runId,
+      parentToolCallId: call.id, provider: "fake", threadId: thread.id, userId: f.userId } });
+    return { threadId: thread.id, turnId: turn.id };
+  };
+  /** The epoch of the `find_tools` call `callId` on `runId`, loading `keys`, as that agent's registry asks for it. */
+  const append = (client: PrismaClient, runId: string, callId: string, keys: readonly ServerKey[]) =>
+    createPrismaMcpDiscoveryOperations(client).appendMcpDiscoveryEpoch({ bindings: keys.map((key) => servers[key].binding), goal: "records",
+      modelRunToolCallId: callId, roundIndex: 1, runId, snapshot: { servers: keys.map((key) => servers[key].server),
+        tools: keys.map((key) => servers[key].tool), version: 1 }, toolIds: keys.map((key) => servers[key].tool.namespacedName), userId: f.userId });
+  const byFingerprint = (left: Readonly<{ runtimeGenerationFingerprint: string }>, right: Readonly<{ runtimeGenerationFingerprint: string }>) =>
+    left.runtimeGenerationFingerprint < right.runtimeGenerationFingerprint ? -1 : 1;
+  /** A run's binding rows, by fingerprint. */
+  const rows = async (runId: string) => (await prisma.mcpRunBinding.findMany({ select: { runtimeGenerationFingerprint: true,
+    runtimeGenerationId: true }, where: { modelRunId: runId } })).sort(byFingerprint);
+  /** The rows of `keys`' servers, as `rows` lists them. */
+  const bound = (...keys: ServerKey[]) => keys.map((key) => ({ runtimeGenerationFingerprint: servers[key].binding.fingerprint,
+    runtimeGenerationId: servers[key].binding.runtimeGenerationId })).sort(byFingerprint);
+  return { ...f, append, backgroundAgent, backgroundRunId: admitted.runId, bound, findTools, foregroundChild, rows, servers };
+}
+
 afterEach(async () => {
   for (const userId of owners.splice(0)) {
     await prisma.memoryOperationReceipt.deleteMany({ where: { userId } });
@@ -255,7 +344,15 @@ afterEach(async () => {
     await prisma.modelRun.deleteMany({ where: { userId } });
     await prisma.workspaceSession.deleteMany({ where: { chat: { userId } } });
     await prisma.chat.deleteMany({ where: { userId } });
+    // The user's MCP preferences and their runtime generations go with it; the servers and revisions are the installation's.
     await prisma.user.deleteMany({ where: { id: userId } });
+  }
+  for (const serverId of mcpServers.splice(0)) {
+    await prisma.mcpServer.update({ data: { activeRevisionId: null }, where: { id: serverId } });
+    await prisma.mcpUserServer.deleteMany({ where: { serverId } });
+    await prisma.mcpGrant.deleteMany({ where: { serverId } });
+    await prisma.mcpRevision.deleteMany({ where: { serverId } });
+    await prisma.mcpServer.delete({ where: { id: serverId } });
   }
 });
 afterAll(() => prisma.$disconnect());
@@ -507,6 +604,130 @@ describe("a chat title's usage and its answer's usage totals", () => {
     } finally {
       resume.release();
       await Promise.allSettled([totals, recording]);
+    }
+  }, 60_000);
+});
+
+/**
+ * MCP discovery of a main-agent run and its background sub-agents (2026-11-20). An epoch locks and writes only the run
+ * whose agent called `find_tools` (`prismaRepositoryMcpDiscovery.ts`): a background sub-agent's run binds on itself.
+ * Binding on the main-agent run instead deadlocked with the main agent's own discovery of the same server and with an
+ * image the main agent published. Each test holds one epoch's transaction after it wrote its rows, just before it records
+ * the epoch, and runs the other discovery into it.
+ */
+describe("MCP discovery of a main-agent run and its background sub-agent", () => {
+  type Discovery = Readonly<{ holder: "background" | "main"; keys: Readonly<Record<"background" | "main", readonly ServerKey[]>> }>;
+  const cases: Array<[string, Discovery]> = [
+    ["the same server, the main agent's held", { holder: "main", keys: { background: ["tracker"], main: ["tracker"] } }],
+    ["the same server, the sub-agent's held", { holder: "background", keys: { background: ["tracker"], main: ["tracker"] } }],
+    ["two servers in either order, the main agent's held", { holder: "main", keys: { background: ["wiki", "tracker"], main: ["tracker", "wiki"] } }],
+    ["two servers in either order, the sub-agent's held", { holder: "background", keys: { background: ["wiki", "tracker"], main: ["tracker", "wiki"] } }],
+    ["one server each, the main agent's held", { holder: "main", keys: { background: ["wiki"], main: ["tracker"] } }]
+  ];
+
+  it.each(cases)("never makes one wait for the other: %s", async (_name, discovery) => {
+    const f = await discoveringAgents();
+    const runs = { background: f.backgroundRunId, main: f.mainRunId };
+    const calls = { background: await f.findTools(f.backgroundRunId, f.backgroundAgent), main: await f.findTools(f.mainRunId) };
+    const other = discovery.holder === "main" ? "background" : "main";
+    const holderPid = barrier<number>();
+    const written = barrier();
+    const resume = barrier();
+    const failures: unknown[] = [];
+    // Paused once its rows are written and before it records its epoch: it holds its run and its rows' index entries.
+    const holderClient = observed(holderPid.release, { failed: (error) => failures.push(error),
+      pause: { method: "update", model: "modelRun", reached: () => written.release(), resume: resume.wait } });
+    const otherPid = barrier<number>();
+    let holding: Promise<unknown> | undefined;
+    let running: Promise<unknown> | undefined;
+    try {
+      holding = f.append(holderClient, runs[discovery.holder], calls[discovery.holder], discovery.keys[discovery.holder])
+        .catch((error: unknown) => ({ error }));
+      await Promise.race([written.wait, holding.then((value) => { throw new Error("holder_ended_before_its_epoch", { cause: value }); })]);
+      const settled: unknown[] = [];
+      running = f.append(observed(otherPid.release, { failed: (error) => failures.push(error) }), runs[other], calls[other],
+        discovery.keys[other]).then((value) => { settled.push(value); }, (error: unknown) => { settled.push({ error }); });
+      const [holder, waiter] = [await holderPid.wait, await otherPid.wait];
+      while (settled.length === 0 && !(await blockedBy(waiter, holder))) await delay(20);
+      // It finished while the other held its run and rows: nothing of the one is the other's.
+      expect(settled).toEqual([expect.objectContaining({ discovery: expect.objectContaining({ epochs: [expect.objectContaining({
+        epoch: 1, modelRunToolCallId: calls[other] })] }) })]);
+      resume.release();
+      expect(await holding).toMatchObject({ discovery: { epochs: [{ epoch: 1, modelRunToolCallId: calls[discovery.holder] }] } });
+      expect(failures).toEqual([]);
+      // Each run binds what its own agent loaded, once, and the sub-agent's rows are its run's, where its registry reads them.
+      expect(await f.rows(f.mainRunId)).toEqual(f.bound(...discovery.keys.main));
+      expect(await f.rows(f.backgroundRunId)).toEqual(f.bound(...discovery.keys.background));
+    } finally {
+      resume.release();
+      await Promise.allSettled([holding, running]);
+    }
+  }, 60_000);
+
+  it("binds a sub-agent's load while an image the main agent publishes holds the main-agent run", async () => {
+    const f = await discoveringAgents();
+    const call = await f.findTools(f.backgroundRunId, f.backgroundAgent);
+    const publisherPid = barrier<number>();
+    const held = barrier();
+    const resume = barrier();
+    // As `lib/server/images/service.ts` publishes: the run `FOR UPDATE`, then the chat, which a sub-agent's settlement may hold.
+    const publishing = observed(publisherPid.release).$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "ModelRun" WHERE "id" = ${f.mainRunId} FOR UPDATE`;
+      held.release();
+      await resume.wait;
+    });
+    try {
+      await held.wait;
+      const discoveryPid = barrier<number>();
+      const settled: unknown[] = [];
+      const discovering = f.append(observed(discoveryPid.release), f.backgroundRunId, call, ["tracker"])
+        .then((value) => { settled.push(value); }, (error: unknown) => { settled.push({ error }); });
+      const [holder, waiter] = [await publisherPid.wait, await discoveryPid.wait];
+      while (settled.length === 0 && !(await blockedBy(waiter, holder))) await delay(20);
+      expect(settled).toEqual([expect.objectContaining({ discovery: expect.anything() })]);
+      expect(await f.rows(f.backgroundRunId)).toEqual(f.bound("tracker"));
+      resume.release();
+      await discovering;
+    } finally {
+      resume.release();
+      await publishing.catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("loads the tools of two foreground children of the background sub-agent that discover at once, each epoch on the last", async () => {
+    const f = await discoveringAgents();
+    const [one, two] = [await f.foregroundChild("one"), await f.foregroundChild("two")];
+    const calls = [await f.findTools(f.backgroundRunId, one), await f.findTools(f.backgroundRunId, two)];
+    const firstPid = barrier<number>();
+    const written = barrier();
+    const resume = barrier();
+    const failures: unknown[] = [];
+    const firstClient = observed(firstPid.release, { failed: (error) => failures.push(error),
+      pause: { method: "update", model: "modelRun", reached: () => written.release(), resume: resume.wait } });
+    const secondPid = barrier<number>();
+    let first: Promise<unknown> | undefined;
+    let second: Promise<unknown> | undefined;
+    try {
+      first = f.append(firstClient, f.backgroundRunId, calls[0]!, ["tracker"]).catch((error: unknown) => ({ error }));
+      await Promise.race([written.wait, first.then((value) => { throw new Error("first_ended_before_its_epoch", { cause: value }); })]);
+      second = f.append(observed(secondPid.release, { failed: (error) => failures.push(error) }), f.backgroundRunId, calls[1]!,
+        ["tracker", "wiki"]).catch((error: unknown) => ({ error }));
+      const waiter = await secondPid.wait;
+      // The second waits for the run's lock, before it reads anything the first is still writing...
+      await waitForBlock(waiter, await firstPid.wait);
+      expect(await statementOf(waiter)).toContain("FOR NO KEY UPDATE OF run");
+      resume.release();
+      // ...then plans on the first's epoch and row: it binds only what the first did not, and both have their tools.
+      expect(await first).toMatchObject({ discovery: { epochs: [{ epoch: 1, modelRunToolCallId: calls[0] }] } });
+      expect(await second).toMatchObject({ discovery: { epochs: [{ epoch: 1 }, { epoch: 2, modelRunToolCallId: calls[1],
+        toolIds: [f.servers.tracker.tool.namespacedName, f.servers.wiki.tool.namespacedName] }] },
+      snapshot: { servers: expect.arrayContaining([expect.objectContaining({ serverId: f.servers.wiki.binding.serverId })]) } });
+      expect(failures).toEqual([]);
+      expect(await f.rows(f.backgroundRunId)).toEqual(f.bound("tracker", "wiki"));
+      expect(await f.rows(f.mainRunId)).toEqual([]);
+    } finally {
+      resume.release();
+      await Promise.allSettled([first, second]);
     }
   }, 60_000);
 });

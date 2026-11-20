@@ -649,6 +649,21 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             workspace: input.workspace },
           userId: input.userId
         };
+        /**
+         * A background turn's registry (`agentInput.host`) acts as its own run, which binds what its own `find_tools` loads:
+         * a discovery epoch writes and locks only the run that calls it (`prismaRepositoryMcpDiscovery.ts`). It calls the
+         * rest under this run's rows (integrator decision 2026-10-30), so it reads both, its own row winning for a server
+         * both bound, into a map of its own: a row of its run linked to a call of the main agent or of another sub-agent
+         * would leave that call's saved result unreadable (`mcpBindingRunIds`).
+         */
+        const backgroundMcpBindings = (hostRunId: string) => ({
+          loadMcpBindingRows: async () => {
+            const own = await engine.mcpBindingRows(hostRunId);
+            const bound = new Set(own.map((row) => row.runtimeGenerationFingerprint));
+            return [...own, ...(await engine.mcpBindingRows(runId)).filter((row) => !bound.has(row.runtimeGenerationFingerprint))];
+          },
+          mcpBindings: new Map(mcpBindings)
+        });
         /** A sub-agent's handoff mode: the run's, naming the sub-agent, with a background turn's own live membership. */
         const subagentHandoff = (agent: WorkspaceAgent, host: SubagentRegistryHost | undefined):
           Readonly<{ browserHandoff: BrowserHandoffMode }> | null => {
@@ -711,11 +726,13 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           // One page-reader session for the answer: its link authority and cache cover every agent, and it stays bound to
           // the main run, however long a background turn outlives it.
           // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
-          // parent's MCP bindings by reference; each sub-agent's handoff names it, from its own run's live membership.
+          // parent's MCP bindings by reference and its own (`backgroundMcpBindings`); each sub-agent's handoff names it,
+          // from its own run's live membership.
           buildRegistry: (agentInput) => buildToolRegistry({ ...registryInput,
             agent: agentInput.agent,
             ...(subagentHandoff(agentInput.agent, agentInput.host) ?? {}),
-            ...(agentInput.host ? { onUsage: agentInput.host.onUsage, runId: agentInput.host.runId } : {}),
+            ...(agentInput.host ? { ...backgroundMcpBindings(agentInput.host.runId), onUsage: agentInput.host.onUsage,
+              runId: agentInput.host.runId } : {}),
             // A sub-agent's calls on the user's computer end with its own tool time: its background turn's, or the sub-agents'.
             toolTimeLeftMs: () => agentInput.host ? agentInput.host.toolTimeLeftMs() : agentToolTimeEndsAt - now(),
             ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),

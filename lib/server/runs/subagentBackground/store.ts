@@ -70,14 +70,16 @@ export async function lockChatSubagentAdmission(tx: Prisma.TransactionClient, ch
  * parent's whole `normalizedRequest` into its own row, because the Workspace
  * code-to-MCP grant, the Workspace coordinator and every whole-request decoder
  * read the request by run id. Its provider, MCP and Skill binding rows stay
- * by reference: the runner reads them from `SubagentTurn.parentRunId` (an
- * interactive MCP write reaches the guard through the parent's
+ * by reference: the runner reads them from the main-agent run behind its turn
+ * (an interactive MCP write reaches the guard through that run's
  * `McpRunBinding` rows), and they outlive it, because deleting the parent
  * deletes the turn and its run and the deleting paths stop the run first.
- * Known gap (2026-11-20): what its own `find_tools` loads is bound on its own
- * run, where its registry does not read, so such a tool is refused as
- * unavailable; binding it on the main-agent run needs a lock order that
- * concurrent main and sub-agent discovery cannot deadlock on (ledger task).
+ * What its own `find_tools` loads it binds on its own run, since a discovery
+ * epoch writes and locks only the run that calls it, and its registry and saved
+ * results read those rows beside the main-agent run's (`mcpBindingRunIds`,
+ * 2026-11-20). A child of a background sub-agent copies that sub-agent's own
+ * rows (`copyParentMcpRunBindings`), because its request copies the servers
+ * they bind.
  *
  * Except the provider bindings of `analyze_image` and `generate_image`
  * (`CALL_PROVIDER_BINDING_KEYS`, decision 2026-11-20): their attempt and
@@ -105,6 +107,20 @@ export async function copyCallProviderBindings(tx: Pick<Prisma.TransactionClient
   if (rows.length === 0) return;
   await tx.providerRunBinding.createMany({ data: rows.map((row) => ({ ...row, executionSnapshot: json(row.executionSnapshot),
     modelRunId: input.toRunId })) });
+}
+
+/**
+ * Copies the `McpRunBinding` rows a background sub-agent's own `find_tools` made, unchanged and in fingerprint order, onto
+ * the run its child's admission just created, under the parent run's lock, which that discovery takes too. The child's
+ * request copies the parent's, servers those rows bind included, while its calls link only its own rows and the
+ * main-agent run's (`mcpBindingRunIds`): without the copies, such a server's tools reached the child's list unbound.
+ */
+export async function copyParentMcpRunBindings(tx: Pick<Prisma.TransactionClient, "mcpRunBinding">,
+  input: Readonly<{ fromRunId: string; toRunId: string }>): Promise<void> {
+  const rows = await tx.mcpRunBinding.findMany({ orderBy: { runtimeGenerationFingerprint: "asc" },
+    select: { runtimeGenerationFingerprint: true, runtimeGenerationId: true }, where: { modelRunId: input.fromRunId } });
+  if (rows.length === 0) return;
+  await tx.mcpRunBinding.createMany({ data: rows.map((row) => ({ ...row, modelRunId: input.toRunId })) });
 }
 
 const ACTIVE_TURN_STATES: SubagentTurnState[] = ["running", "waiting"];
@@ -515,6 +531,8 @@ export function createPrismaSubagentBackgroundStore(client: PrismaClient): Subag
             userId: input.userId, userMessageId: parent.userMessageId
           }, select: { id: true } });
           await copyCallProviderBindings(tx, { fromRunId: parentRunId, toRunId: run.id });
+          // A main-agent parent's rows are read by reference; a background parent's own are copied (header).
+          if (parent.subagentTurnId !== null) await copyParentMcpRunBindings(tx, { fromRunId: parentRunId, toRunId: run.id });
           // Its Workspace binding is the parent's admitted one with its own output folder and browser sign-in sequence,
           // so it attaches to the chat's shared session; a parent without a Workspace leaves it without one.
           const parentWorkspace = await tx.workspaceRunBinding.findUnique({ select: { modelRunId: true },
