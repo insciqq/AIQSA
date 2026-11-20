@@ -79,7 +79,7 @@ class _UsageError(Exception):
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="aiqsa-browser", description="Drive this turn's Workspace browser (full Chromium, kept between commands). "
+    parser = _Parser(prog="aiqsa-browser", description="Drive this chat's Workspace browser (full Chromium, kept between commands and messages). "
                      "Join commands with --then to run them in one call: aiqsa-browser type 1 alice --then click 2.")
     parser.add_argument("--version", action="version", version=f"aiqsa-browser {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)

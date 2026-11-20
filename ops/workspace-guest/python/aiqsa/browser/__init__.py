@@ -8,8 +8,8 @@
     path = b.screenshot()                        # look at it with view_workspace_image, else analyze_image
     b.save_session()                             # keep the sign-in for later requests
 
-One full Chromium per turn stays open between your commands: tabs, cookies and
-the current page survive, your Python variables do not. An element keeps its
+This chat's full Chromium stays open between your commands and keeps its tabs,
+cookies and site data between messages; your Python variables do not survive. An element keeps its
 number while it stays on the page. The `aiqsa-browser` command does the same
 from a shell. Errors raise `BrowserError` with a stable `code`.
 """
@@ -197,7 +197,7 @@ def status(markers: bool = False) -> Dict[str, Any]:
 
 
 def close() -> str:
-    """Close the browser now; the next call starts a new one from the saved sessions."""
+    """Close the browser now; the next call starts it again on this chat's profile."""
     return builtins.str(call("close").get("text") or "")
 
 
