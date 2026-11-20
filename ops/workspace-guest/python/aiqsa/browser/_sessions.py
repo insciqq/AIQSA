@@ -1,12 +1,17 @@
 """Saved site sessions: Playwright storage_state files in the managed secrets directory.
 
-One file per site (`/workspace/secrets/browser/<site>.json`), cookies and local
-storage only, never a password. After an accepted personal run AIQSA encrypts
-changed files as Browser session secrets and restores them in later
-Workspaces (`lib/server/workspace/secrets/browserCollection.ts`). Limits mirror
-`lib/contracts/workspaceSecrets.ts`; a file AIQSA would skip is not written, so
-the previous version stays. Writes are atomic and synced: the turn's Workspace
-is stopped right after the run, and a half-written state must never survive.
+One file per account (`/workspace/secrets/browser/<site>.json`, `google.com` for every Google
+service), cookies and local storage only, never a password. After an accepted personal run AIQSA
+encrypts changed files as Browser session secrets and restores them in later Workspaces
+(`lib/server/workspace/secrets/browserCollection.ts`). Limits mirror `lib/contracts/workspaceSecrets.ts`;
+a file AIQSA would skip is not written, so the previous version stays. Writes are atomic and synced:
+the turn's Workspace is stopped right after the run, and a half-written state must never survive.
+
+Each file this guest writes carries when it was written (`aiqsa.savedAt`, milliseconds; Playwright reads
+only `cookies` and `origins`). Freshness, not file order, decides which copy of a cookie wins when files
+share one, here on restore and on the server when runs save (`workspaceBrowserSaveOrder` in
+`lib/server/workspace/secrets/browserSession.ts`). A file without it (an upload in Settings, an older
+guest's) counts as the oldest.
 """
 
 from __future__ import annotations
@@ -17,9 +22,10 @@ import os
 import re
 import secrets
 import stat
+import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 from urllib.parse import urlsplit
 
 MAX_BYTES = 8 * 1024 * 1024
@@ -27,13 +33,23 @@ TOTAL_MAX_BYTES = 64 * 1024 * 1024
 MAX_COUNT = 50
 WORKSPACE = Path("/workspace")
 ROOT = WORKSPACE / "secrets" / "browser"
+#: AIQSA's own key in a session file, beside Playwright's two.
+STAMP_KEY = "aiqsa"
 
 _SITE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
+_ADDRESS = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 #: Second-level labels under which a two-letter country code registers names (`co.uk`, `com.au`), as
 #: `http.cookiejar` treats them. Without a public suffix list this keeps such pairs, like single labels,
 #: from becoming a site whose session would gather every name under them.
 _COUNTRY_SECOND_LEVEL = frozenset({"ac", "aero", "biz", "cat", "co", "com", "coop", "edu", "eu", "gov", "info", "int", "jobs",
                                    "mil", "mobi", "museum", "name", "net", "org", "pro", "travel"})
+#: Hosting names under which every subdomain is someone else's site (the common ones of the public suffix list's
+#: private part): a sign-in there keeps to its own host instead of gathering the platform's other sites.
+_SHARED_HOSTING = frozenset({
+    "amazonaws.com", "appspot.com", "atlassian.net", "azurewebsites.net", "blogspot.com", "cloudfront.net",
+    "codeberg.page", "firebaseapp.com", "fly.dev", "github.io", "gitlab.io", "glitch.me", "herokuapp.com",
+    "myshopify.com", "netlify.app", "ngrok-free.app", "ngrok.io", "onrender.com", "pages.dev", "readthedocs.io",
+    "sharepoint.com", "surge.sh", "tilda.ws", "vercel.app", "web.app", "workers.dev", "yandexcloud.net"})
 
 
 class SessionError(Exception):
@@ -78,6 +94,37 @@ def site_of(host: str) -> Optional[str]:
     if host.startswith("www."):
         host = host[4:]
     return host if host and len(host) <= 200 and _SITE.fullmatch(host) and not suffix_like(host) else None
+
+
+def account_of(host: str) -> Optional[str]:
+    """The site a sign-in on this host belongs to: its registrable name (`google.com` for `mail.google.com`,
+    `bbc.co.uk` for `news.bbc.co.uk`), so one account's services share one file and its parent-domain cookies
+    one place. Under a shared hosting name it is the tenant's own name; an address stays itself. An approximation
+    without a public suffix list: a portal whose names belong to different people beyond the list above only
+    keeps their cookies together in one file of the same user.
+    """
+    site = site_of(host)
+    if site is None or _ADDRESS.fullmatch(site):
+        return site
+    labels = site.split(".")
+    count = 2
+    while count < len(labels) and (suffix_like(".".join(labels[-count:])) or ".".join(labels[-count:]) in _SHARED_HOSTING):
+        count += 1
+    return ".".join(labels[-count:])
+
+
+def saved_at(value: Mapping[str, Any]) -> int:
+    """When this guest wrote a session file (milliseconds); 0 for a file without it."""
+    meta = value.get(STAMP_KEY)
+    stamp = meta.get("savedAt") if isinstance(meta, Mapping) else None
+    return stamp if isinstance(stamp, int) and not isinstance(stamp, bool) and 0 < stamp < 2 ** 53 else 0
+
+
+def content_key(state: Mapping[str, Any]) -> str:
+    """A state's cookies and local storage in a stable order: two files hold the same session when these match."""
+    cookies = sorted(json.dumps(cookie, sort_keys=True, ensure_ascii=False) for cookie in state.get("cookies") or [])
+    origins = sorted(json.dumps(origin, sort_keys=True, ensure_ascii=False) for origin in state.get("origins") or [])
+    return hashlib.sha256(json.dumps([cookies, origins]).encode("utf-8")).hexdigest()
 
 
 def domain_matches(domain: str, wanted: Iterable[str]) -> bool:
@@ -177,12 +224,16 @@ def _safe_directory(path: Path) -> bool:
 class SessionStore:
     """The sessions of this Workspace and which of them the browser keeps current."""
 
-    def __init__(self, root: Path = ROOT):
+    def __init__(self, root: Path = ROOT, clock: Callable[[], float] = time.time):
         self.root = root
+        self.clock = clock
         #: file name -> sites whose cookies and storage it holds
         self.tracked: Dict[str, Set[str]] = {}
         self.digests: Dict[str, str] = {}
         self.skipped: List[str] = []
+        #: file name -> its state as loaded or last written (with its stamp), and that state's `content_key`
+        self.files: Dict[str, Dict[str, Any]] = {}
+        self.keys: Dict[str, str] = {}
 
     def _usable_root(self, create: bool) -> bool:
         for parent in [self.root.parent.parent, self.root.parent, self.root]:
@@ -215,14 +266,11 @@ class SessionStore:
             pass
 
     def load(self) -> Dict[str, Any]:
-        """Every valid saved session merged into one storage_state; others are skipped and reported."""
-        merged: Dict[str, Any] = {"cookies": [], "origins": []}
-        self.tracked, self.digests, self.skipped = {}, {}, []
+        """Every valid saved session merged into one storage_state (`merge`); others are skipped and reported."""
+        self.tracked, self.digests, self.skipped, self.files, self.keys = {}, {}, [], {}, {}
         if not self._usable_root(create=False):
-            return merged
+            return {"cookies": [], "origins": []}
         self._remove_stale_staging()
-        cookies: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
-        origins: Dict[str, Dict[str, Any]] = {}
         total = 0
         for name, size in sorted(self._entries()):
             if not is_session_filename(name) or size < 1 or size > MAX_BYTES or total + size > TOTAL_MAX_BYTES:
@@ -233,30 +281,56 @@ class SessionStore:
                 with os.fdopen(descriptor, "rb") as stream:
                     raw = stream.read(MAX_BYTES + 1)
                 value = json.loads(raw.decode("utf-8"))
-            except (OSError, ValueError, UnicodeDecodeError):
+            except (OSError, RecursionError, ValueError, UnicodeDecodeError):
                 self.skipped.append(name)
                 continue
             if len(raw) > MAX_BYTES or not valid_state(value):
                 self.skipped.append(name)
                 continue
             total += len(raw)
-            for cookie in value["cookies"]:
-                cookies[(cookie["name"], cookie["domain"], cookie["path"])] = cookie
-            for origin in value["origins"]:
-                origins[origin["origin"]] = origin
             stem = name[: -len(".json")]
             sites = domains_of(value)
             own = site_of(stem)
             if own:
                 sites.add(own)
+            self.files[name] = value
+            self.keys[name] = content_key(value)
             self.tracked[name] = sites
             self.digests[name] = state_digest(value, sites)
-        merged["cookies"] = list(cookies.values())
-        merged["origins"] = list(origins.values())
-        return merged
+        return self.merge(self.files)
+
+    def merge(self, names: Iterable[str]) -> Dict[str, Any]:
+        """The given loaded files as one storage_state. A cookie (name, domain, path) or an origin that several hold
+        comes from the one written last (`saved_at`; a file without it counts as the oldest, then by name), whatever
+        the names: one account's sign-in saved under several site names (`accounts.google.com`, `mail.google.com`)
+        shares its parent-domain cookies, and the alphabetically last file must not win with stale ones."""
+        cookies: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        origins: Dict[str, Dict[str, Any]] = {}
+        known = [name for name in names if name in self.files]
+        for name in sorted(known, key=lambda entry: (saved_at(self.files[entry]), entry)):
+            value = self.files[name]
+            for cookie in value["cookies"]:
+                cookies[(cookie["name"], cookie["domain"], cookie["path"])] = cookie
+            for origin in value["origins"]:
+                origins[origin["origin"]] = {"origin": origin["origin"], "localStorage": origin["localStorage"]}
+        return {"cookies": list(cookies.values()), "origins": list(origins.values())}
 
     def track(self, name: str, sites: Iterable[str]) -> None:
         self.tracked.setdefault(name, set()).update(sites)
+
+    def file_for(self, host: str) -> Optional[Tuple[str, Set[str]]]:
+        """Where a sign-in on this host is saved, with the sites that file keeps: its account's file, else a kept file
+        that already holds the whole account (one saved per subdomain before accounts shared a file), else a new file
+        named after the account. None for a host that is no site."""
+        account = account_of(host)
+        if account is None:
+            return None
+        name = session_name(account)
+        if name not in self.tracked:
+            holding = sorted(entry for entry, sites in self.tracked.items() if account in sites)
+            if holding:
+                name = holding[0]
+        return (name, {account}) if is_session_filename(name) else None
 
     def sites(self) -> Set[str]:
         """Every site whose session the browser keeps current."""
@@ -266,15 +340,41 @@ class SessionStore:
         """Tracked files whose cookies or local storage differ from what was last saved or restored."""
         return [name for name, sites in self.tracked.items() if state_digest(state, sites) != self.digests.get(name)]
 
+    def _current(self, target: Path) -> Optional[Tuple[Dict[str, Any], int]]:
+        """The file as it stands now and its size, when it is a valid state."""
+        try:
+            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    return None
+                raw = stream.read(MAX_BYTES + 1)
+            value = json.loads(raw.decode("utf-8"))
+        except (OSError, RecursionError, ValueError, UnicodeDecodeError):
+            return None
+        return (value, len(raw)) if len(raw) <= MAX_BYTES and valid_state(value) else None
+
     def save(self, name: str, state: Mapping[str, Any]) -> Dict[str, Any]:
-        """Write one tracked file from the browser's whole state; returns its size and whether it changed."""
+        """Write one tracked file from the browser's whole state, stamped with when; returns its size, whether it
+        changed and its stamp. Content equal to the file's keeps the file and its stamp."""
         if not is_session_filename(name):
             raise SessionError("session_name_invalid", "The session file name must be a site such as shop.example.json.")
         sites = self.tracked.get(name)
         if not sites:
             raise SessionError("session_name_invalid", "This site is not tracked.")
         part = filter_state(state, sites)
-        data = json.dumps(part, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        target = self.root / name
+        found = self._current(target) if self._usable_root(create=False) else None
+        current = found[0] if found is not None else None
+        digest = state_digest(part, sites)
+        key = content_key(part)
+        if found is not None and content_key(found[0]) == key:
+            self.digests[name] = digest
+            self.files[name], self.keys[name] = found[0], key
+            return {"file": name, "bytes": found[1], "changed": False, "savedAt": saved_at(found[0])}
+        # Newer than what it replaces even if this clock is behind the one that wrote that.
+        stamp = max(int(self.clock() * 1000), (saved_at(current) if current is not None else 0) + 1)
+        written = {**part, STAMP_KEY: {"savedAt": stamp}}
+        data = json.dumps(written, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(data) > MAX_BYTES:
             raise SessionError("browser_session_too_large",
                                "The site's session is larger than 8 MiB, so it was not saved; the previous version stays.")
@@ -285,15 +385,6 @@ class SessionStore:
             raise SessionError("browser_session_limit", f"At most {MAX_COUNT} site sessions can be saved; this one was not.")
         if sum(entries.values()) + len(data) > TOTAL_MAX_BYTES:
             raise SessionError("browser_session_total_limit", "Saved sessions would exceed 64 MiB in total; this one was not saved.")
-        target = self.root / name
-        try:
-            current = target.read_bytes() if target.is_file() and not target.is_symlink() else None
-        except OSError:
-            current = None
-        digest = state_digest(part, sites)
-        if current == data:
-            self.digests[name] = digest
-            return {"file": name, "bytes": len(data), "changed": False}
         staging = self.root.parent / f".aiqsa-browser-{secrets.token_hex(8)}.tmp"
         try:
             descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -319,4 +410,5 @@ class SessionStore:
             except OSError:
                 pass
         self.digests[name] = digest
-        return {"file": name, "bytes": len(data), "changed": True}
+        self.files[name], self.keys[name] = written, key
+        return {"file": name, "bytes": len(data), "changed": True, "savedAt": stamp}

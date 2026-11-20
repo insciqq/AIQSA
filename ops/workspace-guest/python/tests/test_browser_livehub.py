@@ -440,6 +440,67 @@ class HeldByUserTests(unittest.TestCase):
         run(scenario())
 
 
+class FocusedField:
+    """A field the user typed into: its value, and whether it is a password field."""
+
+    def __init__(self, password: bool) -> None:
+        self.password = password
+
+    async def evaluate(self, script: str) -> Any:
+        return self.password if script == _livehub.PASSWORD_FIELD else "typed-value"
+
+
+class FocusedFrame(FakeFrame):
+    def __init__(self, password: bool) -> None:
+        self.field = FocusedField(password)
+
+    async def evaluate_handle(self, _script: str) -> Any:
+        field = self.field
+
+        class Handle:
+            def as_element(self) -> Any:
+                return field
+        return Handle()
+
+
+class LiveSignInTests(unittest.TestCase):
+    """A value typed into a password field in the live view tells the host a sign-in is under way, whatever the handoff."""
+
+    def test_a_password_field_tells_the_host_and_another_field_does_not(self) -> None:
+        async def scenario() -> List[Tuple[str, str]]:
+            host = AgentHost()
+            calls: List[Tuple[str, str]] = []
+
+            async def typed(agent: str, page: Any) -> None:
+                calls.append((agent, page.url))
+
+            host.user_typed_password = typed  # type: ignore[attr-defined]
+            for agent, password in (("main", True), ("t_search", False)):
+                page = host.add(agent, None, f"https://{agent}.example/login", "Sign in")
+                page.main_frame = FocusedFrame(password)
+                page.frames = [page.main_frame]
+            hub = _livehub.LiveHub(host)
+            for agent in ("main", "t_search"):
+                live = hub.control_of(agent)
+                live.typed_new = True
+                await live.capture_now()
+            await hub.close()
+            return calls
+        self.assertEqual(run(scenario()), [("main", "https://main.example/login")])
+
+    def test_a_host_without_the_hook_is_left_alone(self) -> None:
+        async def scenario() -> None:
+            host = LegacyHost()
+            host.current.main_frame = FocusedFrame(True)
+            host.current.frames = [host.current.main_frame]
+            hub = _livehub.LiveHub(host)
+            live = hub.control_of("main")
+            live.typed_new = True
+            await live.capture_now()
+            await hub.close()
+        run(scenario())
+
+
 class ReturnNoticeTests(unittest.TestCase):
     """Taking control of one agent's tab never holds another agent, and only that agent learns the user gave it back."""
 

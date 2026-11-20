@@ -5,7 +5,9 @@ import {
   WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES, WORKSPACE_SECRET_VALUE_MAX_BYTES
 } from "@/lib/contracts/workspaceSecrets";
 import { parseWorkspaceSecretValue } from "./validation";
-import { workspaceBrowserSessionChecksum, workspaceBrowserSessionError } from "./browserSession";
+import {
+  workspaceBrowserSaveOrder, workspaceBrowserSessionChecksum, workspaceBrowserSessionError, workspaceBrowserSessionSavedAt
+} from "./browserSession";
 import { readWorkspaceBrowserCollection, type WorkspaceBrowserSaveItem } from "./browserCollection";
 import type { WorkspaceBrowserCollection } from "../runtime";
 
@@ -118,5 +120,69 @@ describe("portable browser sessions", () => {
     controller.abort();
     await expect(result).rejects.toThrow();
     expect(cancelled).toBe(true);
+  });
+});
+
+describe("which saved browser session wins", () => {
+  const stamped = (savedAt: number | undefined, value = "synthetic") => Buffer.from(JSON.stringify({ ...state,
+    cookies: [{ ...state.cookies[0]!, value }], ...(savedAt === undefined ? {} : { aiqsa: { savedAt } }) }));
+  const now = Date.UTC(2026, 10, 20, 12);
+  const at = (minutes: number) => now + minutes * 60_000;
+
+  it("reads the guest's stamp and nothing else as one", () => {
+    expect(workspaceBrowserSessionSavedAt(stamped(at(-5)))).toBe(at(-5));
+    expect(workspaceBrowserSessionError("shop.example.json", stamped(at(-5)))).toBeNull();
+    for (const value of [stamped(undefined), Buffer.from(JSON.stringify({ ...state, aiqsa: { savedAt: "1" } })),
+      Buffer.from(JSON.stringify({ ...state, aiqsa: { savedAt: 1.5 } })), Buffer.from(JSON.stringify({ ...state, aiqsa: { savedAt: -1 } })),
+      Buffer.from(JSON.stringify({ ...state, aiqsa: 7 })), Buffer.from("not JSON"), Buffer.from([0xff])]) {
+      expect(workspaceBrowserSessionSavedAt(value)).toBeNull();
+    }
+  });
+
+  function order(input: Readonly<{ sequence?: bigint; manualSequence?: bigint; incoming: Buffer; current?: Buffer | null;
+    writerSequence?: bigint; createdAt?: number }>) {
+    const current = input.current === undefined ? stamped(at(-30), "saved") : input.current;
+    let reads = 0;
+    const result = workspaceBrowserSaveOrder({ sequence: input.sequence ?? 10n, manualSequence: input.manualSequence ?? 0n, now,
+      incoming: { checksum: workspaceBrowserSessionChecksum(input.incoming), savedAt: workspaceBrowserSessionSavedAt(input.incoming) },
+      current: current === null ? null : { checksum: workspaceBrowserSessionChecksum(current), writerSequence: input.writerSequence ?? 11n,
+        createdAt: new Date(input.createdAt ?? at(-20)), savedAt: () => { reads++; return workspaceBrowserSessionSavedAt(current); } } });
+    return { result, reads };
+  }
+
+  it("lets a run accepted earlier but saving later keep the cookies its browser wrote last", () => {
+    // A background sub-agent accepted after the main run ended first and saved; the main run's browser rotated a cookie since.
+    expect(order({ sequence: 10n, writerSequence: 11n, incoming: stamped(at(-1), "rotated") })).toEqual({ result: "write", reads: 1 });
+    // A copy only restored and never rewritten keeps its old stamp and loses, whichever run was accepted later.
+    expect(order({ sequence: 12n, writerSequence: 11n, incoming: stamped(at(-40), "restored") }).result).toBe("browser_session_stale");
+    expect(order({ sequence: 12n, incoming: stamped(at(-30), "same-stamp-other-bytes") }).result).toBe("browser_session_stale");
+  });
+
+  it("counts equal bytes as unchanged before any ordering, without reading the saved revision", () => {
+    const saved = stamped(at(-30), "saved");
+    expect(order({ sequence: 3n, writerSequence: 11n, incoming: saved, current: saved })).toEqual({ result: "unchanged", reads: 0 });
+    expect(order({ incoming: stamped(at(-1)), current: null })).toEqual({ result: "write", reads: 0 });
+  });
+
+  it("keeps the manual settings fence for every run accepted before it", () => {
+    expect(order({ sequence: 10n, manualSequence: 10n, incoming: stamped(at(-1)) }).result).toBe("browser_session_stale");
+    expect(order({ sequence: 10n, manualSequence: 10n, incoming: stamped(at(-1)), current: null }).result).toBe("browser_session_stale");
+  });
+
+  it("keeps acceptance order for a file without a stamp", () => {
+    expect(order({ sequence: 10n, writerSequence: 11n, incoming: stamped(undefined, "old-guest") }).result).toBe("browser_session_stale");
+    expect(order({ sequence: 11n, writerSequence: 11n, incoming: stamped(undefined, "old-guest") }).result).toBe("write");
+  });
+
+  it("never lets a guest's stamp count later than the server's own time of a save", () => {
+    // A forged future stamp counts as its save time, so an honest later write still wins over it.
+    const forged = stamped(at(60 * 24 * 365), "forged");
+    expect(order({ incoming: stamped(at(-1)), current: forged, createdAt: at(-10) }).result).toBe("write");
+    expect(order({ incoming: stamped(at(-15)), current: forged, createdAt: at(-10) }).result).toBe("browser_session_stale");
+    // And an incoming one counts as now.
+    expect(order({ incoming: forged, current: stamped(at(-30)), createdAt: at(-20) }).result).toBe("write");
+    // A saved revision without a stamp (an upload, an older guest's) counts as the time it was saved.
+    expect(order({ incoming: stamped(at(-25)), current: stamped(undefined, "uploaded"), createdAt: at(-20) }).result).toBe("browser_session_stale");
+    expect(order({ incoming: stamped(at(-5)), current: stamped(undefined, "uploaded"), createdAt: at(-20) }).result).toBe("write");
   });
 });

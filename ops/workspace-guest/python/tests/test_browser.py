@@ -133,6 +133,23 @@ class SessionNameTests(unittest.TestCase):
         self.assertTrue(_sessions.domain_matches(".bbc.co.uk", {"news.bbc.co.uk"}))
         self.assertFalse(_sessions.domain_matches("", {"x.com"}))
 
+    def test_one_account_shares_one_site_whatever_service_signed_in(self) -> None:
+        for host, account in [("mail.google.com", "google.com"), ("accounts.google.com", "google.com"), ("google.com", "google.com"),
+                              ("passport.yandex.ru", "yandex.ru"), ("auth.cloud.yandex.ru", "yandex.ru"),
+                              ("tracker.yandex.ru", "yandex.ru"), ("news.bbc.co.uk", "bbc.co.uk"), ("WWW.Amazon.ES", "amazon.es"),
+                              ("shop.example.com.au", "example.com.au"), ("alice.github.io", "alice.github.io"),
+                              ("docs.alice.github.io", "alice.github.io"), ("acme.atlassian.net", "acme.atlassian.net"),
+                              ("github.io", "github.io"), ("127.0.0.1", "127.0.0.1")]:
+            self.assertEqual(_sessions.account_of(host), account, host)
+        for bad in ["", "localhost", "co.uk", "x_y.com"]:
+            self.assertIsNone(_sessions.account_of(bad), bad)
+
+    def test_a_stamp_is_a_positive_whole_number_of_milliseconds(self) -> None:
+        self.assertEqual(_sessions.saved_at({"aiqsa": {"savedAt": 1_763_640_000_000}}), 1_763_640_000_000)
+        for value in [{}, {"aiqsa": 5}, {"aiqsa": {"savedAt": "1"}}, {"aiqsa": {"savedAt": True}}, {"aiqsa": {"savedAt": -1}},
+                      {"aiqsa": {"savedAt": 1.5}}, {"aiqsa": {"savedAt": 2 ** 60}}]:
+            self.assertEqual(_sessions.saved_at(value), 0, value)
+
     def test_state_validation_matches_what_aiqsa_saves(self) -> None:
         self.assertTrue(_sessions.valid_state({"cookies": [cookie("a", "x.com")], "origins": []}))
         self.assertFalse(_sessions.valid_state({"cookies": [{**cookie("a", "x.com"), "sameSite": "lax"}], "origins": []}))
@@ -195,6 +212,59 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(self.store.changed(token), [])
         self.assertEqual(self.store.sites(), {"shop.example"})
         self.assertEqual([entry.name for entry in self.root.parent.iterdir() if entry.name.endswith(".tmp")], [])
+
+    def test_a_cookie_several_files_share_comes_from_the_one_saved_last_whatever_the_names(self) -> None:
+        # One Google account saved per subdomain: every file carries the shared parent-domain cookie. Merged by name,
+        # the alphabetically last file won with its stale copy.
+        self.write("accounts.google.com.json", {"cookies": [cookie("SID", ".google.com", "fresh"), cookie("LSID", "accounts.google.com")],
+                                                "origins": [{"origin": "https://mail.google.com", "localStorage": [{"name": "t", "value": "fresh"}]}],
+                                                "aiqsa": {"savedAt": 2_000}})
+        self.write("mail.google.com.json", {"cookies": [cookie("SID", ".google.com", "stale"), cookie("GMAIL_AT", "mail.google.com")],
+                                            "origins": [{"origin": "https://mail.google.com", "localStorage": [{"name": "t", "value": "stale"}]}],
+                                            "aiqsa": {"savedAt": 1_000}})
+        self.write("script.google.com.json", {"cookies": [cookie("SID", ".google.com", "uploaded-long-ago")], "origins": []})
+        merged = self.store.load()
+        values = {(c["name"], c["domain"]): c["value"] for c in merged["cookies"]}
+        self.assertEqual(values[("SID", ".google.com")], "fresh")
+        self.assertEqual(sorted(values), [("GMAIL_AT", "mail.google.com"), ("LSID", "accounts.google.com"), ("SID", ".google.com")])
+        self.assertEqual(merged["origins"], [{"origin": "https://mail.google.com", "localStorage": [{"name": "t", "value": "fresh"}]}])
+        self.assertNotIn("aiqsa", merged)
+        # Only some files: the freshest of those.
+        self.assertEqual(self.store.merge(["mail.google.com.json", "script.google.com.json"])["cookies"][0]["value"], "stale")
+
+    def test_a_save_is_stamped_and_an_unchanged_one_keeps_its_file_and_stamp(self) -> None:
+        now = [1_000.0]
+        store = _sessions.SessionStore(self.root, clock=lambda: now[0])
+        store.track("shop.example.json", {"shop.example"})
+        state = {"cookies": [cookie("sid", "shop.example", "1")], "origins": []}
+        first = store.save("shop.example.json", state)
+        self.assertEqual((first["changed"], first["savedAt"]), (True, 1_000_000))
+        raw = (self.root / "shop.example.json").read_bytes()
+        self.assertEqual(json.loads(raw)["aiqsa"], {"savedAt": 1_000_000})
+        self.assertEqual(first["bytes"], len(raw))
+        now[0] = 2_000.0
+        # The same cookies in another order are the same session.
+        again = store.save("shop.example.json", {"cookies": list(reversed(state["cookies"])), "origins": []})
+        self.assertEqual((again["changed"], again["savedAt"], again["bytes"]), (False, 1_000_000, len(raw)))
+        self.assertEqual((self.root / "shop.example.json").read_bytes(), raw)
+        # A clock behind the one that wrote the file still writes a newer stamp.
+        self.write("shop.example.json", {"cookies": [cookie("sid", "shop.example", "other-vm")], "origins": [],
+                                         "aiqsa": {"savedAt": 5_000_000}})
+        rotated = store.save("shop.example.json", {"cookies": [cookie("sid", "shop.example", "2")], "origins": []})
+        self.assertEqual((rotated["changed"], rotated["savedAt"]), (True, 5_000_001))
+        self.assertEqual(store.files["shop.example.json"]["aiqsa"], {"savedAt": 5_000_001})
+
+    def test_a_sign_in_joins_its_account_file_and_reuses_one_that_already_holds_the_account(self) -> None:
+        self.assertEqual(self.store.file_for("mail.google.com"), ("google.com.json", {"google.com"}))
+        self.assertIsNone(self.store.file_for("localhost"))
+        # A file saved per subdomain before accounts shared one already holds every google.com cookie.
+        self.write("mail.google.com.json", {"cookies": [cookie("SID", ".google.com")], "origins": []})
+        self.write("shop.example.json", {"cookies": [cookie("sid", "shop.example")], "origins": []})
+        self.store.load()
+        self.assertEqual(self.store.file_for("docs.google.com"), ("mail.google.com.json", {"google.com"}))
+        self.assertEqual(self.store.file_for("www.shop.example"), ("shop.example.json", {"shop.example"}))
+        self.store.track("google.com.json", {"google.com"})
+        self.assertEqual(self.store.file_for("docs.google.com"), ("google.com.json", {"google.com"}))
 
     def test_limits_keep_the_previous_version(self) -> None:
         self.store.track("big.example.json", {"big.example"})
