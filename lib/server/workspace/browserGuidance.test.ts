@@ -5,6 +5,7 @@ import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import { VIEW_WORKSPACE_IMAGE } from "../tools/viewWorkspaceImage";
 import { BROWSER_GUIDE_IMAGE_TOOLS, BROWSER_HANDOFF_TOOL, WORKSPACE_BROWSER_AGENT_IMAGE, WORKSPACE_BROWSER_GUIDANCE,
+  WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE, WORKSPACE_BROWSER_PERSON_IMAGE,
   WORKSPACE_BROWSER_OLD_IMAGE_NOTICE, WORKSPACE_WEBSITE_ACTION_SAFETY, workspaceBrowserAgentAvailable, workspaceBrowserGuidance } from "./browserGuidance";
 import { WORKSPACE_GUIDE_FILES, workspaceGuideInput } from "./guides";
 import { WORKSPACE_BROWSER_SESSION_USER_PATH, workspaceSecretsGuide } from "./secrets/manifest";
@@ -84,6 +85,10 @@ describe("Workspace browser guide", () => {
     expect(guide).toContain("`release`");
     expect(guide).not.toContain(WORKSPACE_BROWSER_OLD_IMAGE_NOTICE);
     expect(workspaceBrowserGuidance("subagent", "aiqsa-workspace:0.1.39")).toContain(WORKSPACE_BROWSER_OLD_IMAGE_NOTICE);
+    // A chat keeps its Workspace image until a reset: an image before the person's browser hears what it lacks.
+    expect(workspaceBrowserGuidance("main", "aiqsa-workspace:0.1.41")).toContain(WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE);
+    expect(workspaceBrowserGuidance("main", WORKSPACE_BROWSER_PERSON_IMAGE)).not.toContain(WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE);
+    expect(guide).not.toContain(WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE);
   });
 
   it("gates only sub-agents on the per-agent guest image", () => {

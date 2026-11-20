@@ -114,10 +114,31 @@ const WORKSPACE_BROWSER_GUIDANCE_BASE = [
     "`p.chromium.launch(headless=True)`) and tell the user when a site refuses it."
 ].join("\n");
 
+/**
+ * The first guest image whose browser passes checks itself, keeps the chat's profile and takes `captcha`, `click-at`,
+ * `drag`, `--then` and `open PATH` (operator decisions 2026-11-20). A chat keeps its Workspace image until the
+ * Workspace is reset or expires, so an older one hears what its browser cannot do instead of commands it lacks.
+ */
+export const WORKSPACE_BROWSER_PERSON_IMAGE = "aiqsa-workspace:0.1.42";
+const WORKSPACE_BROWSER_PERSON_IMAGE_VERSION = 42;
+
+export const WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE =
+  "This chat's Workspace still runs an older image: its browser starts fresh every turn, has no `captcha`, `click-at`, `drag`, `--then` or `open PATH`, and refuses clicks inside a CAPTCHA, so hand a CAPTCHA or bot check to the user there. A new chat, or Reset workspace in this chat's menu (it clears the chat's Workspace files), moves to the current browser; say so when a site stops you.";
+
+function guestImageVersion(imageRef: string): number | null {
+  const match = /^aiqsa-workspace:0\.1\.(\d+)$/u.exec(imageRef);
+  return match ? Number(match[1]) : null;
+}
+
 /** The browser guide for the admitted guest image and agent kind. */
-export function workspaceBrowserGuidance(agentKind: "main" | "subagent" = "main", imageRef = WORKSPACE_BROWSER_AGENT_IMAGE): string {
-  if (agentKind === "main" || workspaceBrowserAgentAvailable(imageRef, agentKind)) return WORKSPACE_BROWSER_GUIDANCE_BASE;
-  return WORKSPACE_BROWSER_GUIDANCE_BASE.replace(
+export function workspaceBrowserGuidance(agentKind: "main" | "subagent" = "main", imageRef = WORKSPACE_BROWSER_PERSON_IMAGE): string {
+  let guide = WORKSPACE_BROWSER_GUIDANCE_BASE;
+  const version = guestImageVersion(imageRef);
+  if (version !== null && version < WORKSPACE_BROWSER_PERSON_IMAGE_VERSION) {
+    guide = guide.replace("# Browser\n\n", `# Browser\n\n${WORKSPACE_BROWSER_OLDER_BROWSER_NOTICE}\n\n`);
+  }
+  if (agentKind === "main" || workspaceBrowserAgentAvailable(imageRef, agentKind)) return guide;
+  return guide.replace(
     "If `aiqsa-browser` is missing,",
     `${WORKSPACE_BROWSER_OLD_IMAGE_NOTICE}\n\nIf \`aiqsa-browser\` is missing,`
   );
