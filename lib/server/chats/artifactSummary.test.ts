@@ -446,23 +446,64 @@ describe("summarizeMessageRunArtifacts", () => {
     const exported = (id: string, relativePath: string, checksum: string, byteSize = 10) => ({
       id, byteSize, checksum, fileName: relativePath.split("/").at(-1)!, mimeType: "application/pdf",
       workspaceRunOutput: { relativePath }, workspaceCheckpointFile: null });
+    // One draft per path: a second checkpoint of a path supersedes the first (next test).
     const summary = summarizeMessageRunArtifacts({ events: [], searchRuns: [], workspaceProducedAttachments: [
       checkpoint("draft-identical", "output/report.pdf", same),
-      checkpoint("draft-older", "output/report.pdf", older),
-      checkpoint("draft-other-size", "output/report.pdf", same, 11),
+      checkpoint("draft-older", "output/older.pdf", older),
+      checkpoint("draft-other-size", "output/sized.pdf", same, 11),
       checkpoint("draft-project", "project/report.pdf", same),
       checkpoint("draft-nested", "output/docs/report.pdf", same),
-      checkpoint("draft-unverified", "output/report.pdf", null),
-      checkpoint("draft-unsettled", "output/report.pdf", same, 10, "PENDING"),
+      checkpoint("draft-unverified", "output/unverified.pdf", null),
+      checkpoint("draft-unsettled", "output/pending.pdf", same, 10, "PENDING"),
       exported("final", "report.pdf", same),
+      exported("final-older", "older.pdf", same),
+      exported("final-sized", "sized.pdf", same),
+      exported("final-unverified", "unverified.pdf", same),
       exported("final-nested", "docs/report.pdf", other)
     ] });
     expect(summary?.generatedFiles?.map(file => [file.attachmentId, file.relativePath, Boolean(file.checkpoint)])).toEqual([
-      ["draft-older", "output/report.pdf", true], ["draft-other-size", "output/report.pdf", true], ["draft-project", "project/report.pdf", true],
-      ["draft-nested", "output/docs/report.pdf", true], ["draft-unverified", "output/report.pdf", true],
-      ["final", "report.pdf", false], ["final-nested", "docs/report.pdf", false]
+      ["draft-older", "output/older.pdf", true], ["draft-other-size", "output/sized.pdf", true], ["draft-project", "project/report.pdf", true],
+      ["draft-nested", "output/docs/report.pdf", true], ["draft-unverified", "output/unverified.pdf", true],
+      ["final", "report.pdf", false], ["final-older", "older.pdf", false], ["final-sized", "sized.pdf", false],
+      ["final-unverified", "unverified.pdf", false], ["final-nested", "docs/report.pdf", false]
     ]);
     expect(JSON.stringify(summary)).not.toContain(same);
+  });
+
+  it("lists only the latest checkpoint of each path, keeps same-named files of other paths and leaves another run alone", () => {
+    const at = (minute: number) => new Date(`2026-11-20T10:${String(minute).padStart(2, "0")}:00.000Z`);
+    const [first, second, third] = ["a", "b", "c"].map(digit => digit.repeat(64));
+    const checkpoint = (id: string, relativePath: string, checksum: string, createdAt: Date, state = "SETTLED") => ({
+      id, byteSize: 10, checksum, fileName: relativePath.split("/").at(-1)!, mimeType: "application/pdf", workspaceRunOutput: null,
+      workspaceCheckpointFile: { relativePath, checkpoint: { id: `checkpoint-${id}`, description: "Draft", createdAt, state } } });
+    const exported = (id: string, relativePath: string, checksum: string) => ({
+      id, byteSize: 10, checksum, fileName: relativePath.split("/").at(-1)!, mimeType: "application/pdf",
+      workspaceRunOutput: { relativePath }, workspaceCheckpointFile: null });
+    type Rows = NonNullable<Parameters<typeof summarizeMessageRunArtifacts>[0]["workspaceProducedAttachments"]>;
+    const files = (rows: Rows) => summarizeMessageRunArtifacts({ events: [], searchRuns: [], workspaceProducedAttachments: rows })
+      ?.generatedFiles?.map(file => [file.attachmentId, file.relativePath]);
+
+    // The production case: one path checkpointed twice in one answer shows one download, the latest, whatever the row order.
+    const v1 = checkpoint("v1", "output/report.pdf", first, at(1));
+    const v2 = checkpoint("v2", "output/report.pdf", second, at(2));
+    expect(files([v1, v2])).toEqual([["v2", "output/report.pdf"]]);
+    expect(files([v2, v1])).toEqual([["v2", "output/report.pdf"]]);
+    // A tie of the same millisecond falls to the later checkpoint id; an unsettled later checkpoint supersedes nothing.
+    expect(files([checkpoint("tie-b", "output/x.pdf", first, at(3)), checkpoint("tie-a", "output/x.pdf", second, at(3))]))
+      .toEqual([["tie-b", "output/x.pdf"]]);
+    expect(files([v1, checkpoint("v2-pending", "output/report.pdf", second, at(2), "PENDING")])).toEqual([["v1", "output/report.pdf"]]);
+
+    // Different paths with the same file name are different files.
+    expect(files([v1, checkpoint("project", "project/report.pdf", second, at(2)), checkpoint("nested", "output/docs/report.pdf", third, at(3))]))
+      .toEqual([["v1", "output/report.pdf"], ["project", "project/report.pdf"], ["nested", "output/docs/report.pdf"]]);
+
+    // The end-of-run export never brings a superseded draft back: the latest repeats the export, so only the export shows.
+    expect(files([v1, v2, exported("final", "report.pdf", second)])).toEqual([["final", "report.pdf"]]);
+    // A changed final export keeps the latest draft beside it, as before.
+    expect(files([v1, v2, exported("final", "report.pdf", third)])).toEqual([["v2", "output/report.pdf"], ["final", "report.pdf"]]);
+
+    // Each answer is its own run: another run's checkpoint of the same path stays as it was.
+    expect(files([checkpoint("other-run", "output/report.pdf", first, at(0))])).toEqual([["other-run", "output/report.pdf"]]);
   });
 
   it("shows a file attached from the user's computer while the answer streams and after a reload alike", () => {
