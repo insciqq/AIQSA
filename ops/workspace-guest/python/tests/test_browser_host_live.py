@@ -68,7 +68,7 @@ class BrowserContext:
 
     async def new_page(self) -> Page:
         index = len(self.pages)
-        page = Page(f"https://site{index}.example.com/login", f"Site {index}")
+        page = Page(f"https://site{index}.example/login", f"Site {index}")
         self.pages.append(page)
         return page
 
@@ -77,7 +77,7 @@ class BrowserContext:
         return session
 
     async def cookies(self) -> List[Dict[str, Any]]:
-        return [{"name": "session", "value": "synthetic", "domain": f"site{index}.example.com", "path": "/",
+        return [{"name": "session", "value": "synthetic", "domain": f"site{index}.example", "path": "/",
                  "expires": -1, "httpOnly": True, "secure": True, "sameSite": "Lax"}
                 for index in range(len(self.pages))]
 
@@ -238,10 +238,10 @@ class HostLiveTests(unittest.IsolatedAsyncioTestCase):
                                 "outcome": "completed", "reason": "sign_in"})
         self.assertTrue(ended["ok"])
         self.assertEqual(ended["page"], {"url": self.sub_page.url, "title": "Site 1"})
-        self.assertEqual(ended["saved"], "site1.example.com")
-        self.assertEqual(sorted(self.host.store.tracked), ["site1.example.com.json"])
-        saved = json.loads((_paths.sessions_dir() / "site1.example.com.json").read_text())
-        self.assertEqual([cookie["domain"] for cookie in saved["cookies"]], ["site1.example.com"])
+        self.assertEqual(ended["saved"], "site1.example")
+        self.assertEqual(sorted(self.host.store.tracked), ["site1.example.json"])
+        saved = json.loads((_paths.sessions_dir() / "site1.example.json").read_text())
+        self.assertEqual([cookie["domain"] for cookie in saved["cookies"]], ["site1.example"])
         self.assertEqual([step["action"] for step in self.sub.steps], ["save_session"])
         self.assertFalse(self.main.steps)
         self.assertFalse(self.host.live.agent_held_by_user(self.sub.agent_id))
@@ -251,7 +251,7 @@ class HostLiveTests(unittest.IsolatedAsyncioTestCase):
         self.host.select_live_agent(self.sub.agent_id)
         token = self.host._agent_context.set(self.sub.agent_id)
         try:
-            self.assertEqual(await self.host.save_site_session(), "site0.example.com")
+            self.assertEqual(await self.host.save_site_session(), "site0.example")
             self.assertIs(self.host._active_state(), self.sub)
             self.assertEqual([step["action"] for step in self.main.steps], ["save_session"])
             self.assertFalse(self.sub.steps)

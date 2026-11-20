@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { Prisma, type PrismaClient } from "@prisma/client";
+import { Prisma, type PrismaClient, type WorkspaceSecretValue as StoredValue } from "@prisma/client";
 import { WORKSPACE_BROWSER_SESSION_MAX_COUNT, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { getSecretEncryptionKey } from "../../secrets/envelope";
 import type { WorkspaceOperation } from "../operationFence";
 import { lockWorkspaceSession } from "../sessionOperation";
 import { isWorkspaceRunOperation, workspaceRunHoldsOperation } from "../attachments";
-import { createWorkspaceSecretRevision, lockWorkspaceSecretOwner, pruneWorkspaceSecretRevisions, workspaceBrowserSessionBytes } from "./store";
-import { workspaceBrowserSessionChecksum, workspaceBrowserSessionError, type WorkspaceBrowserSaveReport, type WorkspaceBrowserSkipCode } from "./browserSession";
+import {
+  createWorkspaceSecretRevision, decryptWorkspaceSecret, lockWorkspaceSecretOwner, pruneWorkspaceSecretRevisions, workspaceBrowserSessionBytes
+} from "./store";
+import {
+  workspaceBrowserSaveOrder, workspaceBrowserSessionChecksum, workspaceBrowserSessionError, workspaceBrowserSessionSavedAt,
+  type WorkspaceBrowserSaveReport, type WorkspaceBrowserSkipCode
+} from "./browserSession";
 import type { WorkspaceBrowserSaveItem } from "./browserCollection";
 
 export type WorkspaceBrowserSaveInput = Readonly<{
@@ -44,19 +49,34 @@ async function authorizedSequence(tx: Prisma.TransactionClient, input: Workspace
   return runOwner || handoffOwner ? binding.browserSessionSequence : null;
 }
 
+/** The stamp inside a saved revision, read only when a stamped file competes with it. */
+function revisionSavedAt(value: StoredValue, userId: string, key: () => Buffer): number | null {
+  try {
+    const secret = decryptWorkspaceSecret(value, userId, key());
+    return secret.value.kind === "browser_session" ? workspaceBrowserSessionSavedAt(Buffer.from(secret.value.base64, "base64")) : null;
+  } catch { return null; }
+}
+
 async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserSaveInput,
-  file: Readonly<{ fileName: string; bytes: Uint8Array }>, key: () => Buffer): Promise<FileOutcome> {
+  file: Readonly<{ fileName: string; bytes: Uint8Array }>, key: () => Buffer, now: () => number): Promise<FileOutcome> {
   input.signal?.throwIfAborted();
   await lockWorkspaceSecretOwner(tx, input.userId, true);
   const sequence = await authorizedSequence(tx, input);
   if (sequence === null) return "unauthorized";
   const owner = await tx.user.findUniqueOrThrow({ where: { id: input.userId }, select: { workspaceBrowserManualSequence: true } });
   const existing = await tx.workspaceSecret.findFirst({ where: { userId: input.userId, browserFileName: file.fileName }, include: { value: true } });
-  // Acceptance order wins; a manual settings change fences every older run.
-  if (sequence <= owner.workspaceBrowserManualSequence || existing && sequence < existing.browserWriterSequence) return "browser_session_stale";
-  if (existing?.value.checksum === workspaceBrowserSessionChecksum(file.bytes)) {
+  // Freshness of the guest's writes, under the run's operation fence; a manual settings change fences every older run.
+  const order = workspaceBrowserSaveOrder({ sequence, manualSequence: owner.workspaceBrowserManualSequence, now: now(),
+    incoming: { checksum: workspaceBrowserSessionChecksum(file.bytes), savedAt: workspaceBrowserSessionSavedAt(file.bytes) },
+    current: existing ? { checksum: existing.value.checksum, writerSequence: existing.browserWriterSequence,
+      createdAt: existing.value.createdAt, savedAt: () => revisionSavedAt(existing.value, input.userId, key) } : null });
+  if (order === "browser_session_stale") return order;
+  const writerSequence = existing && existing.browserWriterSequence > sequence ? existing.browserWriterSequence : sequence;
+  if (existing && order === "unchanged") {
     // Advance ordering even when the immutable encrypted revision is unchanged.
-    await tx.workspaceSecret.update({ where: { id: existing.id }, data: { browserWriterSequence: sequence } });
+    if (writerSequence !== existing.browserWriterSequence) {
+      await tx.workspaceSecret.update({ where: { id: existing.id }, data: { browserWriterSequence: writerSequence } });
+    }
     return "unchanged";
   }
   if (!existing && await tx.workspaceSecret.count({ where: { userId: input.userId, browserFileName: { not: null } } }) >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) {
@@ -70,7 +90,7 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
   const valueId = await createWorkspaceSecretRevision(tx, { userId: input.userId, secretId,
     name: existing?.value.name ?? file.fileName.slice(0, -5).slice(0, 120).replace(/[\uD800-\uDBFF]$/u, ""), description: existing?.value.description ?? "",
     value: { kind: "browser_session", originalName: file.fileName, base64: Buffer.from(file.bytes).toString("base64") }, key: key(), autoSaved: true });
-  if (existing) await tx.workspaceSecret.update({ where: { id: existing.id }, data: { valueId, browserWriterSequence: sequence } });
+  if (existing) await tx.workspaceSecret.update({ where: { id: existing.id }, data: { valueId, browserWriterSequence: writerSequence } });
   else await tx.workspaceSecret.create({ data: { id: secretId, userId: input.userId, valueId, browserFileName: file.fileName, browserWriterSequence: sequence } });
   // The replaced revision goes unless an accepted run still binds it.
   await pruneWorkspaceSecretRevisions(tx, input.userId);
@@ -84,7 +104,7 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
  * report is the only user-visible outcome and never contains names or content.
  */
 export async function saveWorkspaceBrowserSessions(prisma: PrismaClient, input: WorkspaceBrowserSaveInput,
-  key: () => Buffer = getSecretEncryptionKey): Promise<WorkspaceBrowserSaveReport | null> {
+  key: () => Buffer = getSecretEncryptionKey, now: () => number = Date.now): Promise<WorkspaceBrowserSaveReport | null> {
   // No deadline check here: an already expired deadline still records its
   // failed outcome for an authorized run instead of disappearing.
   const authorized = await prisma.$transaction(async (tx) => {
@@ -109,7 +129,7 @@ export async function saveWorkspaceBrowserSessions(prisma: PrismaClient, input: 
       if (invalid) { skip(invalid); continue; }
       if (seen.has(item.fileName)) { skip("browser_session_invalid"); continue; }
       seen.add(item.fileName);
-      const outcome = await prisma.$transaction((tx) => commitFile(tx, input, item, key), { maxWait: 5_000, timeout: 15_000 });
+      const outcome = await prisma.$transaction((tx) => commitFile(tx, input, item, key, now), { maxWait: 5_000, timeout: 15_000 });
       if (outcome === "saved") report.saved++;
       else if (outcome === "unchanged") report.unchanged++;
       else if (outcome === "unauthorized") { skip("browser_session_stale"); break; }

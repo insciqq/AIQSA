@@ -1,3 +1,4 @@
+import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
 import { WORKSPACE_PROXY_PLAN_PATH, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
 
 /** Environments of the runs one shared Workspace serves: the newest of them, within the file bound. */
@@ -23,6 +24,31 @@ def remove(path):
 def write(path, value):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as stream: stream.write(value)
+
+def saved_at(raw):
+    # When the guest browser wrote a session file (aiqsa.savedAt), 0 without it: workspaceBrowserSessionSavedAt.
+    try:
+        meta = json.loads(raw).get('aiqsa')
+        stamp = meta.get('savedAt') if isinstance(meta, dict) else None
+        return stamp if isinstance(stamp, int) and not isinstance(stamp, bool) and 0 < stamp < 2 ** 53 else 0
+    except (AttributeError, RecursionError, UnicodeDecodeError, ValueError):
+        return 0
+
+def browser_session(directory, name, offered):
+    # A browser on this VM saved this session after the copy offered (the server has not taken it yet: the run that
+    # wrote it is still running beside this one), so the guest's own copy stays. A copy without a stamp is an upload
+    # in Settings, which always replaces it; a session no longer offered was deleted there and goes.
+    stamp = saved_at(offered)
+    if not stamp: return offered
+    try:
+        fd = os.open(directory / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return offered
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_BROWSER_SESSION_MAX_BYTES}: return offered
+        own = stream.read(${WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1})
+    return own if len(own) <= ${WORKSPACE_BROWSER_SESSION_MAX_BYTES} and saved_at(own) > stamp else offered
 
 temporary = None
 try:
@@ -89,7 +115,8 @@ try:
         if value['kind'] == 'file':
             write(temporary / 'files' / item['id'], base64.b64decode(value['base64'], validate=True))
         elif value['kind'] == 'browser_session' and not same_run:
-            write(temporary / 'browser' / value['originalName'], base64.b64decode(value['base64'], validate=True))
+            write(temporary / 'browser' / value['originalName'],
+                  browser_session(managed / 'browser', value['originalName'], base64.b64decode(value['base64'], validate=True)))
         elif value['kind'] == 'ssh_key':
             target = temporary / 'ssh' / item['id']
             write(target, (value['privateKey'].strip() + '\n').encode('utf-8'))

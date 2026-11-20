@@ -163,6 +163,42 @@ describe("persisted personal Workspace secrets", () => {
     await expect(prisma.workspaceRunBinding.update({ where: { modelRunId: first.runId }, data: { browserSessionSequence: 1000n } })).rejects.toThrow();
   });
 
+  it("keeps the cookies a browser wrote last when a run accepted earlier saves after a later one, behind the manual fence", async () => {
+    const userId = await owner();
+    // Guest stamps half an hour back, so neither the server's clock nor a revision's creation time caps them.
+    const base = Date.now() - 30 * 60_000;
+    const stamped = (value: string, minute: number) => Buffer.from(JSON.stringify({ cookies: [{ name: "session", value, domain: "shop.example",
+      path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }], origins: [], aiqsa: { savedAt: base + minute * 60_000 } }));
+    const save = (input: WorkspaceBrowserSaveInput, bytes: Buffer) => saveWorkspaceBrowserSessions(prisma,
+      { ...input, files: [{ fileName: "shop.example.json", bytes }] }, () => key);
+    const value = async () => {
+      const saved = (await currentBrowser(userId, "shop.example.json")).value;
+      return saved.kind === "browser_session" ? Buffer.from(saved.base64, "base64").toString("utf8") : "";
+    };
+    const main = await browserRun(userId);
+    const subagent = await browserRun(userId);
+    expect(await save(main, stamped("signed-in", 0))).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    // The sub-agent, accepted later, ends first and saves what the shared files held then.
+    expect(await save(subagent, stamped("rotated-once", 1))).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    // The main run ends later: its browser rotated the cookie again. Acceptance order lost this write before.
+    expect(await save(main, stamped("rotated-twice", 2))).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    expect(await value()).toContain("rotated-twice");
+    // The same bytes again are unchanged, not stale, whichever run sends them.
+    expect(await save(subagent, stamped("rotated-twice", 2))).toEqual({ saved: 0, unchanged: 1, skipped: {} });
+    // A copy only restored, older than the saved one, never undoes it, even from a run accepted later.
+    const later = await browserRun(userId);
+    expect(await save(later, stamped("rotated-once", 1))).toMatchObject({ saved: 0, skipped: { browser_session_stale: 1 } });
+    expect(await value()).toContain("rotated-twice");
+    // The manual fence stays: a change in Settings fences every run accepted before it, however fresh its file.
+    const [current] = await store().list(userId);
+    await store().mutate(userId, { action: "update", id: current!.id, expectedVersionId: current!.versionId, name: "Shop", description: "",
+      value: { action: "preserve" } });
+    expect(await save(later, stamped("after-the-change", 3))).toMatchObject({ saved: 0, skipped: { browser_session_stale: 1 } });
+    const next = await browserRun(userId);
+    expect(await save(next, stamped("after-the-change", 3))).toMatchObject({ saved: 1 });
+    expect(await value()).toContain("after-the-change");
+  });
+
   it("records only safe skip codes and rejects foreign, stale and Workspace-Off authority", async () => {
     const userId = await owner(), foreignUserId = await owner();
     const input = await browserRun(userId);

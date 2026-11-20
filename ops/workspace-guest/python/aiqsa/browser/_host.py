@@ -181,6 +181,8 @@ class Host:
         self.locale = _identity.browser_locale(environ)
         self.timezone = _identity.browser_timezone(environ)
         self.store = _sessions.SessionStore(_paths.sessions_dir())
+        #: Saved sessions are read from the browser and written one save at a time (`_autosave`).
+        self._session_lock = asyncio.Lock()
         self.shots_dir = _paths.shots_dir()
         self.downloads_dir = _paths.downloads_dir()
         self.playwright = None
@@ -1143,21 +1145,25 @@ class Host:
                                                 for origin, entries in self.local_storage.items() if entries]}
 
     async def _autosave(self) -> List[str]:
-        """Rewrite the saved sessions whose cookies or local storage changed; the turn may end at any moment."""
-        if not self.store.tracked or self.context is None:
-            return []
-        try:
-            state = await self._storage_state()
-        except PlaywrightError:
-            return []
-        saved = []
-        for name in self.store.changed(state):
+        """Rewrite the saved sessions whose cookies or local storage changed; the turn may end at any moment.
+
+        One at a time: two agents' actions end together, and a state read earlier must never be written after a later one.
+        """
+        async with self._session_lock:
+            if not self.store.tracked or self.context is None:
+                return []
             try:
-                if self.store.save(name, state)["changed"]:
-                    saved.append(name)
-            except _sessions.SessionError as error:
-                self.notes.append(f"The session {name} was not saved: {error.message}")
-        return saved
+                state = await self._storage_state()
+            except PlaywrightError:
+                return []
+            saved = []
+            for name in self.store.changed(state):
+                try:
+                    if self.store.save(name, state)["changed"]:
+                        saved.append(name)
+                except _sessions.SessionError as error:
+                    self.notes.append(f"The session {name} was not saved: {error.message}")
+            return saved
 
     # Request handling ------------------------------------------------------------------------------------------
 
@@ -1644,19 +1650,22 @@ class Host:
 
     async def op_save_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
         page = await self._page()
-        site = _sessions.site_of(urlsplit(page.url).hostname or "")
+        host = urlsplit(page.url).hostname or ""
+        account = _sessions.account_of(host)
         name = _text(args, "name", 200, required=False)
         if name:
             name = name if name.endswith(".json") else name + ".json"
-        elif site:
-            name = _sessions.session_name(site)
+        else:
+            # One file per account: a sign-in on mail.google.com joins the one made on accounts.google.com.
+            found = self.store.file_for(host)
+            name = found[0] if found else None
         if not name or not _sessions.is_session_filename(name):
             raise HostError("session_name_invalid", "Open the signed-in site first, or name the session like shop.example.com.")
-        sites = {value for value in (site, _sessions.site_of(name[: -len(".json")])) if value}
+        sites = {value for value in (account, _sessions.site_of(name[: -len(".json")])) if value}
         self.store.track(name, sites)
-        state = await self._storage_state()
         try:
-            saved = self.store.save(name, state)
+            async with self._session_lock:
+                saved = self.store.save(name, await self._storage_state())
         except _sessions.SessionError as error:
             raise HostError(error.code, error.message) from None
         step = self._record("save_session", name[: -len(".json")], page.url)
@@ -1684,14 +1693,13 @@ class Host:
             return None
         try:
             page = self.current if self.current is not None and not self.current.is_closed() else None
-            site = _sessions.site_of(urlsplit(page.url).hostname or "") if page is not None else None
-            if page is None or not site:
+            found = self.store.file_for(urlsplit(page.url).hostname or "") if page is not None else None
+            if page is None or found is None:
                 return None
-            name = _sessions.session_name(site)
-            if not _sessions.is_session_filename(name):
-                return None
-            self.store.track(name, {site})
-            self.store.save(name, await self._storage_state())
+            name, sites = found
+            self.store.track(name, sites)
+            async with self._session_lock:
+                self.store.save(name, await self._storage_state())
             step = self._record("save_session", name[: -len(".json")], page.url)
             await self._finish_step(step, page)
             return name[: -len(".json")]
