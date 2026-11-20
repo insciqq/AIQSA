@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { RUN_FOLLOWUP_MAX_COUNT } from "../../contracts/runFollowups";
 import type { ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { ModelToolCall } from "../tools/types";
-import type { ToolBatchOutcome } from "./toolBatch";
+import type { ToolBatchOutcome, ToolsClosedReader } from "./toolBatch";
 import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } from "./transcript";
 
 /**
@@ -14,7 +14,8 @@ import type { TranscriptItem, TranscriptToolResultItem, TranscriptUserItem } fro
  * deadline (the signal), at an approval point (a call that waits for the
  * user ends the turn), and answers without tools once its tool rounds, call
  * budget or tool time are spent, or once a batch ran nothing; without tool
- * limits (the default) only the tool time closes tools. A batch whose
+ * limits (the default) only the tool time closes tools, and the first round
+ * without them after a spent time or limit says why (`toolsClosedInstruction`). A batch whose
  * calls were only mistakes the model can correct (an unknown tool name,
  * malformed arguments) keeps tools for a few rounds, since its results say
  * how (issue #54). A tool-free round that still answered only with calls is
@@ -90,6 +91,11 @@ export type AgentLoopPorts = Readonly<{
     /** The round asks, without tools, for the text the reserved report made needs: its request carries the report's instruction. */
     textOwed?: true;
     toolChoice: LoopToolChoice;
+    /**
+     * The first tool-free round after the tool time or the call or round limits ran out: its request carries
+     * `toolsClosedInstruction`, so the model knows why and what to say. Never for a research run's reader.
+     */
+    toolsClosedBy?: ToolsClosedBy;
   }>): Promise<ProviderRunRequest>;
   /**
    * The run's one call reserved outside the tool budgets, while it has not
@@ -106,6 +112,8 @@ export type AgentLoopPorts = Readonly<{
   signal: AbortSignal;
   /** Whether the turn still has time for tools before it must answer. */
   toolTimeLeft(): boolean;
+  /** Who reads the turn once its tools close, which words its refused calls and instruction take; absent, the user. */
+  toolsClosedReader?: ToolsClosedReader;
 }>;
 
 export type AgentLoopOutcome =
@@ -117,7 +125,55 @@ export type AgentLoopOutcome =
    */
   | Readonly<{ kind: "empty"; rounds: number }>;
 
-export const NO_MORE_TOOLS_OUTPUT = "Not run: this answer may call no more tools. Answer with what you have.";
+/** A call of a round that may run none, by who reads the turn (`ToolsClosedReader`). */
+export const NO_MORE_TOOLS_OUTPUT =
+  "Not run: this answer may call no more tools. Answer with what you have, say plainly what is left undone, and tell the " +
+  "user they can send a message such as \"continue\" to go on: a new message starts a new answer with tools again.";
+export const SUBAGENT_NO_MORE_TOOLS_OUTPUT =
+  "Not run: this turn may call no more tools. Write your report with what you have: what is done, and what is left undone.";
+export const RESEARCH_NO_MORE_TOOLS_OUTPUT = "Not run: this answer may call no more tools. Answer with what you have.";
+
+export function noMoreToolsOutput(reader: ToolsClosedReader = "user"): string {
+  return reader === "parent" ? SUBAGENT_NO_MORE_TOOLS_OUTPUT : reader === "research" ? RESEARCH_NO_MORE_TOOLS_OUTPUT : NO_MORE_TOOLS_OUTPUT;
+}
+
+/** Whether a result is a call refused because its round could run none, whoever read the turn. */
+export function isNoMoreToolsOutput(output: string): boolean {
+  return output === NO_MORE_TOOLS_OUTPUT || output === SUBAGENT_NO_MORE_TOOLS_OUTPUT || output === RESEARCH_NO_MORE_TOOLS_OUTPUT;
+}
+
+/** Why rounds stopped offering tools: the turn's tool time, or the call budget or tool rounds an administrator set. */
+export type ToolsClosedBy = "limits" | "time";
+
+/**
+ * The request-only instruction of the first tool-free round after the tool time or the limits ran out, never recorded in the
+ * transcript, so the cached prefix stays. Rounds that simply stopped offering tools left the model to guess why, and it told
+ * users that work with files was unavailable (production audit 2026-11-20). The user can go on, since a new message starts a
+ * new answer with fresh tool time; a sub-agent reports to its parent instead. A research run's phases have their own texts.
+ */
+export const TOOLS_CLOSED_INSTRUCTIONS: Readonly<Record<Exclude<ToolsClosedReader, "research">, Readonly<Record<ToolsClosedBy, string>>>> = {
+  parent: {
+    limits: "The tool calls this answer may make are spent, so tools are closed for the rest of this turn; the tools " +
+      "themselves still work. Write your report now with what you have: what is done, and what is left undone. Do not call " +
+      "any tool.",
+    time: "This turn's time for tools has run out, so tools are closed for the rest of it; the tools themselves still work. " +
+      "Write your report now with what you have: what is done, and what is left undone. Do not call any tool."
+  },
+  user: {
+    limits: "This answer's tool calls are spent, so tools are closed for the rest of it; the tools themselves still work. " +
+      "Reply to the user now in plain text with what you have, say plainly what is left undone, and tell the user they can " +
+      "send a message such as \"continue\" to go on: a new message starts a new answer with its own tool calls. Do not call " +
+      "any tool, and do not say that tools or files are unavailable.",
+    time: "This answer's time for tools has run out, so tools are closed for the rest of it; the tools themselves still " +
+      "work. Reply to the user now in plain text with what you have, say plainly what is left undone, and tell the user they " +
+      "can send a message such as \"continue\" to go on: a new message starts a new answer with fresh time for tools. Do " +
+      "not call any tool, and do not say that tools or files are unavailable."
+  }
+};
+
+export function toolsClosedInstruction(reader: ToolsClosedReader, by: ToolsClosedBy): string | null {
+  return reader === "research" ? null : TOOLS_CLOSED_INSTRUCTIONS[reader][by];
+}
 
 /** The request-only instruction of the one more tool-free round a response of only calls gets. */
 export const ANSWER_NOW_INSTRUCTION =
@@ -164,7 +220,7 @@ async function reportAfterAnswer(ports: AgentLoopPorts, reserved: NonNullable<Ag
     if (runnable.length > 0) await ports.appendCalls(items);
     else await ports.append(items);
     const refusedCalls = calls.filter((call) => !runnable.includes(call));
-    if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
+    if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, noMoreToolsOutput(ports.toolsClosedReader))));
     if (runnable.length === 0) return [];
     const batch = await ports.runTools(runnable, round);
     await ports.append(batch.results);
@@ -196,7 +252,7 @@ async function textAfterReport(ports: AgentLoopPorts, round: number): Promise<st
     text = result.finalText;
     await ports.append(ports.responseItems(result));
     const calls = distinctCalls(result.toolCalls);
-    if (calls.length > 0) await ports.append(calls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
+    if (calls.length > 0) await ports.append(calls.map((call) => refused(call, noMoreToolsOutput(ports.toolsClosedReader))));
     return text;
   } catch (error) {
     if (ports.signal.aborted) throw error;
@@ -238,6 +294,10 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
   let restarted = false;
   /** The one more tool-free round that asks for the answer: due next, or already taken. */
   let answerNow: "due" | "taken" | null = null;
+  /** A call was refused for the tool time, which may close it before the loop's own check does (a slow tool's longer bound). */
+  let timeSpent = false;
+  /** The model was told why tools closed (`toolsClosedInstruction`); the user's follow-up starts the answer over, and it is told again. */
+  let closedTold = false;
   const approvals: string[] = [];
   const ended = (round: number): AgentLoopOutcome =>
     approvals.length > 0 ? { approvals, kind: "approval", rounds: round } : { kind: "answered", rounds: round };
@@ -250,6 +310,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     if (followups.some((item) => !item.callback)) {
       answerText = "";
       restarted = true;
+      closedTold = false;
     }
     answerNow = null;
     toolsAllowed = true;
@@ -275,9 +336,15 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     }
     const asking = answerNow === "due" && toolChoice === "none";
     if (asking) answerNow = "taken";
+    // The first tool-free round after the tool time or the limits ran out says why, once; a batch that only made no
+    // progress closes tools without it.
+    const closedBy: ToolsClosedBy | null = !timeLeft || timeSpent ? "time" : budgetSpent || roundsSpent ? "limits" : null;
+    const telling = toolChoice === "none" && !asking && !closedTold && closedBy !== null &&
+      (ports.toolsClosedReader ?? "user") !== "research" ? closedBy : null;
+    if (telling) closedTold = true;
     await ports.roundStart(round);
     const request = await ports.prepareRequest({ round, toolChoice, ...(reserved ? { reserved: true as const } : {}),
-      ...(asking ? { answerNow: true as const } : {}) });
+      ...(asking ? { answerNow: true as const } : {}), ...(telling ? { toolsClosedBy: telling } : {}) });
     const result = await ports.callModel(request, round);
     // Answer first: the response's text is the answer's before any record of it is written.
     await ports.roundEnd(result, round);
@@ -293,7 +360,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     }
     // A call that may not run (no more tools, or another call in a reserved round) still gets its result, never a dangling call.
     const refusedCalls = calls.filter((call) => !runnable.includes(call));
-    if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, NO_MORE_TOOLS_OUTPUT)));
+    if (refusedCalls.length > 0) await ports.append(refusedCalls.map((call) => refused(call, noMoreToolsOutput(ports.toolsClosedReader))));
     if (calls.length === 0 || toolChoice === "none") {
       // A tool-free response of only calls, which may not run, is not an answer: the round is asked once more.
       // Calls written as native markup the adapter stopped count too (issue #56).
@@ -353,6 +420,7 @@ export async function runAgentLoop(ports: AgentLoopPorts): Promise<AgentLoopOutc
     // A spent budget, or a batch of which nothing ran, is answered without tools; a batch of only correctable
     // mistakes keeps them for a bounded number of rounds, so the model can do what its results ask.
     if (batch.budgetExhausted) budgetSpent = true;
+    if (batch.timeExhausted) timeSpent = true;
     const correcting = !batch.budgetExhausted && batch.executed === 0 && batch.correctable === runnable.length &&
       corrections < MAX_CORRECTION_ROUNDS;
     if (correcting) corrections += 1;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildRunConversation } from "../conversation";
 import { APPROVAL_PENDING_OUTPUT } from "../toolBatch";
 import type { TranscriptToolResultItem } from "../transcript";
-import { APPROVAL_PENDING_TEXT, engineItemRules, itemRules } from "./items";
+import { APPROVAL_PENDING_TEXT, engineItemRules, itemRules, LEGACY_APPROVAL_PENDING_TEXT } from "./items";
 
 const result = (output: string, outcome: TranscriptToolResultItem["outcome"]): TranscriptToolResultItem =>
   ({ callId: "c", id: "r", kind: "tool_result", name: "mcp_crm_create_ticket_0123456789", outcome, output });
@@ -14,6 +14,8 @@ describe("engine item rules", () => {
     expect(rules.awaitingApproval(result(APPROVAL_PENDING_TEXT, "error"))).toBe(true);
     expect(rules.awaitingApproval(result("{\"id\":\"T-1\"}", "complete"))).toBe(false);
     expect(rules.awaitingApproval(result(APPROVAL_PENDING_TEXT, "complete"))).toBe(false);
+    // A transcript written before the labels were named still marks its call as waiting.
+    expect(rules.awaitingApproval(result(LEGACY_APPROVAL_PENDING_TEXT, "error"))).toBe(true);
   });
 
   it("mark the run context, keep every user message's id stable and exclude an input later runs drop", () => {

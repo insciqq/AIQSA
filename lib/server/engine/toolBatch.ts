@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { MCP_APPROVAL_BUTTON_LABELS } from "../../contracts/mcpApprovals";
 import { workspaceOperationFailureMessage } from "../../contracts/workspaceFailure";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { logEvent, runWithToolCallObservation } from "../observability";
@@ -65,10 +66,23 @@ export const TOOL_BATCH_LIMITS = Object.freeze({
   retryBaseDelayMs: 1_000
 });
 
-/** The placeholder result of a call waiting for the user's approval. */
+/** The card's buttons as the model quotes them: the user's exact English labels on the web and in Telegram. */
+const APPROVAL_BUTTONS = `"${MCP_APPROVAL_BUTTON_LABELS.allow_once}", "${MCP_APPROVAL_BUTTON_LABELS.allow_server}" and ` +
+  `"${MCP_APPROVAL_BUTTON_LABELS.deny}"`;
+
+/**
+ * The placeholder result of a call waiting for the user's approval. The turn ends at the call, so the model reads it in a
+ * later turn (a user asking where to click); the native prompt's approval line says the same before the call. A user
+ * approved one server's writes 22 times with Allow once after the model named a button that does not exist (production
+ * audit 2026-11-20). A transcript keeps the text it was written with: `compaction/items.ts` knows the earlier one.
+ */
 export const APPROVAL_PENDING_OUTPUT =
-  "Not sent: this call can change data, so it waits for the user's approval in the chat. If the user approves, " +
-  "it runs and you continue from its result; do not call it again meanwhile.";
+  "Not sent: this call can change data, so it waits for the user's decision on an approval card in the chat, whose buttons " +
+  `read ${APPROVAL_BUTTONS}. If the user allows it, it runs and you continue from its result; do not call it again ` +
+  "meanwhile. When you mention the card, say in one short sentence what the call will do and quote those labels exactly " +
+  "as written, in English: never translate them or name a button that is not there. If the user has already allowed calls " +
+  "of this server in this chat, or several cards wait at once, add that " +
+  `"${MCP_APPROVAL_BUTTON_LABELS.allow_server}" stops further cards for this server.`;
 
 /** What the transcript keeps of a run-scoped result (`EngineTool.runScopedResult`) for later turns. */
 export const RUN_SCOPED_RESULT_NOTE =
@@ -89,8 +103,8 @@ export const UNKNOWN_OUTCOME_REPEAT_OUTPUT =
 /** The same refusal where the user decides in the approval card. */
 export const UNKNOWN_OUTCOME_APPROVAL_OUTPUT =
   "Not sent: an identical earlier call failed after it may have been sent, so its effect is unknown. Check the current state " +
-  "if you can and tell the user what you found; the user decides in the approval card whether to send it again. Do not call it " +
-  "again meanwhile.";
+  "if you can and tell the user what you found; the user decides on the approval card in the chat whether to send it again, " +
+  `with the buttons ${APPROVAL_BUTTONS} (quote these labels exactly as written, in English). Do not call it again meanwhile.`;
 
 /**
  * What an approved call's record says while it may be on its way: its earlier result said it was not sent, so until its
@@ -136,9 +150,29 @@ export const TURN_TOOL_CALL_LIMIT_OUTPUT = (limit: number) =>
 /** The line that ends the result of each call a turn's own budget counted. */
 export const turnCallsLeftLine = (left: number) => `Calls left in this task: ${left}.`;
 
-/** A call that would have started after the turn's time for tools ran out. */
+/**
+ * Who reads what a turn writes once its tools close: the user, from the main agent, who may send another message for a new
+ * answer with fresh time for tools; a parent agent, from a sub-agent's report; or a research run's method, whose phases close
+ * tools on purpose and keep their own texts. Once tools closed by time the model told users that work with files was
+ * unavailable (production audit 2026-11-20), so the main agent's and sub-agents' texts say the tools still work.
+ */
+export type ToolsClosedReader = "parent" | "research" | "user";
+
+/** A call that would have started after the turn's time for tools ran out, by who reads the turn (`ToolsClosedReader`). */
 export const TOOL_TIME_EXHAUSTED_OUTPUT =
+  "Not run: this answer's time for tools has run out; the tools themselves still work. Answer with what you have, say " +
+  "plainly what is left undone, and tell the user they can send a message such as \"continue\" to go on: a new message " +
+  "starts a new answer with fresh time for tools.";
+export const SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT =
+  "Not run: this turn's time for tools has run out; the tools themselves still work. Write your report with what you " +
+  "have: what is done, and what is left undone.";
+export const RESEARCH_TOOL_TIME_EXHAUSTED_OUTPUT =
   "Not run: this answer's time for tools has run out. Answer with what you have and say what you could not check.";
+
+export function toolTimeExhaustedOutput(reader: ToolsClosedReader = "user"): string {
+  return reader === "parent" ? SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT
+    : reader === "research" ? RESEARCH_TOOL_TIME_EXHAUSTED_OUTPUT : TOOL_TIME_EXHAUSTED_OUTPUT;
+}
 
 /** What a sub-agent's call that needs the user's approval returns: it is not sent, and goes back to the main agent. */
 export const SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT =
@@ -186,6 +220,8 @@ export type ToolBatchDeps = Readonly<{
    * reserve, is refused like one past the call budget; calls already running settle. Absent: no time check here.
    */
   toolTimeLeft?(tool: RunTool): boolean;
+  /** Who reads the turn once its tools close, which words a call past the tool time gets; absent, the user. */
+  toolsClosedReader?: ToolsClosedReader;
   /**
    * A turn's own call budget beside the run's (`SubagentHost.turnToolCalls`): absent, no turn counts its own calls. It counts what
    * the run's budget counts, but its `exempt` tools, as each call starts, so the response's order decides; past `limit` a call is
@@ -222,6 +258,8 @@ export type ToolBatchOutcome = Readonly<{
    */
   correctable: number;
   results: readonly TranscriptToolResultItem[];
+  /** A call was refused for the tool time (a part of `budgetExhausted`): the turn's tools closed by time, not by a limit. */
+  timeExhausted?: true;
 }>;
 
 /** The run stopped (Stop or its deadline) while the batch was being recorded. */
@@ -233,7 +271,7 @@ export class ToolBatchInactiveError extends Error {
 }
 
 type BeforeToolCall =
-  | Readonly<{ budget?: true; correctable?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
+  | Readonly<{ budget?: "calls" | "time"; correctable?: true; kind: "refuse"; output: string; result: ToolLoopJsonValue; toolName: string }>
   | Readonly<{
     /** The run's reserved report, asked for the first time: it does not count against the call budget. */
     exempt?: true;
@@ -292,12 +330,13 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     }
     const exempt = deps.reservedToolName !== undefined && call.name === deps.reservedToolName && state.reservedCalled !== true;
     if (!exempt && deps.toolTimeLeft?.(tool.definition) === false) {
-      return { budget: true, kind: "refuse", output: TOOL_TIME_EXHAUSTED_OUTPUT, toolName: call.name,
-        result: jsonError(call, { error: "tool_time_exhausted", message: TOOL_TIME_EXHAUSTED_OUTPUT }) };
+      const output = toolTimeExhaustedOutput(deps.toolsClosedReader);
+      return { budget: "time", kind: "refuse", output, toolName: call.name,
+        result: jsonError(call, { error: "tool_time_exhausted", message: output }) };
     }
     if (!exempt && deps.maxToolCalls !== null && state.calls >= deps.maxToolCalls) {
       const message = TOOL_CALL_LIMIT_OUTPUT(deps.maxToolCalls);
-      return { budget: true, kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
+      return { budget: "calls", kind: "refuse", output: message, result: jsonError(call, { error: "tool_call_limit_reached", message }),
         toolName: call.name };
     }
     const turn = deps.turnBudget;
@@ -442,6 +481,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const hooks = createToolHooks(deps, state);
   const approvals: string[] = [];
   let budgetExhausted = false;
+  let timeExhausted = false;
   let correctable = 0;
   let executed = 0;
   const declared = input.calls.filter((call) => deps.registry.resolve(call.name));
@@ -459,6 +499,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       runId: deps.runId, ...(deps.thread ? { thread: deps.thread } : {}), userId: deps.userId };
     if (before.kind === "refuse") {
       if (before.budget) budgetExhausted = true;
+      if (before.budget === "time") timeExhausted = true;
       if (before.correctable) correctable += 1;
       const row = await deps.store.refuse({ ...record, result: before.result, toolName: before.toolName });
       if (!row) throw new ToolBatchInactiveError();
@@ -626,5 +667,5 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length - delegatedCalls) }, worker(false)),
     ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.delegatedConcurrency, delegatedCalls) }, worker(true))
   ]);
-  return { approvals, budgetExhausted, correctable, executed, results };
+  return { approvals, budgetExhausted, correctable, executed, results, ...(timeExhausted ? { timeExhausted: true as const } : {}) };
 }

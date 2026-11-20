@@ -4,6 +4,7 @@ import { useId, useRef, useState } from "react";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import { randomUUID } from "@/lib/browser/randomUUID";
 import {
+  MCP_APPROVAL_BUTTON_LABELS,
   mcpApprovalContinuationTool,
   type McpApprovalCard,
   type McpApprovalContinuationOutcome,
@@ -140,15 +141,15 @@ function McpApprovalCardV2({ card, decide, live, offerContinue, onContinue, runI
         <div className="v2-tool-approval-actions" role="group" aria-labelledby={headingId}>
           <UiV2Button busy={busy === "deny"} disabled={live || busy !== null && busy !== "deny"} type="button"
             onClick={() => void choose("deny")}>
-            Deny
+            {MCP_APPROVAL_BUTTON_LABELS.deny}
           </UiV2Button>
           <UiV2Button busy={busy === "allow_server"} disabled={live || busy !== null && busy !== "allow_server"} type="button"
             onClick={() => void choose("allow_server")}>
-            Always allow for this server
+            {MCP_APPROVAL_BUTTON_LABELS.allow_server}
           </UiV2Button>
           <UiV2Button busy={busy === "allow_once"} disabled={live || busy !== null && busy !== "allow_once"} tone="primary"
             type="button" onClick={() => void choose("allow_once")}>
-            Allow once
+            {MCP_APPROVAL_BUTTON_LABELS.allow_once}
           </UiV2Button>
         </div>
       ) : null}

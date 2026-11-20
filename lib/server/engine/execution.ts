@@ -54,14 +54,15 @@ import { buildRunConversation, subagentCatalogItem, turnContextIndex, turnContex
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
-import { ANSWER_NOW_INSTRUCTION, runAgentLoop, type LoopToolChoice } from "./loop";
+import { ANSWER_NOW_INSTRUCTION, runAgentLoop, toolsClosedInstruction, type LoopToolChoice, type ToolsClosedBy } from "./loop";
 import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_UNATTENDED_RETRY } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
 import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
 import {
-  APPROVED_CALL_IN_FLIGHT_OUTPUT, runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState
+  APPROVED_CALL_IN_FLIGHT_OUTPUT, runToolBatch, ToolBatchInactiveError, transcriptRecord, type ToolBatchDeps, type ToolBatchState,
+  type ToolsClosedReader
 } from "./toolBatch";
 import type { ToolCallStore } from "./toolCallStore";
 import { buildToolRegistry, engineMcpBindings, type ToolRegistryServices } from "./toolRegistry";
@@ -767,6 +768,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             userMessage: subagentInput.userMessage }) : null;
         const runResearch = offeredResearch && await offeredResearch.authorized() ? offeredResearch : null;
         research = runResearch;
+        // The user reads the answer and may send another message for fresh tool time; a research run's phases keep their own texts.
+        const toolsClosedReader: ToolsClosedReader = runResearch ? "research" : "user";
         // Admission refused a message sent with Deep research that cannot research (`deepResearchRefusal`); one that still cannot is refused here,
         // before any model call, never answered another way.
         if (normalizedRequest.deepResearch === true && !runResearch) {
@@ -837,6 +840,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           signal,
           store: engine.toolCalls,
           toolTimeLeft: callTimeLeft,
+          toolsClosedReader,
           unknownEffects,
           userId: input.userId
         };
@@ -1027,8 +1031,9 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               runDraftCall: (call, round) => runToolBatch(batchDeps, { calls: 0 }, { calls: [call], round }) })
           } } : {}),
           maxToolRounds: budgets.maxToolRounds,
-          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, textOwed, toolChoice }: Readonly<{
-            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; textOwed?: true; toolChoice: LoopToolChoice }>) => {
+          prepareRequest: async ({ afterAnswer, answerNow, reserved: reservedRound, textOwed, toolChoice, toolsClosedBy }: Readonly<{
+            afterAnswer?: true; answerNow?: true; reserved?: true; round: number; textOwed?: true; toolChoice: LoopToolChoice;
+            toolsClosedBy?: ToolsClosedBy }>) => {
             // The round after a written answer only reports: none of its text streams into the answer, which stands.
             reportOnlyRound = afterAnswer === true;
             const tools = [...registry.definitions()];
@@ -1045,13 +1050,14 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             // Compaction at the request boundary; a request that cannot fit even then fails visibly.
             const prepared = await context.prepare(request);
             void recordContextStatus("request");
-            // A reserved round's, an answer-now round's or a text round's instruction rides on its request only, never on the
-            // transcript.
+            // A reserved round's, an answer-now round's, a text round's or a closed-tools round's instruction rides on its request
+            // only, never on the transcript.
             const reservedInstruction = reserved && afterAnswer && "afterAnswerInstruction" in reserved
               ? reserved.afterAnswerInstruction : reserved?.instruction;
             const instruction = reservedRound && reservedInstruction ? reservedInstruction
               : textOwed && reserved && "textInstruction" in reserved ? reserved.textInstruction
-                : answerNow ? ANSWER_NOW_INSTRUCTION : null;
+                : answerNow ? ANSWER_NOW_INSTRUCTION
+                  : toolsClosedBy ? toolsClosedInstruction(toolsClosedReader, toolsClosedBy) : null;
             return instruction
               ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
               : prepared;
@@ -1088,7 +1094,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             return batch;
           },
           signal,
-          toolTimeLeft
+          toolTimeLeft,
+          toolsClosedReader
         });
         if (outcome.kind === "approval") logEvent("run_execution", { run_id: runId, stage: "execution", outcome: "completed",
           code: "waiting_approval" });

@@ -11,6 +11,17 @@ import { SUBAGENT_CALLBACK_TURN_KIND } from "./subagents";
 export const MCP_APPROVAL_DECISIONS = ["allow_once", "allow_server", "deny"] as const;
 export type McpApprovalDecision = (typeof MCP_APPROVAL_DECISIONS)[number];
 
+/**
+ * The card's buttons as the user sees them, on the web and in Telegram alike. The interface is English-only and the
+ * model is told these exact words (`APPROVAL_PENDING_OUTPUT`, the native prompt's approval line), so a label changes
+ * here and there together.
+ */
+export const MCP_APPROVAL_BUTTON_LABELS: Readonly<Record<McpApprovalDecision, string>> = Object.freeze({
+  allow_once: "Allow once",
+  allow_server: "Always allow for this server",
+  deny: "Deny"
+});
+
 /** Cards one answer shows at most. */
 export const MCP_APPROVAL_CARDS_LIMIT = 16;
 

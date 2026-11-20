@@ -3,7 +3,7 @@ import type { FakeTelegramMessage } from "@/tests/support/fakeTelegramBotApi";
 import {
   buttonData, createBridgeHarness, createFakeGateway, type BridgeHarness, type FakeGateway, type FakeRun
 } from "@/tests/support/telegramChatBridge";
-import type { McpApprovalCard, McpApprovalDecision } from "../../contracts/mcpApprovals";
+import { MCP_APPROVAL_BUTTON_LABELS, type McpApprovalCard, type McpApprovalDecision } from "../../contracts/mcpApprovals";
 import failureCodes from "../observability/failureCodes.json";
 import {
   boundedTelegramApprovalDetails, createTelegramApprovals, TELEGRAM_APPROVAL_CALLBACK_KINDS, TELEGRAM_APPROVAL_DETAILS_MAX_CHARS,
@@ -168,7 +168,9 @@ describe("Telegram MCP approvals: the message", () => {
       ],
       skip_entity_detection: true
     });
-    expect(keyboardTexts(approval!)).toEqual([[TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], ["Always allow Jira"]]);
+    // The web card's labels, word for word: the model names them without knowing which surface shows the card.
+    expect(keyboardTexts(approval!)).toEqual([["Allow once", "Deny"], ["Always allow for this server"]]);
+    expect(keyboardTexts(approval!).flat().sort()).toEqual(Object.values(MCP_APPROVAL_BUTTON_LABELS).sort());
     expect(h.store.gateway.details).toHaveBeenCalledWith({ ordinal: 0, roundIndex: 1, runId: run.id, userId: "user-1" });
     // A reply to the approval continues its chat.
     expect(h.messageRefs.refs).toContainEqual(expect.objectContaining({ chatId: run.chatId, telegramMessageId: approval!.message_id }));
@@ -257,7 +259,7 @@ describe("Telegram MCP approvals: decisions", () => {
     const h = harness();
     const first = await settledApproval(h);
     h.aiqsa.setAutoAnswer((body) => body.systemTurn ? "Done." : null);
-    await press(h, first.approval, "Always allow Jira");
+    await press(h, first.approval, TELEGRAM_COPY.alwaysAllow);
     expect(h.store.decisions.at(-1)).toMatchObject({ decision: "allow_server" });
     expect(JSON.stringify(message(h, h.user.id, first.approval.message_id).rich_message)).toContain("Always allowed for Jira");
     expect(h.aiqsa.sent).toHaveLength(2);
@@ -328,7 +330,7 @@ describe("Telegram MCP approvals: decisions", () => {
     expect(h.store.decisions.length - before).toBeGreaterThan(3);
     const retry = message(h, h.user.id, slowApproval.message_id);
     expect(JSON.stringify(retry.rich_message)).toContain(TELEGRAM_APPROVAL_COPY.stillRunning);
-    expect(keyboardTexts(retry)).toEqual([[TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], ["Always allow Jira"]]);
+    expect(keyboardTexts(retry)).toEqual([[TELEGRAM_COPY.allowOnce, TELEGRAM_COPY.deny], [TELEGRAM_COPY.alwaysAllow]]);
     expect(buttonData(retry, TELEGRAM_COPY.allowOnce)).not.toBe(first.data);
 
     slow.token("Still waiting.");
@@ -367,7 +369,7 @@ describe("Telegram MCP approvals: decisions", () => {
       run.complete();
     };
     h.aiqsa.setAutoAnswer((body) => body.systemTurn ? "Continued after the change." : null);
-    await press(h, approval!, "Always allow Jira", { settle: false });
+    await press(h, approval!, TELEGRAM_COPY.alwaysAllow, { settle: false });
     await h.settle();
     await h.approvals.idle();
 

@@ -12,7 +12,7 @@ import type { RunRepository } from "../runs/runRepositoryContract";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineTestFaults } from "./faults";
 import { ANSWER_STANDS_INSTRUCTION, createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
-import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS } from "./loop";
+import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS, TOOLS_CLOSED_INSTRUCTIONS } from "./loop";
 import type { NativeRunStore } from "./runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptItem } from "./transcript";
@@ -750,6 +750,12 @@ describe("native run execution", () => {
       repository: repository() as unknown as RunRepository, ...(scheduled ? { scheduled: true as const } : {}), services: {},
       userId: "user" }));
     expect(requests.map((request) => request.toolChoice)).toEqual([...Array<string>(toolRounds).fill("auto"), "none"]);
+    // The tool-free round says why tools closed and how the user goes on, on its request only and never in the transcript.
+    const told = TOOLS_CLOSED_INSTRUCTIONS.user.time;
+    expect(requests.at(-1)!.history?.at(-1)).toEqual({ text: told, type: "user" });
+    expect(requests.map((request) => request.history?.filter((item) => item.type === "user" && item.text === told).length))
+      .toEqual([...Array<number>(toolRounds).fill(0), 1]);
+    expect(JSON.stringify(memory.transcriptRows)).not.toContain(told);
     // The last round with tools returned after the tool time ran out: its call is refused, never started.
     expect(callTool).toHaveBeenCalledTimes(toolRounds - 1);
     expect([...memory.rows.values()].filter((row) => JSON.stringify(row.result).includes("tool_time_exhausted"))).toHaveLength(1);
