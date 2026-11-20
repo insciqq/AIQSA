@@ -70,8 +70,17 @@ export const BROWSER_LIVE_RELAY_LIMITS = Object.freeze({
   /** After the guest could not be reached, an open view tries again this much later, at most `retries` times. */
   retryMs: 2_000,
   retries: 30,
-  /** Bytes of one view's SSE queue (a few frames); a view that falls behind loses frames, never state. */
+  /** Bytes of one view's SSE queue; a view that falls behind loses frames, never state. */
   viewQueueBytes: 4 * 1_024 * 1_024,
+  /**
+   * Frames a view's queue holds at most, in the size of the frame being sent (`browserLiveHandlers.ts`): state never
+   * waits behind more pictures than this on a slow connection (production 2026-11-17: ~15 s behind a full queue).
+   */
+  framesQueued: 2,
+  /** ...though small frames may always fill this much, so a few small events never hold a small picture back. */
+  frameQueueFloorBytes: 64 * 1_024,
+  /** A frame held back for a slow view is tried again this often, until a newer one replaces it or it fits. */
+  frameRetryMs: 100,
   /** How long the end of a run waits for its streamer to close. */
   endMs: 3_000,
   /** A sign of the user moves a handoff's shown deadline once it gained this much, so typing does not send a state each key. */

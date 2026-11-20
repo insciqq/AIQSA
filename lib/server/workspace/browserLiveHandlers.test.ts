@@ -1,10 +1,11 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { decodeBrowserLiveEvent, type BrowserLiveEvent } from "@/lib/contracts/browserLive";
 import type { AuthenticatedSession } from "../auth/requestAuth";
-import { BrowserLiveRelay } from "./browserLive";
-import { createBrowserLiveHandlers } from "./browserLiveHandlers";
+import { createConnectSseStream } from "../connect/sse";
+import { BROWSER_LIVE_RELAY_LIMITS, BrowserLiveRelay } from "./browserLive";
+import { createBrowserLiveHandlers, frameBudgetWriter } from "./browserLiveHandlers";
 import { fakeLiveGuest, FRAME_DATA, until } from "./browserLive.testFixtures";
 
 const MARKER = "zz-typed-marker-4242";
@@ -70,6 +71,71 @@ async function readEvents(response: Response, stop: (events: BrowserLiveEvent[])
 const ended: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const end of ended.splice(0)) await end();
+  vi.useRealTimers();
+});
+
+describe("a slow view's frames", () => {
+  const PICTURE = 200_000;
+  const frame = (seq: number) => ({ agent: "main", data: "A".repeat(PICTURE), height: 800, mime: "image/jpeg", seq, width: 1280 });
+
+  /** The next `count` events the reader takes: their names, a frame's seq, and the bytes read before each. */
+  async function take(reader: ReadableStreamDefaultReader<Uint8Array>, count: number) {
+    const decoder = new TextDecoder();
+    const taken: Array<{ before: number; event: string; seq?: number }> = [];
+    let bytes = 0;
+    while (taken.length < count) {
+      const next = await reader.read();
+      if (next.done) break;
+      const block = decoder.decode(next.value);
+      const event = /^event: (.+)$/mu.exec(block)?.[1] ?? "";
+      const seq = event === "frame" ? (JSON.parse(/^data: (.+)$/mu.exec(block)![1]!) as { seq: number }).seq : undefined;
+      taken.push({ before: bytes, event, ...(seq === undefined ? {} : { seq }) });
+      bytes += next.value.byteLength;
+    }
+    return taken;
+  }
+
+  it("queue a state ahead of all but about two frames, and resume with the latest once the reader drains", async () => {
+    vi.useFakeTimers();
+    const stream = createConnectSseStream({ maxQueuedBytes: BROWSER_LIVE_RELAY_LIMITS.viewQueueBytes });
+    const writer = frameBudgetWriter(stream);
+    // A burst of 20 frames (4 MB) to a reader that takes nothing: only the budget is queued, the rest held back.
+    const accepted = Array.from({ length: 20 }, (_, index) => writer.send("frame", frame(index + 1)));
+    expect(accepted.filter(Boolean)).toHaveLength(BROWSER_LIVE_RELAY_LIMITS.framesQueued);
+    expect(stream.queuedBytes()).toBeLessThan((BROWSER_LIVE_RELAY_LIMITS.framesQueued + 0.1) * PICTURE);
+    expect(writer.send("state", { browser: "running" })).toBe(true);
+    const reader = stream.response.body!.getReader();
+    const first = await take(reader, 3);
+    expect(first.map((entry) => [entry.event, entry.seq])).toEqual([["frame", 1], ["frame", 2], ["state", undefined]]);
+    // No 4 MB of pictures before the state: two frames at most.
+    expect(first[2]!.before).toBeLessThan((BROWSER_LIVE_RELAY_LIMITS.framesQueued + 0.1) * PICTURE);
+    // The reader drained: the newest held frame goes out on its retry, and new frames go out at once again.
+    await vi.advanceTimersByTimeAsync(BROWSER_LIVE_RELAY_LIMITS.frameRetryMs);
+    expect((await take(reader, 1)).map((entry) => [entry.event, entry.seq])).toEqual([["frame", 20]]);
+    expect(writer.send("frame", frame(21))).toBe(true);
+    expect((await take(reader, 1)).map((entry) => [entry.event, entry.seq])).toEqual([["frame", 21]]);
+    writer.close();
+    expect(writer.send("frame", frame(22))).toBe(false);
+  });
+
+  it("drop a held frame once a newer one fits or the stream closes", async () => {
+    vi.useFakeTimers();
+    const stream = createConnectSseStream({ maxQueuedBytes: BROWSER_LIVE_RELAY_LIMITS.viewQueueBytes });
+    const writer = frameBudgetWriter(stream);
+    for (let seq = 1; seq <= 3; seq += 1) writer.send("frame", frame(seq));
+    const reader = stream.response.body!.getReader();
+    await take(reader, 2);
+    // Sent directly, the newer frame replaces the held one, which never follows it.
+    expect(writer.send("frame", frame(4))).toBe(true);
+    await vi.advanceTimersByTimeAsync(BROWSER_LIVE_RELAY_LIMITS.frameRetryMs * 3);
+    expect(writer.send("steps", { agent: "main", steps: [] })).toBe(true);
+    expect((await take(reader, 2)).map((entry) => [entry.event, entry.seq])).toEqual([["frame", 4], ["steps", undefined]]);
+    writer.send("frame", frame(5));
+    writer.send("frame", frame(6));
+    writer.send("frame", frame(7));
+    stream.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("browser live routes", () => {

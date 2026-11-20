@@ -37,6 +37,20 @@ describe("AIQSA Connect SSE stream", () => {
     expect(stream.isClosed()).toBe(false);
   });
 
+  it("counts the bytes the reader has not taken yet", async () => {
+    const stream = createConnectSseStream({ maxQueuedBytes: 4096 });
+    expect(stream.queuedBytes()).toBe(0);
+    expect(stream.send("output", { data: "a".repeat(20) })).toBe(true);
+    const sent = stream.queuedBytes();
+    expect(sent).toBe("event: output\ndata: {\"data\":\"aaaaaaaaaaaaaaaaaaaa\"}\n\n".length);
+    stream.send("output", {});
+    expect(stream.queuedBytes()).toBeGreaterThan(sent);
+    const reader = stream.response.body!.getReader();
+    await reader.read();
+    await reader.read();
+    expect(stream.queuedBytes()).toBe(0);
+  });
+
   it("runs its close listeners once, whether the server closes or the client goes away", async () => {
     const closedByServer = vi.fn();
     const server = createConnectSseStream({ maxQueuedBytes: 1024 });

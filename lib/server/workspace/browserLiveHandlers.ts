@@ -7,9 +7,10 @@ import {
   type BrowserLiveErrorCode
 } from "@/lib/contracts/browserLive";
 import type { RequestAuthResolver } from "../auth/requestAuth";
-import { createConnectSseStream } from "../connect/sse";
+import { createConnectSseStream, type ConnectSseStream } from "../connect/sse";
 import { readBoundedRequestBody } from "../http/requestBody";
-import { BROWSER_LIVE_RELAY_LIMITS, type BrowserLiveRelay, type BrowserLiveView, type BrowserLiveViewer } from "./browserLive";
+import { BROWSER_LIVE_RELAY_LIMITS, type BrowserLiveRelay, type BrowserLiveView, type BrowserLiveViewer,
+  type BrowserLiveWriter } from "./browserLive";
 
 /**
  * The live Workspace browser's routes under `/api/chats/<chatId>/browser/` (`lib/contracts/browserLive.ts`),
@@ -33,6 +34,64 @@ const HEADERS = Object.freeze({ "cache-control": "private, no-store" });
 /** Small JSON bodies: one input (a text insertion escapes to at most six bytes a character), a control or a handoff answer. */
 const BODY_MAX_BYTES = 6 * BROWSER_LIVE_LIMITS.textChars + 1_024;
 const CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+
+/** A frame's size on the wire: its base64 picture and a small envelope. */
+function frameBytes(data: unknown): number {
+  const picture = typeof data === "object" && data !== null ? (data as { data?: unknown }).data : undefined;
+  return (typeof picture === "string" ? picture.length : 0) + 256;
+}
+
+/**
+ * One view's writer. Frames go out only while the stream holds less than about `framesQueued` frames of the size
+ * being sent, so a state, steps or end event never waits behind seconds of pictures on a slow connection (production
+ * 2026-11-17: the state after Done reached a phone ~15 s late behind a 4 MB queue of frames); other events use the
+ * whole queue. A frame held back is replaced by the next one, and the latest is tried again until the reader catches
+ * up, so a page that stopped changing still shows its last picture.
+ */
+export function frameBudgetWriter(stream: ConnectSseStream): BrowserLiveWriter {
+  let held: unknown = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const fits = (data: unknown) => {
+    const bytes = frameBytes(data);
+    return stream.queuedBytes() + bytes <= Math.max(BROWSER_LIVE_RELAY_LIMITS.framesQueued * bytes,
+      BROWSER_LIVE_RELAY_LIMITS.frameQueueFloorBytes);
+  };
+  const retry = () => {
+    timer = null;
+    if (held === null || stream.isClosed()) return;
+    if (!fits(held)) {
+      hold(held);
+      return;
+    }
+    const frame = held;
+    held = null;
+    stream.send("frame", frame);
+  };
+  const hold = (data: unknown) => {
+    held = data;
+    if (timer) return;
+    timer = setTimeout(retry, BROWSER_LIVE_RELAY_LIMITS.frameRetryMs);
+    timer.unref?.();
+  };
+  stream.onClose(() => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    held = null;
+  });
+  return {
+    close: (final) => stream.close(final),
+    send(event, data) {
+      if (event !== "frame") return stream.send(event, data);
+      if (stream.isClosed()) return false;
+      if (!fits(data)) {
+        hold(data);
+        return false;
+      }
+      held = null;
+      return stream.send(event, data);
+    }
+  };
+}
 
 function refuse(code: BrowserLiveErrorCode): Response {
   return Response.json({ code }, { headers: HEADERS, status: BROWSER_LIVE_ERROR_HTTP_STATUS[code] });
@@ -67,7 +126,7 @@ export function createBrowserLiveHandlers(deps: BrowserLiveHandlerDeps) {
       if (found instanceof Response) return found;
       const stream = createConnectSseStream({ maxQueuedBytes: BROWSER_LIVE_RELAY_LIMITS.viewQueueBytes, signal: request.signal });
       if (stream.isClosed()) return stream.response;
-      const id = await found.view.watch(found.viewer, stream);
+      const id = await found.view.watch(found.viewer, frameBudgetWriter(stream));
       if (!id) {
         stream.close();
         return refuse("browser_live_not_found");

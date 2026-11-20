@@ -20,6 +20,8 @@ export type ConnectSseStream = ConnectStreamWriter & Readonly<{
   isClosed(): boolean;
   /** Runs once, when the server closes the stream or the client goes away. */
   onClose(listener: () => void): void;
+  /** Bytes sent and not yet taken by the reader, so a sender can hold back what may be dropped (live view frames). */
+  queuedBytes(): number;
   response: Response;
 }>;
 
@@ -91,6 +93,7 @@ export function createConnectSseStream(input: Readonly<{ maxQueuedBytes: number;
       }
       listeners.push(listener);
     },
+    queuedBytes: () => controller ? Math.max(0, input.maxQueuedBytes - (controller.desiredSize ?? input.maxQueuedBytes)) : 0,
     response: new Response(stream, { headers: SSE_HEADERS }),
     send(event, data) {
       if (closed || !controller) return false;
