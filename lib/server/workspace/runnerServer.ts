@@ -175,6 +175,26 @@ function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
   return nodeByteStream(request);
 }
 
+/**
+ * Resolves once the response takes more bytes or once it closed. `once(response, "drain")` never settles when the
+ * client's socket closes while the runner waits on it (a closed response emits "close", not "error"), which left the
+ * export handler, its batch and its operation pending with nothing logged, and the next handover waiting for its drain
+ * timeout (production 2026-11-18: checkpoint uploads cut short while the runner logged nothing). After a close the
+ * reader is already cancelled (`abort`), so the stream ends as a visible export failure.
+ */
+function drainOrClose(response: ServerResponse): Promise<void> {
+  if (response.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      response.off("drain", done);
+      response.off("close", done);
+      resolve();
+    };
+    response.on("drain", done);
+    response.on("close", done);
+  });
+}
+
 async function pipeOutput(response: ServerResponse, pending: PendingOutput, signal: AbortSignal): Promise<void> {
   const reader = pending.output.body.getReader();
   let written = 0;
@@ -195,7 +215,7 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput, sign
       if (next.done) break;
       written += next.value.byteLength;
       if (written > pending.output.byteSize) throw new Error("stream_size_mismatch");
-      if (!response.write(next.value)) await once(response, "drain");
+      if (!response.write(next.value)) await drainOrClose(response);
     }
     if (written !== pending.output.byteSize) throw new Error("stream_size_mismatch");
     response.end();

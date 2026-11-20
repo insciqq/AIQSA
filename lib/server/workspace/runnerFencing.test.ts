@@ -170,4 +170,49 @@ describe("Workspace runner stale operation requests", () => {
     expect(await stale.json()).toEqual({ error: "workspace_operation_stale" });
     expect(cancelled[1]).toHaveBeenCalledOnce();
   });
+
+  it("settles an export whose client went away while the runner waited to write, so a handover need not wait it out", async () => {
+    const value = await fixture();
+    const chunk = new Uint8Array(1024 * 1024);
+    const chunks = 64;
+    let sent = 0;
+    const cancel = vi.fn();
+    vi.spyOn(value.runtime, "collectOutputs").mockResolvedValueOnce([{
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent === chunks) controller.close();
+          else { sent += 1; controller.enqueue(chunk); }
+        },
+        cancel
+      }),
+      byteSize: chunk.byteLength * chunks, checksum: "a".repeat(64), mimeType: "application/octet-stream", opaqueFileId: "0".repeat(64),
+      relativePath: "big.bin"
+    }]);
+    const response = await value.post(`${sessionId}/outputs/list`, {
+      operation: operation(1), runtimeSandboxId: value.runtimeSandboxId, modelRunId: "fixture_1", outputDirectory: "/workspace/out/fixture_1"
+    });
+    const batch = await response.json() as { batchId: string; outputs: { opaqueFileId: string }[] };
+    const address = value.server.address() as AddressInfo;
+    const client = new AbortController();
+    const stream = await fetch(`http://127.0.0.1:${address.port}/v1/sessions/${sessionId}/outputs/stream?batchId=${batch.batchId}&opaqueFileId=${batch.outputs[0]!.opaqueFileId}`,
+      { headers: { authorization: `Bearer ${token}` }, signal: client.signal });
+    expect(stream.status).toBe(200);
+    // The client reads nothing, so the runner's writes back up until it waits for the socket to drain.
+    await vi.waitFor(() => expect(sent).toBeGreaterThan(1), { interval: 20, timeout: 5_000 });
+    let seen = -1;
+    await vi.waitFor(() => {
+      const settled = sent === seen;
+      seen = sent;
+      expect(settled).toBe(true);
+    }, { interval: 300, timeout: 5_000 });
+    client.abort();
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce(), { interval: 20, timeout: 5_000 });
+    // A handler still waiting for "drain" would hold its operation, and the handover would fail after the drain timeout.
+    const started = Date.now();
+    const next = await value.post("ensure", value.ensureBody(2, value.runtimeSandboxId));
+    expect(next.status).toBe(200);
+    await next.arrayBuffer();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(sent).toBeLessThan(chunks);
+  }, 20_000);
 });
