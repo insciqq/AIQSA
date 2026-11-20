@@ -93,19 +93,23 @@ type FailureContext = Readonly<{
   pdf: boolean; pdfMaxBytes: number; httpStatus?: number;
 }>;
 
+const BROWSER_PASSES_CHECKS = "If it shows a CAPTCHA or bot check, pass it there as a person would (`aiqsa-browser captcha`, " +
+  "then a picture, slider or text task from a screenshot).";
+
 /**
  * The next step after a 401, 403 or bot check, which often only means the site refuses automated reading (operator decision
- * 2026-10-31). Starting the browser costs a Workspace VM and only a page that shows a challenge needs the user, so
- * neither is the first answer; a fetch refusal alone does not tell whether the browser can open the page.
+ * 2026-10-31). Starting the browser costs a Workspace VM and only a sign-in or a check the agent could not pass needs
+ * the user, so neither is the first answer; a fetch refusal alone does not tell whether the browser can open the page.
+ * The browser passes a CAPTCHA itself, as the person behind it would (operator decision 2026-11-20).
  */
 function refusedPageNextStep(step: FetchUrlBrowserStep): string {
   const open = " The site may be refusing automated reading. If this page is needed and other sources will not do, open it once " +
-    `in the Workspace browser (read ${WORKSPACE_GUIDE_PATHS.browser} first).`;
+    `in the Workspace browser (read ${WORKSPACE_GUIDE_PATHS.browser} first). ${BROWSER_PASSES_CHECKS}`;
   return step === "user"
-    ? `${open} Only if it then shows a sign-in or CAPTCHA, call ${BROWSER_HANDOFF_TOOL_NAME} so the user can pass it. ` +
-      "If the browser is refused too, say the site blocks automated access and do not try again."
-    : `${open} Nobody can pass a sign-in or CAPTCHA in this run: if it shows one, or the browser is refused too, say what ` +
-      "the site needs and finish with what you have.";
+    ? `${open} Only a sign-in, or a check you could not pass in a few attempts, goes to the user through ` +
+      `${BROWSER_HANDOFF_TOOL_NAME}. If the browser is refused too, say the site blocks automated access and do not try again.`
+    : `${open} Nobody can take over the browser in this run: if it shows a sign-in, a check you could not pass in a few ` +
+      "attempts, or the browser is refused too, say what the site needs and finish with what you have.";
 }
 
 function proxiesToTry(context: FailureContext): string {
@@ -113,16 +117,17 @@ function proxiesToTry(context: FailureContext): string {
 }
 
 /**
- * In research nobody passes a CAPTCHA, but the run's own proxies and browser still count: a real marketplace refused every
- * `fetch_url` and opened with prices in the Workspace browser through the run's proxy (2026-11-02). The site is given up
- * only when they fail too.
+ * In research nobody takes over, but the run's own proxies and browser still count: a real marketplace refused every
+ * `fetch_url` and opened with prices in the Workspace browser through the run's proxy (2026-11-02). The browser passes a
+ * check itself (operator decision 2026-11-20). The site is given up only when they fail too.
  */
 function researchRefusedPageNextStep(proxies: string, step: FetchUrlBrowserStep | null): string {
   const browser = step ? " If this page is needed and other sources will not do, open it once in the Workspace browser " +
-    `(read ${WORKSPACE_GUIDE_PATHS.browser} first).` : "";
-  return proxies || browser
-    ? `${proxies}${browser} If that is refused too or shows a CAPTCHA, a block page or a sign-in: ${RESEARCH_UNREACHABLE_NEXT}`
-    : ` ${RESEARCH_UNREACHABLE_NEXT}`;
+    `(read ${WORKSPACE_GUIDE_PATHS.browser} first). ${BROWSER_PASSES_CHECKS}` : "";
+  return browser
+    ? `${proxies}${browser} If the browser is refused too, shows a block page or a sign-in, or its check still stands after a few ` +
+      `attempts: ${RESEARCH_UNREACHABLE_NEXT}`
+    : proxies ? `${proxies} If that is refused too: ${RESEARCH_UNREACHABLE_NEXT}` : ` ${RESEARCH_UNREACHABLE_NEXT}`;
 }
 
 /** What the model is told for each refusal or failure. */

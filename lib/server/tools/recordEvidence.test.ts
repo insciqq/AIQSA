@@ -399,8 +399,10 @@ describe("a record_evidence call", () => {
         const { message } = value(result) as { message: string };
         expect(message).toContain("your Workspace browser has not opened shop.example in this research");
         expect(message).toContain("/workspace/guides/browser.md");
-        expect(message).toContain("wait about 15 seconds and read it once more");
-        expect(message).toContain("never solve or click a check");
+        // The browser passes a check itself; only one that still stands after a few attempts closes the site.
+        expect(message).toContain("run `aiqsa-browser captcha` and pass it as a person would");
+        expect(message).toContain("or its check still stands after a few attempts, record the site as unreachable");
+        expect(message).not.toContain("never solve");
         expect(tool.appended).toEqual([]);
       });
 

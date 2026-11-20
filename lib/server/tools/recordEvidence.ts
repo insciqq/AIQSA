@@ -123,9 +123,9 @@ export type RecordEvidenceAgentTools = Readonly<{ browser?: () => boolean }>;
  * opened. An agent with the browser records a site unreachable only once its own browser commands opened or tried that host.
  */
 const browserFirst = (host: string) => `Nothing was recorded: your Workspace browser has not opened ${host} in this research, and the browser opens ` +
-  `pages fetch_url cannot. Open the page once in it (read ${WORKSPACE_GUIDE_PATHS.browser} first). If the page only says the browser is being checked, ` +
-  "wait about 15 seconds and read it once more. Only if the browser is refused too, or shows a CAPTCHA, a block page or a sign-in, record the site " +
-  "as unreachable; never solve or click a check.";
+  `pages fetch_url cannot. Open the page once in it (read ${WORKSPACE_GUIDE_PATHS.browser} first). On a page that says the browser is being checked, ` +
+  "or a CAPTCHA, run `aiqsa-browser captcha` and pass it as a person would. Only if the browser is refused too, " +
+  "shows a block page or a sign-in, or its check still stands after a few attempts, record the site as unreachable.";
 
 const CORRECT = `call ${RECORD_EVIDENCE_TOOL_NAME} again with supersedes set to this record's id`;
 

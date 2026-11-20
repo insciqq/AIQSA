@@ -49,7 +49,7 @@ def exit_code(code: str) -> int:
         return EXIT_ELEMENT
     if code in _PAGE:
         return EXIT_PAGE
-    if code == "captcha_requires_user":
+    if code.startswith("captcha_"):
         return EXIT_CAPTCHA
     if code in ("user_in_control", "user_returned_control"):
         return EXIT_USER_IN_CONTROL
@@ -115,10 +115,22 @@ def _parser() -> argparse.ArgumentParser:
     command.add_argument("n", type=int, nargs="?")
     command.add_argument("--start", type=int, default=0)
     command.add_argument("--max", type=int, default=6000)
-    command = commands.add_parser("js", help="Read page data: evaluate a JavaScript expression and print its JSON value. Only for "
-                                  "reading; never to click, solve a challenge or change how the browser identifies itself. "
-                                  "Refused while the page shows a CAPTCHA.")
+    command = commands.add_parser("js", help="Evaluate a JavaScript expression in the page and print its JSON value, to read "
+                                  "data. Act on the page with click, type and the other commands: sites read a scripted click as a bot.")
     command.add_argument("expression")
+    command = commands.add_parser("captcha", parents=[quiet], help="Pass the page's CAPTCHA or bot check as a person would: wait "
+                                  "while it checks the browser, tick an \"I'm not a robot\" box, and report a picture, slider or "
+                                  "text task with a screenshot to answer.")
+    command.add_argument("--wait", type=int, default=20, help="Seconds to wait for the check, at most 60.")
+    command = commands.add_parser("click-at", parents=[quiet], help="Click the point X,Y of the visible page, in the pixels of a "
+                                  "`shot` of it: a tile of a picture task, a canvas, a map.")
+    command.add_argument("x", type=int)
+    command.add_argument("y", type=int)
+    command.add_argument("--hold", type=float, default=0.0, metavar="SECONDS", help="Press and hold this long, at most 20.")
+    command = commands.add_parser("drag", parents=[quiet], help="Drag from X1,Y1 to X2,Y2 of the visible page with the button "
+                                  "held: a slider, a puzzle piece.")
+    for name in ("x1", "y1", "x2", "y2"):
+        command.add_argument(name, type=int)
     command = commands.add_parser("shot", help="Save a PNG screenshot and print its path.")
     command.add_argument("n", type=int, nargs="?")
     command.add_argument("--full", action="store_true", help="The whole page, not only the viewport.")
@@ -182,6 +194,14 @@ def _request(parsed: argparse.Namespace) -> tuple:
         return "status", {"markers": parsed.markers}
     if name == "upload":
         return "upload", {"n": parsed.n, "path": os.path.abspath(parsed.path)}
+    if name == "captcha":
+        return "captcha", {"wait": parsed.wait}
+    if name == "click-at":
+        if not 0 <= parsed.hold <= 20:
+            raise _UsageError("--hold is seconds from 0 to 20")
+        return "click_at", {"x": parsed.x, "y": parsed.y, **({"hold_ms": round(parsed.hold * 1000)} if parsed.hold else {})}
+    if name == "drag":
+        return "drag", {"x1": parsed.x1, "y1": parsed.y1, "x2": parsed.x2, "y2": parsed.y2}
     keys = {"open": ("url", "proxy"), "find": ("text",), "click": ("n",), "select": ("n", "option"), "press": ("key",),
             "tab": ("index",), "js": ("expression",)}
     return name, {key: getattr(parsed, key) for key in keys.get(name, ())}

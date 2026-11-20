@@ -188,19 +188,26 @@ COLLECT = r"""
 }
 """
 
-#: Visible CAPTCHA or bot-check widgets and forms in the top document. Detection only, so the
-#: agent stops and tells the user; an invisible score badge (reCAPTCHA v3) is not a challenge.
+#: Visible CAPTCHA or bot-check widgets and forms in the top document, so the page summary names them and the
+#: agent passes them as a person would (`captcha`); an invisible score badge (reCAPTCHA v3) is not a challenge.
 CAPTCHA_SELECTORS = [
     ["reCAPTCHA", '.g-recaptcha:not([data-size="invisible"])'],
     ["hCaptcha", '.h-captcha:not([data-size="invisible"])'],
     ["Cloudflare challenge", ".cf-turnstile, #challenge-form, #cf-challenge-running, #challenge-stage"],
     ["Amazon bot check", 'form[action*="validateCaptcha"], #captchacharacters'],
     ["PerimeterX challenge", "#px-captcha"],
+    # Yandex's own check pages (showcaptcha) and the SmartCaptcha widget other sites embed.
+    ["Yandex SmartCaptcha", "#checkbox-captcha-form, #advanced-captcha-form, .CheckboxCaptcha, .AdvancedCaptcha, .smart-captcha"],
 ]
 CAPTCHA_CONTAINERS = ", ".join(selector for _, selector in CAPTCHA_SELECTORS)
+#: Page globals that only a check page defines: Cloudflare's "Just a moment..." interstitial runs its checks
+#: before it shows anything to click, so no widget is visible yet.
+CAPTCHA_GLOBALS = [
+    ["Cloudflare browser check", "_cf_chl_opt"],
+]
 
 CAPTCHA = r"""
-(selectors) => {
+([selectors, globals]) => {
   const found = [];
   for (const [kind, selector] of selectors) {
     let nodes = [];
@@ -212,8 +219,17 @@ CAPTCHA = r"""
     });
     if (visible) found.push(kind);
   }
+  for (const [kind, name] of globals) {
+    try { if (window[name] && typeof window[name] === 'object' && !found.includes(kind)) found.push(kind); } catch (error) { /* none */ }
+  }
   return found;
 }
+"""
+
+#: Viewport boxes of the visible CAPTCHA widgets and forms of the top document.
+CAPTCHA_BOXES = r"""
+(selector) => Array.from(document.querySelectorAll(selector)).map((node) => node.getBoundingClientRect())
+  .filter((rect) => rect.width >= 20 && rect.height >= 20).map((rect) => ({ x: rect.left, y: rect.top, width: rect.width, height: rect.height }))
 """
 
 #: The element belongs to a CAPTCHA or bot-check form or widget.
@@ -221,14 +237,63 @@ IN_CAPTCHA = r"""
 (el, containers) => { try { return !!el.closest(containers); } catch (error) { return false; } }
 """
 
-#: Frame addresses of CAPTCHA and bot-check widgets, with a kind for the warning.
+#: Frame addresses of CAPTCHA and bot-check widgets, with a kind for the page summary.
 CAPTCHA_FRAMES = [
     ("reCAPTCHA", ("google.com/recaptcha/", "recaptcha.net/recaptcha/")),
     ("hCaptcha", ("hcaptcha.com/",)),
     ("Cloudflare challenge", ("challenges.cloudflare.com/",)),
     ("Arkose challenge", ("arkoselabs.com/", "funcaptcha.com/")),
     ("DataDome challenge", ("captcha-delivery.com/",)),
+    ("Yandex SmartCaptcha", ("smartcaptcha.yandexcloud.net/", "captcha-api.yandex.ru/")),
 ]
+#: Parts of a frame address that show no challenge: an invisible widget, SmartCaptcha's hidden backend frame.
+CAPTCHA_FRAMES_IGNORED = ("invisible", "/backend.")
+
+#: What each kind's frames are, by a part of their address: the checkbox a person ticks (with the selector of the
+#: box inside the frame, or None where it sits in a closed shadow root and is clicked by its place in the frame),
+#: or the picture, slider or text task that follows when ticking was not enough. The first match wins.
+CAPTCHA_WIDGETS = [
+    ("reCAPTCHA", "/anchor", "checkbox", "#recaptcha-anchor"),
+    ("reCAPTCHA", "/bframe", "challenge", None),
+    ("hCaptcha", "frame=challenge", "challenge", None),
+    ("hCaptcha", "", "checkbox", "#checkbox"),
+    ("Yandex SmartCaptcha", "/checkbox", "checkbox", ".CheckboxCaptcha-Button"),
+    ("Yandex SmartCaptcha", "/advanced", "challenge", None),
+    ("Cloudflare challenge", "", "checkbox", None),
+    ("Arkose challenge", "", "challenge", None),
+    ("DataDome challenge", "", "challenge", None),
+]
+#: The same in the top document: Yandex's own check pages, Amazon's, and PerimeterX's press-and-hold button.
+CAPTCHA_PAGE_WIDGETS = [
+    ("Yandex SmartCaptcha", "challenge", ".AdvancedCaptcha"),
+    ("Yandex SmartCaptcha", "checkbox", ".CheckboxCaptcha-Button"),
+    ("Amazon bot check", "challenge", "#captchacharacters"),
+    ("Amazon bot check", "checkbox", 'form[action*="validateCaptcha"] button, form[action*="validateCaptcha"] input[type="submit"]'),
+    ("PerimeterX challenge", "hold", "#px-captcha"),
+]
+#: The answer a passed widget leaves in its form: a widget whose field holds one is passed, though it still shows.
+CAPTCHA_TOKENS = [
+    ["reCAPTCHA", 'textarea[name="g-recaptcha-response"]'],
+    ["hCaptcha", 'textarea[name="h-captcha-response"]'],
+    ["Cloudflare challenge", 'input[name="cf-turnstile-response"]'],
+    ["Yandex SmartCaptcha", 'input[name="smart-token"]'],
+]
+
+CAPTCHA_PASSED = r"""
+(tokens) => tokens.filter(([kind, selector]) => {
+  try { return Array.from(document.querySelectorAll(selector)).some((field) => String(field.value || '').length > 0); }
+  catch (error) { return false; }
+}).map(([kind]) => kind)
+"""
+
+
+def captcha_widget(kind: str, address: str):
+    """(role, selector) of a CAPTCHA frame of `kind` at `address`, or (None, None) when it is neither."""
+    for widget_kind, part, role, selector in CAPTCHA_WIDGETS:
+        if widget_kind == kind and part in address:
+            return role, selector
+    return None, None
+
 
 #: Visible text, raw: the host masks it, then normalizes whitespace and pages it (`_format.page_text`).
 TEXT = r"""

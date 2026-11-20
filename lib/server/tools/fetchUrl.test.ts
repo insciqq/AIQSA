@@ -418,19 +418,21 @@ describe("a page the site refused", () => {
     return String(json(await s.execute(call(USER_URL), { signal })).message);
   };
 
-  it.each([401, 403])("points a run with a person at the browser, and at them only for a real challenge (%i)", async (status) => {
+  it.each([401, 403])("points a run with a person at the browser, which passes a check itself, and at them only for a sign-in or a check it failed (%i)", async (status) => {
     const message = await refused(status, "user");
     expect(message).toContain(`HTTP status ${status}`);
     expect(message).toContain(FETCH_URL_CONNECTED_SYSTEM_NEXT);
     expect(message).toContain("/workspace/guides/browser.md");
-    expect(message).toContain("Only if it then shows a sign-in or CAPTCHA, call browser_handoff");
+    expect(message).toContain("If it shows a CAPTCHA or bot check, pass it there as a person would (`aiqsa-browser captcha`");
+    expect(message).toContain("Only a sign-in, or a check you could not pass in a few attempts, goes to the user through browser_handoff");
     expect(message).toContain("do not try again");
   });
 
-  it("never promises a person where nobody can take over", async () => {
+  it("never promises a person where nobody can take over, and still passes checks", async () => {
     const message = await refused(403, "nobody");
     expect(message).toContain("/workspace/guides/browser.md");
-    expect(message).toContain("Nobody can pass");
+    expect(message).toContain("pass it there as a person would");
+    expect(message).toContain("Nobody can take over the browser in this run");
     expect(message).not.toContain("browser_handoff");
   });
 

@@ -394,7 +394,9 @@ describe("the method", () => {
     const footer = researcherMethodFooter(plan);
     expect(footer).toContain("verbatim quote");
     expect(footer).toContain("A page fetch_url is refused: open it once in the Workspace browser if you have one");
-    expect(footer).toContain("A CAPTCHA, a block page or a sign-in shown in the browser ends work on that site");
+    // The browser passes a check itself (operator decision 2026-11-20); only one still standing after a few attempts closes the site.
+    expect(footer).toContain("A page that says the browser is being checked, or a CAPTCHA: pass it as a person would with `aiqsa-browser captcha`");
+    expect(footer).toContain("A block page, a sign-in, or a check that still stands after a few attempts ends work on that site");
     expect(footer).toContain("record it as unreachable with its reason and go on; never wait for a person");
     expect(footer).toContain("A closed site does not close your question: answer it from another site that states the answer in its own text");
     // On acceptance run 8 all three answers missed what the last weeks before the question published: forecasts, approvals, disclosures. A purchase stays with

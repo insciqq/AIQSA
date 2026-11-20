@@ -171,6 +171,9 @@ def request_timeout(op: str, args: Mapping[str, Any]) -> float:
     if op == "wait":
         value = args.get("timeout", 15)
         return float(value if isinstance(value, int) and not isinstance(value, bool) else 15) + 30.0
+    if op == "captcha":
+        value = args.get("wait", 20)
+        return float(value if isinstance(value, int) and not isinstance(value, bool) else 20) + 60.0
     return 100.0 if op in _SLOW else 70.0
 
 

@@ -273,8 +273,9 @@ export function researcherMethodFooter(plan: ResearchPlan): string {
     RESEARCH_REVIEWS_REFERENCE,
     RESEARCHER_REPORT,
     "List what you could not reach and why. A page fetch_url is refused: open it once in the Workspace browser if you have one, since the browser opens " +
-      "pages fetch_url cannot. A page that only says the browser is being checked: wait about 15 seconds and read it once more before you decide. " +
-      "A CAPTCHA, a block page or a sign-in shown in the browser ends work on that site: record it as unreachable with its reason and go on; " +
+      "pages fetch_url cannot. A page that says the browser is being checked, or a CAPTCHA: pass it as a person would with `aiqsa-browser captcha` " +
+      "(a picture, slider or text task from a screenshot) before you decide. A block page, a sign-in, or a check that still stands after a few " +
+      "attempts ends work on that site: record it as unreachable with its reason and go on; " +
       "never wait for a person. A closed site does not close your question: answer it from another site that states the answer in its own text, such as a reference " +
       "database, a professional publisher or the news, recorded with that site's own link and quote. Never read a page through third-party readers, mirrors or proxies other " +
       "than the run's own: that works around a block and no check can read it."
