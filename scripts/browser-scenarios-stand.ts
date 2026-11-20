@@ -23,6 +23,7 @@ import {
   openRouterTextModel, parseBrowserResult, textChatCapabilities, type BrowserBlockedCode, type BrowserResult, type ChatRoute,
   type HandoffCallRow, type StandTarget, type TypedValueLeaks
 } from "./browser-scenarios-support";
+import type { ScenarioToolCallRow } from "./browser-scenarios-captcha";
 import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
   type JourneyConnection
@@ -640,6 +641,28 @@ export async function handoffCalls(db: PostgresClient, runIds: readonly string[]
       AND ($2::boolean = false OR "subagentThreadId" IS NOT NULL)
     ORDER BY "createdAt", "roundIndex", "ordinal"`, [[...runIds], subagentsOnly]);
   return rows;
+}
+
+/**
+ * The C and D oracles' calls (`scripts/browser-scenarios-captcha.ts`): the
+ * Workspace command, image and handoff calls of every run of the chat, the
+ * main agent's and its sub-agents' alike, in the order they were made. Read
+ * only for the oracle, never printed.
+ */
+export async function scenarioToolCalls(db: PostgresClient, chatId: string): Promise<ScenarioToolCallRow[]> {
+  const { rows } = await db.query<ScenarioToolCallRow>(`SELECT c."toolName", c."state"::text AS "state", c."arguments", c."result"
+    FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+    WHERE r."chatId" = $1 AND c."toolName" ~ $2
+    ORDER BY c."createdAt", c."roundIndex", c."ordinal"`,
+  [chatId, "^(mcp_workspace_sandbox_(shell|exec|exec_start|exec_poll)_[0-9a-f]{10}|view_workspace_image|analyze_image|browser_handoff)$"]);
+  return rows;
+}
+
+/** Image files (png, jpeg, webp) among the run's exported outputs: the screenshots a C or D prompt asks for. */
+export async function imageOutputCount(db: PostgresClient, runId: string): Promise<number> {
+  const { rows } = await db.query<{ count: number }>(`SELECT count(*)::int AS "count" FROM "WorkspaceRunOutput"
+    WHERE "workspaceRunBindingId" = $1 AND "relativePath" ~* '\\.(png|jpe?g|webp)$'`, [runId]);
+  return rows[0]?.count ?? 0;
 }
 
 /**

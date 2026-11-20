@@ -82,7 +82,10 @@ describe("browser-result.json", () => {
     expect(parseBrowserResult(new TextEncoder().encode("{oops"))).toEqual({ code: "result_invalid_json", ok: false });
     expect(parseBrowserResult(write([1, 2]))).toEqual({ code: "result_not_object", ok: false });
     expect(parseBrowserResult(new Uint8Array(BROWSER_RESULT_MAX_BYTES + 1))).toEqual({ code: "result_too_large", ok: false });
-    expect(blockedCodes("captcha")).toEqual([]);
+    // A C or D claim file names one code or null; the S files' shape check still demands a list.
+    expect(blockedCodes("Captcha")).toEqual(["captcha"]);
+    expect(blockedCodes(null)).toEqual([]);
+    expect(blockedCodes({ code: "captcha" })).toEqual([]);
   });
 
   it("reads prices as numbers or plain decimals only", () => {

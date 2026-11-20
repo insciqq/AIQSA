@@ -42,12 +42,34 @@
  * oracle also reads the run's `browser_handoff` calls and counts stored rows
  * that carry what the user typed; only counts are printed.
  *
+ * C1–C5 and D1 (`scripts/browser-scenarios-captcha.ts`) measure whether the
+ * Workspace browser agent passes CAPTCHAs and bot checks itself (operator
+ * decision 2026-11-20). They run only when named in
+ * AIQSA_BROWSER_SCENARIOS_SELECT, and their prompts state the task as a user
+ * would, never how to pass a check:
+ * - C1 Google's reCAPTCHA v2 demo, C2 hCaptcha's demo and C5 2captcha's
+ *   Cloudflare Turnstile demo: pass the check, submit, and the page says so;
+ * - C3 a Cloudflare "Just a moment..." challenge page: reach the page behind it;
+ * - C4 a Yandex search: reach the results through its "I'm not a robot" check;
+ * - D1 the pixelscan.net and browserscan.net bot detectors: their verdicts,
+ *   as codes (`human`, `bot`, `unknown`; pixelscan's four tabs `pass`, `fail`,
+ *   `unknown`) in `oracleCodes`.
+ * A C verdict never trusts the agent's `passed` claim: it reads the chat's
+ * stored browser command outputs (`ModelRunToolCall`, sub-agents included)
+ * and needs the scenario's success marker in the last page the guest printed
+ * for its host. Their run lines add, as counts only: `captcha`, `click-at`
+ * and `drag` commands, `captcha_attempts_exhausted` codes, image views
+ * (`view_workspace_image`, `analyze_image`), `browser_handoff` calls with
+ * their outcomes, screenshots among the outputs, and whether the agent's
+ * claim disagreed with the oracle (`claim_contradicted` when it claimed a
+ * pass the outputs do not show).
+ *
  * Environment (process only; no .env loading):
  * - AIQSA_BROWSER_SCENARIOS_E2E=DISPOSABLE (required acknowledgement)
  * - AIQSA_BROWSER_SCENARIOS_COMPOSE_FILE: the stand's `docker compose config --format json`
  *   (published app and Postgres ports on 127.0.0.1, reachable from this host)
  * - CODEX_LB_API_KEY
- * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5; the long S6 runs only when named),
+ * - AIQSA_BROWSER_SCENARIOS_SELECT (default S1,S2,S3,S4,S5; the long S6 and C1–C5, D1 run only when named),
  *   AIQSA_BROWSER_SCENARIOS_RUNS (1..5, default 2)
  * - AIQSA_BROWSER_SCENARIOS_EXPECT_BOUNDS (`any`, default, only records the admitted bounds; `unlimited`
  *   demands no tool call or round limit and a 3600 s turn: a run admitted otherwise is cancelled at once,
@@ -75,8 +97,8 @@ import {
 } from "./browser-scenarios-support";
 import {
   TERMINAL_RUN_STATES as TERMINAL, authenticate, awaitExport, createScenarioChat, deleteChat, discard, errorCode, handoffCalls,
-  latestRun, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode, setUpStand, standDatabase,
-  syncSaucedemoSecret, typedValueLeaks, type Api, type RunRow
+  imageOutputCount, latestRun, poll, readResultFile, removeBrowserSessions, request, requireIdleStand, runControls, safeCode,
+  scenarioToolCalls, setUpStand, standDatabase, syncSaucedemoSecret, typedValueLeaks, type Api, type RunRow
 } from "./browser-scenarios-stand";
 import { codexLbRoute } from "./workspace-user-paid-support";
 
@@ -209,15 +231,24 @@ async function runOnce(context: RunContext, scenario: BrowserScenario, run: numb
       const verdict = checkBrowserResult(scenario, read.value);
       checks = [...verdict.failed];
       line.oracleCounts = verdict.counts;
+      if (verdict.codes) line.oracleCodes = verdict.codes;
     }
     if (scenario.runOracle) {
       stage = "run_evidence";
-      const runVerdict = scenario.runOracle({
+      // C1–C5 and D1 read the chat's stored browser outputs; S5 reads its handoff and the typed-value leak check.
+      const runVerdict = scenario.runOracle(scenario.toolCallEvidence ? {
+        calls: await scenarioToolCalls(db, chat.id),
+        handoffs: [],
+        imageOutputs: await imageOutputCount(db, admitted.id),
+        leaks: null,
+        result: read.ok ? read.value : null
+      } : {
         handoffs: await handoffCalls(db, [admitted.id]),
         leaks: await typedValueLeaks(db, chat.id, [admitted.id], marker).catch(() => null)
       });
       checks = [...checks, ...runVerdict.failed];
       line.runOracleCounts = runVerdict.counts;
+      if (runVerdict.codes) line.runOracleCodes = runVerdict.codes;
     }
     line.checksFailed = checks;
     line.blocked = blocked;

@@ -4,12 +4,19 @@
  * and its deterministic oracles, and the content-free run evidence.
  *
  * Oracles read only the result file the agent writes into the turn's output
- * files, never the chat answer, so a verdict is reproducible. Evidence lines
+ * files, never the chat answer, so a verdict is reproducible; the CAPTCHA and
+ * bot-check scenarios (C1–C5, D1, `scripts/browser-scenarios-captcha.ts`)
+ * also read the run's stored browser command outputs, since their file holds
+ * only the agent's claim. Evidence lines
  * carry codes, counts, booleans, timings, token counts (per run and per model
  * request), provider-reported cost and cost estimates from token totals at
  * fixed list prices; never prompts, answers, page content, prices or URLs.
  */
 import { createHash } from "node:crypto";
+import {
+  CAPTCHA_TARGETS, captchaResultOracle, captchaRunOracle, detectorResultOracle, detectorRunOracle, type CaptchaRunEvidence,
+  type CaptchaScenarioId, type ScenarioToolCallRow
+} from "./browser-scenarios-captcha";
 
 export const BROWSER_RESULT_FILE = "browser-result.json";
 /** A result file larger than this is not read (a valid one is a few KiB). */
@@ -18,9 +25,12 @@ export const BROWSER_RESULT_MAX_BYTES = 256 * 1024;
 export const BROWSER_BLOCKED_CODES = ["captcha", "bot_wall", "sign_in_required", "code_required"] as const;
 export type BrowserBlockedCode = (typeof BROWSER_BLOCKED_CODES)[number] | "other";
 
-export const BROWSER_SCENARIO_IDS = ["S1", "S2", "S3", "S4", "S5", "S6"] as const;
+export const BROWSER_SCENARIO_IDS = ["S1", "S2", "S3", "S4", "S5", "S6", "C1", "C2", "C3", "C4", "C5", "D1"] as const;
 export type BrowserScenarioId = (typeof BROWSER_SCENARIO_IDS)[number];
-/** What runs when nothing is selected: S6 is long (hundreds of rounds) and runs only when named. */
+/**
+ * What runs when nothing is selected: S6 is long (hundreds of rounds) and runs only when named, and so do the
+ * CAPTCHA and bot-check measurements C1–C5 and D1, which load third-party check pages.
+ */
 export const DEFAULT_BROWSER_SCENARIO_IDS: readonly BrowserScenarioId[] = Object.freeze(["S1", "S2", "S3", "S4", "S5"]);
 
 /** Published saucedemo.com demo credentials (public test shop, no real orders). */
@@ -199,11 +209,11 @@ export type ParsedBrowserResult =
   | Readonly<{ ok: true; blocked: readonly BrowserBlockedCode[]; value: BrowserResult }>
   | Readonly<{ ok: false; code: "result_invalid_json" | "result_not_object" | "result_too_large" }>;
 
-/** Normalizes the agent's `blocked` list; unknown entries count as `other`. */
+/** Normalizes the agent's `blocked` list, or the single code (or null) of a C or D file; unknown entries count as `other`. */
 export function blockedCodes(value: unknown): BrowserBlockedCode[] {
-  if (!Array.isArray(value)) return [];
+  const entries: unknown[] = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
   const codes = new Set<BrowserBlockedCode>();
-  for (const entry of value) {
+  for (const entry of entries) {
     const code = typeof entry === "string" ? entry.trim().toLowerCase() : "";
     if (!code || code === "none") continue;
     codes.add((BROWSER_BLOCKED_CODES as readonly string[]).includes(code) ? code as BrowserBlockedCode : "other");
@@ -250,8 +260,12 @@ const isEuro = (value: unknown) => typeof value === "string" && /^(eur|€)$/iu.
 const near = (a: number, b: number, tolerance: number) => Math.abs(a - b) <= tolerance + 1e-9;
 const flag = (value: boolean) => value ? 1 : 0;
 
-/** A verdict with content-free counts, so it can be audited later without the file. */
-export type OracleVerdict = Readonly<{ counts: Readonly<Record<string, number>>; failed: readonly string[] }>;
+/**
+ * A verdict with content-free counts, so it can be audited later without the file; `codes` carries fixed-vocabulary
+ * codes the oracle derived (D1's detector verdicts), never text.
+ */
+export type OracleVerdict = Readonly<{ codes?: Readonly<Record<string, string>>; counts: Readonly<Record<string, number>>;
+  failed: readonly string[] }>;
 
 /**
  * The identity of a listed page: an Amazon product's ASIN when the URL names
@@ -502,7 +516,21 @@ export type TypedValueLeaks = Readonly<{
   marker: number;
 }>;
 
-export type ScenarioRunEvidence = Readonly<{ handoffs: readonly HandoffCallRow[]; leaks: TypedValueLeaks | null }>;
+export type ScenarioRunEvidence = Readonly<{
+  handoffs: readonly HandoffCallRow[];
+  leaks: TypedValueLeaks | null;
+  /** The chat's stored tool calls, read only for a scenario with `toolCallEvidence` (C1–C5, D1). */
+  calls?: readonly ScenarioToolCallRow[];
+  /** Image files among the run's outputs, read with `calls`; null when not read. */
+  imageOutputs?: number | null;
+  /** The parsed result file, so a run oracle can weigh the agent's claim; null when missing or unreadable. */
+  result?: BrowserResult | null;
+}>;
+
+/** The evidence a C or D run oracle reads, from what the harness gathered. */
+export function captchaEvidence(evidence: ScenarioRunEvidence): CaptchaRunEvidence {
+  return { calls: evidence.calls ?? [], imageOutputs: evidence.imageOutputs ?? null, result: evidence.result ?? null };
+}
 
 /** The tool's own outcome from a stored result (`{ content: [{ type: "json", value }] }`, or its text form). */
 export function handoffOutcome(result: unknown): string | null {
@@ -569,14 +597,40 @@ export function frameToClientPoint(point: Readonly<{ x: number; y: number }>, fr
 }
 
 /** The section of the result file a scenario's oracle reads. */
-export type ResultSection = "cart" | "checkout" | "items" | "shopping";
+export type ResultSection = "captcha" | "cart" | "checkout" | "detectors" | "items" | "shopping";
+
+const optionalText = (value: unknown) => value === null || (typeof value === "string" && value.length <= 4096);
+
+/**
+ * The C and D files: the agent's own claim beside `blocked`, one code or null.
+ * C carries `final_url`, `final_title` and the boolean `passed`; D1 an object
+ * per detector.
+ */
+function claimShapeErrors(value: BrowserResult, section: "captcha" | "detectors"): string[] {
+  const errors: string[] = [];
+  // A list in the S files' form is read the same way, so a format slip does not hide the measurement.
+  const blocked = value.blocked;
+  if (blocked !== null && !(typeof blocked === "string" && blocked.length <= 64) &&
+    !(Array.isArray(blocked) && blocked.every((entry) => typeof entry === "string"))) errors.push("result_blocked_invalid");
+  if (section === "captcha") {
+    if (!optionalText(value.final_url)) errors.push("result_final_url_invalid");
+    if (!optionalText(value.final_title)) errors.push("result_final_title_invalid");
+    if (typeof value.passed !== "boolean") errors.push("result_passed_invalid");
+  } else {
+    if (!record(value.pixelscan)) errors.push("result_pixelscan_invalid");
+    if (!record(value.browserscan)) errors.push("result_browserscan_invalid");
+  }
+  return errors;
+}
 
 /**
  * The fixed schema every result file must satisfy before an oracle reads it:
  * the `status` enum, `blocked` as an array of strings, and the scenario's own
- * section with the right type. A malformed file fails with stable codes.
+ * section with the right type (the C and D claim files have their own,
+ * `claimShapeErrors`). A malformed file fails with stable codes.
  */
 export function resultShapeErrors(value: BrowserResult, section: ResultSection | null): string[] {
+  if (section === "captcha" || section === "detectors") return claimShapeErrors(value, section);
   const errors: string[] = [];
   if (typeof value.status !== "string" || !["completed", "partial", "blocked"].includes(value.status)) {
     errors.push("result_status_invalid");
@@ -627,6 +681,8 @@ export type BrowserScenario = Readonly<{
   section: ResultSection | null;
   /** The saved Workspace secret the scenario expects (S3); every other scenario runs without it (S5 must). */
   secret?: "saucedemo";
+  /** The run oracle reads the chat's stored tool calls and image outputs (C1–C5, D1) instead of the S5 leak check. */
+  toolCallEvidence?: true;
 }>;
 
 /** The no-purchase rule every prompt carries (the sub-agent scenarios too, `scripts/subagent-scenarios-support.ts`). */
@@ -663,6 +719,59 @@ const S6_FIELDS = [
 export const S5_CHECKOUT_FIELDS = '  "checkout": {"url": "https://...", "item_total": 0.0, "tax": 0.0, "total": 0.0, "finished": false}';
 
 const ITEM_FIELDS = '  "items": [{"name": "...", "price": 2.49, "currency": "EUR", "url": "https://...", "offer": true}]';
+
+// C1–C5 and D1: CAPTCHA and bot checks ------------------------------------------------
+
+/**
+ * The closing of a C or D prompt: one screenshot per page into the outputs,
+ * then `browser-result.json` with `fields` and `blocked` as one code or null.
+ * The prompts state the task as a user would and never say how to pass a
+ * check (operator decision 2026-11-20: the agent passes checks itself).
+ */
+export function claimInstruction(fields: string, screenshots: string): string {
+  return [
+    `${screenshots} Сохрани в ту же папку выходных файлов этого ответа файл ${BROWSER_RESULT_FILE}, чтобы я мог его скачать. Это JSON строго такого вида:`,
+    "{",
+    fields,
+    `  "blocked": null | ${BROWSER_BLOCKED_CODES.map((code) => `"${code}"`).join(" | ")}`,
+    "}",
+    'Если что-то помешало, впиши в "blocked" один из этих кодов и всё равно сохрани файл с тем, что удалось. Ответь коротко.'
+  ].join("\n");
+}
+
+const CAPTCHA_FIELDS = [
+  '  "final_url": "https://...",',
+  '  "final_title": "...",',
+  '  "passed": true | false,'
+].join("\n");
+
+const CAPTCHA_SCREENSHOT = "В конце сделай один скриншот итоговой страницы и сохрани его в папку выходных файлов этого ответа.";
+
+const CAPTCHA_CLAIM = '"final_url" и "final_title" — адрес и заголовок страницы, на которой ты закончил; ' +
+  '"passed": true, только если сама страница показала, что проверка пройдена.';
+
+/** A C scenario: the page and what to do there, then the shared rules and the claim file. */
+function captchaScenario(id: CaptchaScenarioId, task: string): BrowserScenario {
+  return {
+    availability: "available",
+    id,
+    oracle: captchaResultOracle(id),
+    prompt: [
+      task,
+      `Это публичная демонстрационная страница, ничего личного на ней вводить не нужно. В аккаунты не входи. ${SAFETY}`,
+      CAPTCHA_CLAIM,
+      claimInstruction(CAPTCHA_FIELDS, CAPTCHA_SCREENSHOT)
+    ].join("\n\n"),
+    runOracle: (evidence) => captchaRunOracle(id)(captchaEvidence(evidence)),
+    section: "captcha",
+    toolCallEvidence: true
+  };
+}
+
+const D1_FIELDS = [
+  '  "pixelscan": {"headline": "...", "navigator": "...", "webdriver": "...", "cdp": "...", "user_agent": "..."},',
+  '  "browserscan": {"test_results": "..."},'
+].join("\n");
 
 export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenario>> = Object.freeze({
   S1: {
@@ -758,6 +867,32 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
       `В аккаунт не входи и не регистрируйся. ${SAFETY} Корзину не оформляй.`,
       resultInstruction(S6_FIELDS)
     ].join("\n\n")
+  },
+  C1: captchaScenario("C1", `Открой ${CAPTCHA_TARGETS.C1.start}. Там демонстрационная форма с проверкой «I'm not a robot» (reCAPTCHA). ` +
+    "Пройди проверку и отправь форму, чтобы страница показала результат проверки."),
+  C2: captchaScenario("C2", `Открой ${CAPTCHA_TARGETS.C2.start}. Там демонстрационная форма с проверкой hCaptcha. ` +
+    "Пройди проверку и отправь форму (Submit), чтобы страница показала результат проверки."),
+  C3: captchaScenario("C3", `Открой ${CAPTCHA_TARGETS.C3.start}. Сначала сайт показывает проверку браузера («Just a moment...»). ` +
+    "Пройди её и дойди до самой страницы, которая за ней."),
+  C4: captchaScenario("C4", `Открой ${CAPTCHA_TARGETS.C4.start} — это поиск Яндекса по слову «погода». Дойди до страницы ` +
+    "с результатами поиска; если Яндекс сначала спросит, не робот ли ты, пройди эту проверку."),
+  C5: captchaScenario("C5", `Открой ${CAPTCHA_TARGETS.C5.start}. Там демонстрационная форма с проверкой Cloudflare Turnstile. ` +
+    "Пройди проверку и нажми в форме кнопку Check, чтобы страница показала результат."),
+  D1: {
+    availability: "available",
+    id: "D1",
+    oracle: detectorResultOracle,
+    prompt: [
+      "Хочу понять, похож ли наш браузер на бота. Открой по очереди две публичные проверки: https://pixelscan.net/bot-check " +
+        "и https://www.browserscan.net/bot-detection. На каждой дождись, пока проверка закончится и покажет итог.",
+      "На pixelscan запиши главный вывод (заголовок результата) и то, что показано на вкладках Navigator, Webdriver, CDP " +
+        "и User Agent; на browserscan — значение «Test Results». Переписывай тексты точно так, как их показывает страница, " +
+        `на языке страницы. В аккаунты не входи. ${SAFETY}`,
+      claimInstruction(D1_FIELDS, "Сделай скриншот каждой из двух страниц с итогом проверки и сохрани оба в папку выходных файлов этого ответа.")
+    ].join("\n\n"),
+    runOracle: (evidence) => detectorRunOracle(captchaEvidence(evidence)),
+    section: "detectors",
+    toolCallEvidence: true
   }
 });
 
