@@ -1,6 +1,5 @@
 import type { Prisma } from "@prisma/client";
 import { normalizeBrowserSignInHost } from "../../contracts/browserSignIn";
-import { browserHosts } from "../research/quoteCheck";
 import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 
@@ -9,15 +8,56 @@ const COMMAND_TOOLS: readonly string[] = (["sandbox_exec", "sandbox_exec_poll", 
   .map(namespacedWorkspaceToolName);
 /** The newest command calls before the handoff read for the site; an agent opens the page it hands over just before. */
 const SCANNED_COMMANDS = 20;
+/**
+ * One action's step line exactly as the guest prints it (`ops/workspace-guest/python/aiqsa/browser/_format.py`, parsed the
+ * same way by `features/run-lifecycle-v2/workspaceActivityPresentation.ts`), optionally naming the agent:
+ * `[browser #3 · lab] click: button "Add" @ shop.example/cart`. The host is the text after the last ` @ ` up to its path,
+ * which the guest percent-encodes, so a quote in it means the ` @ ` stood inside a quoted name from the page.
+ */
+const STEP_LINE = /^\[browser #\d{1,5}(?: · [^\]\n]{1,64})?\] [a-z_]{1,20}(?:: [^\n]*)? @ ([^\s/@"]+)(?:\/[^\s"]*)?$/u;
 
 type ToolCallReader = Pick<Prisma.TransactionClient, "modelRunToolCall">;
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * What a stored command result printed to stdout: each text part's JSON `stdout`, or the part itself when it is no JSON;
+ * decoded once, never unescaped further.
+ */
+function printedStdout(result: unknown): readonly string[] {
+  const content = isRecord(result) && Array.isArray(result.content) ? result.content as unknown[] : [];
+  return content.flatMap((part) => {
+    if (!isRecord(part)) return [];
+    if (part.type === "json") return isRecord(part.value) && typeof part.value.stdout === "string" ? [part.value.stdout] : [];
+    if (part.type !== "text" || typeof part.text !== "string") return [];
+    try {
+      const parsed: unknown = JSON.parse(part.text);
+      return isRecord(parsed) && typeof parsed.stdout === "string" ? [parsed.stdout] : [];
+    } catch {
+      return [part.text];
+    }
+  });
+}
+
+/**
+ * The host of the step line a command's output opens with. An action prints its step line first, before any page text,
+ * and the guest indents page text that would read as one; only that first line counts, so text a page or a file carries
+ * further down can never name the site.
+ */
+function stepHost(stdout: string): string | null {
+  const firstLine = stdout.split("\n", 1)[0]!.replace(/\r$/u, "");
+  const shown = STEP_LINE.exec(firstLine)?.[1];
+  return shown ? normalizeBrowserSignInHost(shown.replace(/:\d{1,5}$/u, "")) : null;
+}
+
 /**
  * Whether the run's agent needed its owner to sign in to a site and nobody could take over (`browserHandoffNeededSignIn`),
- * and on which host: the site the asking agent's browser last showed before it asked, read from the step lines its own
- * Workspace commands printed (`[browser #3] open @ mail.example.com/…`, `browserHosts`), never from the model's words;
- * null when they show none. Every handoff call asking for a sign-in, a code or a check is read, however many other calls
- * the run made; the first one names the site.
+ * and on which host: the site the asking agent's browser showed in its newest command before it asked, read from the
+ * step line that command's output opens with, never from the model's words or a page's text; null when none shows one.
+ * Every handoff call asking for a sign-in, a code or a check is read, however many other calls the run made; the first
+ * one names the site. An unattended handoff never reaches the browser, so its result carries no page of its own.
  */
 export async function runBrowserSignIn(tx: ToolCallReader, runId: string): Promise<Readonly<{ host: string | null }> | null> {
   const calls = await tx.modelRunToolCall.findMany({
@@ -40,9 +80,7 @@ export async function runBrowserSignIn(tx: ToolCallReader, runId: string): Promi
     }
   });
   for (const command of commands) {
-    if (command.result === null) continue;
-    const host = [...browserHosts(JSON.stringify(command.result))].reverse()
-      .map((shown) => normalizeBrowserSignInHost(shown)).find(Boolean);
+    const host = printedStdout(command.result).map(stepHost).find(Boolean);
     if (host) return { host };
   }
   return { host: null };

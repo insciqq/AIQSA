@@ -15,4 +15,17 @@ describe("sub-agent wake-up turns outside the chat", () => {
     expect(graph.resolve("w1")).toBe("a1");
     expect(graph.resolve("c")).toBe("c");
   });
+
+  it("leaves Sign in again requests out the same way, the first message of a chat included", () => {
+    const graph = omitSubagentCallbackTurns([
+      { id: "s1", parentId: null, role: "user", systemTurnKind: "browser_sign_in_request" },
+      { id: "a1", parentId: "s1", role: "assistant", systemTurnKind: null },
+      { id: "s2", parentId: "a1", role: "user", systemTurnKind: "browser_sign_in_request" },
+      { id: "a2", parentId: "s2", role: "assistant", systemTurnKind: null }
+    ]);
+    expect([...graph.removed]).toEqual(["s1", "s2"]);
+    expect(graph.parents).toEqual(new Map([["a1", null], ["a2", "a1"]]));
+    expect(graph.resolve("s2")).toBe("a1");
+    expect(graph.resolve("s1")).toBeNull();
+  });
 });
