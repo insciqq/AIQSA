@@ -38,7 +38,7 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-from . import _dom, _format, _identity, _livehub, _paths, _sessions
+from . import _dom, _files, _format, _identity, _livehub, _paths, _sessions
 from ..proxy import client as _proxy
 from ..proxy import selection as _proxy_selection
 from ..agents import AGENT_ID_ENV, AGENT_ID_PATTERN, AGENT_NAME_ENV, AGENT_NAME_MAX_CHARS, BROWSER_AGENT_SLOTS, BROWSER_BUSY_CODE, BROWSER_MEMORY_LOW_CODE, MAIN_AGENT_ID
@@ -218,6 +218,8 @@ class Host:
         self.store = _sessions.SessionStore(_paths.sessions_dir())
         self.shots_dir = _paths.shots_dir()
         self.downloads_dir = _paths.downloads_dir()
+        #: Pages the agent built, opened by their Workspace path (`_files`).
+        self.files = _files.FileServer()
         self.playwright = None
         self.browser = None
         self.context = None
@@ -1464,22 +1466,45 @@ class Host:
                          f"languages={_format.clean(languages, 200)}.")
         return {"data": data, "text": "\n".join(lines)}
 
+    def _open_target(self, value: str, choice: Optional[str]) -> Tuple[str, Optional[str]]:
+        """The address to open and, for a Workspace file, its path for the step line; a web address has no path."""
+        try:
+            target = _files.workspace_target(value)
+        except _files.FileRefused as error:
+            raise HostError("invalid_path", error.message) from None
+        if target is None:
+            return _web_url(value), None
+        if choice is not None:
+            raise HostError("invalid_arguments", "A Workspace file opens without a proxy; leave out `--proxy`.")
+        path, tail = target
+        return self.files.address(path, tail), str(path)
+
+    def _note_file(self, path: Optional[str], url: str) -> None:
+        if path is not None:
+            parts = urlsplit(url)
+            origin = f"{parts.scheme}://{parts.netloc}/"
+            self.notes.append(f"Opened {path} from the Workspace: the browser serves its folder at {origin} (for this turn), so files "
+                              "beside and below it load and nothing outside that folder does. After you edit it, `reload`.")
+
     async def op_open(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        url = _web_url(_text(args, "url", 4096))
         choice = _text(args, "proxy", 128, required=False)
+        url, path = self._open_target(_text(args, "url", 4096), choice)
         status: Dict[str, Any] = {}
 
         async def run(page: Any) -> None:
-            await self._route_navigation(page, url, choice)
+            if path is None:
+                await self._route_navigation(page, url, choice)
             try:
                 status["code"] = await self._goto(page, url)
             except PlaywrightTimeoutError:
                 raise HostError("navigation_timeout", "The page did not start loading within 45 seconds.") from None
             except PlaywrightError as error:
                 raise HostError("navigation_failed", self._error_text(error)) from None
+            self._note_file(path, url)
 
-        result = await self._act("open", None, run)
-        result["text"] = self._sign_in_note(url, self.current, result.get("info") or {}) + result["text"]
+        result = await self._act("open", path, run)
+        if path is None:
+            result["text"] = self._sign_in_note(url, self.current, result.get("info") or {}) + result["text"]
         if status.get("code") and status["code"] >= 400:
             result["text"] = f"HTTP status {status['code']}.\n" + await self._blocked_note((result.get("info") or {}).get("url") or url, status["code"]) + result["text"]
         result["data"] = status
@@ -1748,8 +1773,8 @@ class Host:
         return await self._act("tab", str(args["index"]), run, settle=False)
 
     async def op_new_tab(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        url = _web_url(_text(args, "url", 4096)) if args.get("url") else None
         choice = _text(args, "proxy", 128, required=False)
+        url, path = self._open_target(_text(args, "url", 4096), choice) if args.get("url") else (None, None)
         if choice is not None and url is None:
             raise HostError("invalid_arguments", "`--proxy` needs the address to open.")
         self._check_memory()
@@ -1773,11 +1798,13 @@ class Host:
 
         async def run(current: Any) -> None:
             if url:
-                await self._route_navigation(current, url, choice)
+                if path is None:
+                    await self._route_navigation(current, url, choice)
                 status["code"] = await self._goto(current, url)
+                self._note_file(path, url)
 
-        result = await self._act("new_tab", None, run, settle=url is not None)
-        if url:
+        result = await self._act("new_tab", path, run, settle=url is not None)
+        if url and path is None:
             result["text"] = self._sign_in_note(url, self.current, result.get("info") or {}) + result["text"]
         note = await self._blocked_note((result.get("info") or {}).get("url") or url or "", status.get("code"))
         if note:

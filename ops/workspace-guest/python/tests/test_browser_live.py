@@ -440,6 +440,33 @@ class LiveBrowserTests(unittest.TestCase):
         for path in ("/signin", "/"):
             self.assertNotIn("asks for a sign-in", str(self.quiet(browser.open, self.base + path)))
 
+    def test_5c_a_page_built_in_the_workspace_opens_from_its_path(self) -> None:
+        import base64
+
+        from aiqsa import browser
+
+        site = self.workspace / "project" / "built-site"
+        (site / "css").mkdir(parents=True, exist_ok=True)
+        (site / "index.html").write_text("<!doctype html><meta charset=utf-8><title>Built</title><link rel=stylesheet href=css/site.css>"
+                                         "<h1>Готово</h1><img id=dot src=dot.png><script src=app.js></script>", "utf-8")
+        (site / "css" / "site.css").write_text("h1 { color: rgb(1, 2, 3); }", "utf-8")
+        (site / "app.js").write_text("document.title = 'Built and run';", "utf-8")
+        (site / "dot.png").write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="))
+        page = self.quiet(browser.open, str(site / "index.html"))
+        self.assertIn(f"open: {site / 'index.html'} @ ", self.printed)
+        self.assertIn("Title: Built and run", str(page))
+        self.assertIn("from the Workspace", str(page))
+        self.assertEqual(browser.js("getComputedStyle(document.querySelector('h1')).color"), '"rgb(1, 2, 3)"')
+        self.assertEqual(browser.js("document.getElementById('dot').naturalWidth"), "1")
+        # An edit shows after a reload: nothing is cached.
+        (site / "app.js").write_text("document.title = 'Edited';", "utf-8")
+        self.assertIn("Title: Edited", str(self.quiet(browser.reload)))
+        self.quiet(browser.open, f"file://{site}/index.html")
+        with self.assertRaises(browser.BrowserError) as raised:
+            self.quiet(browser.open, str(self.workspace / "secrets" / "browser"))
+        self.assertEqual(raised.exception.code, "invalid_path")
+
     def test_6b_a_heavy_page_answers_open_info_and_click_within_their_budgets(self) -> None:
         from aiqsa import browser
 
