@@ -6,9 +6,8 @@ import { checkQuotes } from "../research/quoteCheck";
 import { createResearchSources } from "../research/sources";
 import { extractPage } from "../webFetch/extract";
 import { WebFetchError } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import { BOT_CHECK_PAGES, CAPTCHA_ARTICLES, htmlPage } from "./botCheckPage.testFixtures";
-import { createFetchUrlSession, type FetchUrlSessionDeps } from "./fetchUrl";
+import { createFetchUrlSession, FETCH_URL_CONNECTED_SYSTEM_NEXT, type FetchUrlSessionDeps } from "./fetchUrl";
 import type { ToolExecutionResult } from "./types";
 
 const url = "https://page.example/item";
@@ -16,8 +15,7 @@ const signal = new AbortController().signal;
 const call = { arguments: { url }, id: "call", name: "fetch_url" };
 const response = (html: string) => ({ body: new TextEncoder().encode(html), contentType: "text/html; charset=utf-8", finalUrl: url, status: 200 });
 const session = (html: string, options: Partial<FetchUrlSessionDeps> = {}) => createFetchUrlSession({
-  browserStep: () => "user", extractPage: async (input) => extractPage(input), fetchPage: vi.fn(async () => response(html)),
-  plan: { userUrlDigests: [fetchUrlDigest(url)], version: 1 }, scheduled: false, ...options
+  browserStep: () => "user", extractPage: async (input) => extractPage(input), fetchPage: vi.fn(async () => response(html)), ...options
 });
 const json = (result: ToolExecutionResult) => {
   const content = result.content[0];
@@ -38,7 +36,9 @@ describe.each([false, true])("a bot check in fetch_url (research: %s)", (researc
     const message = String(json(result).message);
     const refusal = await session(html, { research, fetchPage: async () => { throw new WebFetchError("fetch_http_status", { dispatched: true, httpStatus: 403 }); } })
       .execute(call, { signal });
-    expect(message).toBe(String(json(refusal).message).replace("The site answered with HTTP status 403", "The site returned a bot check instead of the page"));
+    // A 403 may be a connected system's sign-in; a bot check is a public site's challenge, so it skips that pointer.
+    expect(message).toBe(String(json(refusal).message).replace("The site answered with HTTP status 403", "The site returned a bot check instead of the page")
+      .replace(` ${FETCH_URL_CONNECTED_SYSTEM_NEXT}`, ""));
     expect(message).toContain("Workspace browser");
     expect(message.includes("browser_handoff")).toBe(!researching);
   });

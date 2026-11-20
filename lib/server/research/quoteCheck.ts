@@ -14,8 +14,8 @@ import { researchEvidenceKind, RESEARCH_SOURCE_LIMITS } from "./sources";
  * (`researchEvidenceKind`): a quote `echo`ed into a file is no reading of a page.
  * A miss is only a failure when it could not have been read some other way:
  * - `found`: the quote is in an opened page, with the passage around it (`excerpt`), which
- *   is what the agents really saw and so what the verifier judges a claim against: a link
- *   only a browser reached cannot be fetched again, and `fetch_url` extracts a page differently.
+ *   is what the agents really saw and so what the verifier judges a claim against: a page
+ *   only a browser opened often cannot be fetched again, and `fetch_url` extracts a page differently.
  *   Where on the run it was read is the verifier's to judge against the cited link; a redirect
  *   or a page seen under another address must not read as invention here.
  * - `not_verbatim`: the cited page really was fetched and the quote is not on it word

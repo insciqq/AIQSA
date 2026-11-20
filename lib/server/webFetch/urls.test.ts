@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   extractFetchUrls,
   fetchUrlDigest,
-  fetchUrlDigestsOf,
   fetchUrlDisplayTarget,
   isFetchUrlDigest,
   normalizeFetchUrl,
@@ -64,14 +63,6 @@ describe("URLs written in text", () => {
     expect(extractFetchUrls(`https://c.example/${"a(".repeat(500)}${")".repeat(500)}`))
       .toEqual([`https://c.example/${"a(".repeat(500)}${")".repeat(500)}`]);
     expect(performance.now() - started).toBeLessThan(1_000);
-  });
-
-  it("bounds the digests of many texts", () => {
-    const digests = fetchUrlDigestsOf(["https://a.example/1 https://a.example/2", "https://a.example/3"], 2);
-    expect(digests).toEqual([
-      fetchUrlDigest("https://a.example/1"),
-      fetchUrlDigest("https://a.example/2")
-    ]);
   });
 });
 

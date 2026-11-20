@@ -3,7 +3,6 @@ import { toProxyRunPlan } from "../../contracts/proxies";
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { proxyConnection } from "../webFetch/proxy.testFixtures";
 import { fetchWebPage, WebFetchError, type WebFetchOptions } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "./fetchUrl";
 
 const start = "https://short.example/link";
@@ -24,7 +23,6 @@ function setup(overrides: Partial<FetchUrlSessionDeps> = {}, limits?: WebFetchOp
     body: Buffer.from("page"), contentType: "text/plain", finalUrl: url, status: 200
   }));
   const session = createFetchUrlSession({
-    plan: { version: 1, userUrlDigests: [fetchUrlDigest(start)] }, scheduled: false,
     userId: "alice", proxyPlan: toProxyRunPlan([proxy])!, runProxies: runProxiesFromRows([proxy]), fetchProxyPage,
     fetchPage: (url, options) => fetchWebPage(url, { ...options, limits,
       lookupHostname: async () => [{ address: "93.184.216.34", family: 4 }], dispatch }),

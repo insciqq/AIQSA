@@ -9,7 +9,6 @@ import { createFetchUrlSession, fetchUrlActivityFacts } from "../tools/fetchUrl"
 import { setRecordObserver } from "../observability";
 import { fetchThroughProxy, fetchWebPage } from "./index";
 import { localProxy, pageResponse, proxyConnection } from "./proxy.testFixtures";
-import { fetchUrlDigest } from "./urls";
 
 vi.mock("../proxies/address", async (original) => {
   const actual = await original<typeof addressPolicy>();
@@ -182,7 +181,6 @@ describe("GET through a checked proxy", () => {
     const records: unknown[] = [];
     setRecordObserver((record) => records.push(record));
     const session = createFetchUrlSession({
-      plan: { userUrlDigests: [fetchUrlDigest(start)], version: 1 }, scheduled: false,
       proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "owner",
       fetchPage: (requested, options) => fetchWebPage(requested, { ...options,
         lookupHostname: async () => [PUBLIC], dispatch: async () => {
@@ -239,7 +237,6 @@ describe("GET through a checked proxy", () => {
     setRecordObserver((record) => records.push(record));
     const observeProxy = vi.fn();
     const session = createFetchUrlSession({
-      plan: { userUrlDigests: [fetchUrlDigest(url)], version: 1 }, scheduled: false,
       proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "synthetic-user-id", observeProxy,
       extractPage: async ({ body }) => ({ kind: "text", text: Buffer.from(body).toString(), title: null, truncated: false })
     });
@@ -261,7 +258,6 @@ describe("GET through a checked proxy", () => {
     const connection = proxyConnection(server.port);
     const direct: string[] = [];
     const session = createFetchUrlSession({
-      plan: { userUrlDigests: [fetchUrlDigest(start)], version: 1 }, scheduled: false,
       proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "owner",
       fetchPage: (target, options) => fetchWebPage(target, { ...options,
         lookupHostname: async () => [PUBLIC], dispatch: async ({ url: requested }) => {
@@ -281,7 +277,6 @@ describe("GET through a checked proxy", () => {
     const connection = proxyConnection(server.port);
     const fetchPage = vi.fn();
     const session = createFetchUrlSession({
-      plan: { userUrlDigests: [fetchUrlDigest(url)], version: 1 }, scheduled: false,
       proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "synthetic-owner", fetchPage
     });
     const result = await session.execute({ arguments: { url }, id: "call", name: "fetch_url" }, { signal: new AbortController().signal });

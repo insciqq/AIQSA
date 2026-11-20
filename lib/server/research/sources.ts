@@ -143,9 +143,9 @@ export function researchRunsOnBranch(run: ResearchRunPlace): readonly string[] {
 const GATE_TURN = /^(?:gap-judge|skeptic|verifier(?:-\d+)?)-\d+$/u;
 
 /**
- * The addresses a page read answers to by what the agent asked: that link, and the same without its `utm_*` attribution, which
- * `fetch_url` requests in its place when only that form is authorized (`lib/server/tools/fetchUrl.ts`), so a record citing either
- * finds the read.
+ * The addresses a page read answers to by what the agent asked: that link, and the same without its `utm_*` attribution. A
+ * search cites pages with its attribution (`utm_source=openai`) while an agent may record the bare link, and `fetch_url` read
+ * the bare link in its place before 2026-11-20, so a record citing either form finds the read.
  */
 function askedAddresses(asked: unknown): string[] {
   const link = normalizeFetchUrl(asked);

@@ -156,6 +156,11 @@ describe("OpenAI Responses response normalization", () => {
                   title: "Hostile source",
                   type: "url_citation",
                   url: "javascript:alert(1)"
+                },
+                {
+                  title: "Attributed source",
+                  type: "url_citation",
+                  url: "https://example.com/item?id=4&utm_source=openai#specs"
                 }
               ],
               text: "Normalized answer",
@@ -193,7 +198,7 @@ describe("OpenAI Responses response normalization", () => {
       event.type === "artifact" ? [event.data.artifactType] : []
     );
 
-    expect(artifactTypes).toEqual(["search", "reasoning", "citation"]);
+    expect(artifactTypes).toEqual(["search", "reasoning", "citation", "citation"]);
     expect(normalized.events).toContainEqual({
       data: {
         artifactType: "citation",
@@ -206,6 +211,12 @@ describe("OpenAI Responses response normalization", () => {
       type: "artifact"
     });
     expect(JSON.stringify(normalized.events)).not.toContain("javascript:alert");
+    // Hosted search's attribution is not part of the page's link: the source is recorded without it.
+    expect(normalized.events).toContainEqual({
+      data: { artifactType: "citation", payload: { title: "Attributed source", type: "url_citation", url: "https://example.com/item?id=4#specs" } },
+      type: "artifact"
+    });
+    expect(JSON.stringify(normalized.events)).not.toContain("utm_source");
     expect(normalized.events.at(-1)).toEqual({
       data: { delta: "Normalized answer" },
       type: "token"

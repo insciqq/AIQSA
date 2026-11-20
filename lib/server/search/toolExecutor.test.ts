@@ -585,7 +585,7 @@ describe("Search plan tool router", () => {
     expect(execution?.sources.map(({ citation, url }) => ({ citation, url }))).toEqual([
       { citation: 1, url: "https://example.com/browsed/0" },
       { citation: 2, url: "https://example.com/browsed/1" },
-      { citation: 3, url: "https://example.com/cited-only?utm_source=openai" },
+      { citation: 3, url: "https://example.com/cited-only" },
       ...browsed.slice(2).map(({ url }) => ({ citation: undefined, url }))
     ]);
   });

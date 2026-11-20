@@ -343,7 +343,7 @@ describe("OpenAI Responses query-only Search adapter", () => {
 
     expect(result.sources).toEqual([
       { citation: 1, rank: 1, snippet: "Browsed snippet", title: "Page A", url: "https://example.com/a" },
-      { citation: 2, rank: 2, title: "Cited item 2", url: "https://example.com/item?utm_source=openai&id=2" },
+      { citation: 2, rank: 2, title: "Cited item 2", url: "https://example.com/item?id=2" },
       { citation: 3, rank: 3, title: "Query page", url: "https://example.com/find?q=a%20b" },
       { rank: 4, title: "Other page", url: "https://example.com/other" },
       { rank: 5, title: "Item 1", url: "https://example.com/item?id=1" }

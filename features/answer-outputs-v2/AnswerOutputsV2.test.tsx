@@ -326,7 +326,7 @@ describe("answer outputs v2", () => {
     openProcess();
 
     const [skipped, failed] = screen.getAllByRole("listitem");
-    expect(skipped).toHaveTextContent("Skipped www.shop.example/tariffs: only links from this chat or web search are read");
+    expect(skipped).toHaveTextContent("Skipped www.shop.example/tariffs: only links from the chat or web search were read then");
     expect(skipped).toHaveTextContent("94 ms");
     expect(skipped).not.toHaveTextContent("round");
     expect(skipped!.querySelector(".v2-answer-process-mark")).toHaveAttribute("data-status", "cancelled");

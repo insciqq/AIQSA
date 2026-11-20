@@ -5,7 +5,6 @@ import { createFetchUrlSession } from "../tools/fetchUrl";
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { proxyConnection } from "../webFetch/proxy.testFixtures";
 import { WebFetchError } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import { serializeEvent } from "./runtime.cjs";
 
 describe("page-reader proxy observability", () => {
@@ -27,7 +26,6 @@ describe("page-reader proxy observability", () => {
     const connection = { ...proxyConnection(8080), name: "PRIVATE_NAME" };
     const url = "http://example.com/PRIVATE_PATH";
     const session = createFetchUrlSession({
-      plan: { version: 1, userUrlDigests: [fetchUrlDigest(url)] }, scheduled: false,
       proxyPlan: { entries: [connection] }, runProxies: runProxiesFromRows([connection]), userId: "owner",
       fetchProxyPage: async () => {
         if (failed) throw new WebFetchError("proxy_auth_failed", { dispatched: true });

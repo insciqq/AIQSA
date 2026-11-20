@@ -478,15 +478,14 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 /**
  * Only the changed fields, so an unchanged schedule keeps an active task's due
  * run. A switch to an hourly schedule or to monitoring carries
- * `chatMode: "same"` with it. Instructions whose links runs cannot read yet
- * are sent even unchanged: the owner saving them allows those links.
+ * `chatMode: "same"` with it.
  */
 export function scheduledTaskUpdateRequest(draft: ScheduledTaskEditorDraft, original: ScheduledTask): ScheduledTaskUpdateRequest | null {
   const next = scheduledTaskCreateRequest(draft, original);
   if (!next) return null;
   const patch: ScheduledTaskUpdateRequest = { expectedRevision: original.revision };
   if (next.title !== original.title) patch.title = next.title;
-  if (next.prompt !== original.prompt || original.promptLinksPending) patch.prompt = next.prompt;
+  if (next.prompt !== original.prompt) patch.prompt = next.prompt;
   if (next.scheduleEnabled !== original.scheduleEnabled) patch.scheduleEnabled = next.scheduleEnabled;
   if (next.webhookEnabled !== original.webhookEnabled) patch.webhookEnabled = next.webhookEnabled;
   if (!sameScheduledTaskSchedule(next.schedule, original.schedule)) patch.schedule = next.schedule;

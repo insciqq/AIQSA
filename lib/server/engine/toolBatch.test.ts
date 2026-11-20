@@ -933,7 +933,7 @@ describe("native tool batch", () => {
 
     async function imageBatch(execute: (call: ModelToolCall) => Promise<ToolExecutionResult>) {
       const registry = await buildToolRegistry({
-        chatId: "chat", followupTexts: () => [], mcpBindings: new Map(), onEvent: vi.fn(async () => undefined), onUsage: vi.fn(),
+        chatId: "chat", mcpBindings: new Map(), onEvent: vi.fn(async () => undefined), onUsage: vi.fn(),
         onWorkspaceActivity: vi.fn(async () => undefined), runId: "run", userId: "user",
         request: { attachmentIds: [], attachments: [], chatId: "chat", content: { blocks: [] }, imagePlan: mixedToolsImagePlan,
           modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, toolCalling: true, vision: false },

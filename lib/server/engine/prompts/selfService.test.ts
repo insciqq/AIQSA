@@ -131,9 +131,8 @@ describe("AIQSA guide", () => {
     expect(aiqsaGuideText("secrets")).toContain("32 secrets and 4 MiB in total, 128 KiB of environment variables, 512 KiB per file");
     expect(aiqsaGuideText("skills")).toContain("one save per answer and 20 per hour");
     expect(aiqsaGuideText("scheduled_tasks")).toContain("10 active automations (3 of them hourly) and 50 in total");
-    // A run reads only the links its saved instructions hold (`lib/server/scheduledTasks/promptUrls.ts`).
     expect(aiqsaGuideText("scheduled_tasks")).toContain("When an automation depends on particular sites, write their exact links into the instructions and tell the user which sources it uses.");
-    expect(aiqsaGuideText("scheduled_tasks")).toContain("allowed once the user opens the automation and saves its instructions");
+    expect(aiqsaGuideText("scheduled_tasks")).not.toContain("saves its instructions");
     // One Settings page holds every section, the former dialog's included (operator decision 2026-11-16).
     for (const section of ["general", "account", "data", "assistants", "instructions", "skills", "subagents", "scheduled", "defaults", "memory", "files",
       "artifacts", "mcp", "secrets", "proxies", "computers", "telegram", "apps"]) {

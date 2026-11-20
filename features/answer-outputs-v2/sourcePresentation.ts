@@ -1,4 +1,5 @@
 import type { ThreadSearchSource } from "@/lib/contracts/chats";
+import { withoutOpenAiAttribution } from "@/lib/domain/searchAttribution";
 
 export type PresentedSearchSourceV2 = Readonly<{
   domain: string | null;
@@ -30,10 +31,11 @@ function normalizedHost(url: URL): string {
 /**
  * A conservative comparison key for near-duplicate source URLs: scheme and
  * `www.` are ignored, the fragment is dropped, and trailing slashes collapse.
- * Query strings stay significant because they can select different content.
+ * Query strings stay significant because they can select different content,
+ * except OpenAI's search attribution, so a link with it and one without match.
  */
 export function normalizedSourceUrlKeyV2(value: string): string {
-  const url = parsedHttpUrl(value);
+  const url = parsedHttpUrl(withoutOpenAiAttribution(value));
   if (!url) return value.trim().toLowerCase();
   const path = url.pathname.replace(/\/+$/u, "");
   return `${normalizedHost(url)}${path}${url.search}`;
@@ -95,7 +97,8 @@ export function presentSearchSourcesV2(
       rank: source.rank,
       ...(source.snippet ? { snippet: source.snippet } : {}),
       title,
-      url: source.url
+      // A source recorded before 2026-11-20 may still carry the attribution.
+      url: withoutOpenAiAttribution(source.url)
     });
   }
 

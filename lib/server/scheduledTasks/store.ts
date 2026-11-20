@@ -46,7 +46,6 @@ import {
 import { readScheduledTaskEmailRecipient } from "./emailRecipient";
 import { loadScheduledTaskHistoryNextDeletions } from "./historyRetention";
 import { loadScheduledTaskPinnedSkillMap, loadScheduledTaskRunSkills, scheduledTaskPinnedSkillsFrom } from "./pinnedSkills";
-import { scheduledPromptLinksPending, type ScheduledPromptUrlDigests } from "./promptUrls";
 import { SCHEDULED_TASK_OCCURRENCE_RETENTION } from "./runnerPolicy";
 import { unavailableSourcesWire } from "./sourceHealth";
 import { discardWaitingScheduledTaskWebhookEvents, replaceScheduledTaskWebhookToken } from "./webhookStore";
@@ -86,13 +85,6 @@ export type ScheduledTaskUpdateWrite = Readonly<{
   status: ScheduledTaskStatus;
   /** Undefined keeps the stored due time (an active task whose schedule did not change). */
   nextRunAt: Date | null | undefined;
-  /**
-   * The prompt's page-reading snapshot (`scheduledPromptUrlDigests`) for a
-   * write that sends the prompt; `keep` leaves the stored one, refused when
-   * the prompt changes, so no write path can change a prompt without saying
-   * who wrote it.
-   */
-  promptUrls: ScheduledPromptUrlDigests | "keep";
 }>;
 
 /** Owner-scoped persistence; every method treats another owner's task as missing. */
@@ -106,7 +98,7 @@ export interface ScheduledTaskStore {
    * `scheduled_task_trigger_required` without a trigger and
    * `scheduled_task_limit` or `scheduled_task_hourly_limit` at a limit.
    */
-  create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date | null, promptUrls: ScheduledPromptUrlDigests): Promise<ScheduledTask>;
+  create(userId: string, draft: ScheduledTaskDraft, nextRunAt: Date | null): Promise<ScheduledTask>;
   /**
    * Writes every editable field and the status under `expectedRevision`, clears
    * the pause reason and the failure, incomplete-run and missing report
@@ -162,7 +154,7 @@ export const scheduledTaskRowSelect = {
   modelId: true, provider: true,
   searchEnabled: true, emailNotify: true, telegramNotify: true, toolsEnabled: true, workspaceEnabled: true, memoryEnabled: true,
   pinnedSkillIds: true, chatMode: true, kind: true, historyRetentionDays: true, historyDeletedChats: true, status: true, pauseReason: true,
-  completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true, promptUrlDigests: true,
+  completionReason: true, nextRunAt: true, chatId: true, revision: true, createdAt: true, updatedAt: true,
   chat: { select: { permanentDeletionAt: true } },
   // Never the token hash: a projection has no use for it.
   webhook: { select: { lastEventAt: true, publicId: true, tokenIssuedAt: true } }
@@ -251,8 +243,6 @@ export function toScheduledTask(
     nextRunAt: row.nextRunAt?.toISOString() ?? null, lastRun: activity.lastRun, running: activity.running,
     ...(activity.running && activity.waitingForWorkspace ? { waitingForWorkspace: true as const } : {}),
     chatId: usableChatId(row.chatId, row.chat), unseenResult: activity.unseen,
-    // A flag only: the snapshot's digests never leave the server.
-    ...(scheduledPromptLinksPending(row.prompt, row.promptUrlDigests) ? { promptLinksPending: true as const } : {}),
     revision: row.revision, createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString()
   };
 }
@@ -425,15 +415,13 @@ function visibleTask(userId: string, taskId: string) {
  * limit and `scheduled_tasks_unavailable` for an inactive account. A schedule
  * that is off gets no due time; one that is on needs it. A task with the
  * webhook trigger on gets its webhook in the same transaction. The owner API
- * and the chat tool both create here, each with the prompt's page-reading
- * snapshot for its authorship.
+ * and the chat tool both create here.
  */
 export async function insertScheduledTask(
   tx: Prisma.TransactionClient,
   userId: string,
   draft: ScheduledTaskDraft,
-  nextRunAt: Date | null,
-  promptUrls: ScheduledPromptUrlDigests
+  nextRunAt: Date | null
 ): Promise<ScheduledTask> {
   if (!draft.scheduleEnabled && !draft.webhookEnabled) throw new ScheduledTaskError("scheduled_task_trigger_required");
   if (draft.scheduleEnabled && nextRunAt === null) throw new Error("scheduled_task_next_run_missing");
@@ -447,7 +435,7 @@ export async function insertScheduledTask(
   }
   const { id } = await tx.scheduledTask.create({
     data: {
-      ...draftColumns(draft), nextRunAt: draft.scheduleEnabled ? nextRunAt : null, promptUrlDigests: [...promptUrls],
+      ...draftColumns(draft), nextRunAt: draft.scheduleEnabled ? nextRunAt : null,
       status: "ACTIVE", userId
     },
     select: { id: true }
@@ -481,10 +469,6 @@ export async function updateScheduledTask(
   if (!current) throw new ScheduledTaskError("scheduled_task_not_found");
   if (current.revision !== write.expectedRevision) throw new ScheduledTaskError("scheduled_task_stale");
   if (!write.draft.scheduleEnabled && !write.draft.webhookEnabled) throw new ScheduledTaskError("scheduled_task_trigger_required");
-  // A changed prompt never keeps a snapshot computed for other text.
-  if (write.promptUrls === "keep" && current.prompt !== write.draft.prompt) {
-    throw new Error("scheduled_task_prompt_urls_missing");
-  }
   const kind = KIND_COLUMN[write.draft.schedule.kind];
   if (write.status === "active" && current.status !== "ACTIVE" &&
     await tx.scheduledTask.count({ where: { status: "ACTIVE", userId } }) >= SCHEDULED_TASK_MAX_ACTIVE) {
@@ -506,7 +490,6 @@ export async function updateScheduledTask(
     data: {
       ...draftColumns(write.draft), consecutiveFailures: 0, consecutiveIncompleteRuns: 0, consecutiveMissingVerdicts: 0,
       pauseReason: null, revision: { increment: 1 }, status: STATUS_COLUMN[write.status],
-      ...(write.promptUrls === "keep" ? {} : { promptUrlDigests: [...write.promptUrls] }),
       // A task that stays completed keeps why; resuming clears it.
       ...(write.status === "completed" ? {} : { completionReason: null }),
       // A schedule that is off never has a due time, whatever the caller kept.
@@ -600,8 +583,8 @@ export function createPrismaScheduledTaskStore(prisma: PrismaClient, options: Sc
 
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
-    async create(userId, draft, nextRunAt, promptUrls) {
-      return prisma.$transaction((tx) => insertScheduledTask(tx, userId, draft, nextRunAt, promptUrls));
+    async create(userId, draft, nextRunAt) {
+      return prisma.$transaction((tx) => insertScheduledTask(tx, userId, draft, nextRunAt));
     },
     async update(userId, taskId, write) {
       return prisma.$transaction((tx) => updateScheduledTask(tx, userId, taskId, write));

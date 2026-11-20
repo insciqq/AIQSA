@@ -77,6 +77,15 @@ describe("answer text markers", () => {
     expectCleanStream("Basic facts first, then the fine print.", "Basic facts first, then the fine print.");
   });
 
+  it("drops OpenAI's search attribution from Markdown and bare links, keeping the other parameters", () => {
+    expect(cleanAnswerText("Prices: [Shop](https://shop.example/item?utm_source=openai) and https://news.example/a?id=2&utm_source=openai."))
+      .toBe("Prices: [Shop](https://shop.example/item) and https://news.example/a?id=2.");
+    expect(cleanAnswerText("See [docs](https://docs.example/x?utm_source=openai&v=3#intro) citeturn0search0"))
+      .toBe("See [docs](https://docs.example/x?v=3#intro)");
+    expectCleanStream("Read [it](https://news.example/today?utm_source=openai) now.", "Read [it](https://news.example/today) now.");
+    expect(cleanAnswerText("Read https://news.example/today?utm_source=open", { partial: true })).toBe("Read https://news.example/today");
+  });
+
   it("holds back only a tail that may still become a marker", () => {
     expect(cleanAnswerText("Sunny [Rec", { partial: true })).toBe("Sunny");
     expect(cleanAnswerText("Sunny ci", { partial: true })).toBe("Sunny");

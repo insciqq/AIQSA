@@ -16,7 +16,6 @@ import {
   type ScheduledOccurrenceAdmission,
   type ScheduledResultCopy
 } from "../runs/runRepositoryContract";
-import { scheduledPromptUrlDigests } from "./promptUrls";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns } from "./store";
 
@@ -229,8 +228,7 @@ describe("persisted scheduled task chat rotation", () => {
       telegramNotify: false, toolsEnabled: false, workspaceEnabled: false, memoryEnabled: false, pinnedSkillIds: [], chatMode: "same",
       kind: "standard",
       historyRetentionDays: 90
-    }, expectedRevision: current.revision, nextRunAt: null, promptUrls: scheduledPromptUrlDigests("", { kind: "owner" }),
-    status: "paused" });
+    }, expectedRevision: current.revision, nextRunAt: null, status: "paused" });
     expect(await prisma.scheduledTaskCarryover.count({ where: { taskId } })).toBe(0);
     const second = await occurrence(userId, taskId);
     expect(await runner.loadExecution(second.id)).toMatchObject({ carriedResult: null, task: { generation: 2 } });

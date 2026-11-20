@@ -1,7 +1,6 @@
 import { Prisma, type ModelRunStatus, type PrismaClient } from "@prisma/client";
 import { decodeScheduledTaskCard } from "../../contracts/scheduledTasks";
 import { admitScheduledTaskCreate, type ScheduledTaskDraftAdmissionDeps } from "../scheduledTasks/draftAdmission";
-import { scheduledPromptUrlDigests } from "../scheduledTasks/promptUrls";
 import { kickScheduledTaskRunner } from "../scheduledTasks/runnerKick";
 import { insertScheduledTask, ScheduledTaskError } from "../scheduledTasks/store";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskCreation";
@@ -96,10 +95,7 @@ export async function createScheduledTaskForToolCall(
       } });
       if (created > 0) return refused("scheduled_task_answer_limit");
       if (await earlierAnswerTaskKept(tx, input, run.userMessageId)) return refused("scheduled_task_already_created");
-      // The model wrote this prompt: its runs may read only links the user's
-      // own text in this run already authorized, never Search results.
-      const task = await insertScheduledTask(tx, input.userId, admitted.draft, admitted.nextRunAt,
-        scheduledPromptUrlDigests(admitted.draft.prompt, { kind: "tool", userUrlDigests: input.userUrlDigests }));
+      const task = await insertScheduledTask(tx, input.userId, admitted.draft, admitted.nextRunAt);
       const result = input.result(task);
       const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
       if (!snapshot || result.status !== "complete") throw new Error("scheduled_task_call_result_invalid");

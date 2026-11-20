@@ -1515,7 +1515,7 @@ it("runs the gap judge on the checks binding with the user's request and its req
   const main = scripted([{ calls: begin() }, { calls: [submit()] }]);
   const memory = engineOf({ gates: [judge], verifier: installed.role });
   const base = prepared();
-  const request = { ...base.providerRequest, fetchUrl: { version: 1 as const, userUrlDigests: [] } };
+  const request = { ...base.providerRequest, fetchUrl: { version: 1 as const } };
   await run(main.adapter, memory, { prepared: { ...base, normalizedRequest: request, providerRequest: request } }).text();
   const recorded = await vi.mocked(memory.threads.admitForeground).mock.results[0]!.value;
   expect(recorded).toMatchObject({ turn: { providerModelId: "research-model", reasoningEffort: "high" } });

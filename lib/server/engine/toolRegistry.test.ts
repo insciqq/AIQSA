@@ -31,7 +31,7 @@ function request(extra: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
 
 function input(extra: Partial<ToolRegistryInput> & { request: ProviderRunRequest }): ToolRegistryInput {
   return {
-    chatId: "chat", followupTexts: () => [], mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
+    chatId: "chat", mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
     onUsage: vi.fn(), onWorkspaceActivity: vi.fn(async () => undefined), runId: "run", userId: "user",
     services: { repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) } },
     ...extra
@@ -58,8 +58,8 @@ describe("native tool registry", () => {
     expect(workspace.resolve("read_chat_file")).toBeUndefined();
   });
 
-  it("shares the answer's page-reader session with a sub-agent's registry, so its link authority and cache cover every agent", async () => {
-    const fetchRequest = request({ fetchUrl: { userUrlDigests: [], version: 1 } });
+  it("shares the answer's page-reader session with a sub-agent's registry, so its cache covers every agent", async () => {
+    const fetchRequest = request({ fetchUrl: { version: 1 } });
     const main = await buildToolRegistry(input({ request: fetchRequest }));
     expect(main.fetchUrlSession).toBeDefined();
     const execute = vi.spyOn(main.fetchUrlSession!, "execute").mockResolvedValue({ callId: "c1", content: [], name: "fetch_url",
@@ -71,33 +71,17 @@ describe("native tool registry", () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
-  it("authorizes a user's follow-up for the agent that received it, though the session is shared", async () => {
-    const fetchRequest = request({ fetchUrl: { userUrlDigests: [], version: 1 } });
-    const services = { extractPage: async () => ({ kind: "html" as const, text: "Found it.", title: null, truncated: false }),
-      fetchPage: vi.fn(async (url: string) => ({ body: new TextEncoder().encode("<p>Found it.</p>"), contentType: "text/html", finalUrl: url, status: 200 })),
-      repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) } };
-    const main = await buildToolRegistry(input({ request: fetchRequest, services }));
-    const sub = await buildToolRegistry(input({ fetchUrlSession: main.fetchUrlSession!, followupTexts: () => ["Also https://followup.example/page"],
-      request: fetchRequest, services }));
-    const read = (registry: typeof main) => registry.resolve("fetch_url")!.execute({ call: { arguments: { url: "https://followup.example/page" }, id: "c1", name: "fetch_url" },
-      ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
-    expect((await read(main)).status).toBe("error");
-    expect((await read(sub)).status).toBe("complete");
-  });
-
-  it("loads a background sub-agent's link authority for the answer, not for the run it acts as", async () => {
-    const fetchRequest = request({ fetchUrl: { userUrlDigests: [], version: 1 } });
-    const loadRunSearchSourceUrls = vi.fn(async () => ["https://found.example/page"]);
+  it("lets a background sub-agent read any public link through the answer's session, a link nobody wrote included", async () => {
+    const fetchRequest = request({ fetchUrl: { version: 1 } });
     const fetchPage = vi.fn(async () => ({ body: new TextEncoder().encode("<p>Found it.</p>"), contentType: "text/html",
       finalUrl: "https://found.example/page", status: 200 }));
     const services = { extractPage: async () => ({ kind: "html" as const, text: "Found it.", title: null, truncated: false }), fetchPage,
-      repository: { createSearchRun: vi.fn(), loadRunSearchSourceUrls } as never, savedResults: { read: vi.fn(async () => null) } };
-    const main = await buildToolRegistry(input({ fetchUrlEarlierRunIds: ["run-earlier"], request: fetchRequest, runId: "run-main", services }));
+      repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) } };
+    const main = await buildToolRegistry(input({ request: fetchRequest, runId: "run-main", services }));
     const background = await buildToolRegistry(input({ fetchUrlSession: main.fetchUrlSession!, request: fetchRequest, runId: "run-background", services }));
     const result = await background.resolve("fetch_url")!.execute({ call: { arguments: { url: "https://found.example/page" }, id: "c1", name: "fetch_url" },
       ordinal: 0, persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal });
     expect(result.status).toBe("complete");
-    expect(loadRunSearchSourceUrls).toHaveBeenCalledWith({ earlierRunIds: ["run-earlier"], runId: "run-main", userId: "user" });
     expect(fetchPage).toHaveBeenCalledTimes(1);
   });
 

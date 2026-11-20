@@ -216,8 +216,7 @@ describe("create_scheduled_task tool", () => {
     // Left open, a new task keeps the default 90 days of old chats.
     expect(create.mock.calls[0]![0].body).toMatchObject({ historyRetentionDays: 90 });
     expect(Object.keys((create.mock.calls[0]![0].body as { schedule: object }).schedule)).toEqual(["kind", "time", "days"]);
-    // A run without the page reader authorized no links for the prompt it writes.
-    expect(create.mock.calls[0]![0].userUrlDigests).toEqual([]);
+    expect(create.mock.calls[0]![0]).not.toHaveProperty("userUrlDigests");
     expect(result).toEqual({
       artifacts: [{ type: "artifact", data: { artifactType: "scheduled_task", payload: {
         taskId: "task-1", title: "Check mail", kind: "standard", schedule: { kind: "weekly", time: "09:00",
@@ -282,29 +281,10 @@ describe("create_scheduled_task tool", () => {
       "sources it will use.");
   });
 
-  it("tells the model when the task's runs cannot read its links until the user saves the instructions", async () => {
-    const pending = await executeCreateScheduledTask(call({ ...reminder, prompt: "Send the rate from https://www.cbr.ru/currency_base/daily/." }),
-      context(), creator(task({ promptLinksPending: true })));
-    expect(pending.content).toEqual([{ type: "json", value: expect.objectContaining({
-      created: true, linksPending: true,
-      linksNote: expect.stringContaining("opens the automation with Edit and saves its instructions once")
-    }) }]);
-    const allowed = await executeCreateScheduledTask(call(reminder), context(), creator());
-    expect(JSON.stringify(allowed.content)).not.toContain("linksPending");
-  });
-
-  it("hands the creation only the run's frozen user-authored link digests, never Search authority", async () => {
-    const create = creator();
-    const userUrlDigests = ["b".repeat(64)];
-    await executeCreateScheduledTask(call(reminder), context({
-      request: { ...request(), fetchUrl: { version: 1, userUrlDigests } }
-    }), create);
-    expect(create.mock.calls[0]![0].userUrlDigests).toEqual(userUrlDigests);
-    // A malformed marker authorizes nothing.
-    await executeCreateScheduledTask(call(reminder), context({
-      request: { ...request(), fetchUrl: { version: 2, userUrlDigests } }
-    }), create);
-    expect(create.mock.calls[1]![0].userUrlDigests).toEqual([]);
+  it("says nothing of links a task's runs may read: they read any public link (2026-11-20)", async () => {
+    const created = await executeCreateScheduledTask(call({ ...reminder, prompt: "Send the rate from https://rates.example/daily." }),
+      context(), creator());
+    expect(JSON.stringify(created.content)).not.toMatch(/linksPending|linksNote/u);
   });
 
   it("keeps a task's old chats as the user asks, 0 meaning forever, and tells the model what it chose", async () => {

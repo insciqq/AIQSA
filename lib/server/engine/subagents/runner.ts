@@ -59,7 +59,6 @@ import { compactionModelCall } from "../compactionCalls";
 import { turnContextItem } from "../conversation";
 import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
-import { createHostedSearchEvidence, type HostedSearchEvidenceRow } from "./hostedSearchEvidence";
 import {
   ANSWER_NOW_INSTRUCTION, isNoMoreToolsOutput, runAgentLoop, toolsClosedInstruction, type LoopToolChoice, type ToolsClosedBy
 } from "../loop";
@@ -153,7 +152,6 @@ export type SubagentHost = Readonly<{
   /** The run's accepted MCP and Workspace bindings and executors, built for this agent: the same code path as the parent's. */
   buildRegistry(input: Readonly<{
     agent: WorkspaceAgent;
-    followupTexts(): readonly string[];
     onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>;
     request: ProviderRunRequest;
     /** The sub-agent's route carries tool-result images (`rendersToolResultImages`). */
@@ -177,8 +175,6 @@ export type SubagentHost = Readonly<{
   /** Aborted when the parent reached its deadline (rather than Stop). */
   deadlineSignal: AbortSignal;
   faults?: EngineTestFaults;
-  /** User text delivered into the parent run: `fetch_url` link authority. */
-  followupTexts(): readonly string[];
   /**
    * The thread's mailbox on record (`RunFollowup`): what its turns of these runs have not read, oldest first. Only the
    * transcript write that holds a message stamps it (`TranscriptRepository.append`), so one a turn never got on record is
@@ -191,8 +187,6 @@ export type SubagentHost = Readonly<{
   maxToolRounds: number | null;
   /** How long a turn's failed model requests keep being sent again: a research run's turns (`MODEL_CALL_RESEARCH_RETRY`); absent, a chat's. */
   modelRetry?: ModelCallRetryPolicy;
-  /** Writes what a turn's hosted Search found as link evidence for its run. */
-  recordSearchEvidence(row: HostedSearchEvidenceRow): Promise<void>;
   /** How the turn's agent sees and reaches the others (`messageTools.ts`); absent, it has no such tools. */
   messaging?: SubagentMessaging;
   now(): number;
@@ -468,7 +462,6 @@ function waitingDuringHandoff(registry: ToolRegistry, waits: TurnWaits): ToolReg
  * a later turn continues, and the user's follow-ups and the messages it already received.
  */
 type ThreadState = {
-  deliveredTexts: string[];
   readMessages: Set<string>;
   rounds: number;
   seenFollowups: Set<string>;
@@ -631,7 +624,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const key = `${input.hostRunId}\n${input.threadId}`;
     let state = threadStates.get(key);
     if (!state) {
-      state = { deliveredTexts: [], readMessages: new Set(), rounds: 0, seenFollowups: new Set(), writer: null };
+      state = { readMessages: new Set(), rounds: 0, seenFollowups: new Set(), writer: null };
       threadStates.set(key, state);
     }
     return state;
@@ -716,7 +709,6 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
     const approvals: SubagentApprovalRequest[] = [];
     const files = new Set<string>();
     const threadState = threadStateOf(input);
-    const deliveredTexts = threadState.deliveredTexts;
     // The thread's rounds continue across its turns in this run, so their calls never take each other's keys.
     const roundBase = threadState.rounds;
     let writer: TranscriptWriter | null = null;
@@ -797,7 +789,7 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
         if (path && entry.kind !== "file_change") files.add(path);
       };
       const filtered = subagentToolRegistry(await host.buildRegistry({ agent,
-        followupTexts: () => [...host.followupTexts(), ...deliveredTexts], onWorkspaceActivity, request,
+        onWorkspaceActivity, request,
         ...(rendersToolResultImages(route.snapshot.model.adapterKind) ? { resultImages: true as const } : {}) }), input.type?.toolGroups ?? null);
       // No tool group narrows them: they reach the agents of the chat, nothing outside it.
       const messages = host.messaging ? subagentMessageTools({ chatId: host.chatId, messaging: host.messaging, parentRunId: input.parentRunId,
@@ -837,7 +829,6 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           if (seenFollowups.has(followup.id)) continue;
           seenFollowups.add(followup.id);
           added.push({ followup: true, id: randomUUID(), kind: "user", text: subagentFollowupText(followup.text) });
-          deliveredTexts.push(followup.text);
           unknownEffects.userSpoke();
         }
         for (const message of turn.mailbox.splice(0)) {
@@ -848,7 +839,6 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           unrecorded.set(id, message.nonce);
           if (message.origin === "user") {
             added.push({ followup: true, id, kind: "user", text: subagentFollowupText(message.text) });
-            deliveredTexts.push(message.text);
             unknownEffects.userSpoke();
           } else if (message.origin === "subagent_message") {
             // Another agent's message is no user speech and no brief: it releases nothing, authorizes nothing and changes no task.
@@ -991,28 +981,21 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
           await nextMail(turn, signal);
         }
       };
-      // Outputs stay the sub-agent's own, but what its hosted Search found still authorizes page reads (`hostedSearchEvidence.ts`).
-      const searchEvidence = createHostedSearchEvidence({ modelRunId: input.hostRunId, record: host.recordSearchEvidence,
-        searchPlan: request.searchPlan });
       const outcome = await runAgentLoop({
         append,
         appendCalls,
         callModel: (request) => sendOnceMore(request, async (sent) => {
-          const evidence = searchEvidence.modelCall();
           // A request sent once more after a size refusal is a new attempt, as a retry inside `callModel` is.
           streamed = "";
           const result = await callModel({ adapter: route.adapter, deadlineAt: host.deadlineAt,
             faults: host.faults ?? NO_ENGINE_TEST_FAULTS, now: host.now,
             onDiscard: async () => {
               streamed = "";
-              evidence.discard();
             },
             onEvent: async (event) => {
               if (event.type === "token") streamed += event.data.delta;
-              evidence.add(event);
             }, onUsage: recordUsage, ...(host.modelRetry ? { retry: host.modelRetry } : {}), routing: loopRouting, signal,
             timeoutMs: route.timeoutMs }, sent);
-          await evidence.save();
           return result;
         }),
         closeFollowups: async () => {

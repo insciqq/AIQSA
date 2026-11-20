@@ -21,7 +21,6 @@ import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { StorageAdapter } from "../uploads/storage";
 import { WebFetchError } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import type { ResearchGate, ResearchSubagentRequest } from "./gates";
 import { NOOP_RESEARCH_PORTS, researchPorts, type ResearchEvidencePort, type ResearchEvidenceWrite, type ResearchPortFactories, type ResearchRunScope } from "./ports";
 import { proposeCall } from "./planWindow.testFixtures";
@@ -193,7 +192,7 @@ describe("record_evidence through the real engine", () => {
   const fetch = (index: number) => ({ arguments: { url: siteUrls[index] }, id: `fetch-${index}`, name: "fetch_url" });
   const withFetch = () => {
     const base = prepared();
-    const fetchUrl = { userUrlDigests: siteUrls.map(fetchUrlDigest), version: 1 as const };
+    const fetchUrl = { version: 1 as const };
     return { ...base, normalizedRequest: { ...base.normalizedRequest, fetchUrl }, providerRequest: { ...base.providerRequest, fetchUrl } };
   };
 

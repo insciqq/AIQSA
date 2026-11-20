@@ -423,7 +423,7 @@ describe("persisted scheduled task runner", () => {
     await owners.update(userId, created.id, {
       draft: { chatMode, emailNotify, historyRetentionDays, kind, memoryEnabled, modelId, pinnedSkillIds, prompt, provider, schedule, searchEnabled, timeZone,
         scheduleEnabled, telegramNotify, title, toolsEnabled, webhookEnabled, workspaceEnabled },
-      expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active"
+      expectedRevision: revision, nextRunAt: new Date(Date.now() + 3_600_000), status: "active"
     });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } }))
       .toMatchObject({ consecutiveIncompleteRuns: 0, pauseReason: null, status: "ACTIVE" });
@@ -469,10 +469,6 @@ describe("persisted scheduled task runner", () => {
     await prisma.scheduledTask.update({ data: { scheduleEnabled: false, webhookEnabled: true }, where: { id: created.id } });
     expect((await runner.loadExecution(next.id))!.task.schedule).toBeNull();
     await prisma.scheduledTask.update({ data: { scheduleEnabled: true, webhookEnabled: false }, where: { id: created.id } });
-    // The prompt's page-reading snapshot is read with the task's revision.
-    const digest = "c".repeat(64);
-    await prisma.scheduledTask.update({ data: { promptUrlDigests: [digest] }, where: { id: created.id } });
-    expect((await runner.loadExecution(next.id))!.task).toMatchObject({ promptUrlDigests: [digest], revision: created.revision });
   });
 
   it("finds runs past their deadline by the run's own scheduled origin, counted from admission", async () => {
@@ -884,7 +880,7 @@ describe("persisted monitoring checks", () => {
     // Resume continues from now and clears why it completed.
     const completed = await owners.get(userId, created.id);
     const resumed = await owners.update(userId, created.id, { draft: { ...completed!, kind: "monitoring" }, expectedRevision: 8,
-      nextRunAt: new Date(Date.now() + 3_600_000), promptUrls: "keep", status: "active" });
+      nextRunAt: new Date(Date.now() + 3_600_000), status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, kind: "monitoring", status: "active" });
   });
 });

@@ -271,13 +271,10 @@ describe("chat wire contracts", () => {
     expect(decode({ ...call, fetchOutcome: "read", fetchContentKind: "pdf" })).toMatchObject({ fetchContentKind: "pdf" });
     expect(decode({ ...call, fetchOutcome: "read", fetchContentKind: "docx" })).not.toHaveProperty("fetchContentKind");
     expect(decode({ ...call, fetchOutcome: undefined, fetchContentKind: "pdf" })).not.toHaveProperty("fetchContentKind");
-    // Where a refused link is allowed belongs only to a not-in-conversation refusal, with a known scope.
-    for (const scope of ["scheduled_run", "task_instructions"]) {
-      expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: scope }))
-        .toMatchObject({ fetchRefusalScope: scope });
-    }
-    expect(decode({ ...call, fetchRefusalScope: "scheduled_run" })).not.toHaveProperty("fetchRefusalScope");
-    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "everywhere" }))
+    // A refusal stored before the link authority went still decodes; its retired scope never reaches the browser.
+    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "scheduled_run" }))
+      .toMatchObject({ fetchOutcome: "fetch_url_not_in_conversation" });
+    expect(decode({ ...call, fetchOutcome: "fetch_url_not_in_conversation", fetchRefusalScope: "scheduled_run" }))
       .not.toHaveProperty("fetchRefusalScope");
   });
 

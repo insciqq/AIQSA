@@ -230,12 +230,11 @@ describe("scheduled task drafts", () => {
       .toEqual({ expectedRevision: 4, title: "New name", schedule: { kind: "daily", time: "09:00" } });
   });
 
-  it("sends unchanged instructions whose links runs cannot read yet, so saving allows them", () => {
-    const task = scheduledTaskFixture({ revision: 4, prompt: "Summarize https://news.example/today", promptLinksPending: true });
+  it("sends unchanged instructions with links as no change", () => {
+    const task = scheduledTaskFixture({ revision: 4, prompt: "Summarize https://news.example/today" });
     const draft = scheduledTaskDraftFromTask(task, now);
-    expect(scheduledTaskUpdateRequest(draft, task)).toEqual({ expectedRevision: 4, prompt: task.prompt });
-    expect(scheduledTaskUpdateRequest({ ...draft, title: "Renamed" }, task))
-      .toEqual({ expectedRevision: 4, title: "Renamed", prompt: task.prompt });
+    expect(scheduledTaskUpdateRequest(draft, task)).toEqual({ expectedRevision: 4 });
+    expect(scheduledTaskUpdateRequest({ ...draft, title: "Renamed" }, task)).toEqual({ expectedRevision: 4, title: "Renamed" });
   });
 
   it("previews the next run, keeping an active task's due run when the schedule is unchanged", () => {

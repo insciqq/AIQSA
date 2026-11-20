@@ -343,7 +343,6 @@ type ToolActivityIdentity = Readonly<{
   fetchTarget?: unknown;
   fetchOutcome?: unknown;
   fetchHttpStatus?: unknown;
-  fetchRefusalScope?: unknown;
   fetchContentKind?: unknown;
   /** A `call_subagent` or `stop_subagent` step: the sub-agent it addressed (`SubagentActivityRef`). */
   subagent?: unknown;
@@ -415,15 +414,6 @@ function describeSubagentCallV2(call: ToolActivityIdentity, phase: "cancelled" |
   return `${who} finished`;
 }
 
-/** Why a page link was refused, worded by how the owner allows it. */
-function notInConversationCopy(target: string, scope: unknown): string {
-  switch (scope) {
-    case "scheduled_run": return `Didn't read ${target}: open the automation and save its instructions to allow this link`;
-    case "task_instructions": return `Didn't read ${target}: links in an automation's instructions are read only by that automation's runs`;
-    default: return `Skipped ${target}: only links from this chat or web search are read`;
-  }
-}
-
 /**
  * A page read the run skipped by its own rules (a link it may not read, or
  * its page limit): nothing was sent and nothing failed, so the step stays
@@ -462,7 +452,8 @@ function describeFetchCallV2(call: ToolActivityIdentity, phase: "cancelled" | "f
     return pdf ? `Read PDF ${target}` : `Read ${target}`;
   }
   switch (call.fetchOutcome) {
-    case "fetch_url_not_in_conversation": return notInConversationCopy(target, call.fetchRefusalScope);
+    // Stored before 2026-11-20, when only links from the chat or web search were read.
+    case "fetch_url_not_in_conversation": return `Skipped ${target}: only links from the chat or web search were read then`;
     case "fetch_blocked_address":
     case "fetch_port_not_allowed":
     case "fetch_url_credentials":

@@ -170,6 +170,29 @@ describe("splitCitedSourcesV2", () => {
     expect(split.cited).toEqual([]);
     expect(split.uncited).toEqual(sources);
   });
+
+  it("matches a link and a source when only one of them carries OpenAI's search attribution", () => {
+    // A source stored before 2026-11-20 keeps the attribution; a text link written after has none, and the other way round.
+    const stored = presentSearchSourcesV2([
+      { rank: 1, title: "Old", url: "https://old.example/a?utm_source=openai" },
+      { rank: 2, title: "New", url: "https://new.example/b?id=2" }
+    ]).sources;
+    expect(stored.map((source) => source.url)).toEqual(["https://old.example/a", "https://new.example/b?id=2"]);
+    const split = splitCitedSourcesV2(stored, ["https://new.example/b?utm_source=openai&id=2", "https://old.example/a"]);
+    expect(split.cited.map((source) => source.title)).toEqual(["New", "Old"]);
+    expect(normalizedSourceUrlKeyV2("https://x.example/p?utm_source=openai")).toBe(normalizedSourceUrlKeyV2("https://x.example/p"));
+    // Only that exact parameter: another value still selects another page.
+    expect(normalizedSourceUrlKeyV2("https://x.example/p?utm_source=other")).not.toBe(normalizedSourceUrlKeyV2("https://x.example/p"));
+  });
+
+  it("merges a cited source with the same page the search listed without the attribution", () => {
+    const { mergedDuplicateCount, sources: merged } = presentSearchSourcesV2([
+      { rank: 1, title: "Listed", url: "https://shop.example/item?id=7" },
+      { rank: 1, title: "Cited", url: "https://shop.example/item?id=7&utm_source=openai" }
+    ]);
+    expect(merged.map((source) => source.title)).toEqual(["Listed"]);
+    expect(mergedDuplicateCount).toBe(1);
+  });
 });
 
 describe("groupSourcesBySiteV2", () => {

@@ -10,7 +10,6 @@ import { sameScheduledTaskSchedule } from "../../domain/scheduledTaskSchedule";
 import { admitScheduledTaskModel, type ScheduledTaskDraftAdmissionDeps } from "../scheduledTasks/draftAdmission";
 import { planScheduledTaskUpdate } from "../scheduledTasks/mutations";
 import { loadScheduledTaskPinnedSkillMap } from "../scheduledTasks/pinnedSkills";
-import { scheduledPromptUrlDigests } from "../scheduledTasks/promptUrls";
 import { decodeScheduledTaskUpdateRequest } from "../scheduledTasks/requests";
 import { kickScheduledTaskRunner } from "../scheduledTasks/runnerKick";
 import {
@@ -126,13 +125,7 @@ async function planChange(
   return {
     current, newPrompt, unchanged,
     write: {
-      draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, status: plan.status,
-      // A model-written prompt never takes the owner's authorship: it keeps the
-      // links this run's user text authorized and those the task's snapshot,
-      // read with this revision, already held; a page's or Search's never.
-      promptUrls: newPrompt ? scheduledPromptUrlDigests(plan.draft.prompt, {
-        kind: "tool", userUrlDigests: [...input.userUrlDigests, ...row.promptUrlDigests]
-      }) : "keep"
+      draft: plan.draft, expectedRevision: current.revision, nextRunAt: plan.nextRunAt, status: plan.status
     }
   };
 }

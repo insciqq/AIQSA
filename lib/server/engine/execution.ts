@@ -626,7 +626,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
 
         const mcpBindings = engineMcpBindings(input.prepared.mcpBindings ?? [], await engine.mcpBindingRows(runId));
-        const delivered: string[] = [];
         // Nobody takes a Discord thread's browser over: its chat is the service account's, which no member opens.
         const browserHandoff: BrowserHandoffMode | undefined = !workspace ? undefined
           : input.scheduled ? { kind: "unattended" }
@@ -673,10 +672,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             ...(host ? { live: host.live, toolTimeLeftMs: host.toolTimeLeftMs } : {}) } };
         };
         const mainRegistry = await buildToolRegistry({ ...registryInput, agent: { kind: "main" },
-          // A scheduled run's context is flat: an earlier occurrence's search is none of its evidence.
-          fetchUrlEarlierRunIds: input.scheduled ? [] : branchRunIds,
           fetchUrlResearch: async (signal) => research?.holding() ? research.unreachableSites(signal) : null,
-          followupTexts: () => delivered,
           onEvent: (event) => sink.publish(event), onWorkspaceActivity, request: base,
           ...(rendersToolResultImages(snapshot.model.adapterKind) ? { resultImages: true as const } : {}) });
         const budgets = toolRunBudgetsForRequest(normalizedRequest);
@@ -723,8 +719,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           ...(backgroundParts ? { backgroundParts } : {}),
           admittedRequest: base, adapter: input.adapter, answerTimeoutMs,
           branchRunIds,
-          // One page-reader session for the answer: its link authority and cache cover every agent, and it stays bound to
-          // the main run, however long a background turn outlives it.
+          // One page-reader session for the answer: its cache and research refusals cover every agent, and it stays bound
+          // to the main run, however long a background turn outlives it.
           // A background turn's registry acts as its own run (its Workspace attachment, calls and usage), over the
           // parent's MCP bindings by reference and its own (`backgroundMcpBindings`); each sub-agent's handoff names it,
           // from its own run's live membership.
@@ -738,7 +734,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             ...(mainRegistry.fetchUrlSession ? { fetchUrlSession: mainRegistry.fetchUrlSession } : {}),
             // Read at each build: the run's research is made after this input, and before any sub-agent's turn.
             ...(research ? { researchEvidence: researchEvidenceTarget(research), researchFrame: researchFrameTarget(research) } : {}),
-            followupTexts: agentInput.followupTexts,
             // A sub-agent's outputs stay its own; the answer shows its steps under its call.
             onEvent: async () => undefined, onWorkspaceActivity: agentInput.onWorkspaceActivity, request: agentInput.request,
             // The sub-agent's own route decides whether its requests carry result images.
@@ -747,7 +742,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               ? { selfService: { ...input.services.selfService, tools: [READ_AIQSA_GUIDE_TOOL_NAME] } } : {}) } }),
           budgets, callTimeLeft: agentCallTimeLeft, chatId: scope.chatId, deadline: deadline.signal,
           get deadlineAt() { return startedAt + turnMs; }, engine, faults,
-          followupTexts: () => delivered,
           modelConfiguration: input.prepared.providerAdmissionPlan.answer.modelConfiguration,
           // A scheduled or webhook occurrence's sub-agents keep its attempts without the chat's window; research sets its own.
           ...(input.scheduled ? { modelRetry: MODEL_CALL_UNATTENDED_RETRY } : {}), now,
@@ -760,7 +754,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
           },
           // Only a web chat starts background turns: a connector turn or a scheduled occurrence waits for the sub-agents it starts.
           backgroundAllowed: !input.connectorTurn && !input.scheduled,
-          ports: input.subagents, recordSearchEvidence: (row) => input.repository.createSearchRun(row), runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
+          ports: input.subagents, runContextItems: conversation.items.filter((item) => item.kind === "user" && item.runContext === true),
           runId, saveResult, scope, secrets: input.services.secrets, signal, snapshot, toolState, toolTimeLeft: agentToolTimeLeft,
           unknownEffects: (threadId) => agentFences.agent(threadId), usage,
           userMessage: currentUserMessageText(contextMessages, subagentServerTurns)
@@ -1015,7 +1009,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             const batch = await followupOps.load({ runId, userId: input.userId });
             const accepted = batch?.entries.filter((entry) => entry.delivery === "accepted") ?? [];
             if (!batch || accepted.length === 0) return [];
-            // Only the user's own follow-ups are their speech and link authority; what a sub-agent sends is untrusted data.
+            // Only the user's own follow-ups are their speech; what a sub-agent sends is untrusted data.
             const fromUser = accepted.filter(userAuthoredFollowup);
             // Only the user's own follow-up starts the answer over. What agents send alone adds to the answer the user
             // already has and never rewrites or empties it (operator decision 2026-11-05).
@@ -1024,7 +1018,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
             if (!await followupOps.deliver({ budgetTokens: 8_192, precedingText: startsOver ? answer.text : null,
               revision: batch.revision, runId, userId: input.userId })) return [];
             followupRevision = batch.revision;
-            delivered.push(...fromUser.map((entry) => entry.text));
             if (startsOver) unknownEffects.userSpoke();
             runResearch?.followupDelivered();
             if (startsOver) {

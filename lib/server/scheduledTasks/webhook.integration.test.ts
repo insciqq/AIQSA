@@ -10,7 +10,6 @@ import { stopModelRun } from "../runs/handlers";
 import { createPrismaScheduledTaskOwnerLoader, createScheduledTaskSend } from "./admission";
 import { createPrismaScheduledTaskRunCatalogLoader } from "./catalog";
 import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
-import { scheduledPromptUrlDigests } from "./promptUrls";
 import { createScheduledTaskRunner } from "./runner";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { createPrismaScheduledTaskStore } from "./store";
@@ -65,7 +64,7 @@ afterAll(() => prisma.$disconnect());
 describe("automation webhook end to end", () => {
   it("runs each accepted event once, in the automation's chat, with the event after the prompt as labelled data", async () => {
     const userId = await owner();
-    const task = await owners.create(userId, draft, null, scheduledPromptUrlDigests(draft.prompt, { kind: "owner" }));
+    const task = await owners.create(userId, draft, null);
     const issued = await owners.issueWebhookToken(userId, task.id, new Date());
     let kicks = 0;
     const receive = createScheduledTaskWebhookIntake({ kick: () => { kicks += 1; },
@@ -104,8 +103,6 @@ describe("automation webhook end to end", () => {
     // The model read the prompt and the event as the turn's input.
     const answer = await prisma.message.findUniqueOrThrow({ where: { id: run.assistantMessageId! } });
     expect(text(answer.content)).toContain("\"status\": \"failed\"");
-    // Event links never become page-reading authority: only the prompt's own snapshot does.
-    expect(JSON.stringify(run.normalizedRequest)).not.toContain("taskUrlDigests\":[\"");
     expect(await owners.get(userId, task.id)).toMatchObject({ chatId: occurrence!.chatId, unseenResult: true,
       webhook: { queuedEvents: 0 } });
 

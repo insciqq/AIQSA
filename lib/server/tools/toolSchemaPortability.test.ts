@@ -74,7 +74,7 @@ function firstPartyTools(): RunTool[] {
     ...AGENT_MESSAGE_TOOLS.map((descriptor) => descriptor.tool),
     ...SUBAGENT_CHILD_TOOLS.map((descriptor) => descriptor.tool),
     createScheduledTaskTool("Europe/Moscow"),
-    manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" }, userUrlDigests: [] }),
+    manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" } }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
     analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,

@@ -10,6 +10,7 @@ import {
  */
 export const FETCH_URL_ACTIVITY_OUTCOMES = [
   "read",
+  /** Stored rows only: the conversation link authority went on 2026-11-20. */
   "fetch_url_not_in_conversation",
   "fetch_url_invalid",
   "fetch_url_credentials",
@@ -52,21 +53,6 @@ export function isFetchUrlActivityOutcome(value: unknown): value is FetchUrlActi
   return typeof value === "string" && (FETCH_URL_ACTIVITY_OUTCOMES as readonly string[]).includes(value);
 }
 
-/**
- * Where a `fetch_url_not_in_conversation` refusal is recovered, when not by
- * sending the link in the chat: `scheduled_run` (a scheduled run; its owner
- * saves the task's instructions to allow the link) or `task_instructions`
- * (another run refused a link only a scheduled task's instructions hold;
- * only that task's scheduled runs read it).
- */
-export const FETCH_URL_REFUSAL_SCOPES = ["scheduled_run", "task_instructions"] as const;
-
-export type FetchUrlRefusalScope = (typeof FETCH_URL_REFUSAL_SCOPES)[number];
-
-export function isFetchUrlRefusalScope(value: unknown): value is FetchUrlRefusalScope {
-  return typeof value === "string" && (FETCH_URL_REFUSAL_SCOPES as readonly string[]).includes(value);
-}
-
 /** A bounded single-line target without a scheme, or null. */
 export function decodeFetchUrlTarget(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim() || value.length > FETCH_URL_TARGET_MAX_LENGTH ||
@@ -100,7 +86,6 @@ export type FetchUrlActivityFacts = Readonly<{
   fetchOutcome?: FetchUrlActivityOutcome;
   fetchProxyCode?: FetchUrlProxyCode;
   fetchProxyName?: string;
-  fetchRefusalScope?: FetchUrlRefusalScope;
   fetchTarget?: string;
 }>;
 
@@ -117,8 +102,6 @@ export function decodeFetchUrlActivity(value: unknown): FetchUrlActivityFacts {
     ...(isFetchUrlActivityOutcome(fields.fetchOutcome) ? { fetchOutcome: fields.fetchOutcome } : {}),
     ...(isFetchUrlActivityOutcome(fields.fetchOutcome) && isFetchUrlContentKind(fields.fetchContentKind)
       ? { fetchContentKind: fields.fetchContentKind } : {}),
-    ...(fields.fetchOutcome === "fetch_url_not_in_conversation" && isFetchUrlRefusalScope(fields.fetchRefusalScope)
-      ? { fetchRefusalScope: fields.fetchRefusalScope } : {}),
     ...(fields.fetchOutcome === "fetch_http_status" && isFetchUrlHttpStatus(fields.fetchHttpStatus)
       ? { fetchHttpStatus: fields.fetchHttpStatus } : {})
   };

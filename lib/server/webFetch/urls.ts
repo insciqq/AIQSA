@@ -3,8 +3,8 @@ import { domainToUnicode } from "node:url";
 import { FETCH_URL_TARGET_MAX_LENGTH } from "../../contracts/fetchUrlActivity";
 
 /**
- * Page addresses for `fetch_url`: one comparison form for provenance and
- * transport, digests for frozen authority, and the display form of activity.
+ * Page addresses for `fetch_url`: one comparison form for transport and
+ * caches, digests for stored link keys, and the display form of activity.
  * Pure helpers; no I/O.
  */
 export const FETCH_URL_MAX_LENGTH = 2_048;
@@ -41,7 +41,7 @@ export function normalizeFetchUrl(value: unknown): string | null {
 
 /**
  * A normalized URL without its `utm_*` parameters, the rest of its query as written, or null when it has none. Only a
- * comparison and request form for `fetch_url`'s authority: digests and every other comparison keep the whole URL.
+ * comparison form for research records (`lib/server/research/sources.ts`): digests and every other comparison keep the whole URL.
  */
 export function withoutFetchUrlAttribution(normalizedUrl: string): string | null {
   const url = new URL(normalizedUrl);
@@ -64,7 +64,7 @@ function isAttribution(part: string): boolean {
   return decoded.toLowerCase().startsWith("utm_");
 }
 
-/** The frozen authority form of a normalized URL: its SHA-256, hex. */
+/** A normalized URL's stored key form: its SHA-256, hex. */
 export function fetchUrlDigest(normalizedUrl: string): string {
   return createHash("sha256").update(normalizedUrl, "utf8").digest("hex");
 }
@@ -116,18 +116,6 @@ export function extractFetchUrls(text: string): string[] {
     if (found.size >= URLS_PER_TEXT) break;
   }
   return [...found];
-}
-
-/** Digests of every URL the texts contain, deduplicated, at most `limit`, earlier texts first. */
-export function fetchUrlDigestsOf(texts: readonly string[], limit: number): string[] {
-  const digests = new Set<string>();
-  for (const text of texts) {
-    for (const url of extractFetchUrls(text)) {
-      if (digests.size >= limit) return [...digests];
-      digests.add(fetchUrlDigest(url));
-    }
-  }
-  return [...digests];
 }
 
 function decodedPath(pathname: string): string {

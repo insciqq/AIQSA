@@ -147,7 +147,7 @@ export type PrepareRunSubagentsInput = Readonly<{
   answerTimeoutMs: number;
   /** The native runs of the branch's earlier answers, in branch order. */
   branchRunIds: readonly string[];
-  buildRegistry(input: Readonly<{ agent: WorkspaceAgent; followupTexts(): readonly string[];
+  buildRegistry(input: Readonly<{ agent: WorkspaceAgent;
     /** A background turn's own run; absent, the parent run's. */
     host?: SubagentRegistryHost;
     onWorkspaceActivity(entry: ThreadWorkspaceActivityEntry): Promise<void>; request: ProviderRunRequest;
@@ -163,7 +163,6 @@ export type PrepareRunSubagentsInput = Readonly<{
   engine: SubagentEngineDeps & Readonly<{ runs: Pick<NativeRunStore, "recordDetachedCompaction">; toolCalls: ToolCallStore;
     transcripts: Pick<TranscriptRepository, "append" | "loadRuns" | "nextSequence" | "runLive"> }>;
   faults?: EngineTestFaults;
-  followupTexts(): readonly string[];
   modelConfiguration: RunModelConfiguration;
   /** How long its sub-agents' failed model requests keep being sent again (a research run's turns); absent, a chat's. */
   modelRetry?: ModelCallRetryPolicy;
@@ -174,7 +173,6 @@ export type PrepareRunSubagentsInput = Readonly<{
   /** False: its sub-agents start no children, whatever their tools (a research run's researchers); absent, one with every tool may. */
   childrenAllowed?: false;
   ports?: SubagentRunPorts;
-  recordSearchEvidence: SubagentHost["recordSearchEvidence"];
   /** Its sub-agents clear their oldest page results past the policy's mark (a research run's researchers); absent, none do. */
   resultClearing?: ToolResultClearingPolicy;
   runContextItems: readonly TranscriptItem[];
@@ -272,7 +270,6 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     get deadlineAt() { return input.deadlineAt; },
     deadlineSignal: input.deadline,
     ...(input.faults ? { faults: input.faults } : {}),
-    followupTexts: input.followupTexts,
     ...(messaging ? { mailbox: { unread: (thread) => store.unreadMessages({ ...scopeOf, ...thread }) }, messaging } : {}),
     maxToolCalls: input.budgets.maxToolCalls,
     maxToolRounds: input.budgets.maxToolRounds,
@@ -280,7 +277,6 @@ export async function prepareRunSubagents(input: PrepareRunSubagentsInput): Prom
     now: input.now,
     onWorkspaceLifecycle: input.onWorkspaceLifecycle,
     userFollowups: input.userFollowups,
-    recordSearchEvidence: input.recordSearchEvidence,
     ...(input.resultClearing ? { resultClearing: input.resultClearing } : {}),
     recordDetachedCompaction: ({ item, sequence, thread }) =>
       input.engine.runs.recordDetachedCompaction(input.scope, { item, sequence, status: null, thread }),
