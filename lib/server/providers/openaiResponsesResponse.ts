@@ -1,6 +1,7 @@
 import { observeStreamParseFailure } from "./providerObservability";
 import { providerContextLengthFacts, providerResponseFailure } from "./responseFailure";
 import { safeExternalHref } from "../../domain/links";
+import { withoutOpenAiAttribution } from "../../domain/searchAttribution";
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import { createReasoningHeadingTracker, reasoningHeadingEvent } from "../../domain/reasoningHeading";
 import { normalizeTokenUsage } from "../../domain/usage";
@@ -326,10 +327,12 @@ function extractArtifacts(
           continue;
         }
 
-        const url = safeExternalHref(annotation.url);
-        if (!url) {
+        const href = safeExternalHref(annotation.url);
+        if (!href) {
           continue;
         }
+        // Hosted search tags each cited link with its attribution; the source is stored as the page's own link.
+        const url = withoutOpenAiAttribution(href);
 
         artifacts.push({
           data: {

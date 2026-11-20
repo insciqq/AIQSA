@@ -1,3 +1,5 @@
+import { withoutOpenAiAttributionInText } from "./searchAttribution";
+
 /**
  * Markers that never belong in an answer the user reads (production
  * 2026-11-20): the server's hosted Search record, which replays to the model
@@ -5,9 +7,10 @@
  * which a model sometimes repeats in its own reply, and the citation markers
  * OpenAI models write (`U+E200 cite U+E202 turn0search0 U+E201`, sometimes
  * with the private-use characters lost). Only these exact grammars are
- * removed, so text that merely mentions the words stays. Server and browser
- * share it: the server cleans what it streams and saves, the browser what it
- * shows of answers saved before.
+ * removed, so text that merely mentions the words stays. Links also lose the
+ * `utm_source=openai` OpenAI's hosted search adds (`searchAttribution.ts`).
+ * Server and browser share it: the server cleans what it streams and saves,
+ * the browser what it shows of answers saved before.
  */
 
 /** The first words of the server's hosted Search record; replay writes the record with them. */
@@ -155,11 +158,16 @@ function recordHeld(text: string, from: number, until: number): number {
 }
 
 /**
- * The answer text without the server's hosted Search record and citation
- * markers. A removed record leaves the line breaks that followed it, at most a
- * paragraph's; a removed citation takes the spaces before it.
+ * The answer text without the server's hosted Search record, citation markers
+ * and OpenAI's search attribution in its links. A removed record leaves the
+ * line breaks that followed it, at most a paragraph's; a removed citation
+ * takes the spaces before it.
  */
 export function cleanAnswerText(text: string, options: CleanAnswerTextOptions = {}): string {
+  return withoutOpenAiAttributionInText(withoutMarkers(text, options), options);
+}
+
+function withoutMarkers(text: string, options: CleanAnswerTextOptions): string {
   const partial = options.partial === true;
   if (!QUICK_CHECK.test(text) && (!partial || heldTail(text, 0) === text.length && !/[ \t]$/u.test(text))) return text;
   let out = "";
