@@ -32,7 +32,9 @@ export const browserHandoffTool: RunTool = {
   capability: "workspace",
   description: "Hand the Workspace browser to the user for a step only they should take: signing in when the user saved no " +
     "credentials for the site and gave none in the chat, a code sent to them " +
-    "(SMS, email, an authenticator app), a CAPTCHA or bot check, a consent, or a choice that is theirs to make. Open the page " +
+    "(SMS, email, an authenticator app), a CAPTCHA or bot check, a consent, or a choice that is theirs to make. Google and " +
+    "corporate sign-ins often fail in this browser, so where an MCP tool or an API fits the task, use it instead; a 401 or 403 " +
+    "from one is missing access, not a reason to sign in here. Open the page " +
     "that needs them first. The chat shows the user the live browser with your message; they act in it and press Done or " +
     "Cancel, and this call returns then, or when the run's handoff wait ends, with the outcome and the page the browser shows. During research it returns immediately: record the site as unreachable and go on. You " +
     "never see what the user typed. After `completed`, look at the page yourself (take a screenshot and view it) before you go " +
@@ -41,8 +43,9 @@ export const browserHandoffTool: RunTool = {
   inputSchema: {
     additionalProperties: false,
     properties: {
-      message: { description: "One or two short sentences the user reads on the card, saying what to do in the browser, " +
-        "for example \"Please sign in to your Amazon account and enter the SMS code, then press Done.\"",
+      message: { description: "One or two short sentences the user reads on the card: what to do in the browser shown below " +
+        "it, which is your browser in the sandbox, not the user's own, and to press Done when finished, for example \"Please " +
+        "sign in to your Google account in my browser below (it runs in my sandbox, not in your browser), then press Done.\"",
       maxLength: BROWSER_LIVE_LIMITS.handoffMessageChars, type: "string" },
       reason: { description: "Why the user is needed.", enum: [...BROWSER_HANDOFF_REASONS], type: "string" }
     },
