@@ -46,7 +46,11 @@ const turns: readonly Readonly<{ ask: string; answer: string; cards?: ResourceCh
   { ask: "Remove the old deploy key and the report writer Skill.", answer: "Confirm both deletions in the cards below.",
     cards: [secretDelete, skillDelete] },
   { ask: "Make the reviewer thorough and switch it to Claude.", answer: "Updated the Reviewer Assistant.", cards: [assistantUpdated] },
-  { ask: "Save this as a Skill.", answer: "Saved the Invoice parser Skill.", skill: skillSaved },
+  { ask: "Save this as a Skill.", answer: "Saved the Invoice parser Skill.", skill: skillSaved }
+];
+type Turn = (typeof turns)[number];
+// A chat of its own, so the card adds nothing below the other answers and their geometry stays as it was.
+const instructionsTurns: readonly Turn[] = [
   { ask: "From now on compare prices as a table.", answer: "Added it to your Instructions.", cards: [instructionsUpdated] }
 ];
 
@@ -57,10 +61,10 @@ function message(id: string, role: "assistant" | "user", content: string, parent
     modelRunId: null, provider: role === "assistant" ? model.provider : null, ...extra };
 }
 
-function chatFixture(): ChatDetailWire {
+function chatFixture(chatTurns: readonly Turn[] = turns): ChatDetailWire {
   const updatedAt = "2026-10-27T09:05:00.000Z";
   const messages: ChatMessageWire[] = [];
-  turns.forEach((turn, index) => {
+  chatTurns.forEach((turn, index) => {
     messages.push(message(`turn-${index + 1}-question`, "user", turn.ask, messages.at(-1)?.id ?? null));
     messages.push(message(`turn-${index + 1}-answer`, "assistant", turn.answer, `turn-${index + 1}-question`, {
       artifactSummary: { citations: [], reasoningText: [], sources: [],
@@ -78,8 +82,8 @@ function chatFixture(): ChatDetailWire {
   };
 }
 
-async function prepare(page: Page) {
-  const chat = chatFixture();
+async function prepare(page: Page, chatTurns: readonly Turn[] = turns) {
+  const chat = chatFixture(chatTurns);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await installMatrixCatalogFixture(page, { chats: [chat], folders: [] });
   await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
@@ -95,7 +99,7 @@ async function prepare(page: Page) {
   await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
   await signInWithLocalToken(page, `/c/${chatId}`);
-  await expect(page.locator("[data-resource]")).toHaveCount(6, { timeout: 30_000 });
+  await expect(page.locator("[data-resource]")).toHaveCount(chatTurns.flatMap((turn) => turn.cards ?? []).length, { timeout: 30_000 });
   return { writes };
 }
 
@@ -130,20 +134,23 @@ test("resource change cards stay compact and every verb stays reachable at every
     await expectNoHorizontalOverflow(page);
   } });
 
+  await undo.click();
+  await expect(saved).toContainText("Secret removed");
+  await expect(saved.getByRole("status")).toContainText("Undone: the secret is deleted.");
+  expect(writes).toEqual([{ action: "delete", id: secretSaved.secretId, expectedVersionId: secretSaved.versionId }]);
+  await captureState(page, info, "secret-undone", { anchor: saved, sizes, atEachSize: async () => {
+    await expectNoHorizontalOverflow(page);
+  } });
+});
+
+test("the Instructions change card keeps Undo and its link reachable at every size in both themes", async ({ page }, info) => {
+  await prepare(page, instructionsTurns);
   const instructions = page.locator("[data-resource='instructions']");
   await expect(instructions).toContainText("Instructions updated");
   const instructionsUndo = instructions.getByRole("button", { name: `Undo changes to ${instructionsUpdated.name}` });
   await captureState(page, info, "instructions-updated", { anchor: instructionsUndo, sizes, atEachSize: async () => {
     await expectWithinViewport(page, instructionsUndo);
     await expectWithinViewport(page, instructions.getByRole("link", { name: "Open Instructions" }));
-    await expectNoHorizontalOverflow(page);
-  } });
-
-  await undo.click();
-  await expect(saved).toContainText("Secret removed");
-  await expect(saved.getByRole("status")).toContainText("Undone: the secret is deleted.");
-  expect(writes).toEqual([{ action: "delete", id: secretSaved.secretId, expectedVersionId: secretSaved.versionId }]);
-  await captureState(page, info, "secret-undone", { anchor: saved, sizes, atEachSize: async () => {
     await expectNoHorizontalOverflow(page);
   } });
 });
