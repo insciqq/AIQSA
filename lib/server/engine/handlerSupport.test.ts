@@ -13,6 +13,8 @@ describe("the self-service tools' chats", () => {
   const all = [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...SUBAGENT_MANAGEMENT_TOOL_NAMES];
 
   it("are all of them in interactive personal and temporary chats", () => {
+    // Personal Instructions change where every other personal setting does, and nowhere else (operator approval 2026-11-20).
+    expect(all).toContain("manage_instructions");
     expect(selfServiceToolsFor(prepared())).toEqual(all);
     expect(selfServiceToolsFor(prepared({ initialChatMode: "TEMPORARY" }))).toEqual(all);
     expect(selfServiceToolsFor(prepared({}, { monitoringVerdictTool: true }))).toEqual([]);

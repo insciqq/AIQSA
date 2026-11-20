@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mergeLiveThreadArtifacts, summarizeThreadArtifacts } from "@/components/app-shell/threadContent";
-import type { AssistantChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard } from "@/lib/contracts/resourceChanges";
+import type {
+  AssistantChangeCard, InstructionsChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard
+} from "@/lib/contracts/resourceChanges";
 import { AnswerOutputsV2 } from "./AnswerOutputsV2";
 import { ResourceChangeCardsV2 } from "./ResourceChangeCardV2";
 // The cards' own stylesheet, so computed styles answer how their rows wrap.
@@ -376,6 +378,53 @@ describe("ResourceChangeCardsV2: layout", () => {
     const created = within(items[4]!).getByRole("link", { name: "Open in Settings" }).closest(".v2-resource-change-card-actions") as HTMLElement;
     expect(within(created).getByRole("button", { name: "Undo creating Reporter" })).toHaveClass("v2-icon-button");
     expect(within(created).getByRole("link", { name: "Start a chat" })).toHaveAttribute("href", "/assistant/asst_1");
+  });
+});
+
+describe("ResourceChangeCardsV2: personal Instructions", () => {
+  const instructions = (presetId: string, overrides: Partial<InstructionsChangeCard> = {}): InstructionsChangeCard => ({ action: "updated",
+    diff: { lines: [{ kind: "context", text: "Be brief." }, { kind: "add", text: "Use this table: | Item | Price |" }], truncated: false }, name: "Work",
+    presetId, previousText: "Be brief.", resource: "instructions", revision: 2, version: 1, ...overrides });
+  const detail = (presetId: string, revision: number) => ({ preset: { answerRules: null, id: presetId, name: "Work", responseReminder: "Reply in English.",
+    revision, systemInstructions: "Be brief.\nUse this table: | Item | Price |", updatedAt: "2026-11-20T09:00:00.000Z" } });
+  const state = { instructions: { activePresetId: null, presets: [], selectionVersion: 1 } };
+
+  it("shows what changed and when it applies, and undoes it by writing the earlier text back under the revision it left", async () => {
+    const fetchMock = respond({ "GET /api/me/instructions/preset-1": detail("preset-1", 2), "POST /api/me/instructions": state });
+    render(<ResourceChangeCardsV2 cards={[instructions("preset-1")]} />);
+    const item = screen.getByTestId("resource-change-card");
+    expect(item).toHaveTextContent(/^WorkInstructions updated · from your next message/u);
+    expect(within(item).getByRole("link", { name: "Open Instructions" })).toHaveAttribute("href", "/?library=instructions");
+    expect(within(item).getByLabelText("Changes in the instructions of Work")).toHaveTextContent("+ Use this table: | Item | Price |");
+    await waitFor(() => expect(item).toHaveAttribute("data-state", "current"));
+    fireEvent.click(within(item).getByRole("button", { name: "Undo changes to Work" }));
+    await waitFor(() => expect(within(item).getByRole("status")).toHaveTextContent("Your instructions are back to the previous text from your next message."));
+    expect(item).toHaveTextContent(/^WorkChange undone/u);
+    expect(within(item).queryByRole("button")).toBeNull();
+    expect(bodies(fetchMock, "POST")).toEqual([["/api/me/instructions", { action: "update", id: "preset-1", revision: 2,
+      value: { answerRules: null, name: "Work", responseReminder: "Reply in English.", systemInstructions: "Be brief." } }]]);
+  });
+
+  it("refuses Undo visibly once the instructions changed since, and keeps that change", async () => {
+    const fetchMock = respond({ "GET /api/me/instructions/preset-2": detail("preset-2", 3) });
+    render(<ResourceChangeCardsV2 cards={[instructions("preset-2")]} />);
+    const item = screen.getByTestId("resource-change-card");
+    await waitFor(() => expect(item).toHaveAttribute("data-state", "changed"));
+    expect(within(item).getByRole("status")).toHaveTextContent("Undo is not available: your instructions changed after this, and that change is kept.");
+    expect(within(item).queryByRole("button", { name: /^Undo/u })).toBeNull();
+    expect(bodies(fetchMock, "POST")).toEqual([]);
+  });
+
+  it("undoes a preset the change created by deleting it, and a route conflict reads as changed", async () => {
+    const created = instructions("preset-3", { action: "created", previousText: null, revision: 1 });
+    const fetchMock = respond({ "POST /api/me/instructions": error("instruction_preset_conflict", 409) });
+    render(<ResourceChangeCardsV2 cards={[created]} live />);
+    const item = screen.getByTestId("resource-change-card");
+    expect(item).toHaveTextContent(/^WorkInstructions saved · now active/u);
+    fireEvent.click(within(item).getByRole("button", { name: "Undo saving Work" }));
+    await waitFor(() => expect(item).toHaveAttribute("data-state", "changed"));
+    expect(within(item).getByRole("status")).toHaveTextContent("Undo is not available: your instructions changed after this");
+    expect(bodies(fetchMock, "POST")).toEqual([["/api/me/instructions", { action: "delete", id: "preset-3", revision: 1 }]]);
   });
 });
 
