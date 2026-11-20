@@ -97,6 +97,21 @@ describe("chat export source", () => {
     expect(atWakeUp.chat.activeLeafKey).toBe("db-a2");
   });
 
+  it("leaves a Sign in again request out, so the server's words never read as the user's message", async () => {
+    const request = "Sign in again to mail.example.com\n\nThe user pressed Sign in again for mail.example.com.";
+    const rows = [...messageRows,
+      { ...noRuns, content: text(request), createdAt: at(6), id: "db-sign-in", modelId: null, parentMessageId: "db-a2", provider: null,
+        role: "user", status: "complete", systemTurnKind: "browser_sign_in_request" },
+      { ...noRuns, content: text("You are signed in to mail.example.com."), createdAt: at(7), id: "db-a3", modelId: "m",
+        parentMessageId: "db-sign-in", provider: "p", role: "assistant", status: "complete" }];
+    const source = await loadChatExportSource(fakeReadClient(rows) as never, { ...chatRow, activeLeafMessageId: "db-a3" });
+    expect(source.messages.map((message) => message.key)).not.toContain("db-sign-in");
+    expect(source.messages.find((message) => message.key === "db-a3")).toMatchObject({ parentKey: "db-a2", role: "assistant" });
+    const document = chatExportDocument(source, at(10));
+    expect(JSON.stringify(document)).not.toContain("The user pressed Sign in again");
+    expect(decodeChatExportDocument(JSON.parse(JSON.stringify(document)))).not.toBeNull();
+  });
+
   it("leaves out quiet checks however old, hangs the next result from the message before them, and keeps the version", async () => {
     const turn = (id: string, parentMessageId: string | null, minute: number) => ({ ...noRuns, content: text("Check the release page"),
       createdAt: at(minute), id, modelId: null, parentMessageId, provider: null, role: "user", scheduledTaskPrompt: true,

@@ -65,7 +65,8 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
   const quiet = await quietCheckOmission(db, chat.id, collapsed);
   const shown = collapsed.filter((row) => !quiet.removed.has(row.id))
     .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
-  // A sub-agent wake-up turn is the server's, never the user's speech: it stays out, its answer under the turn before it.
+  // A sub-agent wake-up turn and a Sign in again request are the server's, never the user's speech: they stay out, each
+  // answer under the turn before it.
   const wakeUps = omitSubagentCallbackTurns(shown.map((row) => ({ id: row.id, parentId: row.parentMessageId, role: row.role,
     systemTurnKind: row.systemTurnKind })));
   const rows = shown.filter((row) => !wakeUps.removed.has(row.id))

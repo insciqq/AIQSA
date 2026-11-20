@@ -86,7 +86,7 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         const quiet = await quietCheckOmission(tx, chat.id, collapsed);
         const kept = collapsed.filter((message) => !quiet.removed.has(message.id)).map((message) => ({ ...message,
           parentMessageId: quiet.parents.has(message.id) ? quiet.parents.get(message.id) ?? null : message.parentMessageId }));
-        // A sub-agent wake-up turn is the server's, never the user's speech: the share leaves it out.
+        // A sub-agent wake-up turn and a Sign in again request are the server's, never the user's speech: the share leaves them out.
         const wakeUps = omitSubagentCallbackTurns(kept.map((message) => ({ id: message.id, parentId: message.parentMessageId,
           role: message.role, systemTurnKind: message.systemTurnKind })));
         const shownLeaf = quiet.resolve(collapse.replacements.get(leaf) ?? leaf);
