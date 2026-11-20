@@ -12,10 +12,10 @@ const QUICK_CHECK = /utm_source=openai/u;
 const TEXT_LINK = /https?:\/\/[^\s<>"'`]+/giu;
 /**
  * The parameter inside one link of text, with what ends it: another parameter, the fragment, the end of the link, or what
- * closes a Markdown target or ends a sentence. Punctuation counts as an end only when nothing of the link follows it, so a
- * value such as `openai.com` is another value and stays.
+ * closes a Markdown target or ends a sentence. Punctuation and emphasis marks count as an end only when nothing of the link
+ * follows them, so a value such as `openai.com` or `openai_blog` is another value and stays.
  */
-const IN_LINK = /([?&])utm_source=openai(&|(?=[#)\]}>*_~]|[.,;:!?]+(?:$|[)\]}>*_~])|$))/gu;
+const IN_LINK = /([?&])utm_source=openai(&|(?=[#)\]}>]|[.,;:!?*_~]+(?:$|[)\]}>])|$))/gu;
 
 /** The link without the exact `utm_source=openai` parameter; a `?` or `&` left with nothing to join goes too. */
 export function withoutOpenAiAttribution(url: string): string {

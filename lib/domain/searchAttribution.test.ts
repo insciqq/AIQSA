@@ -35,11 +35,15 @@ describe("OpenAI search attribution in answer text", () => {
       "Read https://news.example/today?page=2, then stop.");
     expect(withoutOpenAiAttributionInText("Read https://news.example/today?page=2&utm_source=openai#top")).toBe(
       "Read https://news.example/today?page=2#top");
+    expect(withoutOpenAiAttributionInText("See **https://news.example/today?utm_source=openai** and _https://news.example/b?utm_source=openai_.")).toBe(
+      "See **https://news.example/today** and _https://news.example/b_.");
   });
 
   it("leaves text that is no such link as it is", () => {
     for (const text of ["Tag links with utm_source=openai when sharing.", "Use ?utm_source=openai in links.",
-      "https://example.com/?utm_source=openai.com stays", "**https://example.com/?utm_source=openaiz**"]) {
+      "https://example.com/?utm_source=openai.com stays", "**https://example.com/?utm_source=openaiz**",
+      "https://x.example/a?utm_source=openai_blog&b=1", "https://x.example/a?b=1&utm_source=openai_newsletter",
+      "https://x.example/a?utm_source=openai*b", "https://x.example/a?utm_source=openai~x"]) {
       expect(withoutOpenAiAttributionInText(text)).toBe(text);
     }
   });
