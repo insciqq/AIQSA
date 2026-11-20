@@ -121,9 +121,46 @@ class WorkspaceFileTests(_Workspace):
         port = urlsplit(url).port
         for path in ("/../other/private.txt", "/%2e%2e/other/private.txt", "/linked.json", "/empty/", "/css/"):
             self.assertEqual(self.get(url, path)[0], 404, path)
+        self.assertEqual(self.get(url, "/css")[0], 404)
+        # A folder's index page that is a link out of the folder serves nothing, whatever it points to.
+        secret = self.workspace / "secrets" / "browser" / "shop.example.json"
+        secret.write_text("SYNTHETIC_SECRET", "utf-8")
+        for index, points_to in (("index.html", secret), ("index.htm", secret), ("index.html", self.workspace / "project" / "other" / "private.txt"),
+                                 ("index.htm", self.workspace / "project" / "other" / "private.txt")):
+            leak = self.site / f"leak-{index}-{points_to.parent.name}"
+            leak.mkdir()
+            (leak / index).symlink_to(points_to)
+            for path in (f"/{leak.name}/", f"/{leak.name}/{index}"):
+                status, _, body = self.get(url, path)
+                self.assertEqual(status, 404, path)
+                self.assertNotIn(b"SYNTHETIC_SECRET", body)
+                self.assertNotIn(b"other folder", body)
         # Another host name, an unknown token or the bare loopback address reach nothing.
         for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"0123456789abcdef.localhost:{port}", urlsplit(url).hostname or ""):
             self.assertEqual(self.get(url, host=host)[0], 404, host)
+
+
+    def test_a_folder_index_and_its_subfolders_serve_and_a_link_inside_the_folder_still_works(self) -> None:
+        sub = self.site / "docs"
+        sub.mkdir()
+        (sub / "index.htm").write_text("<p>docs index</p>", "utf-8")
+        (self.site / "alias.css").symlink_to(self.site / "css" / "site.css")
+        url = self.server.address(self.site / "index.html")
+        status, headers, body = self.get(url, "/docs/")
+        self.assertEqual((status, body), (200, b"<p>docs index</p>"))
+        self.assertEqual(self.get(url, "/docs")[0], 301)
+        self.assertEqual(self.get(url, "/alias.css")[2], b"body { color: rgb(1, 2, 3); }")
+
+    def test_the_file_is_opened_without_following_a_link_swapped_in_after_the_check(self) -> None:
+        folder = self.site
+        swapped = folder / "swapped.html"
+        swapped.symlink_to(self.workspace / "secrets" / "browser" / "shop.example.json")
+        # `_open` gets the path the check resolved; if a link replaced it since, nothing opens.
+        self.assertIsNone(_files._Handler._open(_files._Handler, folder, swapped))  # type: ignore[arg-type]
+        opened = _files._Handler._open(_files._Handler, folder, folder / "index.html")  # type: ignore[arg-type]
+        self.assertIsNotNone(opened)
+        os.close(opened[0])
+        self.assertIsNone(_files._Handler._open(_files._Handler, folder / "css", folder / "index.html"))  # type: ignore[arg-type]
 
 
 @unittest.skipUnless(_host is not None, "Playwright is not installed")

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import stat
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,26 +98,60 @@ class _Handler(SimpleHTTPRequestHandler):
             return None
         return self.server.folders.get(name[: -len(_SUFFIX)])
 
-    def translate_path(self, path: str) -> str:
-        """The file this request names inside its folder, or "" when it leaves the folder or the roots."""
-        folder = self._folder()
-        if folder is None:
-            return ""
-        relative = unquote(urlsplit(path).path).lstrip("/")
-        target = Path(os.path.realpath(folder / relative))
-        if not _inside(target, folder) or not any(_inside(target, root) for root in _roots()):
-            return ""
-        return str(target)
+    @staticmethod
+    def _allowed(path: Path, folder: Path) -> bool:
+        return _inside(path, folder) and any(_inside(path, root) for root in _roots())
+
+    def _open(self, folder: Path, target: Path) -> Optional[Tuple[int, os.stat_result]]:
+        """The checked file opened, and where the open really landed checked again: a link swapped in between serves nothing."""
+        try:
+            fd = os.open(target, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            return None
+        try:
+            status = os.fstat(fd)
+            landed = Path(os.path.realpath(f"/proc/self/fd/{fd}")) if os.path.isdir("/proc/self/fd") else target
+            if stat.S_ISREG(status.st_mode) and self._allowed(landed, folder):
+                return fd, status
+        except OSError:
+            pass
+        os.close(fd)
+        return None
 
     def send_head(self):  # type: ignore[no-untyped-def]
-        if not self.translate_path(self.path):
+        """The file a request names inside its folder; a folder serves its index page. Every other request gets 404.
+
+        Python's own handler is not used for this: it picks a folder's index page without checking where it leads.
+        """
+        folder = self._folder()
+        if folder is None:
             self.send_error(404)
             return None
-        return super().send_head()
-
-    def list_directory(self, path):  # type: ignore[no-untyped-def]
-        self.send_error(404)
-        return None
+        url_path = urlsplit(self.path).path
+        target = Path(os.path.realpath(folder / unquote(url_path).lstrip("/")))
+        if not self._allowed(target, folder):
+            self.send_error(404)
+            return None
+        if target.is_dir():
+            target = next((index for index in (Path(os.path.realpath(target / name)) for name in ("index.html", "index.htm"))
+                           if self._allowed(index, folder) and index.is_file()), target)
+            if target.is_file() and not url_path.endswith("/"):
+                # Relative links on an index page resolve against the folder only with a trailing slash.
+                self.send_response(301)
+                self.send_header("Location", url_path + "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return None
+        opened = self._open(folder, target) if target.is_file() else None
+        if opened is None:
+            self.send_error(404)
+            return None
+        fd, status = opened
+        self.send_response(200)
+        self.send_header("Content-Type", self.guess_type(str(target)))
+        self.send_header("Content-Length", str(status.st_size))
+        self.end_headers()
+        return os.fdopen(fd, "rb")
 
     def end_headers(self) -> None:
         self.send_header("Cache-Control", "no-store")
