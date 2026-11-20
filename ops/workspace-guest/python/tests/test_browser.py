@@ -250,10 +250,22 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual((self.root / "shop.example.json").read_bytes(), raw)
         # A clock behind the one that wrote the file still writes a newer stamp.
         self.write("shop.example.json", {"cookies": [cookie("sid", "shop.example", "other-vm")], "origins": [],
-                                         "aiqsa": {"savedAt": 5_000_000}})
+                                         "aiqsa": {"savedAt": 2_100_000}})
         rotated = store.save("shop.example.json", {"cookies": [cookie("sid", "shop.example", "2")], "origins": []})
-        self.assertEqual((rotated["changed"], rotated["savedAt"]), (True, 5_000_001))
-        self.assertEqual(store.files["shop.example.json"]["aiqsa"], {"savedAt": 5_000_001})
+        self.assertEqual((rotated["changed"], rotated["savedAt"]), (True, 2_100_001))
+        self.assertEqual(store.files["shop.example.json"]["aiqsa"], {"savedAt": 2_100_001})
+
+    def test_a_stamp_past_the_clock_orders_nothing_and_is_never_carried_into_a_save(self) -> None:
+        store = _sessions.SessionStore(self.root, clock=lambda: 1_000.0)
+        future = 1_000_000 + _sessions.STAMP_SKEW_MS + 1
+        self.write("a.example.json", {"cookies": [cookie("sid", ".example", "forged")], "origins": [], "aiqsa": {"savedAt": future}})
+        self.write("b.example.json", {"cookies": [cookie("sid", ".example", "honest")], "origins": [], "aiqsa": {"savedAt": 900_000}})
+        self.assertEqual(store.load()["cookies"][0]["value"], "honest", "a future stamp counts as none, never as the newest")
+        store.track("a.example.json", {"a.example"})
+        saved = store.save("a.example.json", {"cookies": [cookie("sid", "a.example", "rewritten")], "origins": []})
+        self.assertEqual(saved["savedAt"], 1_000_000)
+        self.assertEqual(_sessions.trusted_stamp({"aiqsa": {"savedAt": 1_000_000 + _sessions.STAMP_SKEW_MS}}, 1_000_000),
+                         1_000_000 + _sessions.STAMP_SKEW_MS)
 
     def test_a_sign_in_joins_its_account_file_and_reuses_one_that_already_holds_the_account(self) -> None:
         self.assertEqual(self.store.file_for("mail.google.com"), ("google.com.json", {"google.com"}))
@@ -1011,6 +1023,10 @@ class HostBudgetTests(unittest.IsolatedAsyncioTestCase):
 class _LoopingPage(_HostPage):
     async def goto(self, url: str, **_: Any) -> None:
         raise _host.PlaywrightError(f"net::ERR_TOO_MANY_REDIRECTS at {url}\nCall log: navigating")
+
+    async def wait_for_url(self, _pattern: str, timeout: float) -> None:
+        # Its error page commits a moment after the failure (`Host._error_page_committed`).
+        self.url = "chrome-error://chromewebdata/"
 
 
 @unittest.skipUnless(_host is not None, "Playwright is not installed")

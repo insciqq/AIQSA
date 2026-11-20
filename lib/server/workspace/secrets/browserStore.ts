@@ -65,11 +65,16 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
   if (sequence === null) return "unauthorized";
   const owner = await tx.user.findUniqueOrThrow({ where: { id: input.userId }, select: { workspaceBrowserManualSequence: true } });
   const existing = await tx.workspaceSecret.findFirst({ where: { userId: input.userId, browserFileName: file.fileName }, include: { value: true } });
+  // What this run was given at admission: a file it collects back unchanged is no write of its own.
+  const given = existing ? await tx.workspaceRunSecret.findUnique({
+    where: { modelRunId_secretId: { modelRunId: input.runId, secretId: existing.id } }, include: { value: true } }) : null;
   // Freshness of the guest's writes, under the run's operation fence; a manual settings change fences every older run.
   const order = workspaceBrowserSaveOrder({ sequence, manualSequence: owner.workspaceBrowserManualSequence, now: now(),
     incoming: { checksum: workspaceBrowserSessionChecksum(file.bytes), savedAt: workspaceBrowserSessionSavedAt(file.bytes) },
     current: existing ? { checksum: existing.value.checksum, writerSequence: existing.browserWriterSequence,
-      createdAt: existing.value.createdAt, savedAt: () => revisionSavedAt(existing.value, input.userId, key) } : null });
+      createdAt: existing.value.createdAt, savedAt: () => revisionSavedAt(existing.value, input.userId, key) } : null,
+    given: given && given.valueId !== existing?.valueId ? { checksum: given.value.checksum,
+      savedAt: () => revisionSavedAt(given.value, input.userId, key) } : null });
   if (order === "browser_session_stale") return order;
   const writerSequence = existing && existing.browserWriterSequence > sequence ? existing.browserWriterSequence : sequence;
   if (existing && order === "unchanged") {

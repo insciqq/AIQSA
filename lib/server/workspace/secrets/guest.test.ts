@@ -129,6 +129,14 @@ describe("saved browser sessions a run installs on a shared Workspace", () => {
     expect(existsSync(join(browser(value), "gone.example.json"))).toBe(false);
   });
 
+  it("never keeps a guest copy whose stamp lies past the clock over the server's offer", () => {
+    const value = guest();
+    expect(value.install("run_main", {}, [offered("shop.example.json", session("restored", 1_000))]).status).toBe(0);
+    writeFileSync(join(browser(value), "shop.example.json"), session("forged-future", Date.now() + 365 * 86_400_000));
+    expect(value.install("run_next", {}, [offered("shop.example.json", session("newer-on-server", 2_000))]).status).toBe(0);
+    expect(readFileSync(join(browser(value), "shop.example.json"), "utf8")).toBe(session("newer-on-server", 2_000));
+  });
+
   it("lets an upload in Settings, which carries no stamp, replace the guest's copy", () => {
     const value = guest();
     expect(value.install("run_main", {}, [offered("shop.example.json", session("restored", 1_000))]).status).toBe(0);

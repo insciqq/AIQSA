@@ -1,4 +1,5 @@
 import { WORKSPACE_BROWSER_SESSION_MAX_BYTES } from "@/lib/contracts/workspaceSecrets";
+import { WORKSPACE_BROWSER_STAMP_SKEW_MS } from "./browserSession";
 import { WORKSPACE_PROXY_PLAN_PATH, WORKSPACE_SECRETS_GUEST_INPUT_MAX_BYTES } from "./manifest";
 
 /** Environments of the runs one shared Workspace serves: the newest of them, within the file bound. */
@@ -10,7 +11,7 @@ export const WORKSPACE_SECRET_ENV_EXIT = Object.freeze({ missing: 65, unreadable
 
 /** Static code; secret bytes travel on stdin, never in executable source. */
 export const INSTALL_WORKSPACE_SECRETS = String.raw`
-import base64, json, os, pathlib, shutil, stat, subprocess, sys, tempfile
+import base64, json, os, pathlib, shutil, stat, subprocess, sys, tempfile, time
 
 def directory(path):
     if path.is_symlink(): raise ValueError('directory_invalid')
@@ -48,7 +49,9 @@ def browser_session(directory, name, offered):
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > ${WORKSPACE_BROWSER_SESSION_MAX_BYTES}: return offered
         own = stream.read(${WORKSPACE_BROWSER_SESSION_MAX_BYTES + 1})
-    return own if len(own) <= ${WORKSPACE_BROWSER_SESSION_MAX_BYTES} and saved_at(own) > stamp else offered
+    # A stamp past this clock and its skew is no write time: such a copy never outranks the server's (workspaceBrowserSaveOrder).
+    latest = int(time.time() * 1000) + ${WORKSPACE_BROWSER_STAMP_SKEW_MS}
+    return own if len(own) <= ${WORKSPACE_BROWSER_SESSION_MAX_BYTES} and stamp < saved_at(own) <= latest else offered
 
 temporary = None
 try:

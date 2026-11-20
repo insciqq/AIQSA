@@ -35,6 +35,9 @@ WORKSPACE = Path("/workspace")
 ROOT = WORKSPACE / "secrets" / "browser"
 #: AIQSA's own key in a session file, beside Playwright's two.
 STAMP_KEY = "aiqsa"
+#: How far a clock may run ahead of this one: a later stamp is no write time (a clock gone wrong, a file guest code
+#: wrote) and orders nothing, here as on the server (`WORKSPACE_BROWSER_STAMP_SKEW_MS`).
+STAMP_SKEW_MS = 5 * 60_000
 
 _SITE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
 _ADDRESS = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -118,6 +121,12 @@ def saved_at(value: Mapping[str, Any]) -> int:
     meta = value.get(STAMP_KEY)
     stamp = meta.get("savedAt") if isinstance(meta, Mapping) else None
     return stamp if isinstance(stamp, int) and not isinstance(stamp, bool) and 0 < stamp < 2 ** 53 else 0
+
+
+def trusted_stamp(value: Mapping[str, Any], now_ms: int) -> int:
+    """`saved_at`, or 0 for a stamp past `now_ms` and the skew: it counts as no stamp, never as the newest."""
+    stamp = saved_at(value)
+    return stamp if stamp <= now_ms + STAMP_SKEW_MS else 0
 
 
 def content_key(state: Mapping[str, Any]) -> str:
@@ -307,7 +316,8 @@ class SessionStore:
         cookies: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         origins: Dict[str, Dict[str, Any]] = {}
         known = [name for name in names if name in self.files]
-        for name in sorted(known, key=lambda entry: (saved_at(self.files[entry]), entry)):
+        now = int(self.clock() * 1000)
+        for name in sorted(known, key=lambda entry: (trusted_stamp(self.files[entry], now), entry)):
             value = self.files[name]
             for cookie in value["cookies"]:
                 cookies[(cookie["name"], cookie["domain"], cookie["path"])] = cookie
@@ -371,8 +381,10 @@ class SessionStore:
             self.digests[name] = digest
             self.files[name], self.keys[name] = found[0], key
             return {"file": name, "bytes": found[1], "changed": False, "savedAt": saved_at(found[0])}
-        # Newer than what it replaces even if this clock is behind the one that wrote that.
-        stamp = max(int(self.clock() * 1000), (saved_at(current) if current is not None else 0) + 1)
+        # Newer than what it replaces even if this clock is behind the one that wrote that, though never after a stamp
+        # past the skew: that one is no write time and would carry a wrong clock (or a forged stamp) into every save.
+        now = int(self.clock() * 1000)
+        stamp = max(now, (trusted_stamp(current, now) if current is not None else 0) + 1)
         written = {**part, STAMP_KEY: {"savedAt": stamp}}
         data = json.dumps(written, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(data) > MAX_BYTES:
