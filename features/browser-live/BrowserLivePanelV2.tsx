@@ -733,7 +733,10 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
 
   if (!visible) return null;
   const state = expanded ? live.snapshot.state : null;
-  const needsUser = Boolean(activity.pendingHandoffKey || state?.handoff);
+  // A live stream knows the pending handoffs (an answered one leaves at once); the answer's running call only
+  // ends once the agent has its result.
+  const needsUser = state && live.snapshot.connection === "live" ? state.handoff !== null
+    : Boolean(activity.pendingHandoffKey || state?.handoff);
   const status = needsUser ? "Needs your help"
     : state?.controller === "user" && state.browser === "running" ? "You have control"
     : activity.lastStep ?? "The agent is using the browser";

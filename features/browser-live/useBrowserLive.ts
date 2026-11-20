@@ -58,6 +58,27 @@ function forAgent(inputs: readonly BrowserLiveInput[], agent: string | null): Br
 
 const NOOP_SUBSCRIBE = () => () => undefined;
 const IDLE = () => BROWSER_LIVE_IDLE_SNAPSHOT;
+const NONE: ReadonlySet<string> = new Set();
+
+/**
+ * The state as the server has it once it took this tab's answers: the handoffs in `settled` are gone, and an agent
+ * left with no pending handoff drives its tab again (the server hands it back when it removes the handoff). Until
+ * the server's own state says so, an older state event may still list them: on a slow connection the state waits
+ * behind queued frames (production 2026-11-17: the card stayed about 15 s after Done, and 16 more presses got 409).
+ */
+export function withoutSettledHandoffs(state: BrowserLiveStateEvent | null, settled: ReadonlySet<string>): BrowserLiveStateEvent | null {
+  if (!state || !state.handoffs.some((pending) => settled.has(pending.id))) return state;
+  const handoffs = state.handoffs.filter((pending) => !settled.has(pending.id));
+  const answered = new Set(state.handoffs.filter((pending) => settled.has(pending.id)).map((pending) => pending.agent.id));
+  for (const pending of handoffs) answered.delete(pending.agent.id);
+  return {
+    ...state,
+    agents: state.agents.map((agent) => answered.has(agent.id) ? { ...agent, controller: "agent", waitingForUser: false } : agent),
+    controller: answered.has(state.selected) ? "agent" : state.controller,
+    handoff: handoffs[0] ?? null,
+    handoffs
+  };
+}
 
 /**
  * The live browser of one chat while its panel is open: the stream exists only
@@ -72,6 +93,14 @@ export function useBrowserLive(
 ): BrowserLiveController {
   const [busyEntry, setBusyEntry] = useState<{ action: BrowserLiveAction; stream: BrowserLiveStream } | null>(null);
   const [failureEntry, setFailureEntry] = useState<FailureEntry | null>(null);
+  /** Handoffs this tab answered (204) or found ended (`browser_live_handoff_stale`); handoff ids are never reused. */
+  const [settled, setSettled] = useState<ReadonlySet<string>>(NONE);
+  const settledRef = useRef<ReadonlySet<string>>(NONE);
+  /** Handoffs this tab sent an answer for and heard back about: a repeated answer's stale refusal is no news. */
+  const answeredRef = useRef(new Set<string>());
+  /** The server's latest state, for refusals: a newer one hides them, this tab's own settled answers do not. */
+  const serverStateRef = useRef<BrowserLiveStateEvent | null>(null);
+  /** The state as shown (`withoutSettledHandoffs`). */
   const stateRef = useRef<BrowserLiveStateEvent | null>(null);
   const streamRef = useRef<BrowserLiveStream | null>(null);
   const busyRef = useRef<BrowserLiveStream | null>(null);
@@ -93,7 +122,7 @@ export function useBrowserLive(
       send: (input) => postBrowserLiveInput(chatId, input),
       onRefused: (code) => {
         if (code === "browser_live_not_in_control" && endingRef.current) return;
-        setFailureEntry({ code, state: stateRef.current, stream });
+        setFailureEntry({ code, state: serverStateRef.current, stream });
       },
       // An accepted send ends "too much input at once".
       onAccepted: () => setFailureEntry((current) => current?.code === "browser_live_rate_limited" ? null : current),
@@ -108,15 +137,20 @@ export function useBrowserLive(
       if (queueRef.current === queue) queueRef.current = null;
     };
   }, [chatId, stream]);
-  const snapshot = useSyncExternalStore(stream?.subscribe ?? NOOP_SUBSCRIBE, stream?.getSnapshot ?? IDLE, IDLE);
+  const serverSnapshot = useSyncExternalStore(stream?.subscribe ?? NOOP_SUBSCRIBE, stream?.getSnapshot ?? IDLE, IDLE);
+  const snapshot = useMemo(() => {
+    const state = withoutSettledHandoffs(serverSnapshot.state, settled);
+    return state === serverSnapshot.state ? serverSnapshot : { ...serverSnapshot, state };
+  }, [serverSnapshot, settled]);
   useEffect(() => {
+    serverStateRef.current = serverSnapshot.state;
     stateRef.current = snapshot.state;
     streamRef.current = stream;
     const ending = endingRef.current;
     if (ending && ending.agent !== snapshot.state?.selected) endingRef.current = null;
     else if (ending && snapshot.state?.controller === "agent") ending.sawAgent = true;
     else if (ending?.sawAgent && snapshot.state?.controller === "user") endingRef.current = null;
-  }, [snapshot.state, stream]);
+  }, [serverSnapshot.state, snapshot.state, stream]);
 
   const userControls = snapshot.state?.controller === "user" && snapshot.state.browser === "running" &&
     snapshot.connection === "live";
@@ -131,16 +165,16 @@ export function useBrowserLive(
   // supersedes an older refusal, except a rate limit, which is about the person's own pace.
   const busy = busyEntry && busyEntry.stream === stream ? busyEntry.action : null;
   const failure = failureEntry && failureEntry.stream === stream &&
-    (failureEntry.code === "browser_live_rate_limited" || failureEntry.state === snapshot.state) ? failureEntry.code : null;
+    (failureEntry.code === "browser_live_rate_limited" || failureEntry.state === serverSnapshot.state) ? failureEntry.code : null;
 
   /**
    * One control request. Ending control blocks input at once; Done and Return first let queued input
    * (the last code digits, the click on the page's own button) arrive, for at most a bounded wait, while
    * Cancel drops it. An answer to another agent's handoff (its tab is not shown) ends nothing here: the input
-   * typed into the shown tab is that tab's.
+   * typed into the shown tab is that tab's. `heard` sees the result first and says whether a refusal is news.
    */
   const run = useCallback(async (action: BrowserLiveAction, request: () => Promise<BrowserLiveRequestResult>,
-    endsShownControl = action !== "take") => {
+    endsShownControl = action !== "take", heard?: (result: BrowserLiveRequestResult) => boolean) => {
     const requestStream = streamRef.current;
     if (!requestStream || busyRef.current === requestStream) return;
     busyRef.current = requestStream;
@@ -154,11 +188,12 @@ export function useBrowserLive(
       if (ending && action === "cancel") queue?.clearExceptReleases();
       else if (ending && queue && !await queue.drain(BROWSER_LIVE_END_DRAIN_MS)) queue.clear();
       const result = await request();
+      const news = heard ? heard(result) : true;
       // A refused end that left the user in control (a network failure) gives the browser back to them.
       if (!result.ok && ending && endingRef.current === ending && result.code !== "browser_live_handoff_stale" &&
         result.code !== "browser_live_not_in_control") endingRef.current = null;
-      if (!result.ok && streamRef.current === requestStream) {
-        setFailureEntry({ code: result.code, state: stateRef.current, stream: requestStream });
+      if (!result.ok && news && streamRef.current === requestStream) {
+        setFailureEntry({ code: result.code, state: serverStateRef.current, stream: requestStream });
       }
     } finally {
       if (busyRef.current === requestStream) busyRef.current = null;
@@ -169,10 +204,26 @@ export function useBrowserLive(
   const control = useCallback((action: "take" | "return") =>
     run(action, () => postBrowserLiveControl(chatId, action, selected && selected !== BROWSER_LIVE_MAIN_AGENT ? selected : undefined)),
   [chatId, run, selected]);
+  /**
+   * Done or Cancel. Once the server took it, or says it already ended, its card leaves at once and a further press
+   * sends nothing; the stale refusal of a repeated answer (the first one's reply was lost) is not shown.
+   */
   const answerHandoff = useCallback((handoffId: string, action: "done" | "cancel") => {
+    if (settledRef.current.has(handoffId)) return Promise.resolve();
     const state = stateRef.current;
     const asker = state?.handoffs.find((pending) => pending.id === handoffId)?.agent.id;
-    return run(action, () => postBrowserLiveHandoff(chatId, handoffId, action), !state || asker === undefined || asker === state.selected);
+    const repeated = answeredRef.current.has(handoffId);
+    return run(action, () => postBrowserLiveHandoff(chatId, handoffId, action), !state || asker === undefined || asker === state.selected,
+      (result) => {
+        answeredRef.current.add(handoffId);
+        const stale = !result.ok && result.code === "browser_live_handoff_stale";
+        if (result.ok || stale) {
+          const next = new Set(settledRef.current).add(handoffId);
+          settledRef.current = next;
+          setSettled(next);
+        }
+        return !(stale && repeated);
+      });
   }, [chatId, run]);
   const sendInput = useCallback((...inputs: BrowserLiveInput[]) => {
     if (userControls && !endingRef.current && inputs.length > 0) queueRef.current?.push(...forAgent(inputs, selected));

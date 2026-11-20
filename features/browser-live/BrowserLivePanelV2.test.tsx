@@ -162,31 +162,59 @@ describe("BrowserLivePanelV2", () => {
     expect(sources).toHaveLength(0);
   });
 
-  it("answers the handoff with Done or Cancel, says when it will not be remembered, and shows a stale answer", async () => {
+  it("answers the handoff with Done or Cancel and says when it will not be remembered", async () => {
     renderPanel({ toolActivity: handoffCall });
     send("state", liveState({ controller: "user", signInRemembered: false, handoff: handoff("sign_in") }));
     const card = screen.getByTestId("browser-live-handoff");
     expect(card).toHaveTextContent("This chat does not save browser sign-ins");
     fireEvent.click(within(card).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]));
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
-    fireEvent.click(within(card).getByRole("button", { name: "Cancel" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("This request has already ended.");
-    expect(posted()[1]).toEqual([browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-1" }]);
+    cleanup();
+    fetchMock.mockClear();
+
+    renderPanel({ toolActivity: handoffCall });
+    send("state", liveState({ controller: "user", handoff: handoff("sign_in", { id: "handoff-2" }) }));
+    fireEvent.click(within(screen.getByTestId("browser-live-handoff")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "cancel", handoffId: "handoff-2" }]]));
+    await waitFor(() => expect(screen.queryByTestId("browser-live-handoff")).toBeNull());
   });
 
-  it("keeps Done and Cancel usable when the client clock says the time is up", async () => {
+  // Production 2026-11-17: the state after Done reached a slow phone ~15 s late (behind queued frames), the card kept a
+  // live Done meanwhile, and 16 more presses each got "This request has already ended.".
+  it("takes the card away once Done is accepted, before the server's state arrives, and sends nothing more", async () => {
+    renderPanel({ toolActivity: handoffCall });
+    const pending = liveState({ controller: "user", handoff: handoff("sign_in") });
+    send("state", pending);
+    send("frame", liveFrame(1));
+    fireEvent.click(within(screen.getByTestId("browser-live-handoff")).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByTestId("browser-live-handoff")).toBeNull());
+    expect(posted()).toEqual([[browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-1" }]]);
+    // The tab is the agent's again, as the server already has it, though the answer's call still runs.
+    expect(screen.getByRole("button", { name: /Hide/u })).not.toHaveTextContent("Needs your help");
+    expect(screen.getByText("The agent is using the browser")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Return control" })).toBeNull();
+    // A state sent before the answer and delivered after it changes nothing.
+    send("state", { ...pending });
+    expect(screen.queryByTestId("browser-live-handoff")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    send("state", liveState());
+    expect(screen.queryByTestId("browser-live-handoff")).toBeNull();
+    expect(posted()).toHaveLength(1);
+  });
+
+  it("keeps Done and Cancel usable when the client clock says the time is up, and drops a request that already ended", async () => {
     renderPanel({ toolActivity: handoffCall });
     send("state", liveState({ controller: "user", handoff: handoff("captcha", { expiresAt: new Date(Date.now() - 1_000).toISOString() }) }));
     const card = screen.getByTestId("browser-live-handoff");
     expect(card).toHaveTextContent("Time is up");
     expect(card).toHaveTextContent("This is the agent's own browser on the server, not yours, and nothing is taken from your browser. " +
       "Sign in or act in it below, then press Done to hand control back; the agent does not see what you type.");
-    // The server, not the client clock, decides: a late Done gets its own refusal.
+    expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    // The server, not the client clock, decides: a late Done gets its own refusal, and the card goes.
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ code: "browser_live_handoff_stale" }), { status: 409 }));
     fireEvent.click(within(card).getByRole("button", { name: "Done" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This request has already ended.");
-    expect(within(card).getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.queryByTestId("browser-live-handoff")).toBeNull();
   });
 
   it("scrolls the handoff card into view once per handoff, without taking focus", () => {
@@ -620,6 +648,9 @@ describe("BrowserLivePanelV2 with several browsing agents", () => {
     expect(screen.queryByRole("button", { name: "Take control" })).toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Done" }));
     await waitFor(() => expect(posted().at(-1)).toEqual([browserLiveHandoffPath(CHAT), { action: "done", handoffId: "handoff-amazon" }]));
+    // Before the server's state arrives, the other agent's request already takes the card, and still works.
+    await waitFor(() => expect(screen.getByTestId("browser-live-handoff")).toHaveAttribute("data-agent", "thread_shop"));
+    expect(within(screen.getByTestId("browser-live-handoff")).getByRole("button", { name: "Done" })).toBeEnabled();
     // The next one moves the stream to its agent.
     send("state", liveState({ agents: agents({ thread_shop: { controller: "user", waitingForUser: true } }), controller: "user",
       handoff: shopHandoff, handoffs: [shopHandoff], selected: "thread_shop", page: { url: "https://www.saucedemo.com/", title: "Swag Labs" } }));
