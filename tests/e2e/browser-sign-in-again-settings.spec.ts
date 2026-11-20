@@ -114,11 +114,6 @@ async function prepare(page: Page, testInfo: TestInfo, theme: "light" | "dark") 
   const created = chatDetail(newChatId, "New chat", []);
   const { messages: _messages, ...createdSummary } = created;
   const creates: unknown[] = [];
-  await page.route("**/api/chats", (route) => {
-    if (route.request().method() !== "POST") return route.fallback();
-    creates.push(route.request().postDataJSON());
-    return route.fulfill({ status: 201, json: { chat: createdSummary } });
-  });
   for (const chat of [taskChat, created]) {
     await page.route(`**/api/chats/${chat.id}`, (route) => route.request().method() === "GET"
       ? route.fulfill({ json: { chat } }) : route.fallback());
@@ -156,6 +151,12 @@ async function prepare(page: Page, testInfo: TestInfo, theme: "light" | "dark") 
   // A missed fixture must fail before it can dispatch a provider request.
   await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
+  // Registered last, so it outranks the catalog fixture's own chat routes: the blank chat is created at its first send.
+  await page.route(/\/api\/chats(\?.*)?$/u, (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    creates.push(route.request().postDataJSON());
+    return route.fulfill({ status: 201, json: { chat: createdSummary } });
+  });
   await signInWithLocalToken(page, "/");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 30_000 });
   return { creates, newStream, taskStream };
