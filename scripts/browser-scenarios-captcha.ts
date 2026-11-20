@@ -78,13 +78,17 @@ function resultStrings(value: unknown, out: string[] = [], depth = 0, budget = {
 }
 
 /** What a command's arguments carry that its output may only echo back: each argument and each quoted string. */
+/** `aiqsa-browser` verbs and flags: the guest prints them in its own lines (`captcha` inside `hcaptcha`), never as echo. */
+const COMMAND_WORD = /^(?:--?[a-z-]+|\d+|aiqsa-browser|open|info|find|click|type|select|upload|press|scroll|back|forward|reload|wait|text|js|shot|tabs|tab|new-tab|close-tab|save-session|steps|status|close|release|proxies|proxied|captcha|click-at|drag)$/u;
+
 function echoes(args: unknown): string[] {
   const values = record(args)
-    ? [args.command, ...(Array.isArray(args.args) ? args.args : [])].filter((entry): entry is string => typeof entry === "string")
+    ? [...(Array.isArray(args.args) ? args.args : [])].filter((entry): entry is string => typeof entry === "string")
     : [];
+  if (record(args) && typeof args.command === "string" && !COMMAND_WORD.test(args.command)) values.push(args.command);
   const found = new Set<string>();
   for (const value of values) {
-    if (value.length >= 3 && value.length <= 400 && !/\n/u.test(value)) found.add(value);
+    if (value.length >= 3 && value.length <= 400 && !/\n/u.test(value) && !COMMAND_WORD.test(value)) found.add(value);
     for (const match of value.matchAll(/"([^"\n]{3,200})"|'([^'\n]{3,200})'/gu)) found.add((match[1] ?? match[2])!);
   }
   return [...found].sort((a, b) => b.length - a.length);
@@ -173,11 +177,11 @@ export const CAPTCHA_TARGETS: Readonly<Record<CaptchaScenarioId, CaptchaTarget>>
   // Google's reCAPTCHA v2 demo: the form posts back to the same address, which then says "Verification Success... Hooray!".
   C1: { domains: ["google.com"], path: "/recaptcha/api2/demo", start: "https://www.google.com/recaptcha/api2/demo",
     success: { text: /Verification Success/iu } },
-  // hCaptcha's demo posts back to /demo and prints its siteverify result: "Verification Failed." and `"success": false`
-  // for a bad token (seen 2026-11-20), so a passed check reads "Verification Success" or `"success": true`. The
-  // widget's own "Challenge Success!" before the submit does not count.
-  C2: { domains: ["accounts.hcaptcha.com"], path: "/demo", start: "https://accounts.hcaptcha.com/demo",
-    success: { text: /Verification Success|"success"\s*:\s*true/iu } },
+  // hCaptcha's own demo (accounts.hcaptcha.com) answers datacenter addresses with a Cloudflare block page (403, seen
+  // 2026-11-20 from the stand), so the widget is measured on NopeCHA's demo page: a passed widget holds its answer
+  // token, which the browser's page summary reports as "The page's check is passed (hCaptcha)".
+  C2: { domains: ["nopecha.com"], path: "/demo/hcaptcha", start: "https://nopecha.com/demo/hcaptcha",
+    success: { text: /The page's check is passed \([^)]*hCaptcha/iu } },
   // The challenge page and the page behind it share the address; only the title tells them apart ("Just a moment...").
   C3: { domains: ["scrapingcourse.com"], path: "/cloudflare-challenge", start: "https://www.scrapingcourse.com/cloudflare-challenge",
     success: { title: /^Cloudflare Challenge - ScrapingCourse\.com$/iu } },
@@ -225,8 +229,10 @@ export function captchaEffortCounts(calls: readonly ScenarioToolCallRow[]): Reco
     handoffs: handoffs.length,
     viewWorkspaceImageCalls: calls.filter((call) => call.toolName === "view_workspace_image").length
   };
-  // The guest's code when its bounded tries ran out, wherever a browser command printed it.
-  counts.attemptsExhausted = calls.filter((call) => COMMAND_TOOL.test(call.toolName))
+  // The guest's code when its bounded tries ran out, as a browser command printed it: reading the guide, which names
+  // the code, is no browser command and does not count.
+  counts.attemptsExhausted = calls.filter((call) => COMMAND_TOOL.test(call.toolName) &&
+      (POLL_TOOL.test(call.toolName) || BROWSER_COMMAND.test(commandText(call.arguments))))
     .reduce((sum, call) => sum + resultStrings(call.result).reduce((inner, text) =>
       inner + [...text.matchAll(/captcha_attempts_exhausted/gu)].length, 0), 0);
   for (const call of handoffs) {

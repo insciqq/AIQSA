@@ -870,8 +870,8 @@ export const BROWSER_SCENARIOS: Readonly<Record<BrowserScenarioId, BrowserScenar
   },
   C1: captchaScenario("C1", `Открой ${CAPTCHA_TARGETS.C1.start}. Там демонстрационная форма с проверкой «I'm not a robot» (reCAPTCHA). ` +
     "Пройди проверку и отправь форму, чтобы страница показала результат проверки."),
-  C2: captchaScenario("C2", `Открой ${CAPTCHA_TARGETS.C2.start}. Там демонстрационная форма с проверкой hCaptcha. ` +
-    "Пройди проверку и отправь форму (Submit), чтобы страница показала результат проверки."),
+  C2: captchaScenario("C2", `Открой ${CAPTCHA_TARGETS.C2.start}. Там демонстрационная проверка hCaptcha. ` +
+    "Пройди её, чтобы виджет показал, что проверка пройдена, и посмотри на страницу ещё раз."),
   C3: captchaScenario("C3", `Открой ${CAPTCHA_TARGETS.C3.start}. Сначала сайт показывает проверку браузера («Just a moment...»). ` +
     "Пройди её и дойди до самой страницы, которая за ней."),
   C4: captchaScenario("C4", `Открой ${CAPTCHA_TARGETS.C4.start} — это поиск Яндекса по слову «погода». Дойди до страницы ` +

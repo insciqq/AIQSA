@@ -92,14 +92,15 @@ describe("C scenarios: the stored outputs decide, never the claim", () => {
     expect(oracle("C5")({ calls: shown, handoffs: [], imageOutputs: 1, leaks: null, result: { passed: true } }).failed).toEqual([]);
   });
 
-  it("C2 needs hCaptcha's verification after the submit, not the widget's own tick", () => {
-    const demo = "https://accounts.hcaptcha.com/demo";
-    const ticked = [browser(["open", demo], page(demo, "hCAPTCHA Demo")), browser(["text"], "Challenge Success!")];
-    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(ticked)).passed).toBe(false);
-    const failed = [...ticked, browser(["click", "3"], page(demo, "hCAPTCHA Demo")), browser(["text"], 'Verification Failed. {"success": false}')];
-    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(failed)).passed).toBe(false);
-    const verified = [...ticked, browser(["click", "3"], page(demo, "hCAPTCHA Demo")), browser(["text"], 'siteverify response data: {"success": true}')];
-    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(verified)).passed).toBe(true);
+  it("C2 needs the browser's own report that the hCaptcha widget holds its answer, not the page's words", () => {
+    const demo = "https://nopecha.com/demo/hcaptcha";
+    const shown = [browser(["open", demo], page(demo, "NopeCHA - hCaptcha Demo")), browser(["text"], "Challenge Success!")];
+    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(shown)).passed).toBe(false);
+    const echoed = [...shown, browser(["find", "The page's check is passed (hCaptcha)"], "No element matches.")];
+    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(echoed)).passed).toBe(false);
+    const passed = [...shown, browser(["captcha"], page(demo, "NopeCHA - hCaptcha Demo") +
+      "\nThe page's check is passed (hCaptcha); go on with the page.")];
+    expect(captchaPassed(CAPTCHA_TARGETS.C2, browserObservations(passed)).passed).toBe(true);
   });
 
   it("C3 reads the title of the last page: the challenge's own title fails", () => {
