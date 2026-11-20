@@ -237,6 +237,11 @@ IN_CAPTCHA = r"""
 (el, containers) => { try { return !!el.closest(containers); } catch (error) { return false; } }
 """
 
+#: For each listed element of a document: whether it belongs to a CAPTCHA or bot-check form or widget.
+IN_CAPTCHA_LIST = r"""
+(list, containers) => list.map((el) => { try { return !!el.closest(containers); } catch (error) { return false; } })
+"""
+
 #: Frame addresses of CAPTCHA and bot-check widgets, with a kind for the page summary.
 CAPTCHA_FRAMES = [
     ("reCAPTCHA", ("google.com/recaptcha/", "recaptcha.net/recaptcha/")),

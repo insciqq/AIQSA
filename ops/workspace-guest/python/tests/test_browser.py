@@ -537,6 +537,59 @@ class HumanInputTests(unittest.TestCase):
         self.assertLess(mean(keys), 150)
         self.assertLess(mean(scrolls), 700)
 
+    def test_guarded_input_stops_between_events_and_always_lets_go(self) -> None:
+        """The user taking the tab (the check raising) stops the agent's input; a held button or key is let go."""
+        mouse, checks = _FakeMouse(), [0]
+
+        def taken_after_four() -> None:
+            checks[0] += 1
+            if checks[0] > 4:
+                raise RuntimeError("taken")
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(_human.move(_human.Guarded(mouse, taken_after_four), (0, 0), (600, 400), _human.Profile(1), random.Random(1),
+                                    sleep=self.sleep))
+        self.assertEqual(len(mouse.events), 4)
+
+        def stop_on(call: int) -> Any:
+            calls = [0]
+
+            async def sleep(_seconds: float) -> None:
+                calls[0] += 1
+                if calls[0] == call:
+                    raise RuntimeError("taken")
+            return sleep
+
+        mouse = _FakeMouse()
+        guarded = _human.Guarded(mouse, lambda: None)
+        with self.assertRaises(RuntimeError):  # stopped while the button is down (the second pause)
+            asyncio.run(_human.press(guarded, _human.Profile(1), random.Random(1), hold_ms=5000, sleep=stop_on(2)))
+        self.assertEqual(mouse.events, [("down",), ("up",)])
+        keyboard = _FakeKeyboard()
+        with self.assertRaises(RuntimeError):  # stopped while the first key is held
+            asyncio.run(_human.type_text(_human.Guarded(keyboard, lambda: None), "abc", _human.Profile(1), random.Random(1),
+                                         sleep=stop_on(1)))
+        self.assertEqual(keyboard.events, [("down", "a"), ("up", "a")])
+        # A refused press (the point no longer hits the element) presses nothing.
+        mouse = _FakeMouse()
+
+        async def refuse() -> None:
+            raise LookupError("covered")
+
+        with self.assertRaises(LookupError):
+            asyncio.run(_human.press(mouse, _human.Profile(1), random.Random(1), sleep=self.sleep, ready=refuse))
+        self.assertEqual(mouse.events, [])
+        # A long pause checks in slices.
+        seen = [0]
+
+        def taken_on_third() -> None:
+            seen[0] += 1
+            if seen[0] == 3:
+                raise RuntimeError("taken")
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(_human.guarded_sleep(taken_on_third, slice_seconds=0.01)(5.0))
+
     def test_click_points_stay_inside_the_element(self) -> None:
         profile, rng = _human.Profile(2), random.Random(2)
         for _ in range(500):
@@ -574,8 +627,23 @@ class CaptchaTableTests(unittest.TestCase):
 
 @unittest.skipUnless(_host is not None, "Playwright is not installed")
 class HostCaptchaTests(unittest.TestCase):
-    def test_tries_at_a_site_check_are_bounded_per_agent(self) -> None:
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        _paths.use_test_root(self.directory.name)
+        _paths.run_dir().mkdir(mode=0o700, parents=True)
+
+    def tearDown(self) -> None:
+        _paths.use_test_root(None)
+        self.directory.cleanup()
+
+    @staticmethod
+    def host_of(turn: str) -> Any:
         host = _bare_host()
+        host._request_agent({"agent": {"id": "main", "turn": turn}})
+        return host
+
+    def test_failed_tries_are_bounded_per_turn_kept_across_a_restart_and_cleared_by_a_pass(self) -> None:
+        host = self.host_of("a" * 32)
         page = _HostPage("https://www.shop.example/check")
         for count in range(1, _host.CAPTCHA_ATTEMPTS + 1):
             self.assertEqual(host._captcha_try(page, "attempt"), (count, "shop.example"))
@@ -584,9 +652,85 @@ class HostCaptchaTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "captcha_attempts_exhausted")
         self.assertIn("browser_handoff", raised.exception.message)
         self.assertEqual(cli.exit_code(raised.exception.code), cli.EXIT_CAPTCHA)
-        # Inputs into the task have their own, larger bound; another site starts afresh.
-        self.assertEqual(host._captcha_try(page, "input"), (1, "shop.example"))
-        self.assertEqual(host._captcha_try(_HostPage("https://other.example/"), "attempt")[0], 1)
+        # `close` then `open` in the same turn: a new browser host keeps the tries.
+        again = self.host_of("a" * 32)
+        with self.assertRaises(_host.HostError):
+            again._captcha_try(page, "attempt")
+        # A later turn of the same agent on a VM that stayed up starts afresh, and so does another site.
+        later = self.host_of("b" * 32)
+        self.assertEqual(later._captcha_try(page, "attempt")[0], 1)
+        self.assertEqual(again._captcha_try(_HostPage("https://other.example/"), "attempt")[0], 1)
+        # Inputs into the task have their own, larger bound.
+        self.assertEqual(again._captcha_try(page, "input"), (1, "shop.example"))
+        # A check that passes clears the tries that led to it: a site checking on every page is no failure.
+        again._captcha_passed(page)
+        for _ in range(_host.CAPTCHA_ATTEMPTS + 2):
+            self.assertEqual(again._captcha_try(page, "attempt")[0], 1)
+            again._captcha_passed(page)
+        self.assertEqual(again._captcha_try(page, "input")[0], 1)
+        # A turn the client does not name (no bearer): counted per boot, the same way.
+        self.assertEqual(self.host_of("not a turn")._active_state().turn, None)
+
+    def test_the_count_holds_when_the_run_directory_cannot_keep_it(self) -> None:
+        host = self.host_of("c" * 32)
+        page = _HostPage("https://shop.example/")
+        _paths.run_dir().rmdir()
+        for _ in range(_host.CAPTCHA_ATTEMPTS):
+            host._captcha_try(page, "attempt")
+        with self.assertRaises(_host.HostError):
+            host._captcha_try(page, "attempt")
+
+
+class _InputMouse(_FakeMouse):
+    def __init__(self) -> None:
+        super().__init__()
+        self.after_event: Any = None
+
+    async def move(self, x: float, y: float) -> None:
+        await super().move(x, y)
+        if self.after_event:
+            self.after_event()
+
+
+class _InputPage:
+    def __init__(self) -> None:
+        self.url = "https://shop.example/"
+        self.mouse = _InputMouse()
+
+    def is_closed(self) -> bool:
+        return False
+
+    async def evaluate(self, script: str, *args: Any) -> Any:
+        return [1440, 813]
+
+
+@unittest.skipUnless(_host is not None, "Playwright is not installed")
+class HostTakeoverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_user_taking_the_tab_stops_the_agent_input_and_lets_go_of_the_button(self) -> None:
+        from aiqsa.browser import _livehub
+
+        host = _bare_host()
+        page = _InputPage()
+        live = host.live.control_of("main")
+        # Take control clears the agent's turn (`AgentLive.hand_to_user`); its input stops at the next event.
+        page.mouse.after_event = lambda: live.agent_turn.clear() if len(page.mouse.events) >= 3 else None
+        with self.assertRaises(_livehub.UserInControl):
+            await host._pointer_to(page, 900, 600)
+        self.assertEqual(len(page.mouse.events), 3)
+        live.agent_turn.set()
+        page.mouse.after_event = None
+        page.mouse.events.clear()
+        asyncio.get_running_loop().call_later(0.3, live.agent_turn.clear)
+        started = time.monotonic()
+        with self.assertRaises(_livehub.UserInControl):
+            await host._press(page, hold_ms=10_000)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(page.mouse.events, [("down",), ("up",)])
+        # Nothing starts while the user holds the tab.
+        page.mouse.events.clear()
+        with self.assertRaises(_livehub.UserInControl):
+            await host._press(page)
+        self.assertEqual(page.mouse.events, [])
 
 
 @unittest.skipUnless(_host is not None, "Playwright is not installed")
@@ -854,8 +998,21 @@ class ClientAndCliTests(unittest.TestCase):
 
     def test_each_request_carries_the_server_agent_identity(self) -> None:
         with mock.patch.dict(os.environ, {"AIQSA_AGENT_ID": "thread-7", "AIQSA_AGENT_NAME": "shop-amazon"}):
+            os.environ.pop("AIQSA_RUN_TOKEN", None)
             self.assertEqual(self.run_cli("status")[0], 0)
         self.assertEqual(self.host.requests[-1]["agent"], {"id": "thread-7", "name": "shop-amazon"})
+
+    def test_a_request_names_its_turn_by_a_digest_of_the_run_bearer_never_the_bearer(self) -> None:
+        token = "T" * 21 + "_" + "k" * 21
+        with mock.patch.dict(os.environ, {"AIQSA_RUN_TOKEN": token}):
+            self.assertEqual(self.run_cli("status")[0], 0)
+        request = self.host.requests[-1]
+        self.assertRegex(request["agent"]["turn"], r"^[a-f0-9]{32}$")
+        self.assertNotIn(token, json.dumps(request))
+        self.assertEqual(_client.turn_of({"AIQSA_RUN_TOKEN": token}), request["agent"]["turn"])
+        self.assertNotEqual(_client.turn_of({"AIQSA_RUN_TOKEN": "U" * 43}), request["agent"]["turn"])
+        for missing in ({}, {"AIQSA_RUN_TOKEN": "short"}, {"AIQSA_RUN_TOKEN": "x" * 42 + "!"}):
+            self.assertIsNone(_client.turn_of(missing))
 
     def test_failures_print_a_code_and_map_to_stable_exit_codes(self) -> None:
         cases = [("stale_element", cli.EXIT_ELEMENT), ("captcha_attempts_exhausted", cli.EXIT_CAPTCHA),
@@ -1022,9 +1179,10 @@ class HostStartTests(unittest.TestCase):
             "        data += chunk\n"
             "    if data:\n"
             "        request = json.loads(data)\n"
-            "        assert request['agent'] == {'id': 'thread-7', 'name': 'shop-amazon'}, request\n"
+            "        assert request['agent'] == {'id': 'thread-7', 'name': 'shop-amazon', 'turn': %r}, request\n"
+            "        assert 'x' * 43 not in json.dumps(request)\n"
             "        connection.sendall(json.dumps({'ok': True, 'result': {'text': 'served ' + request['op']}}).encode() + b'\\n')\n"
-            "    connection.close()\n")
+            "    connection.close()\n" % _client.turn_of({"AIQSA_RUN_TOKEN": "x" * 43}))
         # Paths in the command environment move nothing: the client and host never read them.
         with mock.patch.dict(os.environ, {"AIQSA_BROWSER_RUN_DIR": str(self.root / "elsewhere"),
                                           "AIQSA_BROWSER_SESSIONS_DIR": "/workspace/project",

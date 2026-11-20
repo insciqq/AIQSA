@@ -251,7 +251,10 @@ export function researchPhaseAt(sinceReleaseMs: number): ResearchPhase {
 
 export type ResearchQuestion = Readonly<{
   question: string;
-  /** Sites the user named for this question: a CAPTCHA there goes to the user, it is never skipped. */
+  /**
+   * Sites the user named for this question. The browser passes a CAPTCHA there itself, as on any site (operator decision
+   * 2026-11-20); one it could not pass in its bounded tries closes the site like any other.
+   */
   sites: readonly string[];
   sourceClasses: readonly ResearchSourceClass[];
 }>;

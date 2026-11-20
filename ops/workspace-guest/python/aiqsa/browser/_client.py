@@ -9,6 +9,7 @@ it and serves the next ones of the turn.
 from __future__ import annotations
 
 import errno
+import hashlib
 import fcntl
 import json
 import os
@@ -188,7 +189,18 @@ def _agent_request(environ: Mapping[str, str]) -> Dict[str, str]:
     if not re.fullmatch(AGENT_ID_PATTERN, agent_id):
         agent_id = MAIN_AGENT_ID
     name = environ.get(AGENT_NAME_ENV, "")
-    return {"id": agent_id, **({"name": name} if name else {})}
+    turn = turn_of(environ)
+    return {"id": agent_id, **({"name": name} if name else {}), **({"turn": turn} if turn else {})}
+
+
+def turn_of(environ: Mapping[str, str]) -> Optional[str]:
+    """This command's turn, for what the browser keeps per turn (the CAPTCHA tries): a one-way digest of the run's code
+    bearer, which the server issues per run and which the browser's own environment never receives. A run without a
+    bearer (Internet or MCP off) has no turn; the browser then counts per boot."""
+    token = environ.get("AIQSA_RUN_TOKEN", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        return None
+    return hashlib.sha256(b"aiqsa-browser-turn\0" + token.encode("ascii")).hexdigest()[:32]
 
 
 def call(op: str, args: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Dict[str, Any]:

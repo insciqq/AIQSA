@@ -56,6 +56,29 @@ AIM = r"""
 }
 """
 
+#: What a point (x, y) of the element's own document hits: `ok` when it is the element, inside it or its label (for a
+#: frame's element: the frame itself), `covered` when something else is on top there, `outside` off that document's
+#: viewport, `detached` once the element left the page. The host checks each document from the element up to the
+#: top page (`Host._hit`), since a frame cannot see what covers it in its parent.
+HIT_AT = r"""
+(el, [x, y]) => {
+  if (!el.isConnected) return 'detached';
+  const root = el.getRootNode();
+  const scope = root && typeof root.elementFromPoint === 'function' ? root : el.ownerDocument;
+  const hit = scope.elementFromPoint(x, y);
+  if (!hit) return 'outside';
+  if (hit === el || el.contains(hit)) return 'ok';
+  const labels = el.labels ? Array.from(el.labels) : [];
+  return labels.some((label) => label === hit || label.contains(hit)) ? 'ok' : 'covered';
+}
+"""
+
+#: The element's top-left corner in its own document's viewport.
+RECT = "(el) => { const r = el.getBoundingClientRect(); return [r.left, r.top]; }"
+
+#: The field's text as it stands (read inside the host only, never answered).
+VALUE = "(el) => String((el.value !== undefined ? el.value : el.textContent) || '')"
+
 #: The element has the keyboard focus (through open shadow roots).
 FOCUSED = r"""
 (el) => {
@@ -244,12 +267,17 @@ async def move(mouse: Any, start: Point, end: Point, profile: Profile, rng: rand
 
 
 async def press(mouse: Any, profile: Profile, rng: random.Random, *, hold_ms: Optional[float] = None,
-                sleep: Sleep = asyncio.sleep) -> None:
-    """Rest on the target, then press and release the left button (held `hold_ms` when given)."""
+                sleep: Sleep = asyncio.sleep, ready: Optional[Callable[[], Awaitable[None]]] = None) -> None:
+    """Rest on the target, then press and release the left button (held `hold_ms` when given). `ready` runs right
+    before the button goes down and may refuse the press by raising; a press stopped while held still lets go."""
     await _pace(sleep, rng.uniform(*profile.settle_ms))
+    if ready is not None:
+        await ready()
     await mouse.down()
-    await _pace(sleep, hold_ms if hold_ms is not None else rng.uniform(*profile.hold_ms))
-    await mouse.up()
+    try:
+        await _pace(sleep, hold_ms if hold_ms is not None else rng.uniform(*profile.hold_ms))
+    finally:
+        await mouse.up()
 
 
 async def key(keyboard: Any, combo: str, profile: Profile, rng: random.Random, *, sleep: Sleep = asyncio.sleep) -> None:
@@ -275,8 +303,10 @@ async def type_text(keyboard: Any, text: str, profile: Profile, rng: random.Rand
         if " " <= char <= "~":
             held = rng.uniform(*profile.key_hold_ms)
             await keyboard.down(char)
-            await _pace(sleep, held)
-            await keyboard.up(char)
+            try:
+                await _pace(sleep, held)
+            finally:
+                await keyboard.up(char)
         else:
             # No key of the US layout makes it: the character arrives as an input method would send it.
             held = 0.0
@@ -288,6 +318,54 @@ async def wheel(mouse: Any, distance: float, profile: Profile, rng: random.Rando
     for delta, pause in wheel_ticks(distance, profile, rng):
         await mouse.wheel(0, delta)
         await _pace(sleep, pause)
+
+
+class Guarded:
+    """A mouse or keyboard whose input stops between two events once `check` raises (the user took the tab). Letting
+    go (`up`) always passes, so a button or key the agent holds is never left pressed."""
+
+    def __init__(self, device: Any, check: Callable[[], None]) -> None:
+        self._device = device
+        self._check = check
+
+    async def move(self, x: float, y: float) -> None:
+        self._check()
+        await self._device.move(x, y)
+
+    async def down(self, *args: Any, **kwargs: Any) -> None:
+        self._check()
+        await self._device.down(*args, **kwargs)
+
+    async def up(self, *args: Any, **kwargs: Any) -> None:
+        await self._device.up(*args, **kwargs)
+
+    async def wheel(self, dx: float, dy: float) -> None:
+        self._check()
+        await self._device.wheel(dx, dy)
+
+    async def insert_text(self, text: str) -> None:
+        self._check()
+        await self._device.insert_text(text)
+
+    async def press(self, key: str, **kwargs: Any) -> None:
+        self._check()
+        await self._device.press(key, **kwargs)
+
+
+def guarded_sleep(check: Callable[[], None], sleep: Sleep = asyncio.sleep, slice_seconds: float = 0.1) -> Sleep:
+    """A sleep that checks in short slices, so a long hold or wait stops soon after `check` raises."""
+
+    async def pause(seconds: float) -> None:
+        loop = asyncio.get_running_loop()
+        end = loop.time() + seconds
+        while True:
+            check()
+            rest = end - loop.time()
+            if rest <= 0:
+                return
+            await sleep(min(rest, slice_seconds))
+
+    return pause
 
 
 class Input:
