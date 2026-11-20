@@ -13,6 +13,7 @@ import type {
   ThreadCitation
 } from "@/components/app-shell/types";
 import { collectThreadSearchSources } from "@/lib/domain/searchSources";
+import { latestWorkspaceCheckpointVersions } from "@/lib/domain/workspaceCheckpointVersions";
 import {
   answerCitationsFromGrounding,
   foldAnswerCitations,
@@ -104,7 +105,8 @@ export function summarizeThreadArtifacts(
       if (!liveFiles.has(file.attachmentId)) liveFiles.set(file.attachmentId, file);
     }
   }
-  const generatedFiles = [...liveFiles.values()];
+  // A later checkpoint of the same path replaces its earlier card, as the settled answer lists it.
+  const generatedFiles = latestWorkspaceCheckpointVersions([...liveFiles.values()]);
   const generatedImages = [...new Map(events.filter((event) => artifactTypeFromEvent(event) === "image").flatMap((event) => {
     const image = decodeThreadGeneratedImage(artifactPayload(event));
     return image ? [[image.attachmentId, image] as const] : [];
@@ -225,7 +227,7 @@ export function mergeLiveThreadArtifacts(
     citations: citationOwner.citations,
     ...(citationOwner.citationsTruncated ? { citationsTruncated: true as const } : {}),
     ...(contextCompaction ? { contextCompaction } : {}),
-    ...(files.size ? { generatedFiles: [...files.values()] } : {}),
+    ...(files.size ? { generatedFiles: latestWorkspaceCheckpointVersions([...files.values()]) } : {}),
     groundingDisplay: groundingDisplay ?? null,
     reasoningText: reasoningOwner.reasoningText,
     ...(reasoningOwner.reasoningTruncated ? { reasoningTruncated: true as const } : {}),

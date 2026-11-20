@@ -247,7 +247,8 @@ describe("thread content", () => {
 it("keeps exact checkpoint downloads through round reset and failure without merging equal names", () => {
   const checkpoint = { id: "cp-1", description: "First version", createdAt: "2026-09-24T09:00:00.000Z" };
   const file = { attachmentId: "draft-1", byteSize: 7, fileName: "result.psd", mimeType: "application/octet-stream", relativePath: "result.psd", checkpoint };
-  const second = { ...file, attachmentId: "draft-2", checkpoint: { ...checkpoint, id: "cp-2", description: "Second version" } };
+  // Another path with the same file name: a different file, never merged by name.
+  const second = { ...file, attachmentId: "draft-2", relativePath: "drafts/result.psd", checkpoint: { ...checkpoint, id: "cp-2", description: "Second version" } };
   const event = (f: typeof file) => ({ type: "artifact", data: { artifactType: "workspace_checkpoint", payload: { checkpoint: f.checkpoint, files: [f] } } });
   const summary = summarizeThreadArtifacts([event(file), { type: "message_reset", data: { round: 2 } }, event(second), event(file),
     event({ ...file, fileName: "replacement.psd" }), { type: "error", data: { code: "provider_request_timed_out" } }]);
@@ -266,6 +267,25 @@ it("keeps exact checkpoint downloads through round reset and failure without mer
   expect(mergeLiveThreadArtifacts(complete, running)?.contextCompaction?.state).toBe("complete");
   expect(mergeLiveThreadArtifacts(running, complete)?.contextCompaction?.state).toBe("complete");
   expect(mergeLiveThreadArtifacts(running, null)?.contextCompaction?.state).toBe("running");
+});
+
+it("replaces a live draft when the same path is checkpointed again, as the settled answer lists it", () => {
+  const draft = (id: string, minute: number, relativePath = "output/report.xlsx") => ({
+    attachmentId: `draft-${id}`, byteSize: 10 + minute, fileName: relativePath.split("/").at(-1)!, mimeType: "application/octet-stream",
+    relativePath, checkpoint: { id: `cp-${id}`, description: `Version ${id}`, createdAt: `2026-11-20T10:0${minute}:00.000Z` } });
+  const event = (file: ReturnType<typeof draft>) =>
+    ({ type: "artifact", data: { artifactType: "workspace_checkpoint", payload: { checkpoint: file.checkpoint, files: [file] } } });
+  const [first, latest, sameName] = [draft("1", 1), draft("2", 2), draft("3", 3, "project/report.xlsx")];
+  const computer = { attachmentId: "computer-1", byteSize: 3, fileName: "report.xlsx", mimeType: "application/octet-stream",
+    relativePath: "report.xlsx", source: "computer" as const };
+  const live = summarizeThreadArtifacts([event(first), event(sameName), event(latest),
+    { type: "artifact", data: { artifactType: "computer_file", payload: computer } }]);
+  expect(live?.generatedFiles).toEqual([sameName, latest, computer]);
+  // A saved summary read before the second checkpoint never brings the first version back beside the live one.
+  const saved = { citations: [], reasoningText: [], sources: [], generatedFiles: [first] };
+  expect(mergeLiveThreadArtifacts(saved, live)?.generatedFiles).toEqual([sameName, latest, computer]);
+  expect(mergeLiveThreadArtifacts({ ...saved, generatedFiles: [latest] }, summarizeThreadArtifacts([event(first)]))?.generatedFiles)
+    .toEqual([latest]);
 });
 
 it("keeps saved citations, sources, reasoning and grounding when the live summary carries only compaction", () => {

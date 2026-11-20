@@ -30,6 +30,13 @@ export function createWorkspaceExportHistoryRepository(client: PrismaClient = pr
             SELECT c."modelRunId", f."attachmentId", f."relativePath", jsonb_build_object('id', c."id", 'description', c."description",
               'createdAt', to_char(c."createdAt", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
             FROM "WorkspaceCheckpointFile" f JOIN "WorkspaceOutputCheckpoint" c ON c."id" = f."checkpointId" AND c."state" = 'SETTLED'
+            -- A later checkpoint of the same path in the same run supersedes this one (latestWorkspaceCheckpointVersions).
+            WHERE NOT EXISTS (
+              SELECT 1 FROM "WorkspaceCheckpointFile" later
+              JOIN "WorkspaceOutputCheckpoint" lc ON lc."id" = later."checkpointId" AND lc."state" = 'SETTLED'
+              WHERE lc."modelRunId" = c."modelRunId" AND later."relativePath" = f."relativePath"
+                AND (lc."createdAt" > c."createdAt" OR lc."createdAt" = c."createdAt" AND lc."id" COLLATE "C" > c."id" COLLATE "C")
+            )
           )
           SELECT path."id" AS "messageId", path."createdAt",
             jsonb_agg(jsonb_build_object(

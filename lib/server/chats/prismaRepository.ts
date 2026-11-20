@@ -39,6 +39,7 @@ import { projectChatPdfPreparation } from "../uploads/chatPdfProjection";
 import { computerOutputFile } from "../connect/computerOutputs";
 import { Prisma, type ModelRunStatus } from "@prisma/client";
 import { mergeWorkspaceActivity } from "@/lib/domain/workspaceActivity";
+import { latestWorkspaceCheckpointVersions } from "@/lib/domain/workspaceCheckpointVersions";
 import { workspaceActivitySnapshot, WORKSPACE_ACTIVITY_SNAPSHOT } from "../runs/workspaceActivityPersistence";
 import {
   APPROX_TOKEN_WEIGHT_CLASSES,
@@ -1620,11 +1621,20 @@ export function summarizeMessageRunArtifacts(
     return Boolean(attachment.checksum && path?.startsWith("output/") &&
       exported.has(identity(path.slice("output/".length), attachment.checksum, attachment.byteSize)));
   };
+  const checkpointFile = (attachment: (typeof produced)[number]) => attachment.workspaceCheckpointFile?.checkpoint.state === "SETTLED"
+    ? { attachmentId: attachment.id, byteSize: attachment.byteSize, fileName: attachment.fileName, mimeType: attachment.mimeType,
+      relativePath: attachment.workspaceCheckpointFile.relativePath, checkpoint: { id: attachment.workspaceCheckpointFile.checkpoint.id,
+        description: attachment.workspaceCheckpointFile.checkpoint.description, createdAt: attachment.workspaceCheckpointFile.checkpoint.createdAt.toISOString() } }
+    : null;
+  // Checkpointing a path again supersedes its earlier version, decided before the export check so a superseded draft
+  // never returns when its successor is the one the export repeats.
+  const latestDrafts = new Set(latestWorkspaceCheckpointVersions(produced.flatMap((attachment) => {
+    const file = checkpointFile(attachment);
+    return file ? [file] : [];
+  })).map((file) => file.attachmentId));
   const generatedFiles = produced.flatMap((attachment) =>
     attachment.workspaceCheckpointFile?.checkpoint.state === "SETTLED"
-      ? repeatsExport(attachment) ? [] : [{ attachmentId: attachment.id, byteSize: attachment.byteSize, fileName: attachment.fileName, mimeType: attachment.mimeType,
-        relativePath: attachment.workspaceCheckpointFile.relativePath, checkpoint: { id: attachment.workspaceCheckpointFile.checkpoint.id,
-          description: attachment.workspaceCheckpointFile.checkpoint.description, createdAt: attachment.workspaceCheckpointFile.checkpoint.createdAt.toISOString() } }]
+      ? repeatsExport(attachment) || !latestDrafts.has(attachment.id) ? [] : [checkpointFile(attachment)!]
       : attachment.workspaceRunOutput
       ? [{
           attachmentId: attachment.id,

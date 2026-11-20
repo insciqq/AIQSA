@@ -109,8 +109,8 @@ async function fixture() {
 }
 
 
-async function invocation(f: Awaited<ReturnType<typeof fixture>>, ordinal = 0) {
-  const call = { id: `checkpoint-${ordinal}`, name: "checkpoint_outputs", arguments: { files: ["project/design.psd"], description: "Intermediate design" } };
+async function invocation(f: Awaited<ReturnType<typeof fixture>>, ordinal = 0, files = ["project/design.psd"]) {
+  const call = { id: `checkpoint-${ordinal}`, name: "checkpoint_outputs", arguments: { files, description: "Intermediate design" } };
   const tool = await prisma.modelRunToolCall.create({ data: { modelRunId: f.current.runId, workspaceRunBindingId: f.current.runId,
     providerCallId: call.id, toolName: call.name, arguments: call.arguments, state: "running", roundIndex: 1, ordinal } });
   const context = { runId: f.current.runId, userId: f.userId, persistedToolCallId: tool.id,
@@ -188,6 +188,37 @@ describe("Workspace draft checkpoint persistence", () => {
       const file = receipt.files[0]!.attachment;
       expect(createHash("sha256").update((await f.storage.getObject(file.storageKey)).body).digest("hex")).toBe(file.checksum);
     }
+  });
+
+  it("lists only the latest checkpoint of a path in export history, keeps every stored version and leaves other paths and runs alone", async () => {
+    const f = await fixture();
+    const attachmentOf = async (toolCallId: string) => (await prisma.workspaceCheckpointFile.findFirstOrThrow({
+      where: { checkpoint: { toolCallId } }, select: { attachmentId: true } })).attachmentId;
+    const checkpoint = async (ordinal: number, files: string[]) => {
+      const inv = await invocation(f, ordinal, files);
+      await inv.service.execute(inv.call, inv.context);
+      return attachmentOf(inv.tool.id);
+    };
+    await f.write("project", "design.psd", "earlier-run-version");
+    const earlierRun = await checkpoint(0, ["project/design.psd"]);
+    await f.nextRun();
+    await f.write("project", "design.psd", "first-version");
+    const first = await checkpoint(0, ["project/design.psd"]);
+    await f.write("project", "drafts/design.psd", "same-name-other-path");
+    const otherPath = await checkpoint(1, ["project/drafts/design.psd"]);
+    await f.write("project", "design.psd", "second-version-a-few-bytes-longer");
+    const latest = await checkpoint(2, ["project/design.psd"]);
+    await prisma.chat.update({ where: { id: f.chat.id }, data: { activeLeafMessageId: f.answer.id } });
+    const history = await createWorkspaceExportHistoryRepository(prisma).list({ chatId: f.chat.id, userId: f.userId, cursor: null });
+    // Both runs answer one message in this fixture: the earlier run's checkpoint of the path stays, this run's first is superseded.
+    expect(history?.exports).toHaveLength(1);
+    expect(history!.exports[0]!.files.map(file => [file.attachmentId, file.relativePath]).sort()).toEqual([
+      [earlierRun, "project/design.psd"], [latest, "project/design.psd"], [otherPath, "project/drafts/design.psd"]
+    ].sort());
+    // The superseded version stays stored and downloadable: its tool result, an artifact or a link may still name it.
+    const download = await createPrismaAttachmentDownloadRepository(prisma).resolve({ attachmentId: first, userId: f.userId });
+    expect(download).not.toBeNull();
+    expect(new TextDecoder().decode((await f.storage.getObject(download!.storageKey)).body)).toBe("first-version");
   });
 
   it("recovers an already retained declared publication after restart and Stop without guest I/O", async () => {
