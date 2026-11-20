@@ -967,6 +967,13 @@
   overflow-wrap: anywhere;
 }
 
+/* Under its Copy bar the rendered view scrolls by itself, as the source does. */
+.v2-artifact-code-content > .v2-file-preview-markdown {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+
 .v2-file-row .v2-resource-row-main > p {
   margin-top: 0.0625rem;
   color: var(--v2-color-text3);

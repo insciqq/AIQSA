@@ -604,9 +604,12 @@ function previewableImageFile(file: ThreadGeneratedFile): boolean {
   return generatedFilePreviewKind(file) === "image";
 }
 
-function GeneratedPdfViewerV2({ canSave, file, onClose }: Readonly<{ canSave: boolean; file: ThreadGeneratedFile; onClose(): void }>) {
+/** A PDF or a text file (Markdown rendered, with its source) opens in the Files viewer through the same route. */
+function GeneratedFileViewerV2({ canSave, file, kind, onClose }: Readonly<{
+  canSave: boolean; file: ThreadGeneratedFile; kind: "pdf" | "text"; onClose(): void;
+}>) {
   const viewed = { byteSize: file.byteSize, canOpenChat: false, id: file.attachmentId, name: file.fileName,
-    previewKind: "pdf" as const, status: "ready" as const };
+    previewKind: kind, status: "ready" as const };
   return <FilePreviewV2 canSave={canSave} compact file={viewed} group={[viewed]} onClose={onClose}
     onSelect={() => undefined} saved={false} useDisabled={false} />;
 }
@@ -619,8 +622,8 @@ function draftDetails(checkpoint: NonNullable<ThreadGeneratedFile["checkpoint"]>
 
 /** Generated files as compact cards: Download is the visible verb, saving a
  * copy to Files waits behind "⋯". The type tile also keeps the file text
- * clear of the floating jump control's left lane. An image file's name opens
- * the image viewer; with `previewImages` (an answer's outputs) its picture is
+ * clear of the floating jump control's left lane. A previewable file's name
+ * opens its viewer (image, PDF or text); with `previewImages` (an answer's outputs) an image's picture is
  * also shown inline above the cards, as generated images are. A draft the
  * agent saved while it worked keeps the final card's two lines, marked
  * "Draft", so nothing moves when the answer settles; its description and
@@ -637,6 +640,7 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
   const [viewing, setViewing] = useState<ThreadGeneratedFile | null>(null);
   if (files.length === 0) return null;
   const previews = previewImages ? files.filter(previewableImageFile) : [];
+  const viewingKind = viewing ? generatedFilePreviewKind(viewing) : null;
   return (
     <section className="v2-generated-files" aria-label="Generated files">
       {previews.map((file) => (
@@ -650,7 +654,7 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
             <li key={file.attachmentId}>
               <span className="v2-generated-file-tile" aria-hidden="true"><UiV2Icon name={generatedFileIcon(file, type)} /></span>
               <span className="v2-generated-file-copy">
-                {previewableImageFile(file) || generatedFilePreviewKind(file) === "pdf" ? (
+                {generatedFilePreviewKind(file) ? (
                   <button aria-haspopup="dialog" className="v2-generated-file-name v2-focusable" onClick={() => setViewing(file)}
                     title={file.relativePath} type="button">
                     <strong>{file.fileName}</strong>
@@ -682,7 +686,8 @@ export function GeneratedFilesV2({ files, canSave = false, describeDrafts = fals
           );
         })}
       </ul>
-      {viewing && generatedFilePreviewKind(viewing) === "pdf" ? <GeneratedPdfViewerV2 canSave={canSave} file={viewing} onClose={() => setViewing(null)} />
+      {viewing && (viewingKind === "pdf" || viewingKind === "text")
+        ? <GeneratedFileViewerV2 canSave={canSave} file={viewing} kind={viewingKind} onClose={() => setViewing(null)} />
         : viewing ? <ChatImageViewerV2 attachmentId={viewing.attachmentId} label={viewing.fileName} onClose={() => setViewing(null)} /> : null}
     </section>
   );

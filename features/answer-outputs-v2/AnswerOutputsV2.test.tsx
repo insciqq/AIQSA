@@ -786,7 +786,8 @@ describe("answer outputs v2", () => {
     // The card keeps its verbs; the inline image adds no second Download.
     expect(within(region).getAllByRole("link", { name: "Download" }).map((link) => link.getAttribute("href")))
       .toEqual(["/api/attachments/chart-id/content", "/api/attachments/table-id/content"]);
-    expect(within(region).queryByRole("button", { name: "profit.csv" })).toBeNull();
+    // A CSV is text, so its name opens the text preview (tested below), never the image viewer.
+    expect(within(region).getByRole("button", { name: "profit.csv" })).toHaveAttribute("aria-haspopup", "dialog");
 
     const name = within(region).getByRole("button", { name: "profit_by_month_2026.png" });
     name.focus();
@@ -796,6 +797,53 @@ describe("answer outputs v2", () => {
     fireEvent.keyDown(viewer, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(name).toHaveFocus();
+  });
+
+  it("opens a text file output in the text preview and a Markdown one rendered, with its source", async () => {
+    shellFetch.mockReset();
+    shellFetch.mockImplementation(async (url: string) => new Response(
+      url.includes("notes-id") ? "# Notes\n\nFirst **point**." : "# Netscape HTTP Cookie File\nexample.com\tTRUE",
+      { headers: { "content-type": "text/plain; charset=utf-8" }, status: 200 }
+    ));
+    render(<AnswerOutputsV2 canSaveFiles artifact={{
+      citations: [],
+      generatedFiles: [
+        { attachmentId: "cookies-id", byteSize: 3_650, fileName: "youtube_cookies.txt", mimeType: "text/plain",
+          relativePath: "youtube_cookies.txt" },
+        { attachmentId: "notes-id", byteSize: 120, fileName: "notes.md", mimeType: "text/markdown", relativePath: "notes.md" },
+        { attachmentId: "archive-id", byteSize: 2_048, fileName: "site.zip", mimeType: "application/zip", relativePath: "site.zip" }
+      ],
+      reasoningText: [],
+      sources: []
+    }} />);
+
+    const region = screen.getByRole("region", { name: "Generated files" });
+    expect(within(region).queryAllByRole("img")).toEqual([]);
+    expect(within(region).queryByRole("button", { name: "site.zip" })).toBeNull();
+
+    const text = within(region).getByRole("button", { name: "youtube_cookies.txt" });
+    text.focus();
+    fireEvent.click(text);
+    const viewer = await screen.findByRole("dialog", { name: "File preview: youtube_cookies.txt" });
+    await waitFor(() => expect(viewer).toHaveTextContent("# Netscape HTTP Cookie File"));
+    expect(shellFetch.mock.calls[0]?.[0]).toBe("/api/attachments/cookies-id/content?preview=text");
+    expect(within(viewer).queryByRole("radiogroup", { name: "Preview mode" })).toBeNull();
+    expect(within(viewer).getByRole("button", { name: "Copy" })).toBeVisible();
+    fireEvent.click(within(viewer).getByRole("button", { name: "Close preview" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(within(region).getByRole("button", { name: "notes.md" }));
+    const markdown = await screen.findByRole("dialog", { name: "File preview: notes.md" });
+    await waitFor(() => expect(within(markdown).getByRole("heading", { name: "Notes" })).toBeVisible());
+    expect(shellFetch.mock.calls[1]?.[0]).toBe("/api/attachments/notes-id/content?preview=text");
+    // One click copies the whole file in the rendered view too.
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    fireEvent.click(within(markdown).getByRole("button", { name: "Copy" }));
+    await waitFor(() => expect(within(markdown).getByRole("button", { name: "Copied" })).toBeVisible());
+    expect(writeText).toHaveBeenCalledWith("# Notes\n\nFirst **point**.");
+    fireEvent.click(within(markdown).getByRole("radio", { name: "Source" }));
+    await waitFor(() => expect(markdown).toHaveTextContent("First **point**."));
   });
 
   it("renders settled generated files with safe metadata and authorized downloads", () => {
