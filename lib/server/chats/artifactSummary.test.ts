@@ -604,7 +604,7 @@ describe("summarizeMessageRunToolActivity", () => {
       rawPreview: { fetchUrl: { version: 1, outcome: "fetch_http_status", dispatched: true, httpStatus: 404,
         url: "https://news.example/today?token=private-token" } } } };
     const run = { userId: "initiator", errorPayload: null, status: "complete",
-      normalizedRequest: { fetchUrl: { version: 1, userUrlDigests: [] } } };
+      normalizedRequest: { fetchUrl: { version: 1 } } };
     const activity = summarizeMessageRunToolActivity({ ...run, toolCalls: [pageCall] }, "initiator");
     expect(activity?.calls[0]).toEqual({ fetchHttpStatus: 404, fetchOutcome: "fetch_http_status", fetchTarget: "news.example/today",
       origin: "web_fetch", round: 1, serverName: "Web", status: "error", toolName: "fetch_url" });

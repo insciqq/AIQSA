@@ -13,7 +13,6 @@ import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ScheduledOccurrenceConflictError, type CreateRunInput, type ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
-import { scheduledPromptUrlDigests } from "./promptUrls";
 import { createPrismaScheduledTaskRunnerStore } from "./runnerStore";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns, ScheduledTaskError } from "./store";
 import { scheduledWebhookTokenHash } from "./webhookEvent";
@@ -24,7 +23,6 @@ const users: string[] = [];
 const owners = createPrismaScheduledTaskStore(prisma);
 const runner = createPrismaScheduledTaskRunnerStore(prisma);
 const runs = createPrismaRunRepository(prisma);
-const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const HOUR = 3_600_000;
 const webhookDraft: ScheduledTaskDraft = {
   title: "Synthetic pipeline digest", prompt: "Summarize the synthetic event", schedule: { kind: "daily", time: "09:00" },
@@ -45,7 +43,7 @@ async function owner(): Promise<string> {
 
 /** A webhook-only automation with its first token, and an intake whose clock the test moves. */
 async function hooked(userId: string, issuedAt = new Date()) {
-  const task = await owners.create(userId, webhookDraft, null, noUrls);
+  const task = await owners.create(userId, webhookDraft, null);
   const issued = await owners.issueWebhookToken(userId, task.id, issuedAt);
   const clock = { now: new Date() };
   const intake = createPrismaScheduledTaskWebhookIntakeStore(prisma, { now: () => clock.now });
@@ -175,13 +173,13 @@ describe("automation webhook intake", () => {
 
     // The trigger turned off, then the task paused: each closes the webhook.
     const off = await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
-      expectedRevision: 1, nextRunAt: new Date(Date.now() + HOUR), promptUrls: "keep", status: "active" });
+      expectedRevision: 1, nextRunAt: new Date(Date.now() + HOUR), status: "active" });
     expect(await intake.find(issued.publicId)).toMatchObject({ open: false });
     expect(await accept({}, fresh)).toEqual({ kind: "refused" });
     const on = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: off.revision, nextRunAt: null,
-      promptUrls: "keep", status: "active" });
+      status: "active" });
     expect(await accept({}, fresh)).toEqual({ kind: "accepted" });
-    await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: on.revision, nextRunAt: null, promptUrls: "keep",
+    await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: on.revision, nextRunAt: null,
       status: "paused" });
     expect(await intake.find(issued.publicId)).toMatchObject({ open: false });
     expect(await accept({}, fresh)).toEqual({ kind: "refused" });
@@ -199,7 +197,7 @@ describe("automation webhook intake", () => {
 describe("automation webhook token", () => {
   it("stores only the hash of a token it issues to the owner while the trigger is on", async () => {
     const userId = await owner();
-    const task = await owners.create(userId, webhookDraft, null, noUrls);
+    const task = await owners.create(userId, webhookDraft, null);
     const issuedAt = new Date("2026-10-25T09:00:00.000Z");
     const issued = await owners.issueWebhookToken(userId, task.id, issuedAt);
     const row = await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task.id } });
@@ -209,14 +207,14 @@ describe("automation webhook token", () => {
     expect(await owners.get(userId, task.id)).toMatchObject({ webhook: { tokenIssuedAt: issuedAt.toISOString() } });
 
     // Paused automations get one too; another owner's, or one whose trigger is off, never.
-    const paused = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: 1, nextRunAt: null, promptUrls: "keep",
+    const paused = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: 1, nextRunAt: null,
       status: "paused" });
     await expect(owners.issueWebhookToken(userId, task.id, new Date())).resolves.toMatchObject({ publicId: issued.publicId });
     const stranger = await owner();
     await expect(owners.issueWebhookToken(stranger, task.id, new Date()))
       .rejects.toSatisfy((error) => error instanceof ScheduledTaskError && error.code === "scheduled_task_not_found");
     await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
-      expectedRevision: paused.revision, nextRunAt: null, promptUrls: "keep", status: "paused" });
+      expectedRevision: paused.revision, nextRunAt: null, status: "paused" });
     await expect(owners.issueWebhookToken(userId, task.id, new Date()))
       .rejects.toSatisfy((error) => error instanceof ScheduledTaskError && error.code === "scheduled_task_webhook_off");
     // The token stays as it was: turning the trigger on again needs no new one.
@@ -290,7 +288,7 @@ describe("automation webhook events in the runner", () => {
     const { accept, task } = await hooked(userId);
     for (const bodyText of ["a", "b", "c"]) await accept({ bodyText });
     await runner.claimDue(new Date(), 10);
-    const paused = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: 1, nextRunAt: null, promptUrls: "keep",
+    const paused = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: 1, nextRunAt: null,
       status: "paused" });
     expect((await events(task.id)).map((event) => [event.state, event.bodyText])).toEqual([["DISCARDED", null], ["DISCARDED", null],
       ["DISCARDED", null]]);
@@ -302,10 +300,10 @@ describe("automation webhook events in the runner", () => {
 
     // Resumed, then moved to its schedule alone: the event waiting meanwhile never runs either.
     const resumed = await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: paused.revision, nextRunAt: null,
-      promptUrls: "keep", status: "active" });
+      status: "active" });
     await accept({ bodyText: "d" });
     await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
-      expectedRevision: resumed.revision, nextRunAt: new Date(Date.now() + HOUR), promptUrls: "keep", status: "active" });
+      expectedRevision: resumed.revision, nextRunAt: new Date(Date.now() + HOUR), status: "active" });
     expect((await events(task.id)).at(-1)).toMatchObject({ bodyText: null, state: "DISCARDED" });
   });
 
@@ -318,8 +316,8 @@ describe("automation webhook events in the runner", () => {
     expect(open).toMatchObject({ runId: null, state: "PENDING", trigger: "webhook" });
     // While the owner's slot is busy: the webhook off (the schedule keeps the task runnable), on again, a new token.
     const off = await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true, webhookEnabled: false },
-      expectedRevision: task.revision, nextRunAt: new Date(Date.now() + HOUR), promptUrls: "keep", status: "active" });
-    await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: off.revision, nextRunAt: null, promptUrls: "keep",
+      expectedRevision: task.revision, nextRunAt: new Date(Date.now() + HOUR), status: "active" });
+    await owners.update(userId, task.id, { draft: webhookDraft, expectedRevision: off.revision, nextRunAt: null,
       status: "active" });
     await owners.issueWebhookToken(userId, task.id, new Date());
     expect((await events(task.id)).map((event) => [event.state, event.bodyText])).toEqual([["DISCARDED", null]]);
@@ -342,7 +340,7 @@ describe("automation webhook events in the runner", () => {
     expect(instant).toMatchObject({ state: "PENDING", trigger: "schedule" });
     const current = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } });
     await owners.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: false, webhookEnabled: true },
-      expectedRevision: current.revision, nextRunAt: null, promptUrls: "keep", status: "active" });
+      expectedRevision: current.revision, nextRunAt: null, status: "active" });
     expect(await prisma.scheduledTaskOccurrence.findUniqueOrThrow({ where: { id: instant!.id } }))
       .toMatchObject({ leaseExpiresAt: null, reasonCode: "schedule_off", runId: null, state: "SKIPPED" });
     expect(await runner.loadExecution(instant!.id)).toBeNull();

@@ -92,14 +92,13 @@ describe("scheduled task wire contract", () => {
     expect(decodeScheduledTask({ ...task, memoryEnabled: false })).toMatchObject({ memoryEnabled: false });
     const reached = { ...task, chatMode: "same", completionReason: "goal_reached", kind: "monitoring", nextRunAt: null, status: "completed" };
     expect(decodeScheduledTask(reached)).toEqual(reached);
-    // Instructions whose links runs cannot read yet carry only a flag.
-    expect(decodeScheduledTask({ ...task, promptLinksPending: true })).toEqual({ ...task, promptLinksPending: true });
+    // The links flag a server before 2026-11-20 sent decodes and is dropped, whatever its value.
+    for (const flag of [true, false, ["a".repeat(64)]]) expect(decodeScheduledTask({ ...task, promptLinksPending: flag })).toEqual(task);
     // A pending run waiting for a Workspace slot is a flag on a running task only.
     expect(decodeScheduledTask({ ...task, running: true, waitingForWorkspace: true }))
       .toEqual({ ...task, running: true, waitingForWorkspace: true });
     for (const candidate of [
       { ...task, running: false, waitingForWorkspace: true }, { ...task, running: true, waitingForWorkspace: false },
-      { ...task, promptLinksPending: false }, { ...task, promptLinksPending: ["a".repeat(64)] },
       { ...task, extra: true }, { ...task, status: "paused" }, { ...task, title: " Morning brief" },
       { ...task, lastRun: { ...task.lastRun, state: "running" } }, { ...task, lastRun: { ...task.lastRun, unseen: undefined } },
       { ...task, pauseReason: "Not a code" },

@@ -331,12 +331,6 @@ export type ScheduledOccurrenceAdmission = Readonly<{
    */
   monitoring?: true;
   /**
-   * The prompt's page-reading snapshot (`ScheduledTask.promptUrlDigests`),
-   * read with `taskRevision`: the only prompt links the run may read with
-   * `fetch_url`, frozen at admission. Absent: none.
-   */
-  promptUrlDigests?: readonly string[];
-  /**
    * The task has Memory on: the run reads the owner's Memory like an
    * ordinary personal turn (standing context and, with a tool-calling
    * model, Memory search) in whatever Memory mode its chat has, and never
@@ -346,7 +340,7 @@ export type ScheduledOccurrenceAdmission = Readonly<{
   /**
    * A webhook occurrence's event (`scheduledWebhookEventText`): the run's
    * user turn holds it as its own text block after the prompt, labelled
-   * incoming data from the sender, never instructions or link authority.
+   * incoming data from the sender, never instructions.
    * Run creation admits the event, which clears its stored body. Absent for
    * other triggers.
    */
@@ -894,12 +888,6 @@ export type RunRepository = {
     callId: string;
     result(task: import("../../contracts/scheduledTasks").ScheduledTask): import("../tools/types").ToolExecutionResult;
     runId: string;
-    /**
-     * The creating run's frozen user-authored link digests
-     * (`FetchUrlPlan.userUrlDigests`): the only links of the tool-written
-     * prompt its scheduled runs may read.
-     */
-    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallCreation>;
   /**
@@ -922,26 +910,18 @@ export type RunRepository = {
     changeNote: string | null;
     result(card: import("../../contracts/skillSaves").SkillSaveCard, version: number): import("../tools/types").ToolExecutionResult;
   }>): Promise<import("../tools/skillSave").SkillSaveCommitOutcome>;
-  /**
-   * `fetch_url` provenance: the source and citation URLs Search persisted so
-   * far (its executions and hosted output events) for the main-agent run
-   * `runId`, `earlierRunIds` (main-agent runs on its branch) and their
-   * background sub-agents; unnormalized, newest first, bounded. A run of
-   * another chat or owner never counts, whatever the input names.
-   */
-  loadRunSearchSourceUrls?(input: Readonly<{ earlierRunIds: readonly string[]; runId: string; userId: string }>): Promise<readonly string[]>;
   /** The newest settled reads of the run's `fetch_url`, oldest of them first and bounded: a recovered run's read cache. */
   loadRunFetchUrlCalls?(input: Readonly<{ runId: string; userId: string }>): Promise<readonly Readonly<{ result: unknown }>[]>;
   /**
    * Which of these messages of the chat are scheduled task prompts
-   * (`Message.scheduledTaskPrompt`): their text authorizes no `fetch_url` link.
+   * (`Message.scheduledTaskPrompt`): the server's turns, never the user's speech.
    */
   loadScheduledPromptMessageIds?(input: Readonly<{
     chatId: string; messageIds: readonly string[]; userId: string;
   }>): Promise<ReadonlySet<string>>;
   /**
    * Which of these messages of the chat are turns the server wrote for the
-   * user (`Message.systemTurnKind`): their text authorizes no `fetch_url` link.
+   * user (`Message.systemTurnKind`): never the user's speech.
    */
   loadSystemTurnMessageIds?(input: Readonly<{
     chatId: string; messageIds: readonly string[]; userId: string;
@@ -989,12 +969,6 @@ export type RunRepository = {
     runId: string;
     /** Null only for `list`. */
     taskId: string | null;
-    /**
-     * The run's frozen user-authored link digests
-     * (`scheduledTaskManagementTool.userUrlDigests`): with the task's stored
-     * snapshot, the only links a changed prompt keeps for its scheduled runs.
-     */
-    userUrlDigests: readonly string[];
     userId: string;
   }>): Promise<ScheduledTaskCallManagement>;
   recoverPreparingRun(input: Readonly<{

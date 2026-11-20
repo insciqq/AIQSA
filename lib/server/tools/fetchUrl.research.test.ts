@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DocumentParserError } from "../parsing/errors";
 import { WebFetchError, type WebFetchResponse } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import { createFetchUrlSession, type FetchUrlSessionDeps } from "./fetchUrl";
 import type { ToolExecutionResult } from "./types";
 
@@ -17,8 +16,8 @@ const json = (result: ToolExecutionResult) => {
 };
 const session = (extra: Partial<FetchUrlSessionDeps> = {}) => createFetchUrlSession({
   extractPage: async () => ({ kind: "text", text: "Page.", title: null, truncated: false }),
-  fetchPage: vi.fn(async () => page), plan: { userUrlDigests: urls.map(fetchUrlDigest), version: 1 },
-  research: async () => new Map(), scheduled: false, ...extra
+  fetchPage: vi.fn(async () => page),
+  research: async () => new Map(), ...extra
 });
 
 describe("research refuses unreachable fetch_url sites", () => {
@@ -105,12 +104,16 @@ describe("research refuses unreachable fetch_url sites", () => {
     expect(fetchPage).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps link authority ahead of research refusal and makes no request", async () => {
+  it("refuses a closed site for any link to it, one a page named included, and makes no request", async () => {
     const research = vi.fn(async () => new Map([["shop.example", "Sign-in required."]]));
     const fetchPage = vi.fn(async () => page);
-    const s = session({ fetchPage, plan: { userUrlDigests: [], version: 1 }, research });
-    expect(json(await s.execute(call(0), { signal })).error).toBe("fetch_url_not_in_conversation");
-    expect(research).not.toHaveBeenCalled();
+    const s = session({ fetchPage, research });
+    // Nobody wrote this link and no search returned it: since 2026-11-20 that no longer matters, the closure does.
+    const refused = json(await s.execute({ arguments: { url: "https://www.shop.example/deep/link?ref=page" }, id: "x", name: "fetch_url" },
+      { signal }));
+    expect(refused.error).toBe("fetch_network_error");
+    expect(String(refused.message)).toContain("already recorded as unreachable");
+    expect(research).toHaveBeenCalled();
     expect(fetchPage).not.toHaveBeenCalled();
   });
 

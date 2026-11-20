@@ -49,7 +49,7 @@ function selfService() {
 
 function input(requestValue: ProviderRunRequest, services: Partial<ToolRegistryServices> = {}, extra: Partial<ToolRegistryInput> = {}): ToolRegistryInput {
   return {
-    chatId: "chat-1", followupTexts: () => [], mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
+    chatId: "chat-1", mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
     onUsage: vi.fn(), onWorkspaceActivity: vi.fn(async () => undefined), request: requestValue, runId: RUN, userId: USER,
     services: { repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) }, ...services },
     ...extra

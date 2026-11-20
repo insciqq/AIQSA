@@ -20,7 +20,6 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import type { NormalizedRunRequest } from "../providers/types";
 import type { RunRepository, ScheduledTaskCallRefusal } from "../runs/runRepositoryContract";
 import { scheduledTaskWebhookUrl } from "../scheduledTasks/webhookUrl";
-import { isFetchUrlPlan } from "./fetchUrlPlan";
 import { resolveScheduledTaskSkillReferences, SCHEDULED_TASK_SKILLS_SCHEMA, scheduledTaskModelSkills } from "./scheduledTaskSkills";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
 
@@ -301,19 +300,6 @@ export function localInstant(value: string | null, timeZone: string): string | n
 }
 
 /**
- * For a task whose prompt holds links its runs cannot read yet: links a tool
- * wrote that the user's own text did not give (`../scheduledTasks/promptUrls.ts`).
- * Saving the instructions once allows them.
- */
-export function scheduledTaskLinksPending(task: Pick<ScheduledTask, "promptLinksPending">) {
-  return task.promptLinksPending ? {
-    linksPending: true,
-    linksNote: "Runs cannot read the links in this prompt that the user did not write in this chat until the user " +
-      "opens the automation with Edit and saves its instructions once. Tell the user which links these are and to do that."
-  } as const : {};
-}
-
-/**
  * A task's webhook as the model may know it: its whole address and whether a
  * token was issued, never the token, which no tool returns. With `explain`,
  * how the user gets the token and what the body is.
@@ -356,7 +342,6 @@ export function scheduledTaskCreatedResult(call: Pick<ModelToolCall, "id" | "nam
       telegram: task.telegramNotify,
       ...(task.telegramNotify ? { telegramNote: "Results reach Telegram once the user has connected it in Settings > Telegram." } : {}),
       skills: scheduledTaskModelSkills(task),
-      ...scheduledTaskLinksPending(task),
       note: "The answer shows this automation with Edit and Delete; the user manages automations in Settings > Automations."
     } }],
     name: call.name,
@@ -442,8 +427,6 @@ export async function executeCreateScheduledTask(
       callId: context.persistedToolCallId,
       result: (task) => scheduledTaskCreatedResult(call, task, zone.fallback),
       runId: context.runId,
-      // A run without the page reader authorized no links: the prompt's runs read none.
-      userUrlDigests: isFetchUrlPlan(context.request.fetchUrl) ? context.request.fetchUrl.userUrlDigests : [],
       userId: context.userId
     });
     if (outcome.kind === "created") return outcome.result;

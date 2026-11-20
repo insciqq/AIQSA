@@ -32,3 +32,31 @@ export function isBotCheckPage(page: FetchedPage, body: Uint8Array): boolean {
   return CHALLENGE_TEXT.test(`${page.title ?? ""} ${text}`) ||
     (page.kind === "html" && text.length <= EMPTY_PAGE_CHARACTERS && CHALLENGE_WIDGET.test(Buffer.from(body).toString("utf8")));
 }
+
+const PASSWORD_FIELD = /<input\b[^>]*\btype\s*=\s*["']?password\b/iu;
+const SIGN_IN_PATH_SEGMENTS: ReadonlySet<string> = new Set(["auth", "authorize", "log-in", "login", "oauth", "oauth2", "saml", "saml2",
+  "sign-in", "sign_in", "signin", "sso"]);
+const SIGN_IN_HOST = /^(?:accounts|auth|id|idp|login|signin|sso)\./u;
+
+/** Whether the page's final address is a sign-in form's: a sign-in host, or a path segment that names one. */
+function signInAddress(finalUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(finalUrl);
+  } catch {
+    return false;
+  }
+  return SIGN_IN_HOST.test(url.hostname) ||
+    url.pathname.split("/").some((segment) => SIGN_IN_PATH_SEGMENTS.has(segment.toLowerCase()));
+}
+
+/**
+ * A short HTML page that asks for a password, or that a sign-in address served: what an internal tracker or wiki shows
+ * an anonymous reader instead of the page (2026-11-20 audit). A long page with a login box stays an ordinary read.
+ * Like `isBotCheckPage`, a literal scan of the already bounded HTML, and no site is named.
+ */
+export function isSignInPage(page: FetchedPage, body: Uint8Array, finalUrl: string): boolean {
+  if (page.kind !== "html" || page.truncated) return false;
+  if (page.text.replace(/\s+/gu, " ").trim().length > SHORT_PAGE_CHARACTERS) return false;
+  return signInAddress(finalUrl) || PASSWORD_FIELD.test(Buffer.from(body).toString("utf8"));
+}

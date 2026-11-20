@@ -99,7 +99,7 @@ describe("the summary's model and current step", () => {
 
   it("carries a page reader's proxy display facts through the sub-agent step projection", async () => {
     const { client } = fakeClient({
-      request: { fetchUrl: { version: 1, userUrlDigests: [] } },
+      request: { fetchUrl: { version: 1 } },
       calls: [runningCall("turn-a", { toolName: "fetch_url", arguments: { url: "http://example.com/page" },
         result: { rawPreview: { fetchUrl: { version: 1, dispatched: true, outcome: "fetch_network_error",
           proxyCode: "proxy_connect_failed", proxy: { id: "private-id", name: "Personal route", host: "private-host", login: "private-login" } } } } })],

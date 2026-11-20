@@ -115,7 +115,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       `- ${WORKSPACE_NO_REPLAY_SAFETY}`,
       "- Calls that may change data in other systems (MCP tools that are not read-only) are sent only after the user approves them in the chat; the turn waits for that decision. Do not ask for the same approval in text.",
       ...tool(HARNESS_TOOL_NAMES.readToolResult, `- A large tool result arrives as its beginning and end with a handle. Read the omitted part with \`${HARNESS_TOOL_NAMES.readToolResult}\` instead of running the tool again; results stay readable later in the chat.`),
-      ...tool(HARNESS_TOOL_NAMES.fetchUrl, `- Read a web page with \`${HARNESS_TOOL_NAMES.fetchUrl}\` when the user gives a link or a search result's snippet is not enough.`),
+      ...tool(HARNESS_TOOL_NAMES.fetchUrl, `- Read a web page with \`${HARNESS_TOOL_NAMES.fetchUrl}\` when the user gives a link, a page, file or tool result names one, or a search result's snippet is not enough.`),
       ...tool(HARNESS_TOOL_NAMES.findTools, `- More tools from the user's MCP connections can be found with \`${HARNESS_TOOL_NAMES.findTools}\`; search there before saying a capability is missing.`),
       ...tool(HARNESS_TOOL_NAMES.loadSkill, `- The user's Skills are listed by name and description. Load a Skill's instructions with \`${HARNESS_TOOL_NAMES.loadSkill}\` before you follow it; this needs no Workspace.`),
       ...tool(HARNESS_TOOL_NAMES.updatePlan, `- \`${HARNESS_TOOL_NAMES.updatePlan}\` shows your plan to the user as progress; use it for work with several steps.`),

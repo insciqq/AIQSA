@@ -9,13 +9,10 @@ import {
 } from "../../contracts/scheduledTasks";
 import { prisma } from "../prisma";
 import { createPrismaScheduledTaskStore, scheduledTaskScheduleColumns, ScheduledTaskError } from "./store";
-import { scheduledPromptUrlDigests } from "./promptUrls";
-import { fetchUrlDigest } from "../webFetch/urls";
 
 const users: string[] = [];
 const store = createPrismaScheduledTaskStore(prisma);
 /** The synthetic prompts carry no links. */
-const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const draft: ScheduledTaskDraft = {
   title: "Synthetic brief", prompt: "Synthetic scheduled prompt", schedule: { kind: "daily", time: "09:00" },
   scheduleEnabled: true, webhookEnabled: false,
@@ -59,74 +56,74 @@ afterAll(() => prisma.$disconnect());
 describe("persisted scheduled tasks", () => {
   it("enforces the active and total limits under concurrent creation", async () => {
     const userId = await owner();
-    for (let index = 0; index < 9; index += 1) await store.create(userId, { ...draft, title: `Task ${index}` }, due, noUrls);
-    const active = await Promise.allSettled(["Last A", "Last B"].map((title) => store.create(userId, { ...draft, title }, due, noUrls)));
+    for (let index = 0; index < 9; index += 1) await store.create(userId, { ...draft, title: `Task ${index}` }, due);
+    const active = await Promise.allSettled(["Last A", "Last B"].map((title) => store.create(userId, { ...draft, title }, due)));
     expect(active.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(limitFailures(active)).toBe(1);
     expect(await prisma.scheduledTask.count({ where: { status: "ACTIVE", userId } })).toBe(10);
 
     const saved = await owner();
     await prisma.scheduledTask.createMany({ data: rows(saved, 49, "PAUSED") });
-    const total = await Promise.allSettled(["Last A", "Last B"].map((title) => store.create(saved, { ...draft, title }, due, noUrls)));
+    const total = await Promise.allSettled(["Last A", "Last B"].map((title) => store.create(saved, { ...draft, title }, due)));
     expect(limitFailures(total)).toBe(1);
     expect(await prisma.scheduledTask.count({ where: { userId: saved } })).toBe(50);
   });
 
   it("allows three active hourly tasks per owner, under concurrent creation and on resume or schedule change", async () => {
     const userId = await owner();
-    for (let index = 0; index < 2; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due, noUrls);
-    const racing = await Promise.allSettled(["Hourly A", "Hourly B"].map((title) => store.create(userId, { ...hourlyDraft, title }, due, noUrls)));
+    for (let index = 0; index < 2; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due);
+    const racing = await Promise.allSettled(["Hourly A", "Hourly B"].map((title) => store.create(userId, { ...hourlyDraft, title }, due)));
     expect(limitFailures(racing, "scheduled_task_hourly_limit")).toBe(1);
     expect(await prisma.scheduledTask.count({ where: { scheduleKind: "HOURLY", status: "ACTIVE", userId } })).toBe(3);
     // Less frequent schedules still fit within the active limit.
-    const daily = await store.create(userId, draft, due, noUrls);
-    await expect(store.update(userId, daily.id, { promptUrls: "keep", draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
+    const daily = await store.create(userId, draft, due);
+    await expect(store.update(userId, daily.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
       .rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
     const [first] = await prisma.scheduledTask.findMany({ orderBy: { createdAt: "asc" }, where: { scheduleKind: "HOURLY", userId } });
-    const paused = await store.update(userId, first!.id, { promptUrls: "keep", draft: hourlyDraft, expectedRevision: 1, nextRunAt: null, status: "paused" });
-    expect(await store.update(userId, daily.id, { promptUrls: "keep", draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
+    const paused = await store.update(userId, first!.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: null, status: "paused" });
+    expect(await store.update(userId, daily.id, { draft: hourlyDraft, expectedRevision: 1, nextRunAt: due, status: "active" }))
       .toMatchObject({ chatMode: "same", schedule: hourlyDraft.schedule, status: "active" });
     // Editing an hourly task that stays active never counts itself.
-    expect(await store.update(userId, daily.id, { promptUrls: "keep", draft: { ...hourlyDraft, title: "Renamed" }, expectedRevision: 2,
+    expect(await store.update(userId, daily.id, { draft: { ...hourlyDraft, title: "Renamed" }, expectedRevision: 2,
       nextRunAt: undefined, status: "active" })).toMatchObject({ title: "Renamed" });
-    await expect(store.update(userId, paused.id, { promptUrls: "keep", draft: hourlyDraft, expectedRevision: paused.revision, nextRunAt: due, status: "active" }))
+    await expect(store.update(userId, paused.id, { draft: hourlyDraft, expectedRevision: paused.revision, nextRunAt: due, status: "active" }))
       .rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
   });
 
   it("guards updates by revision, counts activation and keeps an unchanged due time", async () => {
     const userId = await owner();
-    const task = await store.create(userId, draft, due, noUrls);
-    const paused = await store.update(userId, task.id, { promptUrls: "keep", draft, expectedRevision: 1, nextRunAt: null, status: "paused" });
+    const task = await store.create(userId, draft, due);
+    const paused = await store.update(userId, task.id, { draft, expectedRevision: 1, nextRunAt: null, status: "paused" });
     expect(paused).toMatchObject({ nextRunAt: null, revision: 2, status: "paused" });
     await prisma.scheduledTask.createMany({ data: rows(userId, 10, "ACTIVE") });
-    await expect(store.update(userId, task.id, { promptUrls: "keep", draft, expectedRevision: 2, nextRunAt: due, status: "active" }))
+    await expect(store.update(userId, task.id, { draft, expectedRevision: 2, nextRunAt: due, status: "active" }))
       .rejects.toMatchObject({ code: "scheduled_task_limit" });
     await prisma.scheduledTask.deleteMany({ where: { title: { startsWith: "Seed" }, userId } });
-    const resumed = await store.update(userId, task.id, { promptUrls: "keep", draft, expectedRevision: 2, nextRunAt: due, status: "active" });
+    const resumed = await store.update(userId, task.id, { draft, expectedRevision: 2, nextRunAt: due, status: "active" });
     expect(resumed).toMatchObject({ nextRunAt: due.toISOString(), revision: 3, status: "active" });
 
     // Runner bookkeeping keeps the revision; a runner status transition bumps it.
     const advanced = new Date("2026-10-06T06:00:00.000Z");
     await prisma.scheduledTask.update({ data: { consecutiveFailures: 2, nextRunAt: advanced }, where: { id: task.id } });
     const renamed = await store.update(userId, task.id, {
-      draft: { ...draft, title: "Renamed" }, expectedRevision: 3, nextRunAt: undefined, promptUrls: "keep", status: "active"
+      draft: { ...draft, title: "Renamed" }, expectedRevision: 3, nextRunAt: undefined, status: "active"
     });
     expect(renamed).toMatchObject({ nextRunAt: advanced.toISOString(), revision: 4, title: "Renamed" });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveFailures: 0 });
     await prisma.scheduledTask.update({
       data: { nextRunAt: null, pauseReason: "model_unavailable", revision: { increment: 1 }, status: "PAUSED" }, where: { id: task.id }
     });
-    await expect(store.update(userId, task.id, { promptUrls: "keep", draft, expectedRevision: 4, nextRunAt: due, status: "active" }))
+    await expect(store.update(userId, task.id, { draft, expectedRevision: 4, nextRunAt: due, status: "active" }))
       .rejects.toMatchObject({ code: "scheduled_task_stale" });
     expect(await store.get(userId, task.id)).toMatchObject({ pauseReason: "model_unavailable", revision: 5, status: "paused" });
   });
 
   it("keeps the tool and Workspace switches and clears the incomplete-run streak on every owner update", async () => {
     const userId = await owner();
-    const task = await store.create(userId, { ...draft, toolsEnabled: true, workspaceEnabled: true }, due, noUrls);
+    const task = await store.create(userId, { ...draft, toolsEnabled: true, workspaceEnabled: true }, due);
     expect(task).toMatchObject({ toolsEnabled: true, workspaceEnabled: true });
     await prisma.scheduledTask.update({ data: { consecutiveIncompleteRuns: 2 }, where: { id: task.id } });
-    const updated = await store.update(userId, task.id, { promptUrls: "keep", draft: { ...draft, toolsEnabled: true, workspaceEnabled: false },
+    const updated = await store.update(userId, task.id, { draft: { ...draft, toolsEnabled: true, workspaceEnabled: false },
       expectedRevision: 1, nextRunAt: undefined, status: "active" });
     expect(updated).toMatchObject({ revision: 2, toolsEnabled: true, workspaceEnabled: false });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveIncompleteRuns: 0 });
@@ -142,10 +139,10 @@ describe("persisted scheduled tasks", () => {
 
   it("stores the Memory switch as written and leaves a row saved without it off", async () => {
     const userId = await owner();
-    const task = await store.create(userId, draft, due, noUrls);
+    const task = await store.create(userId, draft, due);
     expect(task).toMatchObject({ memoryEnabled: true });
     const updated = await store.update(userId, task.id, { draft: { ...draft, memoryEnabled: false }, expectedRevision: 1,
-      nextRunAt: undefined, promptUrls: "keep", status: "active" });
+      nextRunAt: undefined, status: "active" });
     expect(updated).toMatchObject({ memoryEnabled: false, revision: 2 });
     // A row written without the column (an older writer or one predating it) runs without Memory.
     const [older] = rows(userId, 1, "ACTIVE");
@@ -156,15 +153,14 @@ describe("persisted scheduled tasks", () => {
 
   it("starts a new generation without a baseline only when the prompt or schedule kind changes", async () => {
     const userId = await owner();
-    const task = await store.create(userId, { ...draft, chatMode: "same" }, due, noUrls);
+    const task = await store.create(userId, { ...draft, chatMode: "same" }, due);
     const baseline = { baselineAssistantMessageId: "answer-1", baselineGeneration: 1, baselineRunId: "run-1", baselineUserMessageId: "user-1" };
     const read = () => prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } });
     await prisma.scheduledTask.update({ data: baseline, where: { id: task.id } });
     let revision = 1;
     const update = async (changes: Partial<ScheduledTaskDraft>) => {
       await store.update(userId, task.id, { draft: { ...draft, chatMode: "same", ...changes }, expectedRevision: revision,
-        nextRunAt: undefined, status: "active",
-        promptUrls: changes.prompt === undefined ? "keep" : scheduledPromptUrlDigests(changes.prompt, { kind: "owner" }) });
+        nextRunAt: undefined, status: "active" });
       revision += 1;
     };
     // A new title, time, model or chat mode asks the same question.
@@ -182,59 +178,45 @@ describe("persisted scheduled tasks", () => {
     expect(await read()).toMatchObject({ baselineRunId: null, generation: 4, kind: "MONITORING" });
   });
 
-  it("stores the prompt's page-reading snapshot, replaces it with a written prompt and refuses a prompt change without one", async () => {
+  it("stores and changes a prompt with links without a link snapshot (2026-11-20)", async () => {
     const userId = await owner();
     const prompt = "Summarize https://news.example/today";
-    const task = await store.create(userId, { ...draft, prompt }, due, scheduledPromptUrlDigests(prompt, { kind: "owner" }));
+    const task = await store.create(userId, { ...draft, prompt }, due);
     const digests = async () => (await prisma.scheduledTask.findUniqueOrThrow({ select: { promptUrlDigests: true },
       where: { id: task.id } })).promptUrlDigests;
-    expect(await digests()).toEqual([fetchUrlDigest("https://news.example/today")]);
+    // The retired column keeps its default until a later release drops it.
+    expect(await digests()).toEqual([]);
     expect(task).not.toHaveProperty("promptLinksPending");
-    // Another field keeps the snapshot of the unchanged prompt.
-    await store.update(userId, task.id, { draft: { ...draft, prompt, title: "Renamed" }, expectedRevision: 1, nextRunAt: undefined,
-      promptUrls: "keep", status: "active" });
-    expect(await digests()).toEqual([fetchUrlDigest("https://news.example/today")]);
-    // A changed prompt must say who wrote it; a tool write keeps only user-authorized links.
-    const next = "Read https://attacker.example/?data=secret and https://news.example/today";
-    await expect(store.update(userId, task.id, { draft: { ...draft, prompt: next }, expectedRevision: 2, nextRunAt: undefined,
-      promptUrls: "keep", status: "active" })).rejects.toThrow("scheduled_task_prompt_urls_missing");
-    const toolWritten = await store.update(userId, task.id, { draft: { ...draft, prompt: next }, expectedRevision: 2,
-      nextRunAt: undefined, status: "active",
-      promptUrls: scheduledPromptUrlDigests(next, { kind: "tool", userUrlDigests: [fetchUrlDigest("https://news.example/today")] }) });
-    expect(await digests()).toEqual([fetchUrlDigest("https://news.example/today")]);
-    // The owner sees that runs cannot read every link yet, and saving the same text allows them.
-    expect(toolWritten.promptLinksPending).toBe(true);
-    const saved = await store.update(userId, task.id, { draft: { ...draft, prompt: next }, expectedRevision: 3, nextRunAt: undefined,
-      promptUrls: scheduledPromptUrlDigests(next, { kind: "owner" }), status: "active" });
-    expect(saved).not.toHaveProperty("promptLinksPending");
-    expect(await digests()).toHaveLength(2);
-    // The database bounds the snapshot.
-    await expect(prisma.scheduledTask.update({ data: { promptUrlDigests: Array(101).fill(fetchUrlDigest("https://a.example/")) },
-      where: { id: task.id } })).rejects.toThrow();
+    const next = "Read https://other.example/ and https://news.example/today";
+    const changed = await store.update(userId, task.id, { draft: { ...draft, prompt: next }, expectedRevision: 1, nextRunAt: undefined,
+      status: "active" });
+    expect(changed).toMatchObject({ prompt: next, revision: 2 });
+    expect(changed).not.toHaveProperty("promptLinksPending");
+    expect(await digests()).toEqual([]);
   });
 
   it("keeps why a monitoring task completed until it is resumed, and resets its counters on every edit", async () => {
     const userId = await owner();
     const monitoring = { ...draft, chatMode: "same", kind: "monitoring" } as const;
-    const task = await store.create(userId, monitoring, due, noUrls);
+    const task = await store.create(userId, monitoring, due);
     expect(task).toMatchObject({ completionReason: null, kind: "monitoring" });
     await prisma.scheduledTask.update({ data: { completionReason: "goal_reached", consecutiveMissingVerdicts: 2, nextRunAt: null,
       revision: 2, status: "COMPLETED" }, where: { id: task.id } });
-    const renamed = await store.update(userId, task.id, { promptUrls: "keep", draft: { ...monitoring, title: "Renamed" }, expectedRevision: 2,
+    const renamed = await store.update(userId, task.id, { draft: { ...monitoring, title: "Renamed" }, expectedRevision: 2,
       nextRunAt: null, status: "completed" });
     expect(renamed).toMatchObject({ completionReason: "goal_reached", status: "completed" });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ consecutiveMissingVerdicts: 0 });
-    const resumed = await store.update(userId, task.id, { promptUrls: "keep", draft: monitoring, expectedRevision: 3, nextRunAt: due, status: "active" });
+    const resumed = await store.update(userId, task.id, { draft: monitoring, expectedRevision: 3, nextRunAt: due, status: "active" });
     expect(resumed).toMatchObject({ completionReason: null, nextRunAt: due.toISOString(), status: "active" });
   });
 
   it("stores and projects the Telegram switch, and lists whether results can go to Telegram now", async () => {
     const userId = await owner();
-    const task = await store.create(userId, { ...draft, telegramNotify: true }, due, noUrls);
+    const task = await store.create(userId, { ...draft, telegramNotify: true }, due);
     expect(task.telegramNotify).toBe(true);
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } })).toMatchObject({ emailNotify: false, telegramNotify: true });
     const off = await store.update(userId, task.id, { draft: { ...draft, telegramNotify: false }, expectedRevision: task.revision,
-      nextRunAt: undefined, promptUrls: "keep", status: "active" });
+      nextRunAt: undefined, status: "active" });
     expect(off.telegramNotify).toBe(false);
     expect((await store.list(userId)).telegramAvailable).toBe(false);
     const asked: string[] = [];
@@ -247,7 +229,7 @@ describe("persisted scheduled tasks", () => {
 
   it("projects the newest settled run, open runs, unread results and owner-scoped history", async () => {
     const userId = await owner(), other = await owner();
-    const task = await store.create(userId, draft, due, noUrls);
+    const task = await store.create(userId, draft, due);
     const at = (hours: number) => new Date(Date.UTC(2026, 9, 1, hours));
     await prisma.scheduledTaskOccurrence.createMany({ data: [
       { finishedAt: at(20), reasonCode: "missed", scheduledFor: at(6), state: "SKIPPED", taskId: task.id, trigger: "schedule", userId },
@@ -279,7 +261,7 @@ describe("persisted scheduled tasks", () => {
     expect(await store.get(other, task.id)).toBeNull();
     expect(await store.detail(other, task.id)).toBeNull();
     expect(await store.delete(other, task.id)).toBe(false);
-    await expect(store.update(other, task.id, { promptUrls: "keep", draft, expectedRevision: 1, nextRunAt: null, status: "paused" }))
+    await expect(store.update(other, task.id, { draft, expectedRevision: 1, nextRunAt: null, status: "paused" }))
       .rejects.toMatchObject({ code: "scheduled_task_not_found" });
     expect(await store.delete(userId, task.id)).toBe(true);
     expect(await prisma.scheduledTaskOccurrence.count({ where: { taskId: task.id } })).toBe(0);
@@ -287,7 +269,7 @@ describe("persisted scheduled tasks", () => {
 
   it("clears only chat references when the chat is deleted and binds personal chats of the owner only", async () => {
     const userId = await owner(), other = await owner();
-    const task = await store.create(userId, draft, due, noUrls);
+    const task = await store.create(userId, draft, due);
     const chat = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: draft.title, userId } });
     const foreign = await prisma.chat.create({ data: { memoryMode: "EXCLUDED", title: "Other", userId: other } });
     await prisma.scheduledTask.update({ data: { chatId: chat.id }, where: { id: task.id } });
@@ -306,8 +288,8 @@ describe("persisted scheduled tasks", () => {
 
   it("removes tasks and their history with the account and rejects inconsistent rows", async () => {
     const userId = await owner();
-    const task = await store.create(userId, draft, due, noUrls);
-    const hourly = await store.create(userId, hourlyDraft, due, noUrls);
+    const task = await store.create(userId, draft, due);
+    const hourly = await store.create(userId, hourlyDraft, due);
     await prisma.scheduledTaskOccurrence.create({ data: { scheduledFor: due, taskId: task.id, trigger: "schedule", userId } });
     await expect(prisma.scheduledTask.update({ data: { status: "PAUSED" }, where: { id: task.id } }))
       .rejects.toThrow("ScheduledTask_state_check");
@@ -345,7 +327,7 @@ describe("persisted scheduled tasks", () => {
 
   it("creates a webhook-only automation without a due time and keeps its webhook while the trigger is off", async () => {
     const userId = await owner();
-    const task = await store.create(userId, webhookDraft, null, noUrls);
+    const task = await store.create(userId, webhookDraft, null);
     expect(task).toMatchObject({ nextRunAt: null, scheduleEnabled: false, status: "active", webhookEnabled: true,
       webhook: { lastEventAt: null, queuedEvents: 0, tokenIssuedAt: null } });
     const hook = await prisma.scheduledTaskWebhook.findUniqueOrThrow({ where: { taskId: task.id } });
@@ -354,15 +336,15 @@ describe("persisted scheduled tasks", () => {
     expect(task.webhook?.path).toBe(`${SCHEDULED_TASK_WEBHOOK_PATH_PREFIX}${hook.publicId}`);
     // Both triggers; then the schedule alone, which keeps the address for later.
     const both = await store.update(userId, task.id, { draft: { ...webhookDraft, scheduleEnabled: true }, expectedRevision: 1,
-      nextRunAt: due, promptUrls: "keep", status: "active" });
+      nextRunAt: due, status: "active" });
     expect(both).toMatchObject({ nextRunAt: due.toISOString(), scheduleEnabled: true, webhookEnabled: true });
-    const off = await store.update(userId, task.id, { draft, expectedRevision: 2, nextRunAt: undefined, promptUrls: "keep", status: "active" });
+    const off = await store.update(userId, task.id, { draft, expectedRevision: 2, nextRunAt: undefined, status: "active" });
     expect(off).toMatchObject({ nextRunAt: due.toISOString(), webhookEnabled: false, webhook: { path: task.webhook?.path } });
     // An issued token survives every owner edit, and no projection carries its hash.
     const issuedAt = new Date("2026-10-25T08:00:00.000Z");
     await prisma.scheduledTaskWebhook.update({ data: { tokenHash: "a".repeat(64), tokenIssuedAt: issuedAt }, where: { taskId: task.id } });
     // Turning the schedule off clears its due time whatever the caller kept, and the webhook comes back at its address.
-    const again = await store.update(userId, task.id, { draft: webhookDraft, expectedRevision: 3, nextRunAt: undefined, promptUrls: "keep",
+    const again = await store.update(userId, task.id, { draft: webhookDraft, expectedRevision: 3, nextRunAt: undefined,
       status: "active" });
     expect(again).toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhook: { path: task.webhook?.path,
       tokenIssuedAt: issuedAt.toISOString() } });
@@ -371,17 +353,17 @@ describe("persisted scheduled tasks", () => {
       .toMatchObject({ publicId: hook.publicId, tokenHash: "a".repeat(64), tokenIssuedAt: issuedAt });
     expect((await store.list(userId)).tasks).toMatchObject([{ id: task.id, webhook: { path: task.webhook?.path } }]);
     // A task created on its schedule alone has no webhook.
-    expect(await store.create(userId, draft, due, noUrls)).toMatchObject({ webhook: null, webhookEnabled: false });
+    expect(await store.create(userId, draft, due)).toMatchObject({ webhook: null, webhookEnabled: false });
     expect(await prisma.scheduledTaskWebhook.count({ where: { userId } })).toBe(1);
   });
 
   it("needs a trigger and never gives an off schedule a due time, in the store and in the database", async () => {
     const userId = await owner();
-    await expect(store.create(userId, { ...draft, scheduleEnabled: false }, null, noUrls))
+    await expect(store.create(userId, { ...draft, scheduleEnabled: false }, null))
       .rejects.toMatchObject({ code: "scheduled_task_trigger_required" });
-    const task = await store.create(userId, draft, due, noUrls);
+    const task = await store.create(userId, draft, due);
     await expect(store.update(userId, task.id, { draft: { ...draft, scheduleEnabled: false }, expectedRevision: 1, nextRunAt: null,
-      promptUrls: "keep", status: "active" })).rejects.toMatchObject({ code: "scheduled_task_trigger_required" });
+      status: "active" })).rejects.toMatchObject({ code: "scheduled_task_trigger_required" });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: task.id } }))
       .toMatchObject({ nextRunAt: due, revision: 1, scheduleEnabled: true, webhookEnabled: false });
     // Other writers meet the same rules, so the scheduler, which claims only due runs, never picks an off schedule.
@@ -396,18 +378,18 @@ describe("persisted scheduled tasks", () => {
 
   it("counts only hourly schedules that are on toward the hourly limit", async () => {
     const userId = await owner();
-    for (let index = 0; index < 3; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due, noUrls);
+    for (let index = 0; index < 3; index += 1) await store.create(userId, { ...hourlyDraft, title: `Hourly ${index}` }, due);
     // A webhook-only task keeps an hourly schedule without running it.
-    const hooked = await store.create(userId, { ...hourlyDraft, scheduleEnabled: false, title: "Hooked", webhookEnabled: true }, null, noUrls);
+    const hooked = await store.create(userId, { ...hourlyDraft, scheduleEnabled: false, title: "Hooked", webhookEnabled: true }, null);
     expect(hooked).toMatchObject({ nextRunAt: null, schedule: { kind: "hourly" }, status: "active" });
     await expect(store.update(userId, hooked.id, { draft: { ...hourlyDraft, title: "Hooked", webhookEnabled: true }, expectedRevision: 1,
-      nextRunAt: due, promptUrls: "keep", status: "active" })).rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
+      nextRunAt: due, status: "active" })).rejects.toMatchObject({ code: "scheduled_task_hourly_limit" });
   });
 
   it("keeps an event's body only while it waits, links one occurrence of its own task and orders events per task", async () => {
     const userId = await owner();
-    const task = await store.create(userId, webhookDraft, null, noUrls);
-    const other = await store.create(userId, { ...webhookDraft, title: "Other" }, null, noUrls);
+    const task = await store.create(userId, webhookDraft, null);
+    const other = await store.create(userId, { ...webhookDraft, title: "Other" }, null);
     const at = (minute: number) => new Date(Date.UTC(2026, 9, 25, 9, minute));
     const occurrence = await prisma.scheduledTaskOccurrence.create({ data: {
       scheduledFor: at(0), taskId: task.id, trigger: "webhook", userId
@@ -464,8 +446,8 @@ describe("persisted scheduled tasks", () => {
 
   it("removes the webhook and its events with the automation and with the account", async () => {
     const userId = await owner();
-    const task = await store.create(userId, webhookDraft, null, noUrls);
-    const kept = await store.create(userId, { ...webhookDraft, title: "Kept" }, null, noUrls);
+    const task = await store.create(userId, webhookDraft, null);
+    const kept = await store.create(userId, { ...webhookDraft, title: "Kept" }, null);
     for (const taskId of [task.id, kept.id]) {
       await prisma.scheduledTaskWebhookEvent.create({ data: { bodyText: "{}", receivedAt: due, taskId, userId } });
     }

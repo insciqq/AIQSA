@@ -38,7 +38,7 @@ const SINGLE_OP_NAMES = COMPUTER_TOOL_NAMES.filter((name) => name !== "computer_
 
 function input(extra: Partial<ToolRegistryInput> & { request: ProviderRunRequest }, ops?: FakeComputerOps): ToolRegistryInput {
   return {
-    chatId: "chat", followupTexts: () => [], mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
+    chatId: "chat", mcpBindings: new Map<string, EngineMcpBinding>(), onEvent: vi.fn(async () => undefined),
     onUsage: vi.fn(), onWorkspaceActivity: vi.fn(async () => undefined), runId: RUN, userId: USER,
     services: { ...(ops ? { computer: ops } : {}), computerOutputs: outputs, repository: { createSearchRun: vi.fn() } as never,
       savedResults: { read: vi.fn(async () => null) } },

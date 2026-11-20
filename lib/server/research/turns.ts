@@ -74,7 +74,7 @@ export function createResearchTurns(input: ResearchTurnsInput) {
   /**
    * One host per kind of turn: the same parts as the run's own sub-agents, without what a gate's turn has no use for. The
    * verifier's is independent whatever model it runs on: none of the chat's or an Assistant's instructions, and none of what
-   * the user wrote, which the main agent read too. Link authority stays the answer's (`followupTexts`, the page-reader session).
+   * the user wrote, which the main agent read too. The page-reader session stays the answer's.
    */
   const hosted = (kind: "main" | "verifier" | "gap_judge" | "researcher", route: ResearchVerifierRoute | null) => {
     let runner = runners.get(kind);

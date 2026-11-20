@@ -16,7 +16,6 @@ import {
   type ScheduledTaskCallManager
 } from "./scheduledTaskManagement";
 import { invalidProviderToolArguments } from "./types";
-import { fetchUrlDigest } from "../webFetch/urls";
 
 vi.mock("../observability", async (importOriginal) => ({
   ...await importOriginal<typeof import("../observability")>(), logEvent: vi.fn()
@@ -106,8 +105,8 @@ describe("manage_scheduled_task tool", () => {
   it("decodes only the exact frozen marker", () => {
     expect(isScheduledTaskManagementSettings(marker)).toBe(true);
     expect(isScheduledTaskManagementSettings({ chatTask: { taskId: "task-1", title: "Report" } })).toBe(true);
-    // The run's frozen user links; a marker accepted before them still decodes, authorizing none.
-    const digest = fetchUrlDigest("https://news.example/today");
+    // A marker frozen before 2026-11-20 holds link digests that nothing reads; recovery still decodes it.
+    const digest = "a".repeat(64);
     expect(isScheduledTaskManagementSettings({ chatTask: null, userUrlDigests: [digest] })).toBe(true);
     expect(isScheduledTaskManagementSettings({ chatTask: null, userUrlDigests: [] })).toBe(true);
     for (const value of [null, {}, { chatTask: null, extra: true }, { chatTask: { taskId: "", title: "Report" } },
@@ -121,23 +120,19 @@ describe("manage_scheduled_task tool", () => {
 
   it("admits the tool only while the owner has a task, and degrades a failed read to no tool", async () => {
     const repository = (value: unknown) => ({ loadScheduledTaskManagement: vi.fn(async () => value as never) });
-    const admission = { chatId: "chat-1", userId: "user-1", userUrlDigests: [] };
+    const admission = { chatId: "chat-1", userId: "user-1" };
     expect(await admitScheduledTaskManagement({}, admission)).toBeUndefined();
     expect(await admitScheduledTaskManagement(repository(null), admission)).toBeUndefined();
-    expect(await admitScheduledTaskManagement(repository({ chatTask: null }), admission))
-      .toEqual({ chatTask: null, userUrlDigests: [] });
+    const frozen = await admitScheduledTaskManagement(repository({ chatTask: null }), admission);
+    expect(frozen).toEqual({ chatTask: null });
+    expect(isScheduledTaskManagementSettings(frozen)).toBe(true);
     const owner = repository({ chatTask: { taskId: "task-1", title: "Report" } });
     expect(await admitScheduledTaskManagement(owner, admission))
-      .toEqual({ chatTask: { taskId: "task-1", title: "Report" }, userUrlDigests: [] });
+      .toEqual({ chatTask: { taskId: "task-1", title: "Report" } });
     expect(owner.loadScheduledTaskManagement).toHaveBeenCalledExactlyOnceWith({ chatId: "chat-1", userId: "user-1" });
-    // The run's user links are frozen with the marker, which decodes as recovery reads it.
-    const digest = fetchUrlDigest("https://news.example/today");
-    const frozen = await admitScheduledTaskManagement(repository({ chatTask: null }), { ...admission, userUrlDigests: [digest] });
-    expect(frozen).toEqual({ chatTask: null, userUrlDigests: [digest] });
-    expect(isScheduledTaskManagementSettings(frozen)).toBe(true);
     // A chat task that cannot be named safely leaves the tool without the hint.
     expect(await admitScheduledTaskManagement(repository({ chatTask: { taskId: "task-1", title: "" } }), admission))
-      .toEqual({ chatTask: null, userUrlDigests: [] });
+      .toEqual({ chatTask: null });
     const failing = { loadScheduledTaskManagement: vi.fn(async () => { throw new Error("database_down"); }) };
     expect(await admitScheduledTaskManagement(failing, admission)).toBeUndefined();
     expect(logEvent).toHaveBeenCalledWith("service_operation", expect.objectContaining({
@@ -288,17 +283,13 @@ describe("executing a management call", () => {
     expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toMatch(/Secret plan|task-1/u);
   });
 
-  it("hands the repository the run's frozen user links, and none for a run accepted without them", async () => {
-    const digest = fetchUrlDigest("https://news.example/today");
+  it("hands the repository no link digests, whatever a marker frozen before 2026-11-20 holds", async () => {
     const update = call({ action: "update", taskId: "task-1", prompt: "Summarize https://news.example/today every morning." });
-    const frozen = manager({ action: "update", changed: true, task: task() });
+    const legacy = manager({ action: "update", changed: true, task: task() });
     await executeManageScheduledTask(update, context({ request: { scheduledTaskManagementTool: { chatTask: null,
-      userUrlDigests: [digest] } } }), frozen);
-    expect(frozen.mock.calls[0]![0]).toMatchObject({ action: "update", userUrlDigests: [digest] });
-    // A plan persisted before the marker froze them authorizes no link of its run.
-    const older = manager({ action: "update", changed: true, task: task() });
-    await executeManageScheduledTask(update, context(), older);
-    expect(older.mock.calls[0]![0].userUrlDigests).toEqual([]);
+      userUrlDigests: ["a".repeat(64)] } as never } }), legacy);
+    expect(legacy.mock.calls[0]![0]).toMatchObject({ action: "update" });
+    expect(legacy.mock.calls[0]![0]).not.toHaveProperty("userUrlDigests");
   });
 
   it("does nothing without the frozen marker, a manager or a persisted call", async () => {
@@ -386,14 +377,10 @@ describe("management results", () => {
         prompt: "Remind me to send the weekly report." }) } }]);
   });
 
-  it("tells the model when the task's runs cannot read links in its prompt until the user saves it", () => {
+  it("says nothing of links a task's runs may read", () => {
     const updated = scheduledTaskManagementResult(call({ action: "update", taskId: "task-1" }),
-      { action: "update", changed: true, task: task({ promptLinksPending: true }) });
-    expect(updated.content).toEqual([{ type: "json", value: expect.objectContaining({ task: expect.objectContaining({
-      linksPending: true, linksNote: expect.stringContaining("opens the automation with Edit and saves its instructions once")
-    }) }) }]);
-    expect(JSON.stringify(scheduledTaskManagementResult(call({ action: "get", taskId: "task-1" }),
-      { action: "get", task: task() }).content)).not.toContain("linksPending");
+      { action: "update", changed: true, task: task() });
+    expect(JSON.stringify(updated.content)).not.toMatch(/linksPending|linksNote/u);
   });
 
   it("shows a change and a proposal with a card, and an unchanged task without one", () => {

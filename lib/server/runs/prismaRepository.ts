@@ -338,7 +338,7 @@ export function createPrismaRunRepository(
           'delivered', f."deliveredAt" IS NOT NULL, 'precedingText', f."precedingText") ORDER BY f."ordinal") AS entries
         FROM "RunFollowup" f
         -- The user's own follow-ups only: a sub-agent's callback the answer read is in its native items, an unread one is
-        -- owed again, and neither is ever user text (link authority, guard references) on a later turn.
+        -- owed again, and neither is ever user text (guard references) on a later turn.
         WHERE f."origin" = 'user' AND f."subagentTurnId" IS NULL AND f."modelRunId" = (
           SELECT r."id" FROM "ModelRun" r WHERE path."role" = 'assistant' AND
             r."assistantMessageId" = path."id"
@@ -458,7 +458,6 @@ export function createPrismaRunRepository(
     createScheduledTaskForCall: (input) => createScheduledTaskForToolCall(prismaClient, scheduledTaskCreationDeps, input)
       .catch(retainRunPrismaCode),
     saveSkillForCall: (input) => saveSkillForToolCall(prismaClient, input).catch(retainRunPrismaCode),
-    loadRunSearchSourceUrls: (input) => fetchUrlOperations.loadRunSearchSourceUrls(input).catch(retainRunPrismaCode),
     loadRunFetchUrlCalls: (input) => fetchUrlOperations.loadRunFetchUrlCalls(input).catch(retainRunPrismaCode),
     loadScheduledPromptMessageIds: (input) =>
       fetchUrlOperations.loadScheduledPromptMessageIds(input).catch(retainRunPrismaCode),

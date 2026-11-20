@@ -96,16 +96,7 @@ import { isScheduledTaskToolSettings, scheduledTaskToolsForRequest } from "../to
 import { skillSaveToolsForRequest } from "../tools/skillSave";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import { admitScheduledTaskManagement, scheduledTaskManagementToolsForRequest } from "../tools/scheduledTaskManagement";
-import {
-  FETCH_URL_LIMITS,
-  fetchUrlAuthoringMessages,
-  fetchUrlToolsForRequest,
-  taskInstructionFetchUrlDigests,
-  userAuthoredFetchUrlDigests,
-  type FetchUrlPlan
-} from "../tools/fetchUrlPlan";
-import { isFetchUrlDigest } from "../webFetch/urls";
-import { databaseFailureCode } from "../observability/databaseFailure";
+import { fetchUrlToolsForRequest, type FetchUrlPlan } from "../tools/fetchUrlPlan";
 import { readToolResultTool } from "../tools/readToolResult";
 import { mcpRunTools } from "../mcp/toolExecutor";
 import type { ProviderToolBridge } from "../tools/types";
@@ -190,14 +181,10 @@ type RunPreparationRepository = Pick<
   | "createScheduledTaskForCall"
   /** Present where a run can save a Workspace folder as a Skill: admission offers `save_skill` only then. */
   | "saveSkillForCall"
-  /** Without it a step's link authority excludes only its own server-written turn. */
-  | "loadSystemTurnMessageIds"
   /** Present where a run can manage scheduled tasks: admission offers that tool only then. */
   | "loadScheduledTaskManagement"
   | "manageScheduledTaskForCall"
   | "loadAssistantRowContext"
-  /** Without it only the current message's links are authorized for `fetch_url`. */
-  | "loadScheduledPromptMessageIds"
   /** Without it an interactive run freezes no "Always allow" consent: every write is asked. */
   | "loadMcpToolConsentServerIds"
 >>;
@@ -1952,10 +1939,8 @@ export async function prepareRun(
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
     typeof deps.repository.saveSkillForCall === "function" && modelCapabilities.toolCalling === true &&
       toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
-  // One page reader for every tool-calling model. Frozen here: the links
-  // user-authored text on this branch authorizes (never a scheduled prompt's),
-  // or a scheduled run's task snapshot, read with the task revision the link
-  // fences.
+  // One page reader for every tool-calling model, frozen here. It reads any
+  // public link the model passes (operator decision 2026-11-20).
   const fetchUrlOffered = body?.tools !== "none" &&
     modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
@@ -1963,49 +1948,11 @@ export async function prepareRun(
   // is a scheduled or connector turn. Scheduled and Discord turns take no `manage_proxy`, as for every self-service tool
   // (`selfServiceToolsFor`).
   const proxyPlan = fetchUrlOffered && deps.proxies ? await deps.proxies.planForRun(input.userId) : null;
-  let fetchUrlPlan: FetchUrlPlan | undefined;
-  if (fetchUrlOffered && scheduledOccurrence) {
-    fetchUrlPlan = { version: 1, userUrlDigests: [], taskUrlDigests: (scheduledOccurrence.promptUrlDigests ?? [])
-      .filter(isFetchUrlDigest).slice(0, FETCH_URL_LIMITS.authorizedUrls) };
-  } else if (fetchUrlOffered) {
-    const storedIds = fetchUrlAuthoringMessages(conversationMessages).map((message) => message.id)
-      .filter((id) => id !== currentSendMessageId);
-    let promptIds: ReadonlySet<string> | null = null;
-    let systemTurnIds: ReadonlySet<string> | null = new Set();
-    try {
-      // Without the marks, only the current message (never a stored prompt) authorizes links.
-      promptIds = deps.repository.loadScheduledPromptMessageIds
-        ? await deps.repository.loadScheduledPromptMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
-        : null;
-      // Turns the server wrote for the user (review steps, approval continuations) authorize nothing.
-      systemTurnIds = deps.repository.loadSystemTurnMessageIds
-        ? await deps.repository.loadSystemTurnMessageIds({ chatId: chat.id, messageIds: storedIds, userId: input.userId })
-        : new Set();
-    } catch (error) {
-      promptIds = null;
-      systemTurnIds = null;
-      logEvent("service_operation", { error, subsystem: "database", stage: "projection", outcome: "degraded", action: "degrade",
-        code: "fetch_url_authority_unavailable", prisma_code: databaseFailureCode(error) });
-    }
-    // Known prompts only: messages refused for lack of marks are not called instructions.
-    const instructionIds = new Set(promptIds ?? []);
-    if (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt) {
-      instructionIds.add(input.source.source.userMessage.id);
-    }
-    const excludedIds = new Set([...(promptIds ?? storedIds), ...instructionIds, ...(systemTurnIds ?? storedIds),
-      // A message the server wrote for this send (an approval continuation, a sub-agent wake-up quoting a report)
-      // authorizes no link; the user's own branch messages still do.
-      ...(input.serverAuthoredInput ? [currentSendMessageId] : [])]);
-    const userUrlDigests = userAuthoredFetchUrlDigests(conversationMessages, excludedIds);
-    const instructionUrlDigests = taskInstructionFetchUrlDigests(conversationMessages, instructionIds, userUrlDigests);
-    fetchUrlPlan = { version: 1, userUrlDigests, ...(instructionUrlDigests.length > 0 ? { instructionUrlDigests } : {}) };
-  }
+  const fetchUrlPlan: FetchUrlPlan | undefined = fetchUrlOffered ? { version: 1 } : undefined;
   // Where it may create one, it may also manage the owner's saved tasks, once
-  // there is one; in a task's own chat the tool names that task. Frozen here,
-  // with the links this run's user text authorized for a prompt it rewrites.
+  // there is one; in a task's own chat the tool names that task. Frozen here.
   const scheduledTaskManagementTool = scheduledTaskTool && deps.repository.manageScheduledTaskForCall
-    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId,
-      userUrlDigests: fetchUrlPlan?.userUrlDigests ?? [] }) : undefined;
+    ? await admitScheduledTaskManagement(deps.repository, { chatId: chat.id, userId: input.userId }) : undefined;
   // A run a user started asks its initiator before an MCP tool that may change
   // data runs (operator decision 2026-10-08); a scheduled task's own run is its
   // owner's standing authority, and a Discord turn runs unattended like it (owner

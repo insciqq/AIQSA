@@ -280,32 +280,19 @@ describe("ScheduledTasksPanel", () => {
     expect(update).toHaveBeenLastCalledWith(task.id, { expectedRevision: 2, title: "Digest", pinnedSkillIds: [] });
   });
 
-  it("explains instructions whose links runs cannot read yet and allows them when the owner saves them unchanged", async () => {
-    const task = scheduledTaskFixture({ revision: 2, prompt: "Summarize https://news.example/today", promptLinksPending: true });
-    const { promptLinksPending: _pending, ...allowed } = task;
+  it("shows no links note and sends nothing for an unchanged save of instructions with links", async () => {
+    const task = scheduledTaskFixture({ revision: 2, prompt: "Summarize https://news.example/today" });
     list.mockResolvedValue(listed([task]));
     detail.mockResolvedValue({ task, recentRuns: [] });
-    update.mockResolvedValueOnce({ ...allowed, revision: 3 });
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const sheet = screen.getByRole("dialog", { name: "Edit automation" });
-    const note = within(sheet).getByText("Runs can't read the links in these instructions yet. Save the instructions to allow them.");
-    expect(within(sheet).getByLabelText("Instructions").getAttribute("aria-describedby")).toContain(note.id);
-    // Nothing was edited, so closing needs no confirmation; saving still sends the instructions.
-    expectDirty(false);
+    expect(within(sheet).queryByTestId("scheduled-task-prompt-links")).toBeNull();
+    expect(within(sheet).queryByText(/Runs can't read the links/u)).toBeNull();
     fireEvent.click(within(sheet).getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(update).toHaveBeenCalledWith(task.id, { expectedRevision: 2, prompt: task.prompt });
-    expect(screen.getByRole("status")).toHaveTextContent("Changes saved.");
-    // Once allowed, the editor has no note and an unchanged save sends nothing.
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Weekday news brief" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
-    const again = screen.getByRole("dialog", { name: "Edit automation" });
-    expect(within(again).queryByTestId("scheduled-task-prompt-links")).toBeNull();
-    fireEvent.click(within(again).getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("marks seen only the unread runs its history renders and opens each run's own chat", async () => {

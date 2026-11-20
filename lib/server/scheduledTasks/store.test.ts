@@ -1,7 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { decodeScheduledTask, type ScheduledTaskSchedule } from "../../contracts/scheduledTasks";
-import { scheduledPromptUrlDigests } from "./promptUrls";
 import {
   loadScheduledTaskActivity,
   scheduledTaskScheduleColumns,
@@ -29,7 +28,7 @@ function row(overrides: Partial<ScheduledTaskRow> = {}): ScheduledTaskRow {
     kind: "STANDARD", status: "ACTIVE", pauseReason: null, completionReason: null,
     nextRunAt: new Date("2026-10-05T06:00:00.000Z"), chatId: "chat-1", revision: 4,
     createdAt: new Date("2026-10-01T00:00:00.000Z"), updatedAt: new Date("2026-10-02T06:01:00.000Z"),
-    promptUrlDigests: [], chat: { permanentDeletionAt: null }, ...overrides
+    chat: { permanentDeletionAt: null }, ...overrides
   };
 }
 
@@ -72,15 +71,11 @@ describe("scheduled task storage mapping", () => {
     expect(reached).toMatchObject({ completionReason: "goal_reached", kind: "monitoring", status: "completed" });
   });
 
-  it("flags instructions whose links runs cannot read yet, without exposing the snapshot", () => {
-    const prompt = "Summarize https://news.example/today";
-    const pending = toScheduledTask(row({ prompt }), { lastRun: null, running: false, unseen: false });
-    expect(pending.promptLinksPending).toBe(true);
-    expect(decodeScheduledTask(pending)).toEqual(pending);
-    expect(JSON.stringify(pending)).not.toMatch(/[0-9a-f]{64}/u);
-    const allowed = toScheduledTask(row({ prompt, promptUrlDigests: [...scheduledPromptUrlDigests(prompt, { kind: "owner" })] }),
-      { lastRun: null, running: false, unseen: false });
-    expect(allowed).not.toHaveProperty("promptLinksPending");
+  it("flags no links in instructions, which runs read whatever their source (2026-11-20)", () => {
+    const linked = toScheduledTask(row({ prompt: "Summarize https://news.example/today" }), { lastRun: null, running: false, unseen: false });
+    expect(linked).not.toHaveProperty("promptLinksPending");
+    // A projection from a server before the change still decodes, without the flag.
+    expect(decodeScheduledTask({ ...linked, promptLinksPending: true })).toEqual(linked);
   });
 
   it("flags the newest run's own unread result beside the task's unread aggregate", async () => {

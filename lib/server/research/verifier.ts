@@ -21,8 +21,8 @@ import { RESEARCH_VERIFIER_UNAVAILABLE } from "./turns";
  * 1. The quote check (`quoteCheck.ts`), which needs no model. Its result stands whatever happens after it: each later step
  *    runs under its own time inside the gate's, so a failure or a timeout there still returns what is already known.
  * 2. Turns on the verifier model, with the findings and their links and none of the reasoning, and for each claim the text it
- *    rests on, which is what the researchers really saw. A real run proved why: `fetch_url` refuses a link only a browser
- *    reached (that authority stays), and it extracts a page it can read differently, so re-reading alone left most claims
+ *    rests on, which is what the researchers really saw. A real run proved why: `fetch_url` cannot open many pages only a
+ *    browser reached, and it extracts a page it can read differently, so re-reading alone left most claims
  *    unchecked and called true ones unsupported. A finding that stands for a record (`recordId`) is read from the store: the
  *    record's stored page, whole where it fits, past that the stretches around its quotes. Only a record with no stored page
  *    stays could not check. Such a claim needs no tool, so its turn has none: past the tool time it is still checked, and a

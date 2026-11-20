@@ -41,7 +41,7 @@ type Task = {
   chatId: string | null; chatMode: ScheduledTaskChatMode; completionReason: string | null;
   consecutiveFailures: number; consecutiveIncompleteRuns: number; consecutiveMissingVerdicts: number; emailNotify: boolean;
   generation: number; id: string; kind: ScheduledTaskKind; memoryEnabled: boolean; modelId: string; nextRunAt: Date | null;
-  pauseReason: string | null; pinnedSkillIds: readonly string[]; prompt: string; promptUrlDigests: readonly string[]; provider: string;
+  pauseReason: string | null; pinnedSkillIds: readonly string[]; prompt: string; provider: string;
   /** What the store derives from the previous shown result (null: every server). */
   relevantMcpServerIds: readonly string[] | null;
   revision: number; schedule: ScheduledTaskSchedule; scheduleEnabled?: boolean; searchEnabled: boolean;
@@ -257,7 +257,6 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
         task: { baseline: task.baseline, chatEpoch: task.chatEpoch, chatMode: task.chatMode, chatPeriod: task.chatPeriod,
           generation: task.generation, kind: task.kind,
           memoryEnabled: task.memoryEnabled, modelId: task.modelId, pinnedSkillIds: task.pinnedSkillIds, prompt: task.prompt,
-          promptUrlDigests: task.promptUrlDigests,
           provider: task.provider, revision: task.revision, schedule: task.scheduleEnabled === false ? null : task.schedule,
           searchEnabled: task.searchEnabled, status: task.status, timeZone: task.timeZone, title: task.title,
           toolsEnabled: task.toolsEnabled, webhookEnabled: task.webhookEnabled, workspaceEnabled: task.workspaceEnabled },
@@ -441,7 +440,7 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
       consecutiveMissingVerdicts: 0, emailNotify: false, generation: 1, id: nextId("task"), kind: "standard", memoryEnabled: false,
       modelId: "model-a", pinnedSkillIds: [],
       nextRunAt: new Date("2026-10-05T06:00:00.000Z"), pauseReason: null, prompt: "  Summarize the synthetic fixture  ",
-      promptUrlDigests: [], provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
+      provider: "connection-a", relevantMcpServerIds: null, revision: 1, schedule: { kind: "daily", time: "09:00" },
       searchEnabled: false, status: "ACTIVE", timeZone: "Europe/Moscow", title: "Synthetic brief", toolsEnabled: false,
       userId: "owner-1", webhookEnabled: false, workspaceEnabled: false, ...overrides
     };
@@ -499,7 +498,7 @@ describe("scheduled task runner", () => {
       automation: { previousResultAt: null, schedule: "Every day at 09:00", timeZone: "Europe/Moscow", title: "Synthetic brief",
         trigger: "schedule" },
       chatPeriod: "2026-10", newChat: { title: "Synthetic brief · October 2026" },
-      occurrenceId: h.forTask(task)[0]!.id, previousResult: null, promptUrlDigests: [], relevantMcpServerIds: null,
+      occurrenceId: h.forTask(task)[0]!.id, previousResult: null, relevantMcpServerIds: null,
       taskChatEpoch: 0, taskGeneration: 1, taskId: task.id, taskRevision: 1 });
     expect(h.chats.get(h.sent[0]!.chatId)?.title).toBe("Synthetic brief · October 2026");
     expect(task).toMatchObject({ chatEpoch: 1, chatId: h.sent[0]!.chatId, chatPeriod: "2026-10" });
@@ -1143,14 +1142,6 @@ describe("scheduled task runner with the owner's tools", () => {
     const task = h.addTask({ relevantMcpServerIds: ["server-mail"], toolsEnabled: true });
     await h.tick();
     expect(h.sent[0]!.occurrence.relevantMcpServerIds).toEqual(["server-mail"]);
-  });
-
-  it("freezes the prompt's page-reading snapshot, read with the revision, into the admission", async () => {
-    const h = harness();
-    const digest = "a".repeat(64);
-    h.addTask({ promptUrlDigests: [digest], revision: 3 });
-    await h.tick();
-    expect(h.sent[0]!.occurrence).toMatchObject({ promptUrlDigests: [digest], taskRevision: 3 });
   });
 
   it("pauses before any send when tools or Workspace need tool calling the model lost", async () => {

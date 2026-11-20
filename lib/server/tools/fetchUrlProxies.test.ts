@@ -4,7 +4,6 @@ import { PROXY_BLOCKED_HTTP_STATUSES, toProxyRunPlan } from "../../contracts/pro
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { proxyConnection } from "../webFetch/proxy.testFixtures";
 import { WebFetchError, type WebFetchResponse } from "../webFetch/transport";
-import { fetchUrlDigest } from "../webFetch/urls";
 import { createFetchUrlSession, fetchUrlActivityFacts, type FetchUrlSessionDeps } from "./fetchUrl";
 import type { ToolExecutionResult } from "./types";
 
@@ -26,8 +25,7 @@ function session(overrides: Partial<FetchUrlSessionDeps> = {}) {
   const observeProxy = vi.fn();
   const runProxies = { load: vi.fn(runProxiesFromRows([one, two]).load) };
   const deps: FetchUrlSessionDeps = {
-    plan: { userUrlDigests: [url, "http://example.com/next", "http://sub.example.com/page", "http://other.org/"].map(fetchUrlDigest), version: 1 },
-    proxyPlan: toProxyRunPlan([one, two])!, runProxies, userId: "synthetic-owner", scheduled: false,
+    proxyPlan: toProxyRunPlan([one, two])!, runProxies, userId: "synthetic-owner",
     fetchPage, fetchProxyPage, observeProxy,
     extractPage: async ({ body }) => ({ kind: "text", text: Buffer.from(body).toString(), title: null, truncated: false }),
     ...overrides
@@ -133,9 +131,8 @@ describe("fetch_url proxy selection in one answer", () => {
     }
   });
 
-  it("never widens link authority and validates explicit choices before credentials load", async () => {
+  it("validates explicit choices before credentials load", async () => {
     const reader = session();
-    expect(json(await reader.execute(call("http://unknown.example/", one.name), { signal })).error).toBe("fetch_url_not_in_conversation");
     for (const choice of [null, 1, {}, "", "x".repeat(65), "bad\nname"]) {
       expect(json(await reader.execute(call(url, choice), { signal })).error).toBe("fetch_url_invalid");
     }

@@ -7,7 +7,6 @@ import { setRecordObserver } from "../observability";
 import { createFetchUrlSession } from "../tools/fetchUrl";
 import { extractPage } from "./extract";
 import { fetchWebPage } from "./transport";
-import { fetchUrlDigest } from "./urls";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -62,7 +61,6 @@ describe("fetch_url redirect cookies and tabbed HTML", () => {
     const records: unknown[] = [];
     setRecordObserver((record) => records.push(record));
     const session = () => createFetchUrlSession({
-      plan: { version: 1, userUrlDigests: [start, probe, "http://shop.example.com/leave"].map(fetchUrlDigest) }, scheduled: false,
       fetchPage: (url, options) => fetchWebPage(url, { ...options, dispatch,
         lookupHostname: async () => [{ address: "93.184.216.34", family: 4 }] }),
       // Same extraction as the disposable parser; no parser service or database needed.

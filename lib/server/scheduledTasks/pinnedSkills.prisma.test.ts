@@ -9,7 +9,6 @@ import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
 import { createPrismaScheduledTaskPinnedSkillLoader } from "./pinnedSkills";
-import { scheduledPromptUrlDigests } from "./promptUrls";
 import { createPrismaScheduledTaskStore } from "./store";
 
 const users: string[] = [];
@@ -18,7 +17,6 @@ const skills = createPrismaSkillRepository(prisma);
 const store = createPrismaScheduledTaskStore(prisma);
 const runs = createPrismaRunRepository(prisma);
 const loadPinnedSkills = createPrismaScheduledTaskPinnedSkillLoader(prisma);
-const noUrls = scheduledPromptUrlDigests("", { kind: "owner" });
 const due = new Date("2026-10-05T06:00:00.000Z");
 const draft: ScheduledTaskDraft = {
   title: "Synthetic digest", prompt: "Run the synthetic digest", schedule: { kind: "daily", time: "09:00" },
@@ -98,11 +96,11 @@ describe("a scheduled task's pinned Skills", () => {
   it("persist with the task under the database's bound and tools rule and project the owner's view", async () => {
     const runner = await user("pinned-store");
     const own = await skill(runner, "Own digest");
-    const created = await store.create(runner, { ...draft, pinnedSkillIds: [own] }, due, noUrls);
+    const created = await store.create(runner, { ...draft, pinnedSkillIds: [own] }, due);
     expect(created).toMatchObject({ pinnedSkillIds: [own], pinnedSkills: [{ id: own, name: "Own digest", available: true }] });
     // Changing the pins bumps the revision but keeps the generation and its baseline.
     const updated = await store.update(runner, created.id, { draft: { ...draft, pinnedSkillIds: [] }, expectedRevision: 1,
-      nextRunAt: undefined, promptUrls: "keep", status: "active" });
+      nextRunAt: undefined, status: "active" });
     expect(updated).toMatchObject({ pinnedSkillIds: [], pinnedSkills: [], revision: 2 });
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ generation: 1 });
     // The database refuses pins without tools and more than four.
@@ -121,7 +119,7 @@ describe("a scheduled task's pinned Skills", () => {
     await prisma.accessGrant.create({ data: { providerConnectionId: providerTemplateIds.fakeConnection, userId: runner } });
     const own = await skill(runner, "Own digest");
     const revision = await prisma.skillDefinition.findUniqueOrThrow({ select: { currentRevisionId: true }, where: { id: own } });
-    const created = await store.create(runner, { ...draft, pinnedSkillIds: [own] }, due, noUrls);
+    const created = await store.create(runner, { ...draft, pinnedSkillIds: [own] }, due);
     const row = await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } });
     const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, memoryMode: "EXCLUDED",
       title: "Synthetic digest", userId: runner } });

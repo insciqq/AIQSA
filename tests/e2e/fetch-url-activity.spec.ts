@@ -96,14 +96,15 @@ test("shows the page read's host/path with plain-language refusal copy", async (
   await expect(blocked).toHaveText(["Blocked 127.0.0.1/e2e-page: this address is not allowed"]);
   await expect(page.getByTestId("tool-activity-disclosure").last()).not.toContainText("token=private");
 
-  // A link the chat never contained is skipped, and the model is told to ask for it.
+  // A link the chat never contained is requested too (operator decision 2026-11-20); a reserved .example host never
+  // resolves, so the read fails as unreachable instead of being skipped.
   await ask(page, `${titlePrefix}: summarize the private page [AIQSA_FETCH_URL_E2E:unlisted]`,
-    "Page reading finished: fetch_url_not_in_conversation.");
-  const refused = await latestSteps(page);
-  await expect(refused).toHaveText(["Skipped unlisted.example/private: only links from this chat or web search are read"]);
+    "Page reading finished: fetch_network_error.");
+  const unreachable = await latestSteps(page);
+  await expect(unreachable).toHaveText(["Couldn't read unlisted.example/private: the site is unreachable"]);
 
   // The persisted projection shows the same rows after a reload.
   await page.reload();
-  await expect(page.getByTestId("conversation-thread")).toContainText("Page reading finished: fetch_url_not_in_conversation.");
-  await expect(await latestSteps(page)).toHaveText(["Skipped unlisted.example/private: only links from this chat or web search are read"]);
+  await expect(page.getByTestId("conversation-thread")).toContainText("Page reading finished: fetch_network_error.");
+  await expect(await latestSteps(page)).toHaveText(["Couldn't read unlisted.example/private: the site is unreachable"]);
 });

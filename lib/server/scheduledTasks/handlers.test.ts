@@ -8,7 +8,6 @@ import {
 import type { ScheduledTaskCatalog } from "./catalog";
 import { createScheduledTaskHandlers } from "./handlers";
 import { ScheduledTaskError, type ScheduledTaskUpdateWrite } from "./store";
-import { fetchUrlDigest } from "../webFetch/urls";
 
 const NOW = new Date("2026-10-04T08:00:00.000Z"); // 11:00 in Moscow
 const catalog: ScheduledTaskCatalog = {
@@ -43,7 +42,7 @@ function fixture(current: ScheduledTask | null = task()) {
     list: vi.fn().mockResolvedValue({ tasks: [current], limits: { maxActive: 10, maxTotal: 50 }, emailAvailable: false }),
     get: vi.fn().mockResolvedValue(current),
     detail: vi.fn().mockResolvedValue(current ? { task: current, recentRuns: [] } : null),
-    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date | null, _promptUrls: readonly string[]) =>
+    create: vi.fn(async (_userId: string, value: ScheduledTaskDraft, nextRunAt: Date | null) =>
       task({ ...value, nextRunAt: nextRunAt?.toISOString() ?? null, revision: 1, webhook: value.webhookEnabled ? hook : null })),
     update: vi.fn(async (_userId: string, _taskId: string, write: ScheduledTaskUpdateWrite) =>
       task({ ...write.draft, status: write.status, revision: write.expectedRevision + 1 })),
@@ -94,7 +93,7 @@ describe("scheduled tasks owner API", () => {
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("private, no-store");
     expect(f.store.create).toHaveBeenCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [] },
-      new Date("2026-10-05T06:00:00.000Z"), []);
+      new Date("2026-10-05T06:00:00.000Z"));
 
     expect(f.loadCatalog).toHaveBeenCalledWith("owner");
     expect((await response.json()).task).toMatchObject({ title: "Morning brief", nextRunAt: "2026-10-05T06:00:00.000Z" });
@@ -148,7 +147,7 @@ describe("scheduled tasks owner API", () => {
     const hourlyTask = await f.handlers.create(json("POST", { ...draft, schedule: hourly, chatMode: "same" }));
     expect(hourlyTask.status).toBe(201);
     expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], schedule: hourly, chatMode: "same" },
-      new Date("2026-10-05T06:00:00.000Z"), []);
+      new Date("2026-10-05T06:00:00.000Z"));
   });
 
   it("maps store limits and hides unexpected failures", async () => {
@@ -332,7 +331,7 @@ describe("scheduled tasks owner API", () => {
     const disabled = await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }));
     expect([disabled.status, await disabled.json()]).toEqual([400, { error: "scheduled_task_workspace_unavailable" }]);
     expect((await f.handlers.create(json("POST", { ...draft, workspaceEnabled: true }))).status).toBe(201);
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], workspaceEnabled: true }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], workspaceEnabled: true }, expect.any(Date));
 
     // Turning tools on for a model without tool calling is refused, even for a paused task.
     const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
@@ -353,7 +352,7 @@ describe("scheduled tasks owner API", () => {
     const created = await f.handlers.create(json("POST", { ...draft, pinnedSkillIds: ["skill-own", "skill-shared"] }));
     expect(created.status).toBe(201);
     expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: ["skill-own", "skill-shared"] },
-      expect.any(Date), []);
+      expect.any(Date));
     expect(f.loadPinnedSkills).toHaveBeenLastCalledWith("owner", ["skill-own", "skill-shared"]);
     const cases: Array<[unknown, string]> = [
       [{ ...draft, pinnedSkillIds: ["a", "b", "c", "d", "e"] }, "scheduled_task_invalid"],
@@ -389,7 +388,7 @@ describe("scheduled tasks owner API", () => {
   it("stores the Memory switch as sent and changes it without a model check", async () => {
     const f = fixture();
     await f.handlers.create(json("POST", { ...draft, memoryEnabled: false }));
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], memoryEnabled: false }, expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", { ...draft, ...createDefaults, pinnedSkillIds: [], memoryEnabled: false }, expect.any(Date));
     // Memory needs no tool calling: a paused task with a plain model turns it on as it is.
     const plain = fixture(task({ memoryEnabled: false, modelId: "model-plain", nextRunAt: null, searchEnabled: false,
       status: "paused", toolsEnabled: false }));
@@ -406,7 +405,7 @@ describe("scheduled tasks owner API", () => {
   it("starts a task without Telegram delivery unless the body asks, and switches it without a model check", async () => {
     const f = fixture();
     await f.handlers.create(json("POST", { ...draft, telegramNotify: true }));
-    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ telegramNotify: true }), expect.any(Date), []);
+    expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ telegramNotify: true }), expect.any(Date));
     const refused = await f.handlers.create(json("POST", { ...draft, telegramNotify: "yes" }));
     expect([refused.status, await refused.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
     const plain = fixture(task({ modelId: "model-plain", nextRunAt: null, searchEnabled: false, status: "paused", toolsEnabled: false }));
@@ -424,10 +423,10 @@ describe("scheduled tasks owner API", () => {
     const { historyRetentionDays: _omitted, ...withoutHistory } = draft;
     await f.handlers.create(json("POST", withoutHistory));
     expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: 90 }),
-      expect.any(Date), []);
+      expect.any(Date));
     await f.handlers.create(json("POST", { ...draft, historyRetentionDays: null }));
     expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ historyRetentionDays: null }),
-      expect.any(Date), []);
+      expect.any(Date));
     for (const historyRetentionDays of [0, 60, "90"]) {
       const refused = await f.handlers.create(json("POST", { ...draft, historyRetentionDays }));
       expect([refused.status, await refused.json()]).toEqual([400, { error: "scheduled_task_invalid" }]);
@@ -455,19 +454,12 @@ describe("scheduled tasks owner API", () => {
     expect(f.kick).toHaveBeenCalledTimes(2);
   });
 
-  it("authorizes the links of a prompt the owner writes and keeps the snapshot otherwise", async () => {
+  it("writes a prompt with links as it is, with no link snapshot (2026-11-20)", async () => {
     const f = fixture();
-    const prompt = "Summarize https://news.example/today every morning.";
-    await f.handlers.create(json("POST", { ...draft, prompt }));
-    expect(f.store.create.mock.calls.at(-1)?.[3]).toEqual([fetchUrlDigest("https://news.example/today")]);
-    // An edit that sends the prompt replaces the snapshot with the owner's links.
+    await f.handlers.create(json("POST", { ...draft, prompt: "Summarize https://news.example/today every morning." }));
+    expect(f.store.create.mock.calls.at(-1)).toHaveLength(3);
     await f.handlers.update(patch({ expectedRevision: 2, prompt: "Read https://other.example/a instead." }), "task-1");
-    expect(lastWrite(f)?.promptUrls).toEqual([fetchUrlDigest("https://other.example/a")]);
-    // Pausing or editing other fields never authorizes links the owner did not write.
-    await f.handlers.update(patch({ expectedRevision: 2, status: "paused" }), "task-1");
-    expect(lastWrite(f)?.promptUrls).toBe("keep");
-    await f.handlers.update(patch({ expectedRevision: 2, title: "Renamed" }), "task-1");
-    expect(lastWrite(f)?.promptUrls).toBe("keep");
+    expect(lastWrite(f)).not.toHaveProperty("promptUrls");
   });
 
   it("creates a webhook-only automation without a due time, and refuses one with no trigger", async () => {
@@ -477,12 +469,12 @@ describe("scheduled tasks owner API", () => {
     const created = await f.handlers.create(json("POST", { ...draft, schedule: once, scheduleEnabled: false, webhookEnabled: true }));
     expect(created.status).toBe(201);
     expect(f.store.create).toHaveBeenLastCalledWith("owner",
-      { ...draft, ...createDefaults, pinnedSkillIds: [], schedule: once, scheduleEnabled: false, webhookEnabled: true }, null, []);
+      { ...draft, ...createDefaults, pinnedSkillIds: [], schedule: once, scheduleEnabled: false, webhookEnabled: true }, null);
     expect((await created.json()).task).toMatchObject({ nextRunAt: null, scheduleEnabled: false, webhookEnabled: true, webhook: hook });
     // Both triggers, and the defaults of a body that names neither.
     await f.handlers.create(json("POST", { ...draft, webhookEnabled: true }));
     expect(f.store.create).toHaveBeenLastCalledWith("owner", expect.objectContaining({ scheduleEnabled: true, webhookEnabled: true }),
-      new Date("2026-10-05T06:00:00.000Z"), []);
+      new Date("2026-10-05T06:00:00.000Z"));
     const cases: Array<[unknown, string]> = [
       [{ ...draft, scheduleEnabled: false }, "scheduled_task_trigger_required"],
       [{ ...draft, scheduleEnabled: false, webhookEnabled: false, schedule: { kind: "weekly", time: "09:00", days: [] } },
