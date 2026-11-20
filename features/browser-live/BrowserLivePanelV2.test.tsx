@@ -100,7 +100,7 @@ describe("BrowserLivePanelV2", () => {
     expect(sources).toHaveLength(0);
     fireEvent.click(bar);
     expect(bar).toHaveAttribute("aria-expanded", "true");
-    expect(sources[0]!.url).toBe(browserLiveStreamPath(CHAT));
+    expect(sources[0]!.url).toBe(browserLiveStreamPath(CHAT, { presence: true }));
     expect(screen.getByText("Connecting to the browser…")).toBeVisible();
     send("state", liveState());
     send("frame", liveFrame(1));
@@ -252,6 +252,22 @@ describe("BrowserLivePanelV2", () => {
       setHidden(false);
       expect(sources).toHaveLength(2);
       expect(sources[1]!.closed).toBe(false);
+    });
+
+    // Review 2026-11-20: the grace kept a just-hidden page "shown", so a handoff arriving then opened a stream unseen.
+    it("opens no new stream during the grace: the grace only keeps one already open", () => {
+      vi.useFakeTimers();
+      const { rerender } = renderPanel();
+      expect(sources).toHaveLength(0);
+      setHidden(true);
+      act(() => { vi.advanceTimersByTime(1_000); });
+      rerender(<BrowserLivePanelV2 chatId={CHAT} live openEventSource={openSource} toolActivity={handoffCall}
+        workspaceActivity={browsing} />);
+      expect(screen.getByRole("button", { name: /Hide/u })).toHaveTextContent("Needs your help");
+      expect(sources).toHaveLength(0);
+      setHidden(false);
+      expect(sources).toHaveLength(1);
+      expect(sources[0]!.url).toBe(browserLiveStreamPath(CHAT, { presence: true }));
     });
 
     it("does not open the stream in a tab loaded in the background", () => {

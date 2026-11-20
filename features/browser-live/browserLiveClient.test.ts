@@ -28,7 +28,7 @@ describe("BrowserLiveStream", () => {
     const changes = vi.fn();
     stream.subscribe(changes);
     stream.start();
-    expect(sources[0]!.url).toBe(browserLiveStreamPath("chat/1"));
+    expect(sources[0]!.url).toBe(browserLiveStreamPath("chat/1", { presence: true }));
     expect(stream.getSnapshot().connection).toBe("connecting");
     sources[0]!.send("state", liveState());
     expect(stream.getSnapshot()).toMatchObject({ connection: "live", state: { controller: "agent" } });
@@ -68,6 +68,11 @@ describe("BrowserLiveStream", () => {
     stream.restart();
     expect(sources).toHaveLength(BROWSER_LIVE_RETRY_DELAYS_MS.length + 2);
     expect(stream.getSnapshot()).toMatchObject({ connection: "connecting", state: null, frame: null });
+    // Only the person's openings (start, Reopen) claim presence; the transport's own reconnects never do, so a view left
+    // open cannot keep a waiting handoff alive (review 2026-11-20).
+    expect(sources.map((source) => source.url.endsWith("?presence=1"))).toEqual([true,
+      ...BROWSER_LIVE_RETRY_DELAYS_MS.map(() => false), true]);
+    expect(sources[1]!.url).toBe(browserLiveStreamPath("chat-1"));
   });
 
   it("forgets the frame and closes the stream when stopped", () => {

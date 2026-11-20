@@ -1,6 +1,7 @@
 import {
   BROWSER_LIVE_ERROR_HTTP_STATUS,
   BROWSER_LIVE_LIMITS,
+  BROWSER_LIVE_PRESENCE_PARAM,
   browserLiveControlRequestSchema,
   browserLiveHandoffRequestSchema,
   browserLiveInputSchema,
@@ -126,7 +127,9 @@ export function createBrowserLiveHandlers(deps: BrowserLiveHandlerDeps) {
       if (found instanceof Response) return found;
       const stream = createConnectSseStream({ maxQueuedBytes: BROWSER_LIVE_RELAY_LIMITS.viewQueueBytes, signal: request.signal });
       if (stream.isClosed()) return stream.response;
-      const id = await found.view.watch(found.viewer, frameBudgetWriter(stream));
+      // Only an opening the person made is a sign of them; an automatic reconnect carries no flag.
+      const presence = new URL(request.url).searchParams.get(BROWSER_LIVE_PRESENCE_PARAM) === "1";
+      const id = await found.view.watch(found.viewer, frameBudgetWriter(stream), { presence });
       if (!id) {
         stream.close();
         return refuse("browser_live_not_found");

@@ -75,18 +75,21 @@ function pageHidden(): boolean {
 }
 
 /**
- * Whether the page is shown, or was hidden for less than the grace. The live view streams only then: its opening is
- * how the server learns the user came to a waiting handoff (`browserLive.ts`), so a background tab must not open it
- * by itself, and frames for a hidden page are wasted anyway.
+ * Whether the page is shown now (`visible`), and whether it is shown or was hidden for less than the grace (`kept`).
+ * The live view opens a stream only on a visible page: its opening is how the server learns the user came to a waiting
+ * handoff (`browserLive.ts`), so a background tab must never open one. The grace only keeps a stream already open.
  */
-function usePageShown(): boolean {
-  const [shown, setShown] = useState(() => !pageHidden());
+function usePageVisibility(): Readonly<{ kept: boolean; visible: boolean }> {
+  const [visible, setVisible] = useState(() => !pageHidden());
+  const [kept, setKept] = useState(() => !pageHidden());
   useEffect(() => {
     let timer: number | undefined;
     const changed = () => {
       window.clearTimeout(timer);
-      if (!pageHidden()) setShown(true);
-      else timer = window.setTimeout(() => setShown(false), BROWSER_LIVE_HIDDEN_GRACE_MS);
+      const shown = !pageHidden();
+      setVisible(shown);
+      if (shown) setKept(true);
+      else timer = window.setTimeout(() => setKept(false), BROWSER_LIVE_HIDDEN_GRACE_MS);
     };
     document.addEventListener("visibilitychange", changed);
     return () => {
@@ -94,7 +97,7 @@ function usePageShown(): boolean {
       window.clearTimeout(timer);
     };
   }, []);
-  return shown;
+  return { kept, visible };
 }
 
 function prefersReducedMotion(): boolean {
@@ -759,8 +762,12 @@ export function BrowserLivePanelV2({ chatId, live: runLive, openEventSource, too
   }, []);
   const panelId = useId();
   const barRef = useRef<HTMLButtonElement>(null);
-  const pageShown = usePageShown();
-  const live = useBrowserLive(chatId, visible && expanded && pageShown, openEventSource);
+  const page = usePageVisibility();
+  // A stream opens only on a visible page; a hidden one keeps an open stream for the grace (adjusted while rendering).
+  const [streaming, setStreaming] = useState(false);
+  const streams = visible && expanded && (page.visible || (streaming && page.kept));
+  if (streams !== streaming) setStreaming(streams);
+  const live = useBrowserLive(chatId, streams, openEventSource);
   const streamHandoff = live.snapshot.state?.handoff?.id ?? null;
 
   // A pending handoff opens the panel once; the user may close it again.

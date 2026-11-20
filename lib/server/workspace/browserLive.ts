@@ -304,23 +304,26 @@ class LiveRun implements BrowserLiveRunHandle {
 
   /**
    * The owner acted in this chat's live browser (opened a view, sent input, took or returned control, picked an agent,
-   * answered a handoff): every pending handoff learns the user is there, so its wait starts its idle time again. The
-   * panel opens its stream only while its page is shown (`BrowserLivePanelV2.tsx`), so a view opening is the user
-   * coming to the screen, not a tab left open in the background.
+   * answered a handoff): every pending handoff learns the user is there, so its wait starts its idle time again.
    */
   private userSeen(): void {
     for (const pending of [...this.agents.pendingAll()]) pending.seen?.();
   }
 
-  /** Opens one view of the owner: the state, the steps and the latest frame now, then every change. */
-  async watch(viewer: BrowserLiveViewer, writer: BrowserLiveWriter): Promise<string | null> {
+  /**
+   * Opens one view of the owner: the state, the steps and the latest frame now, then every change. `presence`: the
+   * person opened it on a page they can see (`browserLiveStreamPath`; the panel opens a stream only on a shown page),
+   * a sign of them; an automatic reconnect is none, so a view left open cannot keep a handoff waiting by itself.
+   */
+  async watch(viewer: BrowserLiveViewer, writer: BrowserLiveWriter, options: Readonly<{ presence?: boolean }> = {}):
+    Promise<string | null> {
     if (this.remembered === null) this.remembered = await this.registration.signInRemembered().catch(() => false);
     if (this.ended) return null;
     if (this.unavailable) {
       writer.close({ data: { reason: "not_available" }, event: "end" });
       return null;
     }
-    this.userSeen();
+    if (options.presence === true) this.userSeen();
     while (this.views.size >= BROWSER_LIVE_RELAY_LIMITS.views) {
       const [oldestId, oldest] = this.views.entries().next().value!;
       this.views.delete(oldestId);
