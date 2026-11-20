@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ChatDetailWire, ChatMessageWire } from "../../lib/contracts/chats";
-import type { AssistantChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard } from "../../lib/contracts/resourceChanges";
+import type { AssistantChangeCard, InstructionsChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard } from "../../lib/contracts/resourceChanges";
 import type { SkillSaveCard } from "../../lib/contracts/skillSaves";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
@@ -31,6 +31,10 @@ const assistantUpdated: AssistantChangeCard = { action: "updated", assistantId: 
   changes: [{ field: "instructions", summary: null }, { field: "model", summary: "GPT-5.5 → Claude Sonnet" }], consequences: null,
   definitionVersion: 4, instructionsDiff: { lines: [{ kind: "del", text: "Be brief." }, { kind: "add", text: "Be thorough." }], truncated: false },
   name: "Reviewer", proposalId: null, resource: "assistant", version: 1 };
+const instructionsUpdated: InstructionsChangeCard = { version: 1, resource: "instructions", action: "updated",
+  presetId: "preset_1", revision: 3, name: "My instructions",
+  diff: { lines: [{ kind: "context", text: "Answer in Russian." }, { kind: "add", text: "Format price comparisons as a table: model, price, shop, rating." }], truncated: false },
+  previousText: "Answer in Russian." };
 const skillSaved: SkillSaveCard = { version: 1, saveId: "save_1", skillId: "skill_2", revisionId: "rev_2", name: "Invoice parser",
   outcome: "created", fromRevision: null, toRevision: 1, changeNote: null, copiedFrom: null, published: false,
   files: [{ path: "SKILL.md", change: "added", executable: false }, { path: "scripts/parse.py", change: "added", executable: true }],
@@ -42,7 +46,8 @@ const turns: readonly Readonly<{ ask: string; answer: string; cards?: ResourceCh
   { ask: "Remove the old deploy key and the report writer Skill.", answer: "Confirm both deletions in the cards below.",
     cards: [secretDelete, skillDelete] },
   { ask: "Make the reviewer thorough and switch it to Claude.", answer: "Updated the Reviewer Assistant.", cards: [assistantUpdated] },
-  { ask: "Save this as a Skill.", answer: "Saved the Invoice parser Skill.", skill: skillSaved }
+  { ask: "Save this as a Skill.", answer: "Saved the Invoice parser Skill.", skill: skillSaved },
+  { ask: "From now on compare prices as a table.", answer: "Added it to your Instructions.", cards: [instructionsUpdated] }
 ];
 
 function message(id: string, role: "assistant" | "user", content: string, parentMessageId: string | null,
@@ -80,7 +85,7 @@ async function prepare(page: Page) {
   await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));
   await page.route(`**/api/chats/${chatId}`, (route) => route.fulfill({ json: { chat } }));
   // A settled card reads its resource once; a failed read keeps its verbs, which is the state these images show.
-  await page.route(/\/api\/(me\/)?(skills|assistants)\//u, (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
+  await page.route(/\/api\/(me\/)?(skills|assistants|instructions)\//u, (route) => route.fulfill({ status: 503, json: { error: "unavailable" } }));
   const writes: unknown[] = [];
   await page.route("**/api/me/workspace/secrets", (route) => {
     if (route.request().method() !== "POST") return route.fulfill({ status: 503, json: { error: "workspace_secret_unavailable" } });
@@ -90,7 +95,7 @@ async function prepare(page: Page) {
   await page.route("**/api/chats/*/messages", (route) => route.request().method() === "POST"
     ? route.fulfill({ status: 409, json: { error: "unexpected_fixture_run" } }) : route.fallback());
   await signInWithLocalToken(page, `/c/${chatId}`);
-  await expect(page.locator("[data-resource]")).toHaveCount(5, { timeout: 30_000 });
+  await expect(page.locator("[data-resource]")).toHaveCount(6, { timeout: 30_000 });
   return { writes };
 }
 
@@ -122,6 +127,14 @@ test("resource change cards stay compact and every verb stays reachable at every
   const skillSave = page.getByText(skillSaved.name, { exact: true }).first();
   await captureState(page, info, "assistant-updated-skill-saved", { anchor: skillSave, sizes, atEachSize: async () => {
     await expectWithinViewport(page, assistant.getByRole("link", { name: "Open in Settings" }));
+    await expectNoHorizontalOverflow(page);
+  } });
+
+  const instructions = page.locator("[data-resource='instructions']");
+  await expect(instructions).toContainText("Instructions updated");
+  await captureState(page, info, "instructions-updated", { anchor: instructions, sizes, atEachSize: async () => {
+    await expectWithinViewport(page, instructions.getByRole("button", { name: `Undo changes to ${instructionsUpdated.name}` }));
+    await expectWithinViewport(page, instructions.getByRole("link", { name: "Open Instructions" }));
     await expectNoHorizontalOverflow(page);
   } });
 
