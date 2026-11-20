@@ -596,7 +596,7 @@ describe("why tools closed", () => {
       told.push(input.toolsClosedBy);
       const instruction = input.toolsClosedBy ? toolsClosedInstruction(reader, input.toolsClosedBy) : null;
       const request = { history: [{ text: "question", type: "user" as const },
-        ...(instruction ? [{ text: instruction, type: "user" as const }] : [])], toolChoice: input.toolChoice } as ProviderRunRequest;
+        ...(instruction ? [{ text: instruction, type: "user" as const }] : [])], toolChoice: input.toolChoice } as unknown as ProviderRunRequest;
       requests.push(request);
       return request;
     };

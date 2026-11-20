@@ -182,7 +182,7 @@ describe("manage_secret", () => {
     const first = card(await executeManageSecret(fake, call({ action: "propose_delete", name: "x" })));
     const second = card(await executeManageSecret(fake, call({ action: "propose_delete", name: "x" })));
     expect(first).toMatchObject({ action: "delete_proposed", name: `${"𝔸".repeat(59)}…`, proposalId: expect.any(String) });
-    expect(first?.proposalId).not.toBe(second?.proposalId);
+    expect(first && "proposalId" in first ? first.proposalId : null).not.toBe(second && "proposalId" in second ? second.proposalId : null);
   });
 
   it.each([

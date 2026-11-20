@@ -289,7 +289,7 @@ describe("manage_assistant", () => {
     const first = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
     const second = card(await executeManageAssistant(fake, call({ action: "propose_delete", assistantId: "asst_1" }), context));
     expect(first).toMatchObject({ consequences: { groupNames: [`${long.slice(0, 199)}…`] }, name: `${"𝔸".repeat(39)}…`, proposalId: expect.any(String) });
-    expect(first?.proposalId).not.toBe(second?.proposalId);
+    expect(first && "proposalId" in first ? first.proposalId : null).not.toBe(second && "proposalId" in second ? second.proposalId : null);
     const publish = card(await executeManageAssistant(fake, call({ action: "propose_publish", assistantId: "asst_1", audience: "Frontend" }), context));
     expect(publish).toMatchObject({ action: "publish_proposed", proposalId: expect.any(String) });
   });
