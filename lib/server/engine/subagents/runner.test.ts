@@ -1212,6 +1212,15 @@ describe("sub-agent runner", () => {
     expect(step({ args: ["open", "https://forum.example/"], command: "aiqsa-browser" },
       `{\n  "ok": true,\n  "data": {\n    "stdout": "[browser #4 · forum] open @ forum.example/t/1\\nTitle: A topic\\n… 9000 characters omitted here`))
       .toBe("[browser #4 · forum] open @ forum.example/t/1");
+    // A step naming an emoji stays within the decoder's UTF-16 bound, so the report around it survives.
+    const emoji = `[browser #1 · shop-catalog] click: button "🔍${"x".repeat(99)}" @ shop.test/${"a".repeat(90)}🔍🔍🔍`;
+    const summary = step({ args: ["click", "1"], command: "aiqsa-browser" }, workspace(emoji));
+    expect(summary.length).toBeLessThanOrEqual(SUBAGENT_LIMITS.stepSummaryCharacters);
+    expect(summary.endsWith("…")).toBe(true);
+    expect(summary).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    const ended = endedSubagentCallResult({ approvals: [], binding, files: [], name: "shop-catalog", report: "Outcome: done\nFound it.",
+      state: "done", steps: [{ outcome: "complete", summary, tool: "Workspace: sandbox_exec" }] });
+    expect(decodeSubagentCallResult(ended)).toMatchObject({ report: "Outcome: done\nFound it.", steps: [{ summary }] });
   });
 
   it("reads the outcome line of a report", () => {

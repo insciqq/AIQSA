@@ -294,10 +294,19 @@ const CHILD_REPORT_LOOKS = 2;
  */
 const TURN_BUDGET_EXEMPT: ReadonlySet<string> = new Set([CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME]);
 
+/**
+ * One line within `max` UTF-16 units, the measure `decodeSubagentCallResult` checks: a summary one unit over it, such as a
+ * browser step naming an emoji button, would make the whole result undecodable and drop the report. Never splits a pair.
+ */
 const boundLine = (value: string, max: number) => {
   const line = value.replace(/\s+/gu, " ").trim();
-  const characters = Array.from(line);
-  return characters.length > max ? `${characters.slice(0, max - 1).join("")}…` : line;
+  if (line.length <= max) return line;
+  let kept = "";
+  for (const character of line) {
+    if (kept.length + character.length > max - 1) break;
+    kept += character;
+  }
+  return `${kept}…`;
 };
 
 /** A response's items for adapters that report none. */
