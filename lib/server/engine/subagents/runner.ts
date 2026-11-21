@@ -82,7 +82,7 @@ import {
   type ToolsClosedReader
 } from "../toolBatch";
 import type { ToolCallStore } from "../toolCallStore";
-import type { ToolRegistry } from "../toolRegistry";
+import { drivesBrowser, type ToolRegistry } from "../toolRegistry";
 import { toolOutputExcerpt } from "../toolResults";
 import {
   modelResponseItems,
@@ -275,7 +275,12 @@ export const WORKSPACE_TURN_GUIDANCE_PREFIX = "This turn's output directory: ";
 const WRITTEN_FILE_KINDS = new Set(["file_write", "file_copy", "file_move", "file_change"]);
 const WORKSPACE_LIFECYCLE_KINDS = new Set(["attachments_prepare", "execution_status", "outputs_export", "workspace_recreated",
   "workspace_start", "workspace_stopped"]);
-const BROWSER_STEP_LINE = /\[browser #\d+\][^\n]*/u;
+/**
+ * A browser action's step line (`ops/workspace-guest/python/aiqsa/browser/_format.py`): only an action prints one, at a line's
+ * start, and a sub-agent's names it after the number (`[browser #3 · shop] open @ shop.example/`). The guide quotes one mid-line,
+ * so reading it with `cat` once made a sub-agent's first step "click Add to cart".
+ */
+const BROWSER_STEP_LINE = /^\[browser #\d{1,5}(?: · [^\]\n]{1,64})?\] [a-z_]{1,20}\b[^\n]*/mu;
 const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)\b\s*(?:\(\s*([a-z][a-z0-9_]{0,63})\s*\))?/iu;
 /** Attempts to end a turn's row; one that stays unsettled ends with its run's next admission (`threadStore.ts`). */
 const SETTLE_ATTEMPTS = 3;
@@ -362,6 +367,23 @@ export function parseSubagentOutcome(report: string): Readonly<{ outcome: Subage
   return { outcome, ...(reason && isSubagentCode(reason) ? { reason } : {}) };
 }
 
+const printedStrings = (value: unknown): string[] => typeof value === "string" ? [value]
+  : Array.isArray(value) ? value.flatMap(printedStrings)
+  : value !== null && typeof value === "object" ? Object.values(value).flatMap(printedStrings) : [];
+
+/** The first step line a call that drives the browser printed. A Workspace result is JSON whose `stdout` holds the lines. */
+function browserStepLine(call: ModelToolCall, output: string): string | undefined {
+  if (!output.includes("[browser #") || !drivesBrowser(call)) return undefined;
+  let printed: string;
+  try {
+    printed = printedStrings(JSON.parse(output)).join("\n");
+  } catch {
+    // An excerpt of a long result no longer parses: its stdout starts a line, and its escapes are read as they print.
+    printed = output.replace(/"stdout":\s*"/u, "\n").replace(/\\n/gu, "\n").replace(/\\"/gu, "\"");
+  }
+  return BROWSER_STEP_LINE.exec(printed)?.[0];
+}
+
 /** One call's step for the main agent: the tool's friendly name, its outcome and a content-light line. */
 export function subagentStep(registry: ToolRegistry, call: ModelToolCall, result: TranscriptToolResultItem): SubagentStep {
   const activity = registry.resolve(call.name)?.activity(call);
@@ -371,7 +393,7 @@ export function subagentStep(registry: ToolRegistry, call: ModelToolCall, result
   const notRun = isNoMoreToolsOutput(result.output);
   const refused = result.output === SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT || notRun;
   const outcome: SubagentStep["outcome"] = refused ? "refused" : result.outcome;
-  const browser = BROWSER_STEP_LINE.exec(result.output)?.[0];
+  const browser = browserStepLine(call, result.output);
   const summary = browser ?? (refused ? (notRun ? "not run" : SUBAGENT_BLOCKED_REASONS.needsApproval)
     : outcome === "complete" ? "" : (result.output.split("\n").find((line) => line.trim()) ?? ""));
   return { outcome, summary: boundLine(summary, SUBAGENT_LIMITS.stepSummaryCharacters), tool };

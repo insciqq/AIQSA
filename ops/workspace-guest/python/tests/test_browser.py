@@ -34,7 +34,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in the slim gue
     _host = None  # type: ignore[assignment]
 
 #: The parser of `features/run-lifecycle-v2/workspaceActivityPresentation.ts`, kept equal to it.
-UI_STEP_LINE = re.compile(r"^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$")
+UI_STEP_LINE = re.compile(r"^\[browser #(\d{1,5})(?: · [^\]\n]{1,64})?\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$")
 
 
 def cookie(name: str, domain: str, value: str = "v", **extra: Any) -> Dict[str, Any]:
@@ -320,15 +320,29 @@ class FormatTests(unittest.TestCase):
         ]
         self.assertEqual(lines[0], '[browser #3] click: button "Add to cart" @ www.saucedemo.com/inventory.html')
         self.assertEqual(lines[1], "[browser #1] open @ www.amazon.es/")
-        self.assertEqual(_format.step_line({"n": 3, "agent": "shop-amazon", "action": "click", "target": "button", "url": None}),
-                         "[browser #3 · shop-amazon] click: button")
+        agent = _format.step_line({"n": 3, "agent": "shop-amazon", "action": "open", "target": None, "url": "https://linux.example/"})
+        self.assertEqual(agent, "[browser #3 · shop-amazon] open @ linux.example/")
         self.assertEqual(lines[3], "[browser #4] back")
         parsed = [UI_STEP_LINE.match(line) for line in lines]
         self.assertTrue(all(parsed))
+        # A sub-agent's line names it after the number; the answer's activity reads it the same way.
+        self.assertEqual(UI_STEP_LINE.match(agent).groups(), ("3", "open", None, "linux.example/"))
         self.assertEqual(parsed[2].group(3), 'textbox "Email @ work" (13 characters)')
         self.assertEqual(parsed[2].group(4), "127.0.0.1:8080/a%20b")
         self.assertNotIn("secret", "".join(lines))
         self.assertNotIn("\n", _format.step_line({"n": 1, "action": "click", "target": "a\nb\u2028c", "url": None}))
+
+    def test_a_sign_in_wall_names_a_saved_session_without_claiming_it_ever_signed_in(self) -> None:
+        # A handoff for a check saves a session too, so the line never tells the agent a sign-in expired.
+        line = _format.sign_in_line("forum.example", None, ["forum.example"])
+        self.assertIn("forum.example asks for a sign-in: it sent the browser to its sign-in page; the saved browser session "
+                      "forum.example does not sign it in, either because it expired or because it was saved after a check, "
+                      "not a sign-in. Prefer a connected service", line)
+        self.assertNotIn("signed in", line)
+        self.assertNotIn("saved browser session", _format.sign_in_line("forum.example", "sso.example", []))
+        loop = _format.redirect_loop_line("forum.example", ["forum.example"])
+        self.assertIn("usually means it needs a sign-in that the saved browser session forum.example does not give it.", loop)
+        self.assertNotIn("stale", loop)
 
     def test_hidden_values_never_print(self) -> None:
         line = _format.item_line({"n": 2, "role": "textbox", "name": "Password", "secret": True, "filled": True, "value": "hunter2"})
@@ -1219,7 +1233,7 @@ class SignInWallTests(unittest.IsolatedAsyncioTestCase):
         host.store.tracked = {"example.org.json": {"example.org"}, "shop.example.json": {"shop.example"}}
         with self.assertRaises(_host.HostError) as raised:
             await host._goto(_LoopingPage(), "https://tracker.example.org/issues")
-        self.assertIn("or the saved sign-in example.org for it has gone stale", raised.exception.message)
+        self.assertIn("needs a sign-in that the saved browser session example.org does not give it.", raised.exception.message)
         self.assertNotIn("shop.example", raised.exception.message)
 
     async def test_landing_on_a_sign_in_page_names_the_site_that_asked(self) -> None:
@@ -1231,7 +1245,8 @@ class SignInWallTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("to its sign-in page", self.note(host, "https://board.example/space/7", "https://board.example/login?next=x", True))
         self.assertIn("to sso.example to sign in", self.note(host, "https://board.example/", "https://sso.example/auth", True))
         host.store.tracked = {"board.example.json": {"board.example"}}
-        self.assertIn("the saved sign-in board.example did not keep it signed in",
+        self.assertIn("the saved browser session board.example does not sign it in, either because it expired or because it was "
+                      "saved after a check, not a sign-in.",
                       self.note(host, "https://www.board.example/space/7", "https://board.example/login", True))
 
     async def test_ordinary_pages_and_sign_in_pages_opened_on_purpose_add_no_line(self) -> None:

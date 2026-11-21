@@ -42,6 +42,7 @@ describe("browser steps in Workspace activity", () => {
       "[browser #4] open @ www.amazon.es/",
       '[browser #12] type: textbox "Email @ work" (13 characters) @ 127.0.0.1:8080/a%20b',
       "[browser #5] back",
+      "[browser #7 · linux-ban] open: direct @ linux.example/",
       "[browser #x] click: forged",
       "  [browser #6] click: indented"
     ].join("\n");
@@ -49,7 +50,8 @@ describe("browser steps in Workspace activity", () => {
       { number: 3, action: "click", target: 'button "Add to cart"', where: "www.saucedemo.com/inventory.html" },
       { number: 4, action: "open", where: "www.amazon.es/" },
       { number: 12, action: "type", target: 'textbox "Email @ work" (13 characters)', where: "127.0.0.1:8080/a%20b" },
-      { number: 5, action: "back" }
+      { number: 5, action: "back" },
+      { number: 7, action: "open", target: "direct", where: "linux.example/" }
     ]);
     expect(workspaceBrowserStepsV2(command("plain", "succeeded"))).toEqual([]);
     // A web page or file that prints a step-like line through another command does not become a step.
@@ -73,6 +75,9 @@ describe("browser steps in Workspace activity", () => {
     expect(workspaceActivityLabelV2(browser("failed", "[browser #3] click: button \"X\" @ a.example/"))).toBe("aiqsa-browser click 7 failed");
     expect(workspaceActivityLabelV2(browser("running", ""))).toBe("Running aiqsa-browser click 7…");
     expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", where: "www.amazon.es/" })).toBe("Opened www.amazon.es/");
+    expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "direct", where: "linux.example/" })).toBe("Opened linux.example/");
+    expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "proxy KZ1 (KZ)", where: "shop.kz/" }))
+      .toBe("Opened shop.kz/ through proxy KZ1 (KZ)");
     expect(workspaceBrowserStepPhraseV2({ number: 2, action: "select", target: '"2" in combobox "Quantity"' }))
       .toBe('Selected "2" in combobox "Quantity"');
     expect(workspaceBrowserStepPhraseV2({ number: 3, action: "screenshot", target: "page" })).toBe("Took a screenshot");

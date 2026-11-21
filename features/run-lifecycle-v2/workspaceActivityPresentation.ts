@@ -135,10 +135,11 @@ function commandSummary(preview: string): string {
 /**
  * One step line of the Workspace browser helper, exactly as it prints it
  * (`ops/workspace-guest/python/aiqsa/browser/_format.py`):
- * `[browser #3] click: button "Add to cart" @ shop.example/cart`. A
+ * `[browser #3] click: button "Add to cart" @ shop.example/cart`, with a
+ * sub-agent's name after the number (`[browser #3 · shop-amazon] …`). A
  * presentation hint read from the command's own output, never authority.
  */
-const BROWSER_STEP = /^\[browser #(\d{1,5})\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
+const BROWSER_STEP = /^\[browser #(\d{1,5})(?: · [^\]\n]{1,64})?\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
 /**
  * Only a command that runs the helper reports steps, as the guide shows it: `aiqsa-browser …` (after
  * optional variable assignments) or `python3 -c "from aiqsa import browser …"`. Output of any other
@@ -177,7 +178,8 @@ export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): Wo
 export function workspaceBrowserStepPhraseV2(step: WorkspaceBrowserStepV2): string {
   const target = step.target;
   switch (step.action) {
-    case "open": return `Opened ${step.where ?? "a page"}${target ? ` through ${target}` : ""}`;
+    // The route is `direct` or `proxy NAME (CC)`; only a proxy is worth naming.
+    case "open": return `Opened ${step.where ?? "a page"}${target && target !== "direct" ? ` through ${target}` : ""}`;
     case "click": return `Clicked ${target ?? "an element"}`;
     case "type": return `Typed into ${target ?? "a field"}`;
     case "select": return `Selected ${target ?? "an option"}`;

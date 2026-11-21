@@ -333,7 +333,7 @@ export type ToolRegistryInput = Readonly<{
 /** A command that drives the Workspace browser (`aiqsa-browser`, or the helper's Python module). */
 const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
 
-function drivesBrowser(call: ModelToolCall): boolean {
+export function drivesBrowser(call: ModelToolCall): boolean {
   try {
     return BROWSER_COMMAND.test(JSON.stringify(call.arguments));
   } catch {

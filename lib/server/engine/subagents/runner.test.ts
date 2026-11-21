@@ -49,6 +49,7 @@ import {
   handedBackApproval,
   parseSubagentOutcome,
   subagentFailureCode,
+  subagentStep,
   subagentRequest,
   withChildApprovals,
   type SubagentChildHost,
@@ -464,8 +465,8 @@ describe("sub-agent runner", () => {
     expect(decodeSubagentCallResult(result)).toEqual(result);
     expect(result).toMatchObject({ kind: "ended", model: { effort: null, id: "fake-qsa" }, name: "shop", outcome: "partial",
       report: "Outcome: partial\nFound two of three laptops.", state: "done" });
-    expect(result.steps).toEqual([{ outcome: "complete", summary: "[browser #3] click: button \"Add to cart\" @ shop.example",
-      tool: "Jira: mcp_jira_get_issue" }]);
+    // The fake lookup prints a step line, yet a call that does not drive the browser reports none.
+    expect(result.steps).toEqual([{ outcome: "complete", summary: "", tool: "Jira: mcp_jira_get_issue" }]);
     const first = ctx.requests[0]!;
     // Its own stable prompt, without the parent's answer rules or anything personal to the user's conversation; this chat has no Workspace.
     expect(first.prompt.system).toContain(subagentRoleSection("plain", false));
@@ -1186,6 +1187,31 @@ describe("sub-agent runner", () => {
       await ctx.runner.wait(await ctx.runner.start(ctx.input()));
       expect(JSON.parse(outputs(ctx)[0]!)).toEqual({ delivered: true, replied: false, to: "main" });
     });
+  });
+
+  it("names a browser step only from a call that drives the browser, as the step line starts its output", () => {
+    const registry = { resolve: () => undefined } as unknown as ToolRegistry;
+    const workspace = (stdout: string) => JSON.stringify({ ok: true, data: { stdout, stderr: "", exitCode: 0, success: true } }, null, 2);
+    const step = (args: Record<string, unknown>, output: string) => subagentStep(registry,
+      { arguments: args, id: "c1", name: "mcp_workspace_sandbox_exec_1" },
+      { callId: "c1", id: "r1", kind: "tool_result", name: "mcp_workspace_sandbox_exec_1", outcome: "complete", output }).summary;
+    // A sub-agent's step line names it after the number.
+    expect(step({ args: ["open", "https://forum.example/"], command: "aiqsa-browser" },
+      workspace("[browser #1 · forum] open: direct @ forum.example/\nHTTP status 403.\nTitle: Just a moment...")))
+      .toBe("[browser #1 · forum] open: direct @ forum.example/");
+    expect(step({ command: "aiqsa-browser open https://shop.example/ && aiqsa-browser click 7" },
+      workspace("[browser #2] open @ shop.example/\nURL: https://shop.example/\n[browser #3] click: button \"Buy\" @ shop.example/")))
+      .toBe("[browser #2] open @ shop.example/");
+    // Reading the guide quotes a step line mid-sentence: no step at all (production 2026-11-21: "click Add to cart").
+    const guide = "# Browser\nEach action prints a step line such as `[browser #3] click: button \"Add to cart\" @ shop.example/cart`.";
+    expect(step({ command: "cat /workspace/guides/browser.md" }, workspace(guide))).toBe("");
+    expect(step({ command: "aiqsa-browser help" }, workspace(guide))).toBe("");
+    // A page's text that looks like a step line is indented by the browser, so it never starts a line either.
+    expect(step({ args: ["text"], command: "aiqsa-browser" }, workspace("Page text:\n  [browser #9] click: button \"Pay\" @ bank.example/"))).toBe("");
+    // An excerpt that no longer parses as JSON still shows its first step line.
+    expect(step({ args: ["open", "https://forum.example/"], command: "aiqsa-browser" },
+      `{\n  "ok": true,\n  "data": {\n    "stdout": "[browser #4 · forum] open @ forum.example/t/1\\nTitle: A topic\\n… 9000 characters omitted here`))
+      .toBe("[browser #4 · forum] open @ forum.example/t/1");
   });
 
   it("reads the outcome line of a report", () => {
