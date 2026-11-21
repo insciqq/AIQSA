@@ -9,6 +9,15 @@ const COMMAND_TOOLS: readonly string[] = (["sandbox_exec", "sandbox_exec_poll", 
 /** The newest command calls before the handoff read for the site; an agent opens the page it hands over just before. */
 const SCANNED_COMMANDS = 20;
 /**
+ * A call that runs the browser helper as a command (`aiqsa-browser …`, alone or in a shell line) or imports it in inline
+ * Python, read from each of its arguments. Only such a call's output may name the site: a file another command prints, a
+ * saved browser log under `cat` included, starts with whatever line it holds (review 2026-11-21).
+ */
+const BROWSER_COMMAND = /(?:^|[\s;&|(])(?:\/usr\/local\/bin\/)?aiqsa-browser(?=$|[\s;&|)])|from\s+aiqsa\s+import\s+browser\b|\baiqsa\.browser\b/u;
+
+const argumentStrings = (value: unknown): string[] => typeof value === "string" ? [value]
+  : Array.isArray(value) ? value.flatMap(argumentStrings) : isRecord(value) ? Object.values(value).flatMap(argumentStrings) : [];
+/**
  * One action's step line exactly as the guest prints it (`ops/workspace-guest/python/aiqsa/browser/_format.py`, parsed the
  * same way by `features/run-lifecycle-v2/workspaceActivityPresentation.ts`), optionally naming the agent:
  * `[browser #3 · lab] click: button "Add" @ shop.example/cart`. The host is the text after the last ` @ ` up to its path,
@@ -66,8 +75,8 @@ function stepHost(stdout: string): string | null {
 
 /**
  * Whether the run's agent needed its owner to sign in to a site and nobody could take over (`browserHandoffNeededSignIn`),
- * and on which host: the site the asking agent's browser showed in its newest command before it asked, read from the
- * step line that command's output opens with, never from the model's words or a page's text; null when none shows one.
+ * and on which host: the site the asking agent's browser showed in its newest browser command before it asked, read from
+ * the step line that command's output opens with, never from the model's words or a page's text; null when none shows one.
  * Every handoff call asking for a sign-in, a code or a check is read, however many other calls the run made; the first
  * one names the site. An unattended handoff never reaches the browser, so its result carries no page of its own.
  */
@@ -84,7 +93,7 @@ export async function runBrowserSignIn(tx: ToolCallReader, runId: string): Promi
   if (!asked) return null;
   const commands = await tx.modelRunToolCall.findMany({
     orderBy: [{ startedAt: "desc" }, { createdAt: "desc" }],
-    select: { result: true },
+    select: { arguments: true, result: true },
     take: SCANNED_COMMANDS,
     where: {
       modelRunId: runId, subagentThreadId: asked.subagentThreadId, toolName: { in: [...COMMAND_TOOLS] },
@@ -92,6 +101,7 @@ export async function runBrowserSignIn(tx: ToolCallReader, runId: string): Promi
     }
   });
   for (const command of commands) {
+    if (!argumentStrings(command.arguments).some((text) => BROWSER_COMMAND.test(text))) continue;
     const host = printedStdout(command.result).map(stepHost).find(Boolean);
     if (host) return { host };
   }

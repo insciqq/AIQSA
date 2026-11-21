@@ -121,6 +121,25 @@ describe("a scheduled run that needed a sign-in", () => {
     expect(await runBrowserSignIn(escaped, "run-1")).toEqual({ host: null });
   });
 
+  it("reads the site only from commands that run the browser, never from a file another command printed", async () => {
+    const as = (row: Row, args: Record<string, unknown>): Row => ({ ...row, arguments: args });
+    const { tx } = transaction([
+      command("[browser #1] open @ portal.example/login"),
+      as(command("[browser #1] open @ news.example/"), { args: ["previous-browser.log"], command: "cat" }),
+      as(command("[browser #1] open @ news.example/"), { command: "cat /tmp/aiqsa-browser/host.log" }),
+      await stored({ message: "Please sign in", reason: "sign_in" })
+    ]);
+    expect(await runBrowserSignIn(tx, "run-1")).toEqual({ host: "portal.example" });
+    // The helper as a program with its arguments, in a shell line, or imported by inline Python.
+    for (const args of [{ args: ["open", "https://portal.example/login"], command: "aiqsa-browser" },
+      { command: "cd /workspace/project && aiqsa-browser open https://portal.example/login" },
+      { command: "python3 -c \"from aiqsa import browser as b; b.open('https://portal.example/login')\"" }]) {
+      const { tx: ran } = transaction([as(command("[browser #2] open @ portal.example/login"), args),
+        await stored({ message: "Please sign in", reason: "sign_in" })]);
+      expect(await runBrowserSignIn(ran, "run-1")).toEqual({ host: "portal.example" });
+    }
+  });
+
   it("reads only the agent that asked, and records no site when its commands showed none", async () => {
     const sub = "thread-1";
     const { tx } = transaction([
