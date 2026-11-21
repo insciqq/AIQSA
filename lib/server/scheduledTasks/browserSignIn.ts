@@ -23,6 +23,19 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /**
+ * A Workspace command result's `stdout`: the guest MCP server's envelope `{ ok, data: { stdout, … } }`, or a failed
+ * command's `{ ok: false, error: { details: { stdout } } }` (both read the same way by `lib/server/workspace/operationFailure.ts`),
+ * or a bare `{ stdout }`. Reading only the bare form left every production sign-in failure without its host.
+ */
+function stdoutOf(value: unknown): readonly string[] {
+  if (!isRecord(value)) return [];
+  for (const holder of [value.data, isRecord(value.error) ? value.error.details : undefined, value]) {
+    if (isRecord(holder) && typeof holder.stdout === "string") return [holder.stdout];
+  }
+  return [];
+}
+
+/**
  * What a stored command result printed to stdout: each text part's JSON `stdout`, or the part itself when it is no JSON;
  * decoded once, never unescaped further.
  */
@@ -30,11 +43,10 @@ function printedStdout(result: unknown): readonly string[] {
   const content = isRecord(result) && Array.isArray(result.content) ? result.content as unknown[] : [];
   return content.flatMap((part) => {
     if (!isRecord(part)) return [];
-    if (part.type === "json") return isRecord(part.value) && typeof part.value.stdout === "string" ? [part.value.stdout] : [];
+    if (part.type === "json") return stdoutOf(part.value);
     if (part.type !== "text" || typeof part.text !== "string") return [];
     try {
-      const parsed: unknown = JSON.parse(part.text);
-      return isRecord(parsed) && typeof parsed.stdout === "string" ? [parsed.stdout] : [];
+      return stdoutOf(JSON.parse(part.text));
     } catch {
       return [part.text];
     }

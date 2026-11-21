@@ -174,12 +174,21 @@ export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): Wo
   return steps;
 }
 
+/**
+ * What opened the page, which the guest adds after the target of an action that opened or reached a site (`_note_proxy` in
+ * `ops/workspace-guest/python/aiqsa/browser/_host.py`): `direct`, or `through proxy NAME (CC)`, perhaps `after … failed`.
+ */
+const STEP_ROUTE = /(?:^| )(direct|through proxy .+)$/u;
+
 /** What the agent did in the browser, in the reader's words. */
 export function workspaceBrowserStepPhraseV2(step: WorkspaceBrowserStepV2): string {
-  const target = step.target;
+  const route = step.target ? STEP_ROUTE.exec(step.target) : null;
+  const target = route ? step.target!.slice(0, route.index).trim() || undefined : step.target;
+  // Only a proxy is worth naming, and only where a page was opened.
+  const through = route && route[1] !== "direct" ? ` ${route[1]}` : "";
   switch (step.action) {
-    // The route is `direct` or `proxy NAME (CC)`; only a proxy is worth naming.
-    case "open": return `Opened ${step.where ?? "a page"}${target && target !== "direct" ? ` through ${target}` : ""}`;
+    // A Workspace file opens by its path, at a random local address.
+    case "open": return `Opened ${target ?? step.where ?? "a page"}${through}`;
     case "click": return `Clicked ${target ?? "an element"}`;
     case "type": return `Typed into ${target ?? "a field"}`;
     case "select": return `Selected ${target ?? "an option"}`;

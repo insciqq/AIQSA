@@ -31,10 +31,14 @@ async function stored(args: Record<string, unknown>, subagentThreadId: string | 
     subagentThreadId, toolName: BROWSER_HANDOFF_TOOL_NAME };
 }
 
-/** A Workspace command whose output carries the browser's step lines, as the guest prints them. */
+/**
+ * A Workspace command whose output carries the browser's step lines, as the guest prints them, in the guest MCP server's
+ * pretty-printed envelope that production stores.
+ */
 function command(stdout: string, subagentThreadId: string | null = null): Row {
+  const text = JSON.stringify({ ok: true, data: { stdout, stderr: "", exitCode: 0, success: true } }, null, 2);
   return { arguments: { command: "aiqsa-browser open https://example.com" }, startedAt: next(), subagentThreadId, toolName: SHELL,
-    result: { callId: "c", content: [{ text: JSON.stringify({ exitCode: 0, stdout }), type: "text" }], name: SHELL, status: "complete" } };
+    result: { callId: "c", content: [{ text, type: "text" }], name: SHELL, status: "complete" } };
 }
 
 /** The run's rows filtered and ordered as PostgreSQL would answer the query, cut at its `take`. */

@@ -76,8 +76,17 @@ describe("browser steps in Workspace activity", () => {
     expect(workspaceActivityLabelV2(browser("running", ""))).toBe("Running aiqsa-browser click 7…");
     expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", where: "www.amazon.es/" })).toBe("Opened www.amazon.es/");
     expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "direct", where: "linux.example/" })).toBe("Opened linux.example/");
-    expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "proxy KZ1 (KZ)", where: "shop.kz/" }))
+    // The guest adds the route after the target: named once for a proxy, never "through direct", nowhere else.
+    expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "through proxy KZ1 (KZ)", where: "shop.kz/" }))
       .toBe("Opened shop.kz/ through proxy KZ1 (KZ)");
+    expect(workspaceBrowserStepPhraseV2({ number: 1, action: "open", target: "through proxy KZ2 (KZ) after KZ1 (KZ) failed", where: "shop.kz/" }))
+      .toBe("Opened shop.kz/ through proxy KZ2 (KZ) after KZ1 (KZ) failed");
+    expect(workspaceBrowserStepPhraseV2({ number: 2, action: "click", target: 'button "Sign in" direct', where: "sso.example/" }))
+      .toBe('Clicked button "Sign in"');
+    expect(workspaceBrowserStepPhraseV2({ number: 2, action: "click", target: 'button "Go direct"', where: "shop.example/" }))
+      .toBe('Clicked button "Go direct"');
+    expect(workspaceBrowserStepPhraseV2({ number: 3, action: "open", target: "/workspace/project/site/index.html", where: "a1b2.localhost:4100/index.html" }))
+      .toBe("Opened /workspace/project/site/index.html");
     expect(workspaceBrowserStepPhraseV2({ number: 2, action: "select", target: '"2" in combobox "Quantity"' }))
       .toBe('Selected "2" in combobox "Quantity"');
     expect(workspaceBrowserStepPhraseV2({ number: 3, action: "screenshot", target: "page" })).toBe("Took a screenshot");

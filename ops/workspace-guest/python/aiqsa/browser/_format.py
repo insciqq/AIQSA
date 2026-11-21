@@ -32,8 +32,9 @@ INFO_CHARS = 16_000
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f  ]+")
 _SPACE = re.compile(r"\s+")
-#: A line of page text that would read as an action's step line.
-_STEP_LIKE = re.compile(r"^(?=\[browser #)", re.M)
+#: A line of page text that would read as an action's step line: after a newline, and after the other breaks a
+#: JavaScript multiline anchor starts a line at (CR, U+2028, U+2029), which the research checks read with.
+_STEP_LIKE = re.compile(r"(?:^|(?<=[\r\u2028\u2029]))(?=\[browser #)", re.M)
 
 
 def clean(value: Any, limit: int) -> str:
