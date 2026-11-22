@@ -10,7 +10,6 @@ import {
   showArchivedChatList,
   useArchivedChatsStore
 } from "@/components/app-shell/archivedChatsStore";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import {
   openPermanentChatDeletion,
   usePermanentChatDeletionStore
@@ -26,7 +25,7 @@ import {
 import { UiV2ResponsiveMenu } from "@/components/ui-v2/ResponsiveMenuV2";
 import { useMenuDismissalV2 } from "@/components/ui-v2/useMenuDismissalV2";
 import type { ArchivedChatSummaryWire } from "@/lib/contracts/chats";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 import { useEffect, useId, useRef, useState } from "react";
 
 const ARCHIVE_FILTER_MAX_LENGTH = 120;
@@ -43,7 +42,6 @@ function matchesArchiveFilter(chat: ArchivedChatSummaryWire, query: string): boo
 }
 
 function ArchivedChatRowV2({
-  canDelete,
   chat,
   restoring,
   onDelete,
@@ -51,7 +49,6 @@ function ArchivedChatRowV2({
   primaryRef,
   onRestore
 }: Readonly<{
-  canDelete: boolean;
   chat: ArchivedChatSummaryWire;
   restoring: boolean;
   onDelete(focusTarget: HTMLElement | null): void;
@@ -90,42 +87,38 @@ function ArchivedChatRowV2({
         disabled={restoring}
         onClick={onRestore}
       >
-        {resolveMemoryCopy("restore.action")}
+        {chatMemoryModeCopy("restore.action")}
       </UiV2Button>
-      {canDelete ? (
-        <>
-          <UiV2IconButton
-            ref={triggerRef}
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            className="v2-archived-chat-menu-trigger"
-            disabled={restoring}
-            icon="more"
-            label={`Actions: ${chat.title}`}
-            onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
+      <UiV2IconButton
+        ref={triggerRef}
+        aria-expanded={menuOpen}
+        aria-haspopup="menu"
+        className="v2-archived-chat-menu-trigger"
+        disabled={restoring}
+        icon="more"
+        label={`Actions: ${chat.title}`}
+        onClick={() => (menuOpen ? closeMenu() : setMenuOpen(true))}
+      />
+      {menuOpen ? (
+        <UiV2ResponsiveMenu
+          anchorRef={triggerRef}
+          label={`Archived chat actions: ${chat.title}`}
+          menuRef={menuRef}
+          onClose={closeMenu}
+        >
+          <UiV2MenuActions
+            actions={[{
+              icon: "trash",
+              label: "Delete permanently…",
+              onSelect: () => {
+                triggerRef.current?.focus({ preventScroll: true });
+                onDelete(triggerRef.current);
+              },
+              tone: "destructive"
+            }]}
+            onClose={closeMenu}
           />
-          {menuOpen ? (
-            <UiV2ResponsiveMenu
-              anchorRef={triggerRef}
-              label={`Archived chat actions: ${chat.title}`}
-              menuRef={menuRef}
-              onClose={closeMenu}
-            >
-              <UiV2MenuActions
-                actions={[{
-                  icon: "trash",
-                  label: "Delete permanently…",
-                  onSelect: () => {
-                    triggerRef.current?.focus({ preventScroll: true });
-                    onDelete(triggerRef.current);
-                  },
-                  tone: "destructive"
-                }]}
-                onClose={closeMenu}
-              />
-            </UiV2ResponsiveMenu>
-          ) : null}
-        </>
+        </UiV2ResponsiveMenu>
       ) : null}
     </li>
   );
@@ -144,9 +137,6 @@ export function ArchivedChatsPanelV2({
   const nextCursor = useArchivedChatsStore((state) => state.nextCursor);
   const restoring = useArchivedChatsStore((state) => state.restoring);
   const summaries = useArchivedChatsStore((state) => state.summaries);
-  const canDelete = useMemorySettingsStore(
-    (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
-  );
   const permanentDialogOpen = usePermanentChatDeletionStore(
     (state) => Boolean(state.target) || state.statusOpen
   );
@@ -242,8 +232,8 @@ export function ArchivedChatsPanelV2({
             <UiV2Icon name="alert" />
             <span>
               {detail.memoryMode === "EXCLUDED"
-                ? `${resolveMemoryCopy("exclude.explanation")} Restoring this chat does not resume Memory.`
-                : resolveMemoryCopy("archive.explanation")}
+                ? `${chatMemoryModeCopy("exclude.explanation")} Restoring this chat does not resume Memory.`
+                : chatMemoryModeCopy("archive.explanation")}
             </span>
           </div>
           {detail.pageInfo.hasOlder ? (
@@ -267,26 +257,24 @@ export function ArchivedChatsPanelV2({
           </ol>
           {detailError ? <p className="v2-archived-error" role="alert">{detailError}</p> : null}
           <footer className="v2-archived-preview-actions">
-            {canDelete ? (
-              <UiV2Button
-                disabled={restoring}
-                tone="destructive"
-                onClick={(event) => openPermanentChatDeletion({
-                  chatId: detail.id,
-                  location: "ARCHIVED",
-                  title: detail.title
-                }, event.currentTarget, () => searchRef.current)}
-              >
-                Delete permanently…
-              </UiV2Button>
-            ) : null}
+            <UiV2Button
+              disabled={restoring}
+              tone="destructive"
+              onClick={(event) => openPermanentChatDeletion({
+                chatId: detail.id,
+                location: "ARCHIVED",
+                title: detail.title
+              }, event.currentTarget, () => searchRef.current)}
+            >
+              Delete permanently…
+            </UiV2Button>
             <UiV2Button
               aria-label={`Restore ${detail.title}`}
               busy={restoring}
               disabled={restoring}
               onClick={() => void restoreCurrent().catch(() => undefined)}
             >
-              {resolveMemoryCopy("restore.action")}
+              {chatMemoryModeCopy("restore.action")}
             </UiV2Button>
           </footer>
         </section>
@@ -359,7 +347,6 @@ export function ArchivedChatsPanelV2({
             <ul className="v2-archived-list" aria-busy={listLoadState === "loading" || undefined} aria-label="Archived chats">
               {visibleSummaries.map((chat) => (
                 <ArchivedChatRowV2
-                  canDelete={canDelete}
                   chat={chat}
                   key={chat.id}
                   restoring={restoring}
@@ -392,7 +379,7 @@ export function ArchivedChatsPanelV2({
           <div className="v2-archived-memory-note">
             <UiV2Icon name="alert" />
             <p>
-              Archiving only hides a chat from the active list. Unless it was already excluded, Memory can still use it. Restore the chat, then choose <strong>Exclude from Memory</strong> from its menu to stop future recall and learning.
+              Archiving only hides a chat from the active list. Unless it was already excluded, past-chat search can still find it. Restore the chat, then choose <strong>Exclude from Memory</strong> from its menu to keep it out of search.
             </p>
           </div>
         </>

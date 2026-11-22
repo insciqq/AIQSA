@@ -433,15 +433,6 @@ async function cleanupQuickChatFixture(
       await tx.modelRun.deleteMany({ where: { id: { in: runIds } } });
     }
     if (chatIds.length > 0) {
-      await tx.memoryJob.deleteMany({
-        where: { chatId: { in: chatIds }, userId: fixture.userId }
-      });
-      await tx.memoryRetrievalAttempt.deleteMany({
-        where: { chatId: { in: chatIds }, userId: fixture.userId }
-      });
-      await tx.memoryRecallChunk.deleteMany({
-        where: { chatId: { in: chatIds }, userId: fixture.userId }
-      });
       // Workspace sessions restrict their chat's deletion, so they go first.
       await tx.workspaceSession.deleteMany({ where: { chat: { id: { in: chatIds }, userId: fixture.userId } } });
       await tx.chat.deleteMany({ where: { id: { in: chatIds }, userId: fixture.userId } });

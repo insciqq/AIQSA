@@ -65,12 +65,6 @@ import {
 } from "@/components/app-shell/composerSessionStore";
 import { createFolderActions } from "@/components/app-shell/folderActions";
 import { useMessageRunActions } from "@/components/app-shell/messageRunActions";
-import {
-  activateMemorySettings,
-  deactivateMemorySettings,
-  refreshMemorySettings,
-  useMemorySettingsStore
-} from "@/components/app-shell/memorySettingsStore";
 import { PowerAppShellV2View } from "@/features/workspace-v2/PowerAppShellV2View";
 import type {
   ShellComposerAssistant,
@@ -96,7 +90,6 @@ import { deactivatePersonalMcp } from "@/components/app-shell/personalMcpStore";
 import { useMcpOAuthReturn } from "./useMcpOAuthReturn";
 import { ASSISTANT_SEND_GATE_HINT } from "./AssistantBindingNoticeV2";
 import { assistantStripItemsV2 } from "./AssistantStripV2";
-import { deactivateMemoryManager } from "@/components/app-shell/memoryManagerStore";
 import { useRunControlsActions } from "@/components/app-shell/runControlsActions";
 import {
   abortActiveStreamControllers,
@@ -170,7 +163,7 @@ import type {
   Notice
 } from "@/components/app-shell/types";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   modelControlKey,
@@ -359,20 +352,16 @@ export function PowerAppShellV2({
   const workspaceReady = useWorkspaceStore((state) => state.workspaceReady);
   const activeChatId = useWorkspaceStore((state) => state.activeChatId);
   const pendingChatFolderId = useWorkspaceStore((state) => state.pendingChatFolderId);
-  const memorySettings = useMemorySettingsStore((state) => state.data);
   const activeChatDetailLoading = useWorkspaceStore((state) => state.activeChatDetailLoading);
   const activeChatDetailError = useWorkspaceStore((state) => state.activeChatDetailError);
   const setCatalog = useWorkspaceStore((state) => state.setCatalog);
   const setCatalogError = useWorkspaceStore((state) => state.setCatalogError);
 
   useEffect(() => {
-    activateMemorySettings(accountId);
     return () => {
-    deactivateArchivedChats();
-    deactivateMcpSettings();
-    deactivatePersonalMcp();
-    deactivateMemoryManager();
-      deactivateMemorySettings(accountId);
+      deactivateArchivedChats();
+      deactivateMcpSettings();
+      deactivatePersonalMcp();
     };
   }, [accountId]);
   const activeThread = useThreadStore((state) => selectThreadSnapshot(state, activeChatId));
@@ -630,15 +619,9 @@ export function PowerAppShellV2({
     ? activeChat.memoryMode === "TEMPORARY" ||
       activeChat.pendingInitialMemoryMode === "TEMPORARY"
     : composerSessionModeFromKey(activeComposerSessionKey) === "TEMPORARY";
-  const canToggleTemporary = Boolean(memorySettings?.capabilities.temporaryChats) &&
-    !activeChat &&
+  const canToggleTemporary = !activeChat &&
     !composerSession.pendingSend &&
     !activeChatStreaming;
-
-  useEffect(() => {
-    if (!workspaceReady || memorySettings) return;
-    void refreshMemorySettings().catch(() => undefined);
-  }, [memorySettings, workspaceReady]);
 
   function toggleTemporaryComposer(): void {
     if (!canToggleTemporary) return;
@@ -857,8 +840,7 @@ export function PowerAppShellV2({
     return decodeChatBranchesResponse(await response.json())?.branchGraph ?? null;
   });
   const showUnavailableDeepLink = useEventCallback((target: PersonalChatDeepLinkTarget) => {
-    // An unavailable Memory source simply opens the chat; only a plain
-    // message link explains that its message is gone or in a version of the
+    // A message link explains that its message is gone or in a version of the
     // chat that could not be shown.
     if (target === "message") setNotice({ kind: "error", text: "This message is no longer available." });
     else if (target === "message_version") setNotice({ kind: "error", text: MESSAGE_VERSION_UNAVAILABLE_NOTICE });
@@ -926,9 +908,9 @@ export function PowerAppShellV2({
     chooseDefaultAssistantRef.current = chatAssistantActions.chooseDefaultAssistant;
   }, [chatAssistantActions]);
 
-  // "Save & try" asks for a Temporary chat; it falls back to an ordinary one where they are off.
+  // "Save & try" asks for a Temporary chat.
   const activateAssistantTrialWorkspace = (options?: { temporary?: boolean }) =>
-    activateBlankWorkspaceEvent(null, options?.temporary && memorySettings?.capabilities.temporaryChats ? "TEMPORARY" : "NORMAL");
+    activateBlankWorkspaceEvent(null, options?.temporary ? "TEMPORARY" : "NORMAL");
   const assistantLibraryActions = createAssistantLibraryActions({
     activateBlankWorkspace: activateAssistantTrialWorkspace,
     chooseAssistant: chatAssistantActions.chooseAssistant,
@@ -1295,7 +1277,6 @@ export function PowerAppShellV2({
     ),
     fetchRun,
     notifyAnswerReady,
-    openMemorySettings: openMemoryLibraryDestination,
     persistActiveLeaf,
     primeAnswerSound,
     refreshActiveChat,
@@ -1473,7 +1454,7 @@ export function PowerAppShellV2({
       updateChatMemoryMode(chat.id, response.mode);
       setNotice({
         kind: "success",
-        text: resolveMemoryCopy(
+        text: chatMemoryModeCopy(
           response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
         )
       });
@@ -1979,11 +1960,11 @@ export function PowerAppShellV2({
     maxOutputTokens,
     memory: {
       canToggleTemporary,
-      explanation: resolveMemoryCopy("temporary.explanation"),
-      externalRetention: resolveMemoryCopy("temporary.externalRetention"),
-      label: resolveMemoryCopy("temporary.label"),
+      explanation: chatMemoryModeCopy("temporary.explanation"),
+      externalRetention: chatMemoryModeCopy("temporary.externalRetention"),
+      label: chatMemoryModeCopy("temporary.label"),
       mode: composerTemporary ? "TEMPORARY" : "NORMAL",
-      retention: resolveMemoryCopy("temporary.retention"),
+      retention: chatMemoryModeCopy("temporary.retention"),
       retentionDeadline: activeChat?.temporaryRetentionDeadline ?? null,
       toggleTemporary: toggleTemporaryComposer
     },

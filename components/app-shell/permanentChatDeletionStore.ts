@@ -5,7 +5,6 @@ import {
   type PermanentChatDeletionFailureReason,
   type PermanentChatDeletionSnapshot
 } from "@/components/app-shell/permanentChatDeletionApi";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
   type MemoryConsumerPermanentChatDeleteResponse
@@ -18,7 +17,6 @@ export type PermanentChatDeletionTarget = PermanentChatDeletionSnapshot;
 
 type PermanentChatDeletionStore = {
   accountId: string | null;
-  alsoForgetOriginMemories: boolean;
   busy: boolean;
   confirmationError: PermanentChatDeletionFailureReason | null;
   reference: Readonly<{ chatId: string }> | null;
@@ -34,7 +32,6 @@ const LEGACY_STORAGE_PREFIX = "aiqsa:chat-permanent-deletion:v1:";
 
 const initialState: PermanentChatDeletionStore = {
   accountId: null,
-  alsoForgetOriginMemories: false,
   busy: false,
   confirmationError: null,
   reference: null,
@@ -209,25 +206,17 @@ export function openPermanentChatDeletion(
   focusTarget?: HTMLElement | null,
   focusFallback?: () => HTMLElement | null
 ): void {
-  if (!validTarget(target) || !usePermanentChatDeletionStore.getState().accountId ||
-    !useMemorySettingsStore.getState().data?.capabilities.permanentChatDeletion) return;
+  if (!validTarget(target) || !usePermanentChatDeletionStore.getState().accountId) return;
   captureFocusReturnTarget(focusTarget, focusFallback);
   usePermanentChatDeletionStore.setState({
-    alsoForgetOriginMemories: false,
     confirmationError: null,
     statusOpen: false,
     target
   });
 }
 
-export function setPermanentChatDeletionOriginForget(value: boolean): void {
-  if (!usePermanentChatDeletionStore.getState().target) return;
-  usePermanentChatDeletionStore.setState({ alsoForgetOriginMemories: value });
-}
-
 export function closePermanentChatDeletionDialog(): void {
   usePermanentChatDeletionStore.setState({
-    alsoForgetOriginMemories: false,
     confirmationError: null,
     statusOpen: false,
     target: null
@@ -265,7 +254,6 @@ function recordAdmission(
   // dialog stays, and the reference waits for the next status read.
   if (generation !== operationGeneration && state.target) return true;
   usePermanentChatDeletionStore.setState({
-    alsoForgetOriginMemories: false,
     busy: false,
     confirmationError: null,
     reference: { chatId },
@@ -293,7 +281,8 @@ export async function confirmPermanentChatDeletion(): Promise<void> {
   usePermanentChatDeletionStore.setState({ busy: true, confirmationError: null });
   try {
     const status = await admitPermanentChatDeletion(target.chatId, {
-      alsoForgetOriginMemories: current.alsoForgetOriginMemories,
+      // Saved memories no longer exist: the server refuses `true`.
+      alsoForgetOriginMemories: false,
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       requestId: requestId()
     });

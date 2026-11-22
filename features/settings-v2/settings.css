@@ -360,55 +360,6 @@
   color: var(--v2-color-accent);
 }
 
-/* Memory tab: status card. */
-.v2-settings-status-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  margin: 0.75rem 0 0.25rem;
-  padding: 0.875rem 1rem;
-  border: 1px solid color-mix(in srgb, var(--v2-color-accent) 25%, transparent);
-  border-radius: var(--v2-radius-m);
-  background: var(--v2-color-accent-dim);
-}
-
-.v2-settings-status-card[data-state="off"] {
-  border-color: var(--v2-color-border);
-  background: var(--v2-color-surface2);
-}
-
-.v2-settings-status-card-copy {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.v2-settings-status-dot {
-  width: 0.5rem;
-  height: 0.5rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--v2-color-accent);
-}
-
-.v2-settings-status-card[data-state="off"] .v2-settings-status-dot {
-  background: var(--v2-color-text3);
-}
-
-.v2-settings-status-card strong {
-  display: block;
-  font-size: 0.9375rem;
-  font-weight: 600;
-}
-
-.v2-settings-status-card small {
-  display: block;
-  color: var(--v2-color-text2);
-  font-size: 0.78125rem;
-}
-
 .v2-settings-note {
   display: flex;
   align-items: center;

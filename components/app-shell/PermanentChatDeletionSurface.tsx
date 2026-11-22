@@ -6,7 +6,6 @@ import {
   openPermanentChatDeletionStatus,
   permanentChatDeletionFocusReturnTarget,
   refreshPermanentChatDeletionStatus,
-  setPermanentChatDeletionOriginForget,
   usePermanentChatDeletionStore
 } from "@/components/app-shell/permanentChatDeletionStore";
 import {
@@ -114,9 +113,6 @@ function ModalFrame({
 }
 
 function Confirmation() {
-  const alsoForget = usePermanentChatDeletionStore(
-    (state) => state.alsoForgetOriginMemories
-  );
   const busy = usePermanentChatDeletionStore((state) => state.busy);
   const error = usePermanentChatDeletionStore((state) => state.confirmationError);
   const target = usePermanentChatDeletionStore((state) => state.target);
@@ -152,22 +148,7 @@ function Confirmation() {
         </button>
       </div>
 
-      <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-control border border-trace-subtle bg-control-surface px-3 py-3 text-sm">
-        <input
-          checked={alsoForget}
-          className="mt-1 size-4 shrink-0 accent-proof"
-          disabled={busy}
-          type="checkbox"
-          onChange={(event) =>
-            setPermanentChatDeletionOriginForget(event.currentTarget.checked)}
-        />
-        <span>
-          <span className="block font-semibold text-ink">{t("forgetLabel")}</span>
-          <span className="mt-1 block leading-5 text-ink-muted">{t("forgetHelp")}</span>
-        </span>
-      </label>
-
-      <details className="mt-3 border-y border-trace-subtle py-1">
+      <details className="mt-4 border-y border-trace-subtle py-1">
         <summary className={`min-h-touch cursor-pointer py-3 text-sm font-semibold text-ink-secondary ${focusRing}`}>
           {t("advanced")}
         </summary>

@@ -224,9 +224,6 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
         const chatIds = [...new Set([...chats.map(({ id }) => id), ...runs.map(({ chatId }) => chatId)])];
         await tx.providerRunBinding.deleteMany({ where: { connectionId } });
         await tx.modelRun.deleteMany({ where: { id: { in: runs.map(({ id }) => id) } } });
-        await tx.memoryJob.deleteMany({ where: { userId, chatId: { in: chatIds } } });
-        await tx.memoryRetrievalAttempt.deleteMany({ where: { userId, chatId: { in: chatIds } } });
-        await tx.memoryRecallChunk.deleteMany({ where: { userId, chatId: { in: chatIds } } });
         // Every chat has the Workspace (2026-10-20), and its session restricts the chat's deletion.
         await tx.workspaceCleanupJob.deleteMany({ where: { workspaceSession: { chatId: { in: chatIds }, chat: { userId } } } });
         await tx.workspaceSession.deleteMany({ where: { chatId: { in: chatIds }, chat: { userId } } });

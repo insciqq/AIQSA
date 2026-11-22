@@ -7,7 +7,6 @@ import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { chooseReasoningEffort, expectRunSummary, selectModel } from "./shell/composer";
 import { authenticateWithLocalToken, signInWithLocalToken } from "./support/localAuth";
 import { matrixCatalog } from "./shell/catalog";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import type { Catalog } from "../../lib/contracts/catalog";
@@ -191,7 +190,6 @@ async function installReasoningChipFixture(page: Page, savedLevel = "xhigh") {
         provider: message.role === "assistant" ? "openai" : null, modelRunId: message.role === "assistant" ? "reasoning-run" : null,
         artifactSummary: message.role === "assistant" ? { citations: [], sources: [], reasoningText: [], generatedArtifacts: [artifact] } : null })) };
   await installMatrixCatalogFixture(page, { folders: [], chats: [chat] }, { catalog });
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
   await page.route("**/api/artifacts/reasoning-artifact", route => route.fulfill({ json: { artifact: {
     id: artifact.artifactId, title: artifact.title, currentVersionId: artifact.versionId, sourceChatId: chat.id,

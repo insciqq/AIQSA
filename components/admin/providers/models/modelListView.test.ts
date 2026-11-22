@@ -90,7 +90,6 @@ function sources(overrides: Partial<ProviderUsageSources> = {}): ProviderUsageSo
     },
     search: null,
     systemModelPolicy: {
-      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       candidates: [],
       titleCandidates: [], documentCandidates: [],
       ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
@@ -256,7 +255,7 @@ describe("deriveModelUsage and successors", () => {
     const withSuccessor = turnOffConsequence({ model: { displayName: "Voyage Rerank 2.5" }, successor: "Cohere Rerank 4 Pro", tags: ["Reranker · primary"] });
     expect(withSuccessor?.title).toBe("Turn off Voyage Rerank 2.5?");
     expect(withSuccessor?.body).toBe(
-      "It is the primary reranker for Memory. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
+      "It is the primary reranker for past-chat search. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
     );
     const withoutSuccessor = turnOffConsequence({ model: { displayName: "GPT-5.6 Luna" }, successor: null, tags: ["Default chat", "Perplexity Search"] });
     expect(withoutSuccessor?.body).toContain("It is the default chat model for new chats and the model behind “Perplexity Search” Search.");
@@ -387,13 +386,13 @@ describe("check summaries", () => {
     const summaries = connection.credentials.flatMap((credential) => modelCheckSummaries(connection, model, credential, NOW));
     // Local clock formatting: the hour depends on the test machine's time zone.
     expect(summaries.map((summary) => summary.sentence.replace(/\d{2}:\d{2}/u, "HH:MM"))).toEqual([
-      "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work. Memory actions: check incomplete.",
-      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine. Memory actions: check incomplete."
+      "Checked today HH:MM with key Primary · tools, JSON and the other checked capabilities work.",
+      "Checked Sep 6 HH:MM with key Research team · works without PDF input; tools and JSON output are fine."
     ]);
     expect(summaries[0]!.chips).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: "tools", tone: "ok" }),
-      expect.objectContaining({ key: "memoryActions", tone: "warn" })
+      expect.objectContaining({ key: "tools", tone: "ok" })
     ]));
+    expect(summaries[0]!.chips.map(({ label }) => label).join(" ")).not.toMatch(/Memory/u);
     expect(summaries.map((summary) => summary.usageMissing)).toEqual([false, true]);
     expect(modelCheckSummaries(connection, model, null, NOW)).toEqual([]);
     expect(modelCheckSummaries(connection, connection.models[1]!, connection.credentials[0], NOW)).toEqual([]);

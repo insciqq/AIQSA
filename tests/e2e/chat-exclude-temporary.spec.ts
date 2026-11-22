@@ -1,5 +1,4 @@
 import { expect, test, type Route } from "@playwright/test";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memoryClient";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { leaveSettings, runAccountMenuAction } from "./shell/page";
@@ -49,7 +48,7 @@ function sse(type: string, data: unknown): string {
   return `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-test("opens an authorized Personal Memory source at its exact message", async ({ page }) => {
+test("a legacy chat link moves to the chat's address and anchors its message", async ({ page }) => {
   const linkedMessages = [
     message("linked-user", "user", "Linked source question", null),
     message("linked-assistant", "assistant", "Linked source answer", "linked-user", "run-linked")
@@ -71,12 +70,6 @@ test("opens an authorized Personal Memory source at its exact message", async ({
   await page.route("**/api/chats/linked-personal-chat", async (route: Route) => {
     await route.fulfill({ contentType: "application/json", json: { chat: linked } });
   });
-  await page.route("**/api/me/memory/settings", async (route: Route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      json: memoryConsumerSettingsFixture()
-    });
-  });
 
   await signInWithLocalToken(page);
   // A legacy query link moves to the chat's address and still anchors its message.
@@ -85,13 +78,6 @@ test("opens an authorized Personal Memory source at its exact message", async ({
   await expect(page.getByRole("heading", { name: "Linked Personal source" })).toBeVisible();
   await expect(page.locator('[data-message-id="linked-user"]')).toBeVisible();
   await expect(page).toHaveURL(/\/c\/linked-personal-chat\?message=linked-user$/u);
-
-  // An unavailable Memory source simply opens the app without any notice.
-  await page.goto("/?memorySource=unavailable&keep=yes");
-  await expect(page).toHaveURL(/\?keep=yes$/u);
-  await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
-  await expect(page.getByTestId("shell-notice")).toHaveCount(0);
-  await expect(page.getByText(/Memory source is unavailable/u)).toHaveCount(0);
 });
 
 test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinct", async ({ page }) => {
@@ -120,12 +106,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const temporaryAdmissions: Record<string, unknown>[] = [];
 
   await installMatrixCatalogFixture(page, { chats: [normal], folders: [] });
-  await page.route("**/api/me/memory/settings", async (route: Route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      json: memoryConsumerSettingsFixture()
-    });
-  });
   await page.route("**/api/me/chats/*/memory-mode", async (route: Route) => {
     const request = route.request();
     const chatId = new URL(request.url()).pathname.split("/").at(-2)!;
@@ -295,8 +275,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   const resumeDialog = page.getByRole("dialog", {
     name: "Resume Memory for Retained lifecycle"
   });
-  await expect(resumeDialog).toContainText("Only new messages sent after you resume");
-  await expect(resumeDialog).toContainText("Earlier excluded messages are not added back");
+  await expect(resumeDialog).toContainText("Past-chat search can find this chat again");
   expect(modePatches).toHaveLength(1);
   await page.keyboard.press("Escape");
   await expect(resumeDialog).toHaveCount(0);

@@ -287,26 +287,20 @@ test("v2 answer outputs reserve no placeholder and keep Reasoning optional", asy
   await expect(page.getByTestId("answer-sources")).toHaveCount(0);
 });
 
-test("v2 memory recall and the saved-memory notice keep their verbs behind menus", async ({ page }) => {
+test("v2 past-chat sources sit in the fold and link to their chats", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1280 });
-  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=memory");
+  await page.goto("/ui-v2-fixture?fixture=answer-outputs&state=past-chats");
   const answer = page.locator('article[data-role="assistant"]').first();
   const process = answer.getByTestId("tool-activity-disclosure");
   await expect(process.locator(":scope > summary")).toHaveText("Worked for 8s");
-  await expect(answer.getByTestId("memory-action-confirmation")).toContainText("Memory saved.");
   await expect(answer.getByRole("button", { name: "Edit" })).toHaveCount(0);
   await process.locator(":scope > summary").click();
   await expect(answer.getByRole("heading", { name: "Steps" })).toBeVisible();
-  await answer.getByTestId("memories-disclosure").locator(":scope > summary").click();
-  const rows = answer.getByTestId("memory-source-card");
-  await expect(rows).toHaveCount(2);
-  await expect(rows.first()).toContainText("My dog is called Bruno and he is a beagle.");
-  await rows.first().getByTestId("memory-source-actions").click();
-  const menu = answer.getByRole("menu", { name: "Memory actions" });
-  await expect(menu.getByRole("menuitem")).toHaveText(["Correct", "Not relevant", "Forget"]);
-  await page.keyboard.press("Escape");
-  await expect(menu).toHaveCount(0);
-  await expect(rows.first().getByTestId("memory-source-actions")).toBeFocused();
+  const sources = answer.getByTestId("past-chat-sources");
+  await expect(sources.locator(":scope > summary")).toHaveText("Past chats · 2");
+  await sources.locator(":scope > summary").click();
+  await expect(sources).toContainText("Release rollback plan");
+  await expect(sources.getByRole("link", { name: /^Open Release rollback plan at this message/u })).toHaveAttribute("href", /\/c\/gallery-chat-rollback/u);
   await expectNoHorizontalOverflow(page);
 });
 

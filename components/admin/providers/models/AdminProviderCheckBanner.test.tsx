@@ -4,16 +4,14 @@ import { fixtureCheckRun, fixtureConnection, fixtureModel } from "../providerFix
 import { AdminProviderCheckBanner } from "./AdminProviderCheckBanner";
 import type { AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
 
-function fixture(results: AdminProviderCheckRun["results"], failed: string[] = [], overrides: Partial<AdminProviderCheckRun> = {}, memoryAssigned?: boolean) {
+function fixture(results: AdminProviderCheckRun["results"], failed: string[] = [], overrides: Partial<AdminProviderCheckRun> = {}) {
   const model = fixtureModel({ id: "m", displayName: "Fixture model", connectionId: "c" });
   const restart = vi.fn(async () => true);
-  const onOpenMemoryRole = vi.fn();
   const props = { disabled: false, connection: fixtureConnection({ id: "c", displayName: "Fixture provider", models: [model] }),
-    memoryAssigned, onOpenMemoryRole,
     checks: { interrupted: null, dismissInterrupted: vi.fn(), restart, stop: vi.fn(async () => true),
       run: fixtureCheckRun({ id: "run", credentialId: "key", state: "completed", done: 1, total: 1, failed, results, ...overrides }) } };
   render(<AdminProviderCheckBanner {...props} />);
-  return { onOpenMemoryRole, restart };
+  return { restart };
 }
 
 const saved: AdminProviderCheckRun["results"] = [{ providerModelId: "m", state: "saved", checks: { modelAccess: "verified" } }];
@@ -72,39 +70,27 @@ describe("independent model check feedback", () => {
     expect(screen.getByRole("button", { name: "Stop checking" })).toBeEnabled();
   });
 
-  it("finishes setup with a Memory hint instead of Retry when Memory has no qualified model", () => {
-    const { onOpenMemoryRole, restart } = fixture(saved, [], { reason: "setup", setup: {
+  it("finishes a setup run stored with the old Memory marker without a hint or Retry", () => {
+    const { restart } = fixture(saved, [], { reason: "setup", setup: {
       defaults: ["Chat: Fixture model"], needsConfiguration: ["memory"], search: "ready", state: "completed"
     } });
     expect(screen.getByText("Automatic setup finished.")).not.toHaveClass("text-critical");
     expect(screen.getByText("Search checked and ready.")).toBeVisible();
-    expect(screen.getByTestId("provider-setup-memory-hint")).toHaveTextContent("Memory needs a model. Choose one in Defaults & roles");
+    expect(screen.queryByText(/Memory/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/could not be saved|unfinished/u)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByRole("status").querySelector(".text-critical")).toBeNull();
-    const link = screen.getByRole("link", { name: "Choose one in Defaults & roles" });
-    expect(link.getAttribute("href")).toMatch(/\?section=roles&resource=memory$/u);
-    fireEvent.click(link);
-    expect(onOpenMemoryRole).toHaveBeenCalledOnce();
     expect(restart).not.toHaveBeenCalled();
   });
 
-  it("drops the stale Memory hint once the installation policy assigns Memory", () => {
-    fixture(saved, [], { reason: "setup", setup: {
-      defaults: ["Chat: Fixture model"], needsConfiguration: ["memory"], search: "ready", state: "completed"
-    } }, true);
-    expect(screen.getByText("Automatic setup finished.")).toBeVisible();
-    expect(screen.queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
-  });
-
-  it("keeps Retry for a real setup failure next to the Memory hint", () => {
+  it("keeps Retry for a real setup failure of a run stored with the old Memory marker", () => {
     const { restart } = fixture(saved, [], { reason: "setup", setup: {
       defaults: [], needsConfiguration: ["memory"], search: "failed", state: "partial"
     } });
     expect(screen.getByText("Some setup work is unfinished.")).toHaveClass("text-critical");
     expect(screen.getByText("Search could not be verified. Your saved key and model results are kept.")).toBeVisible();
-    expect(screen.getByTestId("provider-setup-memory-hint")).toBeVisible();
+    expect(screen.queryByText(/Memory/u)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry checks" }));
     expect(restart).toHaveBeenCalledOnce();
   });
@@ -121,10 +107,9 @@ describe("independent model check feedback", () => {
     expect(screen.getByText(text)).toBeVisible();
   });
 
-  it("keeps the unsaved-defaults copy and Retry for a partial save without the Memory hint", () => {
+  it("keeps the unsaved-defaults copy and Retry for a partial save", () => {
     fixture(saved, [], { reason: "setup", setup: { defaults: [], search: "ready", state: "partial" } });
     expect(screen.getByText("Some default assignments could not be saved. Retry setup to finish.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry checks" })).toBeVisible();
-    expect(screen.queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument();
   });
 });

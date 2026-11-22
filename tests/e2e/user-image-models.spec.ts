@@ -146,11 +146,6 @@ async function installImageChoiceFixture(suffix: string) {
     await prisma.$transaction(async (tx) => {
       await tx.attachment.deleteMany({ where: { chatId: { in: allChats } } });
       await tx.modelRun.deleteMany({ where: { chatId: { in: allChats } } });
-      await tx.memoryJob.deleteMany({ where: { chatId: { in: allChats } } });
-      await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: allChats } } });
-      await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: allChats } } });
-      await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: allChats } } });
-      await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: allChats } } });
       await tx.chat.deleteMany({ where: { id: { in: allChats } } });
     });
     if (priorChat) await prisma.modelPolicy.update({ where: { id: "installation" }, data: { defaultProviderModelId: priorChat.defaultProviderModelId,

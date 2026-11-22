@@ -26,12 +26,11 @@ for (const profile of [
       clientName: "Synthetic agent", clientOrigin: "https://agent.example.test",
       connectedAt: "2026-09-12T00:00:00.000Z", lastUsedAt: null, revokedAt: null, state: "ACTIVE"
     };
-    const memory = { ...common, connectionId: "memory-grant", resourcePath: "/mcp", capability: "memory:facts" };
     const hub = { ...common, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
     const readSkills = { ...common, clientName: "Read-only agent", connectionId: "skills-read-grant", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read"] };
     const writeSkills = { ...common, clientName: "Skill writer", connectionId: "skills-write-grant", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read", "skills:write"] };
     let revoked = false;
-    await page.route("**/api/me/connected-apps", (route) => route.fulfill({ json: { apps: [memory, hub, readSkills, writeSkills] } }));
+    await page.route("**/api/me/connected-apps", (route) => route.fulfill({ json: { apps: [hub, readSkills, writeSkills] } }));
     await page.route("**/api/me/connected-apps/skills-write-grant", async (route) => {
       expect(route.request().method()).toBe("DELETE");
       revoked = true;
@@ -72,7 +71,6 @@ for (const profile of [
     await expect(settings.getByRole("status").filter({ hasText: "Skills access revoked." }))
       .toHaveText("Skills access revoked. Your stored Skills and downloaded copies were kept.");
     expect(revoked).toBe(true);
-    await expect(settings.getByRole("button", { name: "Revoke Synthetic agent Personal Memory access" })).toBeEnabled();
     await expect(settings.getByRole("button", { name: "Revoke Synthetic agent MCP Hub access" })).toBeEnabled();
     await expect(settings.getByRole("button", { name: "Revoke Read-only agent Skills · read and download access" })).toBeEnabled();
     await expect(settings.getByRole("heading", { name: "Skill writer" })).toBeFocused();

@@ -114,7 +114,6 @@ function usageSources(): ProviderUsageSources {
     },
     search: null,
     systemModelPolicy: {
-      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       candidates: [],
       titleCandidates: [], documentCandidates: [],
       ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
@@ -504,7 +503,7 @@ describe("AdminProviderModels", () => {
     expect(confirmations).toHaveLength(1);
     expect(confirmations[0]).toMatchObject({ confirmLabel: "Turn off", title: "Turn off Voyage Rerank 2.5?", tone: "warning" });
     expect(confirmations[0]!.body).toBe(
-      "It is the primary reranker for Memory. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
+      "It is the primary reranker for past-chat search. Cohere Rerank 4 Pro takes over automatically, and chats in progress keep using the current model until they finish.\n\nNothing is deleted. You can turn it back on at any time."
     );
     await act(async () => { await confirmations[0]!.onConfirm(); });
     expect(actions.updateModel).toHaveBeenCalledWith("conn-or", "model-voyage", { action: "disable" }, "Model turned off.");

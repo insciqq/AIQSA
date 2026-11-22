@@ -1,5 +1,5 @@
 import type { UiV2MenuAction } from "@/components/ui-v2";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 
 export type FlattenedFolder<Folder> = Readonly<{ depth: number; folder: Folder }>;
 
@@ -117,13 +117,13 @@ export function chatMenuActionsV2({
       ? [{
           disabled: true,
           icon: "memory",
-          label: resolveMemoryCopy("resume.action"),
+          label: chatMemoryModeCopy("resume.action"),
           sub: memoryLockedReason
         }] as const
       : surface === "header" && onMemoryMode && memoryUsed !== null
       ? [{
           icon: "memory",
-          label: resolveMemoryCopy(memoryUsed ? "exclude.action" : "resume.action"),
+          label: chatMemoryModeCopy(memoryUsed ? "exclude.action" : "resume.action"),
           onSelect: () => onMemoryMode(memoryUsed ? "EXCLUDED" : "NORMAL")
         }] as const
       : [])

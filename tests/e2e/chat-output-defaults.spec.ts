@@ -152,9 +152,6 @@ test("ordinary output defaults reach requests and survive reload, override and r
         const chatIds = [...new Set([...chats.map(({ id }) => id), ...runs.map(({ chatId }) => chatId)])];
         await tx.providerRunBinding.deleteMany({ where: { connectionId } });
         await tx.modelRun.deleteMany({ where: { id: { in: runs.map(({ id }) => id) } } });
-        await tx.memoryJob.deleteMany({ where: { userId, chatId: { in: chatIds } } });
-        await tx.memoryRetrievalAttempt.deleteMany({ where: { userId, chatId: { in: chatIds } } });
-        await tx.memoryRecallChunk.deleteMany({ where: { userId, chatId: { in: chatIds } } });
         await tx.chat.deleteMany({ where: { userId, id: { in: chatIds } } });
         await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });
         await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });

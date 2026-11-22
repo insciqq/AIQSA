@@ -306,13 +306,12 @@ export function RunLifecycleV2Gallery() {
                   actions={{ onCopy: () => undefined, onRegenerate: () => undefined }}
                   artifact={{
                     citations: [],
-                    memorySources: [{
-                      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+                    pastChatSources: [{
+                      chatId: "run-gallery-chat",
+                      chatTitle: "Capacity plan",
                       date: "2026-09-02T09:00:00.000Z",
-                      memoryRef: "mr1.run-gallery-source",
-                      sourceAvailable: true,
-                      sourceType: "SAVED_MEMORY",
-                      text: "The capacity plan is revised every March."
+                      excerpt: "The capacity plan is revised every March.",
+                      messageId: "run-gallery-message"
                     }],
                     reasoningText: ["The question has two parts: the drivers and whether the plan covers them."],
                     sources: [{

@@ -35,14 +35,13 @@ export async function submitPasswordSignIn(
 }
 
 /**
- * Workspace turns run on the 8k fake model; recalled past chats from earlier
- * specs in the same database would otherwise push a multi-round tool loop
- * over the context budget. Memory is not under test here.
+ * Workspace turns run on the 8k fake model; a note or past chats found from
+ * earlier specs in the same database would otherwise push a multi-round tool
+ * loop over the context budget. Turns Memory off (the master switch: no note,
+ * no past-chat search, no offers). Memory is not under test here.
  */
 export async function disableMemoryRecall(page: Page): Promise<void> {
-  await page.request.patch("/api/me/memory/settings", {
-    data: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false }
-  }).catch(() => undefined);
+  await page.request.patch("/api/me/memory/preferences", { data: { memoryEnabled: false } }).catch(() => undefined);
 }
 
 export async function selectFakeModel(page: Page): Promise<void> {

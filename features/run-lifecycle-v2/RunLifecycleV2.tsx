@@ -269,7 +269,7 @@ export type RunAnswerV2Props = Readonly<{
   actionsSlot?: ReactNode;
   anchorId?: string;
   processDisclosureId?: string;
-  /** Settled answer outputs: Sources chip + list and the process fold's memory rows. */
+  /** Settled answer outputs: Sources chip + list and the process fold's past-chat rows. */
   artifact?: ThreadArtifactSummary | null;
   /** The chat of the live run whose Workspace browser the answer may show (`BrowserLivePanelV2`). */
   browserLiveChatId?: string | null;
@@ -283,8 +283,6 @@ export type RunAnswerV2Props = Readonly<{
   answerText?: string;
   /** Identity, rendered above the process line. */
   leadingSlot?: ReactNode;
-  /** The memory-saved notice, rendered under the process line and above the text. */
-  noticeSlot?: ReactNode;
   onPinSkill?(skillId: string): Promise<void>;
   pinnedSkillIds?: readonly string[];
   /** Opens one of the answer's past-chat sources in the shell, at the turn it came from; without it the link loads the chat page. */
@@ -328,7 +326,6 @@ function RunAnswerBodyV2({
   content,
   answerText,
   leadingSlot = null,
-  noticeSlot = null,
   onPinSkill,
   pinnedSkillIds,
   onOpenChatMessage,
@@ -353,7 +350,7 @@ function RunAnswerBodyV2({
   const sources = useAnswerSourcesV2({ artifact: settled ? artifact : null, text: answerText ?? content });
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
-  // exist (steps, then reasoning and memory once the artifact summary lands).
+  // exist (steps, then reasoning and past chats once the artifact summary lands).
   const activity = presentation.activity;
   // The model's own heading replaces only the waiting label. It is a one-line
   // status, shown whatever the Reasoning blocks setting, which governs the
@@ -391,7 +388,6 @@ function RunAnswerBodyV2({
       liveLabel={liveLabel}
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}
-      memorySources={settled ? artifact?.memorySources ?? [] : []}
       // The past chats the answer's search used, as the settled answer's load found them still there.
       pastChatSources={settled ? artifact?.pastChatSources ?? [] : []}
       onOpenChatMessage={onOpenChatMessage}
@@ -453,7 +449,6 @@ function RunAnswerBodyV2({
           {(artifact?.skillCatalogOmittedCount ?? 0) > 0 ? <p className="v2-tool-budget-warning" role="status">
             {artifact!.skillCatalogOmittedCount} enabled Skills were omitted from Auto discovery for this response because the Skill descriptions exceeded its budget. Choose Always use in Skills to include a specific Skill.
           </p> : null}
-          {noticeSlot}
         </>
       )}
       className={`v2-run-answer v2-run-answer-${presentation.kind}`}

@@ -18,7 +18,6 @@ import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AnswerOutputsV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import { researchAnswerViewV2 } from "@/features/answer-outputs-v2/researchAnswerView";
 import { McpApprovalCardsV2, McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
-import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import { mcpApprovalContinuationText, type McpApprovalCard } from "@/lib/contracts/mcpApprovals";
 
 export type AnswerOutputsGalleryState =
@@ -26,7 +25,7 @@ export type AnswerOutputsGalleryState =
   | "complete"
   | "computer"
   | "empty"
-  | "memory"
+  | "past-chats"
   | "reasoning"
   | "research";
 
@@ -52,14 +51,14 @@ const messages: ConversationMessageV2[] = [
   }
 ];
 
-const memoryMessages: ConversationMessageV2[] = [
+const pastChatMessages: ConversationMessageV2[] = [
   {
-    content: "Где я живу и как зовут мою собаку? Запомни, что я предпочитаю единицы СИ.",
+    content: "Что мы решили про откат релиза на прошлой неделе?",
     id: "answer-outputs-question",
     role: "user"
   },
   {
-    content: "Вы живёте в Лиссабоне, а собаку зовут Бруно. Единицы СИ теперь в памяти.",
+    content: "Решили держать предыдущий образ с тегом и откатываться одной командой; миграции остаются только добавляющими.",
     id: "answer-outputs-answer",
     role: "assistant"
   }
@@ -104,35 +103,26 @@ const reasoningArtifact: ThreadArtifactSummary = {
   workDurationMs: 12_400
 };
 
-/* The full settled anatomy: Thinking → Steps → Memory in the fold, a
-   "Memory saved." notice above the text, and no Sources chip. */
-const memoryArtifact: ThreadArtifactSummary = {
+/* The full settled anatomy: Thinking → Steps → Past chats in the fold, and no Sources chip. */
+const pastChatArtifact: ThreadArtifactSummary = {
   citations: [],
-  memoryAction: {
-    memoryRef: "mr1.gallery-save-reference",
-    operation: "SAVE",
-    statement: "I prefer SI units in answers.",
-    status: "COMMITTED"
-  },
-  memorySources: [
+  pastChatSources: [
     {
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      chatId: "gallery-chat-rollback",
+      chatTitle: "Release rollback plan",
       date: "2026-09-02T09:00:00.000Z",
-      memoryRef: "mr1.gallery-source-1",
-      sourceAvailable: true,
-      sourceType: "SAVED_MEMORY",
-      text: "My dog is called Bruno and he is a beagle."
+      excerpt: "Keep the previous image tagged so a rollback is one command; migrations stay additive.",
+      messageId: "gallery-message-1"
     },
     {
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      chatId: "gallery-chat-migrations",
+      chatTitle: "Migration review",
       date: "2026-08-28T09:00:00.000Z",
-      memoryRef: "mr1.gallery-source-2",
-      sourceAvailable: true,
-      sourceType: "LEARNED_MEMORY",
-      text: "I live in Lisbon."
+      excerpt: "Every migration in this release only adds columns, so the old image still starts.",
+      messageId: "gallery-message-2"
     }
   ],
-  reasoningText: ["Two facts are already in memory; the unit preference is new and worth saving."],
+  reasoningText: ["The rollback decision is in an earlier chat; search for it before answering."],
   sources: [],
   workDurationMs: 8_300
 };
@@ -194,10 +184,9 @@ const computerToolActivity: ThreadToolActivity = {
   ]
 };
 
-const memoryToolActivity: ThreadToolActivity = {
+const pastChatToolActivity: ThreadToolActivity = {
   calls: [
-    { durationMs: 640, round: 1, status: "complete", toolName: "web_search" },
-    { durationMs: 1_400, round: 2, serverName: "Memory", status: "complete", toolName: "save_memory" }
+    { durationMs: 1_400, origin: "memory", round: 1, serverName: "Past chats", status: "complete", toolName: "search_past_chats" }
   ]
 };
 
@@ -263,8 +252,8 @@ function artifactFor(state: AnswerOutputsGalleryState): ThreadArtifactSummary | 
       return null;
     case "reasoning":
       return reasoningArtifact;
-    case "memory":
-      return memoryArtifact;
+    case "past-chats":
+      return pastChatArtifact;
     default:
       return completeArtifact;
   }
@@ -310,8 +299,8 @@ export function AnswerOutputsV2Gallery({
       >
         <main className="v2-conversation-gallery-main">
           <ConversationV2
-            messages={state === "memory"
-              ? memoryMessages
+            messages={state === "past-chats"
+              ? pastChatMessages
               : state === "approval" ? approvalMessages : state === "research" ? researchMessages : messages}
             renderMessage={(message) => state === "research" && message.role === "assistant" ? (
               <ResearchAnswerOutput message={message} />
@@ -349,14 +338,8 @@ export function AnswerOutputsV2Gallery({
                     <span className="v2-answer-identity">Research assistant</span>
                   </div>
                 ) : null}
-                noticeSlot={artifact?.memoryAction ? (
-                  <MemoryActionConfirmationV2
-                    action={artifact.memoryAction}
-                    onOpenMemorySettings={() => undefined}
-                  />
-                ) : null}
                 presentation={{ kind: "complete", runId: "answer-outputs-run" }}
-                toolActivity={state === "memory" ? memoryToolActivity : state === "computer" ? computerToolActivity : null}
+                toolActivity={state === "past-chats" ? pastChatToolActivity : state === "computer" ? computerToolActivity : null}
                 workDurationMs={artifact?.workDurationMs ?? null}
               />
             )}

@@ -19,7 +19,6 @@ describe("adminSections", () => {
       { group: "models", id: "providers", label: "Providers" },
       { group: "models", id: "roles", label: "Defaults & roles" },
       { group: "models", id: "search", label: "Search" },
-      { group: "models", id: "retrieval", label: "Memory" },
       { group: "people", id: "users", label: "Users" },
       { group: "people", id: "groups", label: "Groups" },
       { group: "people", id: "limits", label: "Budgets & limits" },
@@ -52,8 +51,9 @@ describe("adminSections", () => {
     expect(resolveAdminSectionId("invites")).toBe("users");
     expect(resolveAdminSectionId("access-rules")).toBe("access-rules");
     expect(resolveAdminSectionId("safety")).toBe("users");
-    expect(resolveAdminSectionId("knowledge")).toBe("retrieval");
-    expect(resolveAdminSectionId("memory")).toBe("retrieval");
+    expect(resolveAdminSectionId("knowledge")).toBe("roles");
+    expect(resolveAdminSectionId("memory")).toBe("roles");
+    expect(resolveAdminSectionId("retrieval")).toBe("roles");
     expect(resolveAdminSectionId(null)).toBe("overview");
   });
 

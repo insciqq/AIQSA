@@ -294,7 +294,6 @@ export function providerSubtitle(
 const ROLE_TAGS = new Set([
   "Default chat",
   "System model",
-  "Memory",
   "Chat titles",
   "Chat PDF",
   "Vision Model",
@@ -337,7 +336,6 @@ export function deriveProviderUsage(
   add(sources.modelPolicy?.policy.defaultModel?.connectionId, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.connectionId, "System model");
-  add(sources.systemModelPolicy?.memoryPolicy.model?.connectionId, "Memory");
   add(roles?.chatTitleModel?.connectionId, "Chat titles");
   add(roles && activeChatPdfReader(roles)?.connectionId, "Chat PDF");
   add(roles?.visionModel?.connectionId, "Vision Model");

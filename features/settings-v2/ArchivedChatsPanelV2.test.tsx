@@ -1,17 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useArchivedChatsStore } from "@/components/app-shell/archivedChatsStore";
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import {
   activatePermanentChatDeletionAccount,
   usePermanentChatDeletionStore
 } from "@/components/app-shell/permanentChatDeletionStore";
 import {
   resetArchivedChatsStoreForTest,
-  resetMemorySettingsStoreForTest,
   resetPermanentChatDeletionStoreForTest
 } from "@/tests/support/appShellStores";
-import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
 import { ArchivedChatsPanelV2 } from "./ArchivedChatsPanelV2";
 
 const updatedAt = "2026-08-10T08:00:00.000Z";
@@ -85,7 +82,6 @@ afterEach(() => {
   cleanup();
   resetArchivedChatsStoreForTest();
   resetPermanentChatDeletionStoreForTest();
-  resetMemorySettingsStoreForTest();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -103,7 +99,6 @@ describe("ArchivedChatsPanelV2", () => {
     })).toBeVisible();
     expect(within(panel).getByText(/Last message Aug 10, 2026 · 1 message/u)).toBeVisible();
     expect(within(panel).getByRole("button", { name: "Restore Archived source" })).toBeVisible();
-    expect(within(panel).queryByRole("button", { name: /Delete/u })).not.toBeInTheDocument();
     expect(within(panel).queryByRole("dialog")).not.toBeInTheDocument();
     expect(within(panel).getByText(/Restore the chat, then choose/u)).toBeVisible();
   });
@@ -118,16 +113,11 @@ describe("ArchivedChatsPanelV2", () => {
     expect(within(panel).getByText("Retained evidence")).toBeVisible();
     expect(within(panel).getByRole("list", { name: "Archived chat messages" })).toBeVisible();
     expect(within(panel).getByRole("button", { name: "Restore Archived source" })).toBeVisible();
-    expect(within(panel).getByText(/stops using it as a source/i)).toBeVisible();
+    expect(within(panel).getByText(/past-chat search no longer finds it/i)).toBeVisible();
     expect(within(panel).queryByRole("textbox")).not.toBeInTheDocument();
   });
 
-  it("offers permanent deletion in the always-visible row menu only when allowed", async () => {
-    useMemorySettingsStore.setState({
-      data: memoryConsumerSettingsFixture({ capabilities: { permanentChatDeletion: true } }),
-      error: null,
-      loadState: "ready"
-    });
+  it("offers permanent deletion in the always-visible row menu", async () => {
     await activatePermanentChatDeletionAccount("account-a");
     readyList();
 

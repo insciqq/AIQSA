@@ -136,19 +136,4 @@ describe("usePersonalChatDeepLink", () => {
     expect(props.onUnavailable).not.toHaveBeenCalled();
     unmount();
   });
-
-  it("reports the one-shot Memory source marker separately and clears it without details", () => {
-    window.history.replaceState(
-      null,
-      "",
-      "/c/chat-1?memorySource=unavailable&keep=yes#answer"
-    );
-    const { props } = renderDeepLink({ activeChatId: null, ready: false });
-
-    expect(props.onUnavailable).toHaveBeenCalledOnce();
-    expect(props.onUnavailable).toHaveBeenCalledWith("memory_source");
-    expect(window.location.pathname).toBe("/c/chat-1");
-    expect(window.location.search).toBe("?keep=yes");
-    expect(window.location.hash).toBe("#answer");
-  });
 });

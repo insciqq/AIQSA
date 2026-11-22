@@ -1,21 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
-import { useMemorySettingsStore } from "./memorySettingsStore";
 import { COMPLETED_NOTICE_DISMISS_MS, PermanentChatDeletionSurface } from "./PermanentChatDeletionSurface";
 import { activatePermanentChatDeletionAccount, openPermanentChatDeletion, usePermanentChatDeletionStore } from "./permanentChatDeletionStore";
-import { resetMemorySettingsStoreForTest, resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
+import { resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 import { simulatePageTranslation } from "@/tests/support/pageTranslation";
 
 beforeEach(async () => {
   resetPermanentChatDeletionStoreForTest();
-  resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
-  useMemorySettingsStore.setState({
-    data: memoryConsumerSettingsFixture({ capabilities: { permanentChatDeletion: true } }),
-    error: null,
-    loadState: "ready"
-  });
   await activatePermanentChatDeletionAccount("account-a");
 });
 
@@ -23,7 +15,6 @@ afterEach(() => {
   vi.useRealTimers();
   cleanup();
   resetPermanentChatDeletionStoreForTest();
-  resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -41,17 +32,14 @@ describe("PermanentChatDeletionSurface", () => {
     const dialog = screen.getByRole("dialog", { name: "Delete this chat permanently?" });
     expect(screen.getByTestId("permanent-chat-deletion-dialog").parentElement).toBe(document.body);
     expect(within(dialog).getByText("Research notes", { exact: false })).toBeVisible();
-    expect(within(dialog).getByRole("checkbox", {
-      name: /Also forget saved memories from this chat/i
-    })).not.toBeChecked();
+    // Saved memories are gone, so the dialog offers no choice about them.
+    expect(within(dialog).queryByRole("checkbox")).toBeNull();
     const advanced = within(dialog).getByText("Advanced details").closest("details")!;
     expect(advanced).not.toHaveAttribute("open");
     expect(within(dialog).getByText(/AI provider or external tool/i)).not.toBeVisible();
 
     fireEvent.click(within(dialog).getByText("Advanced details"));
     expect(within(dialog).getByText(/AI provider or external tool/i)).toBeVisible();
-    fireEvent.click(within(dialog).getByRole("checkbox"));
-    expect(usePermanentChatDeletionStore.getState().alsoForgetOriginMemories).toBe(true);
     await waitFor(() => expect(
       within(dialog).getByRole("button", { name: "Close" })
     ).toHaveFocus());

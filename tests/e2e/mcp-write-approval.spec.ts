@@ -24,7 +24,7 @@ import { prepareWorkspaceFakeContext } from "./support/workspaceFixture";
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
 
-type MemoryRecall = Record<"learnAutomatically" | "referenceChatHistory" | "useMemoryFacts", boolean>;
+type MemoryRecall = Record<"memoryEnabled" | "memorySuggestionsEnabled" | "pastChatSearchEnabled", boolean>;
 type Stand = Readonly<{ chatIds: Set<string>; endpoint: MutableMcpEndpoint; serverId: string; serverName: string; userId: string }>;
 
 const viewports = [
@@ -47,12 +47,12 @@ async function withApprovalServer(page: Page, label: string, body: (stand: Stand
     await signInWithLocalToken(page);
     // Load all is chosen per chat, never as the account's default.
     await keepAccountMcpDefault(page);
-    // Recalled chats would count against the 8k fake model; restored afterwards.
-    const memory = await page.request.get("/api/me/memory/settings");
+    // A note or found past chats would count against the 8k fake model; the switches are restored afterwards.
+    const memory = await page.request.get("/api/me/memory/preferences");
     if (memory.ok()) {
-      const { settings } = await memory.json() as { settings: MemoryRecall };
-      memoryRecall = { learnAutomatically: settings.learnAutomatically,
-        referenceChatHistory: settings.referenceChatHistory, useMemoryFacts: settings.useMemoryFacts };
+      const switches = await memory.json() as MemoryRecall;
+      memoryRecall = { memoryEnabled: switches.memoryEnabled, memorySuggestionsEnabled: switches.memorySuggestionsEnabled,
+        pastChatSearchEnabled: switches.pastChatSearchEnabled };
     }
     await disableMemoryRecall(page);
     const userId = ((await (await page.request.get("/api/me")).json()) as { user: { id: string } }).user.id;
@@ -81,7 +81,7 @@ async function withApprovalServer(page: Page, label: string, body: (stand: Stand
     for (const chatId of chatIds) await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/me/mcp-consents/${serverId}`).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
-    if (memoryRecall) await page.request.patch("/api/me/memory/settings", { data: memoryRecall }).catch(() => undefined);
+    if (memoryRecall) await page.request.patch("/api/me/memory/preferences", { data: memoryRecall }).catch(() => undefined);
     await endpoint.close();
   }
 }

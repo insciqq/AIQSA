@@ -160,7 +160,6 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
   add(sources.modelPolicy?.policy.defaultModel?.id, "Default chat");
   const roles = sources.systemModelPolicy?.policy;
   add(roles?.systemModel?.id, "System model");
-  add(sources.systemModelPolicy?.memoryPolicy.model?.id, "Memory");
   add(roles?.chatTitleModel?.id, "Chat titles");
   add(roles && activeChatPdfReader(roles)?.id, "Chat PDF");
   add(roles?.visionModel?.id, "Vision Model");
@@ -185,7 +184,7 @@ export function deriveModelUsage(sources: ProviderUsageSources): ModelUsageIndex
 export function modelAssignedRoles(modelId: string, sources: ProviderUsageSources): AdminProviderAssignedRole[] {
   const policy = sources.systemModelPolicy?.policy;
   const pinned: ReadonlyArray<readonly [AdminProviderAssignedRole, string | undefined]> = [
-    ["memory", sources.systemModelPolicy?.memoryPolicy.model?.id], ["system_model", policy?.systemModel?.id],
+    ["system_model", policy?.systemModel?.id],
     ["chat_titles", policy?.chatTitleModel?.id], ["vision", policy?.visionModel?.id],
     ["mcp_guard", policy?.mcpGuardModel?.id], ["research_researcher", policy?.researchResearcherModel?.id],
     ["research_verifier", policy?.researchVerifierModel?.id], ["chat_pdf", policy?.chatPdfModel?.id], ["chat_pdf_native", policy?.chatPdfNativeModel?.id]
@@ -235,7 +234,6 @@ export function turnOffConsequence(input: Readonly<{
   const uses: string[] = [];
   if (input.tags.includes("Default chat")) uses.push("the default chat model for new chats");
   if (input.tags.includes("System model")) uses.push("the System model");
-  if (input.tags.includes("Memory")) uses.push("Memory processing");
   if (input.tags.includes("Chat titles")) uses.push("the chat title model");
   if (input.tags.includes("Vision Model")) uses.push("the Vision Model");
   if (input.tags.includes("Researchers")) uses.push("the model for research gathering");
@@ -245,10 +243,10 @@ export function turnOffConsequence(input: Readonly<{
   if (input.tags.includes("Relevance checks")) uses.push("the optional relevance-check model");
   if (roles.length) {
     uses.push(roles.includes("Reranker · primary") || roles.includes("Reranker")
-      ? "the primary reranker for Memory"
-      : "a fallback reranker for Memory");
+      ? "the primary reranker for past-chat search"
+      : "a fallback reranker for past-chat search");
   }
-  const known = new Set(["Default chat", "System model", "Memory", "Chat titles", "Chat PDF", "Vision Model",
+  const known = new Set(["Default chat", "System model", "Chat titles", "Chat PDF", "Vision Model",
     "Researchers", "Research checks", "Relevance checks", IMAGE_GENERATION_TAG, IMAGE_GENERATION_OFF_TAG]);
   const searchSources = input.tags.filter((tag) => !known.has(tag) && !tag.startsWith("Reranker"));
   if (searchSources.length) {
@@ -343,10 +341,6 @@ const missingCapabilityNames: Partial<Record<ModelChip["key"], string>> = {
 function describeChips(chips: readonly ModelChip[], modelClass: AdminProviderModelClass): string {
   if (chips.some((entry) => entry.key === "unavailable")) {
     return "the provider reports this model as not available with this key.";
-  }
-  const memoryActions = chips.find((entry) => entry.key === "memoryActions");
-  if (memoryActions) {
-    return `${describeChips(chips.filter((entry) => entry.key !== "memoryActions"), modelClass)} ${memoryActions.label}.`;
   }
   if (modelClass === "embedding") return "embeddings work.";
   if (modelClass === "reranker") return "reranking works.";

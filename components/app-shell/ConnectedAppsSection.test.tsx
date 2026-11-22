@@ -4,8 +4,8 @@ import { ConnectedAppsSection } from "./ConnectedAppsSection";
 import { deactivateConnectedApps } from "./connectedAppsStore";
 
 const activeApp = {
-  resourcePath: "/mcp" as const,
-  capability: "memory:facts" as const,
+  resourcePath: "/mcp/hub" as const,
+  capability: "mcp:hub" as const,
   clientName: "Codex CLI",
   clientOrigin: "http://127.0.0.1:43119",
   connectedAt: "2026-09-03T01:00:00.000Z",
@@ -31,19 +31,17 @@ describe("ConnectedAppsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("explains fact-only authority and renders the empty state", async () => {
+  it("explains what revoking keeps and renders the empty state", async () => {
     stubFetch(vi.fn(async () => jsonResponse({ apps: [] })));
     render(<ConnectedAppsSection accountId="account-a" />);
 
     expect(screen.getAllByRole("status").some((node) => node.textContent?.includes("Loading connected apps"))).toBe(true);
     expect(await screen.findByText("No connected apps")).toBeInTheDocument();
-    expect(screen.getByText(/read, add, change, and delete your Memory facts/i))
-      .toBeInTheDocument();
-    expect(screen.getByText(/Chat history is not shared/i)).toBeInTheDocument();
-    expect(screen.getByText(/Your stored Skills, MCP connections, and Memory facts remain/i)).toBeInTheDocument();
+    expect(screen.getByText(/Your stored Skills and MCP connections remain/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Memory/u)).not.toBeInTheDocument();
   });
 
-  it("revokes access, reports retained facts, and focuses the changed app", async () => {
+  it("revokes access, reports what was kept, and focuses the changed app", async () => {
     const revoked = {
       ...activeApp,
       revokedAt: "2026-09-03T02:00:00.000Z",
@@ -62,7 +60,7 @@ describe("ConnectedAppsSection", () => {
     );
 
     const revoke = await screen.findByRole("button", {
-      name: "Revoke Codex CLI Personal Memory access"
+      name: "Revoke Codex CLI MCP Hub access"
     });
     fireEvent.click(revoke);
     await waitFor(() => expect(onBusyChange).toHaveBeenCalledWith(true));
@@ -72,9 +70,9 @@ describe("ConnectedAppsSection", () => {
     const heading = await screen.findByRole("heading", { name: "Codex CLI" });
     await waitFor(() => expect(heading).toHaveFocus());
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Personal Memory access revoked. Stored Memory facts were kept."
+      "MCP Hub access revoked. Your MCP connections were kept."
     );
-    expect(screen.queryByRole("button", { name: /Revoke Codex CLI Personal Memory access/i }))
+    expect(screen.queryByRole("button", { name: /Revoke Codex CLI MCP Hub access/i }))
       .not.toBeInTheDocument();
     expect(onBusyChange).toHaveBeenLastCalledWith(false);
   });
@@ -93,18 +91,19 @@ describe("ConnectedAppsSection", () => {
   });
 
   it("revokes only the selected resource when the same app has both permissions", async () => {
-    const hub = { ...activeApp, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
+    const hub = { ...activeApp, connectionId: "hub-grant" };
+    const skills = { ...activeApp, connectionId: "skills-grant", resourcePath: "/mcp/skills", capability: "skills:store", scopes: ["skills:read"] };
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ apps: [activeApp, hub] }))
+      .mockResolvedValueOnce(jsonResponse({ apps: [skills, hub] }))
       .mockResolvedValueOnce(jsonResponse({ app: { ...hub, state: "REVOKED", revokedAt: "2026-09-03T02:00:00.000Z" } }));
     stubFetch(fetchMock);
     render(<ConnectedAppsSection accountId="account-a" />);
     const revoke = await screen.findByRole("button", { name: "Revoke Codex CLI MCP Hub access" });
-    expect(screen.getByRole("button", { name: "Revoke Codex CLI Personal Memory access" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Revoke Codex CLI Skills · read and download access" })).toBeEnabled();
     fireEvent.click(revoke);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("MCP Hub access revoked. Your MCP connections were kept."));
     expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/me/connected-apps/hub-grant");
-    expect(screen.getByRole("button", { name: "Revoke Codex CLI Personal Memory access" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Revoke Codex CLI Skills · read and download access" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Revoke Codex CLI MCP Hub access" })).not.toBeInTheDocument();
   });
 

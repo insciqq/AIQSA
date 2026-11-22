@@ -95,7 +95,7 @@ for (const viewport of [{ width: 1280, height: 560, theme: "dark" }, { width: 39
       expect(decryptWorkspaceSecret((await rows())[0]!.value, userId).value).toEqual(decryptWorkspaceSecret(imported!.value, userId).value);
       expect(pageErrors).toEqual([]);
     } finally {
-      // Deferred Memory source guards must observe the complete fixture deletion.
+      // The fixture rows go in the order their keys require.
       await prisma.$transaction([
         prisma.modelRun.deleteMany({ where: { userId } }),
         prisma.chat.updateMany({ where: { userId }, data: { activeLeafMessageId: null } }),

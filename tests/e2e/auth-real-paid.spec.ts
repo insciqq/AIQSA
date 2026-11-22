@@ -76,7 +76,7 @@ test.afterAll(async ({ browser }) => {
     await admin.close();
   } finally {
     await restoreOidc?.();
-    // A permanently deleted chat leaves its owner a Memory deletion obligation that guards the
+    // A permanently deleted chat leaves its owner a deletion obligation that guards the
     // account row; the disposable stand's database goes with the stand, so the account may stay.
     await deleteStandUsers(prisma, emails).catch(() => undefined);
     if (groupId) {

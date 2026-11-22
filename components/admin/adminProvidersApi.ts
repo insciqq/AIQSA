@@ -579,8 +579,12 @@ export function getAdminProviderCheckRun(
   );
 }
 
-const assignedRoleLabels: Record<AdminProviderAssignedRole, string> = {
-  mcp_guard: "MCP guard", memory: "Memory", research_researcher: "Researchers", research_verifier: "Research checks",
+/**
+ * Role names as administrators read them. The old Memory utility role (`memory`) is gone; results stored before
+ * v0.5.0 may still name it, and it is left out of every message instead of being named.
+ */
+const assignedRoleLabels: Readonly<Partial<Record<AdminProviderAssignedRole, string>>> = {
+  mcp_guard: "MCP guard", research_researcher: "Researchers", research_verifier: "Research checks",
   system_model: "System model", chat_titles: "Chat titles", vision: "Vision Model",
   chat_pdf: "PDF processing in chats", chat_pdf_native: "PDF reader"
 };
@@ -592,9 +596,15 @@ function listText(values: readonly string[]): string {
   return values.length < 2 ? values.join("") : `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
 }
 
-/** `System model and Memory use this model and need structured output`. */
-export function roleRoutingConflictSummary(conflicts: readonly AdminProviderRoleRoutingConflict[]): string {
-  const names = listText(conflicts.map(({ role }) => assignedRoleLabels[role]));
+/** The roles a message can name: a stored legacy role without a label is left out. */
+export function namedAssignedRoles<T extends Readonly<{ role: AdminProviderAssignedRole }>>(roles: readonly T[]): T[] {
+  return roles.filter(({ role }) => assignedRoleLabels[role] !== undefined);
+}
+
+/** `System model and Chat titles use this model and need structured output`. */
+export function roleRoutingConflictSummary(allConflicts: readonly AdminProviderRoleRoutingConflict[]): string {
+  const conflicts = namedAssignedRoles(allConflicts);
+  const names = listText(conflicts.map(({ role }) => assignedRoleLabels[role]!));
   const plural = conflicts.length > 1 || conflicts.some(({ role }) => role === "research_researcher" || role === "research_verifier");
   const needs = listText([...new Set(conflicts.flatMap(({ missingParameters }) =>
     missingParameters.map((parameter) => routingParameterLabels[parameter] ?? parameter)))]);
@@ -603,9 +613,9 @@ export function roleRoutingConflictSummary(conflicts: readonly AdminProviderRole
 
 /** Names the installation roles a refused routing change or failed check affects. */
 function assignedRoleMessage(error: AdminProviderClientError): string | null {
-  const roles = error.roles ?? [];
+  const roles = namedAssignedRoles(error.roles ?? []);
   if (!roles.length) return null;
-  const names = listText(roles.map(({ role }) => assignedRoleLabels[role]));
+  const names = listText(roles.map(({ role }) => assignedRoleLabels[role]!));
   const plural = roles.length > 1 || roles.some(({ role }) => role === "research_researcher" || role === "research_verifier");
   if (error.code === "provider_routing_role_incompatible") {
     return `${roleRoutingConflictSummary(roles)}, which the selected providers do not support. ` +

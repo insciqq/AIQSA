@@ -1,5 +1,4 @@
 import { expect, test, type Locator, type Page, type TestInfo } from "@playwright/test";
-import { memoryConsumerItemFixture, memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction, showSettingsSection } from "./shell/page";
@@ -18,8 +17,13 @@ async function prepare(page: Page) {
     activeLeafMessageId: null, createdAt: timestamp, updatedAt: timestamp, messageCount: 0,
     defaultModelId: "gpt-5.5", defaultProvider: "openai", messages: []
   }] });
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
-  await page.route("**/api/me/memories?*", route => route.fulfill({ json: memoryConsumerListFixture([]) }));
+  // Settings › Memory: a saved note, its switches and no earlier memories.
+  await page.route("**/api/me/memory/note", route => route.request().method() === "GET"
+    ? route.fulfill({ json: { text: "Release notes need evidence.", revision: 1, lastChangedBy: "user", updatedAt: timestamp } })
+    : route.fallback());
+  await page.route("**/api/me/memory/preferences", route => route.fulfill({
+    json: { memoryEnabled: true, pastChatSearchEnabled: true, memorySuggestionsEnabled: true } }));
+  await page.route(/\/api\/me\/memory\/legacy(?:\?.*)?$/u, route => route.fulfill({ json: { suggestions: [], nextCursor: null } }));
   await page.route("**/api/chats/compact?*", route => route.fulfill({ json: {
     chats: [{ id: "studio-navigation-chat", title: "Navigation destination", folderId: null, activeRun: false, updatedAt: timestamp,
       assistant: null }],
@@ -44,8 +48,8 @@ async function openDraft(page: Page, resource: Resource) {
     await input.fill("Unsaved Settings assistant");
     return input;
   }
-  await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
-  const input = library.getByRole("textbox", { name: "New memory", exact: true });
+  const input = library.getByRole("textbox", { name: "Memory note", exact: true });
+  await expect(input).toHaveValue("Release notes need evidence.");
   await input.fill("I prefer carefully verified examples.");
   return input;
 }
@@ -148,12 +152,13 @@ test("pending resource mutations block all Settings exits without offering Disca
   for (const resource of resources) {
     const input = await openDraft(page, resource);
     const library = page.getByTestId("library-v2");
-    const path = resource === "Assistants" ? "assistants" : "memories";
+    const path = resource === "Assistants" ? "assistants" : "memory/note";
+    const method = resource === "Assistants" ? "POST" : "PUT";
     let release: (() => void) | undefined;
     let requested = false;
     const pending = new Promise<void>(resolve => { release = resolve; });
     await page.route(`**/api/me/${path}`, async route => {
-      if (route.request().method() !== "POST") { await route.fallback(); return; }
+      if (route.request().method() !== method) { await route.fallback(); return; }
       requested = true;
       await pending;
       await route.fulfill({ status: 503, json: { error: { code: "temporarily_unavailable", message: "Try again later." } } });
@@ -161,7 +166,7 @@ test("pending resource mutations block all Settings exits without offering Disca
     if (resource === "Assistants") {
       await library.getByRole("textbox", { name: "Instructions", exact: true }).fill("Be precise.");
       await library.getByTestId("assistant-editor-save").click();
-    } else await library.getByRole("button", { name: "Save memory", exact: true }).click();
+    } else await library.getByRole("button", { name: "Save", exact: true }).click();
     await expect.poll(() => requested).toBe(true);
     for (const tab of await library.getByRole("tab").all()) await expect(tab).toBeDisabled();
     // Every exit is locked while the save runs: the Assistant editor's own Back, or Back to chat.
@@ -462,8 +467,6 @@ test("Escape leaves Settings one step at a time, yields to what uses it and neve
   page.setDefaultTimeout(15_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await prepare(page);
-  const statement = "I prefer carefully verified examples.";
-  await page.route("**/api/me/memories?*", route => route.fulfill({ json: memoryConsumerListFixture([memoryConsumerItemFixture({ statement })]) }));
   const library = page.getByTestId("library-v2");
   const confirmation = page.getByTestId("discard-changes-confirmation");
 
@@ -485,24 +488,16 @@ test("Escape leaves Settings one step at a time, yields to what uses it and neve
   await page.keyboard.press("Escape");
   await expect(library).toBeHidden();
 
-  // A resource menu closes first, then a delete confirmation, then Escape leaves; a field keeps Settings.
+  // A field keeps Settings, a confirmation closes first, then Escape leaves.
   await runAccountMenuAction(page, "Memory");
-  await library.getByRole("searchbox", { name: "Search memories" }).focus();
+  await library.getByRole("textbox", { name: "Memory note", exact: true }).focus();
   await page.keyboard.press("Escape");
   await expect(library).toBeVisible();
-  const menuTrigger = library.getByRole("button", { name: `Memory actions: ${statement}` });
-  await menuTrigger.click();
-  const menu = page.getByRole("menu");
-  await expect(menu).toBeVisible();
+  await library.getByRole("button", { name: "Clear note…", exact: true }).click();
+  const clear = page.getByTestId("memory-note-clear-confirmation");
+  await expect(clear).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(menu).toHaveCount(0);
-  await expect(library).toBeVisible();
-  await menuTrigger.click();
-  await page.getByRole("menuitem", { name: "Forget" }).click();
-  const forget = library.getByRole("group", { name: /^Forget / });
-  await expect(forget).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(forget).toHaveCount(0);
+  await expect(clear).toHaveCount(0);
   await expect(library).toBeVisible();
   await library.getByRole("tab", { name: "Memory", exact: true }).focus();
   await page.keyboard.press("Escape");

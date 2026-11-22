@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction, showSettingsSection } from "./shell/page";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
@@ -78,7 +77,6 @@ async function installChat(page: Page, fixture: Fixture, nextArtifact?: ThreadGe
     defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null,
     contextStats: { approximateActiveBranchInputTokens: 0 } };
   await installMatrixCatalogFixture(page, { folders: [], chats: [chat] });
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
   return chat;
 }

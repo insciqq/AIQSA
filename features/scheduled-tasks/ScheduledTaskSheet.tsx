@@ -192,9 +192,9 @@ export function ScheduledTaskSheet({
     : chatMode === "same" ? "Runs share this automation's Workspace, so its files stay from run to run and move to each new month's chat."
       : "Each run starts with an empty Workspace in its new chat.");
   // The owner's own Memory state decides what any task may read; the switch stays the task's.
-  const memoryReason = memory === "paused" ? "Memory is paused, so runs read nothing. Turn it on in Settings › Memory."
-    : memory === "needs_setup" ? "Memory needs administrator setup, so runs read nothing yet."
-      : "Reads what Memory knows about you. Automations never add to Memory.";
+  const memoryReason = memory === "off"
+    ? "Memory is off, so runs neither read your note nor search past chats. Turn it on in Settings › Memory."
+    : "Reads your Memory note and may search your past chats. Automations never change Memory.";
   // Turning the webhook off keeps its address and token; the endpoint refuses calls meanwhile.
   const webhookHelp = draft.webhookEnabled
     ? "Another system runs it by posting to its URL with a token. The request body reaches each run as incoming data."

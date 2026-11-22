@@ -11,7 +11,7 @@ import type { AdminGroup } from "@/lib/contracts/admin";
 import { useEffect, useRef } from "react";
 
 export const ADMIN_ROLES_FOOTNOTE =
-  "Only deployments that can do the job are listed. One that has not been checked for a role yet shows a Check action inside the picker; nothing else can be assigned. Personal Memory keeps each owner’s existing embedding space.";
+  "Only deployments that can do the job are listed. One that has not been checked for a role yet shows a Check action inside the picker; nothing else can be assigned.";
 
 /** Defaults & roles page (PRD 5.5): Chat defaults card over the System roles table. */
 export function AdminRolesSection({
@@ -37,7 +37,7 @@ export function AdminRolesSection({
       return;
     }
     if (!controller.policy || focusedResource.current === resource) return;
-    const id = ({ system: "system", memory: "memory", mcp_guard: "mcp-guard", research_researcher: "research-researcher", research_verifier: "research-verifier",
+    const id = ({ system: "system", mcp_guard: "mcp-guard", research_researcher: "research-researcher", research_verifier: "research-verifier",
       chat_pdf: "chat-pdf", vision: "vision", chat_titles: "chat-titles", reranker: "reranker", decisions: "decisions", speech_to_text: "speech-to-text" } as Record<string, string>)[resource];
     const row = id ? document.getElementById(`admin-role-${id}`) : null;
     if (row) {

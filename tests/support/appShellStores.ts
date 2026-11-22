@@ -4,8 +4,6 @@ import { useChatAssistantProjectionStore } from "@/components/app-shell/chatAssi
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import { useComposerSessionStore } from "@/components/app-shell/composerSessionStore";
 import { deactivateMcpSettings } from "@/components/app-shell/mcpSettingsStore";
-import { deactivateMemoryManager } from "@/components/app-shell/memoryManagerStore";
-import { deactivateMemorySettings } from "@/components/app-shell/memorySettingsStore";
 import { deactivatePermanentChatDeletionAccount } from "@/components/app-shell/permanentChatDeletionStore";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
@@ -39,14 +37,6 @@ export function resetComposerSessionStoreForTest(): void {
 
 export function resetMcpSettingsStoreForTest(): void {
   deactivateMcpSettings();
-}
-
-export function resetMemoryManagerStoreForTest(): void {
-  deactivateMemoryManager();
-}
-
-export function resetMemorySettingsStoreForTest(): void {
-  deactivateMemorySettings();
 }
 
 export function resetPermanentChatDeletionStoreForTest(): void {

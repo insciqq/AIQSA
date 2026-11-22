@@ -654,7 +654,7 @@ test.describe("MCP authorization", () => {
     } finally {
       await page.goto("about:blank");
       // Deleting the synthetic owner removes its chat. A permanent chat
-      // deletion would queue Memory cleanup for this user and block that.
+      // deletion would queue deletion cleanup for this user and block that.
       if (serverId) {
         const clients = await prisma.mcpOAuthConnection.findMany({ where: { serverId }, select: { oauthClientId: true } });
         await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);

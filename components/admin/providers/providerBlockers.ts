@@ -14,7 +14,6 @@ const usedBy: Partial<Record<AdminProviderDeleteBlocker["kind"], (count: number)
   credentials: (count) => plural(count, "key"),
   group_assignments: (count) => plural(count, "group override"),
   installation_default: () => "the default chat model",
-  memory_bindings: (count) => plural(count, "Memory call"),
   models: (count) => plural(count, "model"),
   run_bindings: (count) => plural(count, "running or recoverable chat"),
   search_references: (count) => plural(count, "Search source"),

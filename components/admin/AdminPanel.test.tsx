@@ -1,4 +1,3 @@
-import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "@/lib/contracts/admin";
@@ -759,8 +758,9 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "Invites" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Safety" })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Memory|Users|Groups|Sign-up rules|MCP servers|Workspace|Email|Usage)$/ }))
-      .toHaveLength(12);
+    expect(screen.getAllByRole("link", { name: /^(Overview|Providers|Defaults & roles|Search|Users|Groups|Sign-up rules|MCP servers|Workspace|Email|Usage)$/ }))
+      .toHaveLength(11);
+    expect(screen.queryByRole("link", { name: "Memory" })).not.toBeInTheDocument();
 
     window.history.pushState(null, "", "/admin?section=system-models");
     fireEvent.popState(window);
@@ -768,11 +768,17 @@ describe("AdminPanel", () => {
     expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
     expect(window.location.search).toBe("?section=roles");
 
-    // The section of the removed Knowledge resolves to Memory.
-    window.history.pushState(null, "", "/admin?section=knowledge");
-    fireEvent.popState(window);
-    await screen.findByTestId("admin-section-retrieval");
-    expect(screen.getByRole("link", { name: "Memory" })).toHaveAttribute("aria-current", "page");
+    // The sections of the removed Knowledge and the old Memory resolve to Defaults & roles, where the past-chat
+    // embedding role lives.
+    for (const legacy of ["knowledge", "retrieval"]) {
+      window.history.pushState(null, "", "/admin?section=users");
+      fireEvent.popState(window);
+      await screen.findByTestId("admin-section-users");
+      window.history.pushState(null, "", `/admin?section=${legacy}`);
+      fireEvent.popState(window);
+      await screen.findByTestId("admin-section-roles");
+      expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
+    }
   });
 
   it("switches compact composition between the active section and the section drawer", async () => {
@@ -862,45 +868,6 @@ describe("AdminPanel", () => {
     act(() => window.history.back());
     await screen.findByTestId("admin-section-users");
     expect(window.location.search).toBe("?section=users");
-  });
-  it("mounts the Memory card under Memory and leaves it for Defaults & roles without a discard prompt", async () => {
-    window.history.replaceState(null, "", "/admin?section=retrieval");
-    const memory = {
-      processing: { enabled: true, issues: [] },
-      searchTimeout: { seconds: 30, version: 1 },
-      configuredTargets: [],
-      index: { generation: 1, readiness: "READY" },
-      queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
-      rebuild: { state: "NOT_REQUIRED" },
-      recovery: memoryRecoveryStatusFixture(),
-      worker: memoryWorkerStatusFixture()
-    };
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      if (url === "/api/admin") return dashboardResponse();
-      if (url === "/api/admin/memory" && (init?.method ?? "GET") === "GET") {
-        return dashboardResponse({ memory });
-      }
-      return dashboardResponse({ error: "unexpected_request" }, 500);
-    });
-    render(<AdminPanel adminEmail="admin@example.com" adminUserId="admin-1" />);
-
-    const retrieval = await screen.findByTestId("admin-section-retrieval");
-    expect(window.location.search).toBe("?section=retrieval");
-    await within(within(retrieval).getByTestId("admin-retrieval-memory")).findByText("Working");
-    for (const save of within(retrieval).getAllByRole("button", { name: "Save" })) {
-      expect(save).toBeDisabled();
-    }
-    expect(within(retrieval).queryByText(/Manage assignments in System Models/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("link", { name: "Defaults & roles" }));
-    await screen.findByTestId("admin-section-roles");
-    expect(window.location.search).toBe("?section=roles");
-    expect(screen.getByRole("link", { name: "Defaults & roles" })).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByRole("heading", { name: "Discard unsaved changes?" }))
-      .not.toBeInTheDocument();
-    const unload = new Event("beforeunload", { cancelable: true });
-    window.dispatchEvent(unload);
-    expect(unload.defaultPrevented).toBe(false);
   });
 
   it("loads period-scoped usage from its own endpoint and keeps the period in the section URL", async () => {

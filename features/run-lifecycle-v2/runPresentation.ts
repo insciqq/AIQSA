@@ -6,6 +6,7 @@ import {
   continuableRunFailure,
   isMcpAutoDiscoveryFailureCode,
   isToolSynthesisFailure,
+  RUN_PREPARATION_FAILURE_MESSAGE,
   TOOL_SYNTHESIS_FAILURE,
   type ModelRunStatus,
   type RunEventView
@@ -18,7 +19,7 @@ import {
   type ThreadToolActivityOrigin,
   type ThreadToolBudgetWarning
 } from "@/lib/contracts/chats";
-import { formatMemoryUiCopy, memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { MEMORY_NOTE_COPY } from "@/components/app-shell/memoryNoteUiCopy";
 import { decodeThreadSearchActivitySnapshot, mergeThreadSearchEngineActivity } from "@/lib/contracts/searchActivity";
 import { decodeContextCompactionStatus, mergeContextCompactionStatus, terminalContextCompactionStatus, type ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import { decodeReasoningHeading } from "@/lib/domain/reasoningHeading";
@@ -658,7 +659,6 @@ export function planCallHiddenV2(call: ToolActivityIdentity): boolean {
 
 export type AnswerProcessFactsV2 = Readonly<{
   hasReasoning: boolean;
-  memoryCount: number;
   pastChatCount?: number;
   stepCount: number;
   workDurationMs: number | null;
@@ -699,14 +699,7 @@ export function answerProcessLabelV2(facts: AnswerProcessFactsV2): string | null
     const verb = facts.stepCount > 0 ? "Worked" : "Thought";
     return `${verb} for ${formatWorkDurationV2(facts.workDurationMs)}`;
   }
-  const segments: string[] = [];
-  if ((facts.pastChatCount ?? 0) > 0) {
-    segments.push(formatMemoryUiCopy("source.pastChatsHeading", { count: facts.pastChatCount! }));
-  }
-  if (facts.memoryCount > 0) {
-    segments.push(formatMemoryUiCopy("source.heading", { count: facts.memoryCount }));
-  }
-  return segments.length > 0 ? segments.join(" · ") : null;
+  return (facts.pastChatCount ?? 0) > 0 ? MEMORY_NOTE_COPY.pastChatsHeading(facts.pastChatCount!) : null;
 }
 
 /**
@@ -1391,7 +1384,7 @@ export function neutralizeMemoryRunFailureV2<T extends Readonly<{ code?: string 
     ...failure,
     ...(egressCode ? { code: failure.code!.slice("memory_".length) } : {}),
     ...(memoryCode ? { code: NEUTRAL_RUN_PREPARATION_CODE_V2 } : {}),
-    ...(memoryMessage || memoryCode ? { message: memoryUiCopy("answer.preparationFailed") } : {})
+    ...(memoryMessage || memoryCode ? { message: RUN_PREPARATION_FAILURE_MESSAGE } : {})
   };
 }
 

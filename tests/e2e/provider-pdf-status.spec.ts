@@ -5,7 +5,7 @@ import { expectNoHorizontalOverflow, expectTouchSafe } from "./support/layoutAss
 
 test.use({ hasTouch: true });
 
-test("Memory action warnings stay visible beside verified ordinary Tools", async ({ page }) => {
+test("an unproven required tool result reads inside verified ordinary Tools, with no chip of its own", async ({ page }) => {
   const connection = workingConnection();
   connection.models = [connection.models[0]!];
   const model = connection.models[0]!;
@@ -22,17 +22,16 @@ test("Memory action warnings stay visible beside verified ordinary Tools", async
   for (const theme of ["light", "dark"]) {
     await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
     await page.setViewportSize({ width: theme === "light" ? 1440 : 390, height: 844 });
-    const warning = page.getByTestId("model-chip-memoryActions");
-    await expect(warning).toHaveText("Memory actions: check incomplete");
-    await expect(warning).toBeVisible();
-    await expect(page.getByTestId("model-chip-tools")).toHaveAttribute("data-chip-tone", "ok");
-    await warning.tap();
-    const help = warning.locator("..").locator("p");
+    const tools = page.getByTestId("model-chip-tools");
+    await expect(tools).toHaveAttribute("data-chip-tone", "ok");
+    await expect(page.getByTestId("model-chip-memoryActions")).toHaveCount(0);
+    await tools.tap();
+    const help = tools.locator("..").locator("p");
+    await expect(help).toContainText("Required tool results:");
     await expect(help).toContainText("HTTP 400");
-    await expect(help).toContainText("Other Memory features have separate requirements.");
     await page.keyboard.press("Escape");
     await expect(help).toBeHidden();
-    await expect(warning).toBeFocused();
+    await expect(tools).toBeFocused();
     await expectNoHorizontalOverflow(page);
   }
 });

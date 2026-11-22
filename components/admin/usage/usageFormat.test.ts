@@ -98,7 +98,7 @@ describe("usage shares", () => {
 
   it("name system functions in the order the server lists them", () => {
     expect(systemPurposeList(["chat_title", "memory_retrieval", "knowledge_retrieval", "other"]))
-      .toBe("Chat titles, Memory search, Knowledge search, Other");
+      .toBe("Chat titles, Past-chat search, Knowledge search, Other");
   });
 });
 

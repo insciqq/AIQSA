@@ -17,7 +17,7 @@ function attentionResult(ids: string[]): AdminAttentionResult {
       checkedAt: "2026-09-07T12:00:00.000Z",
       items: ids.map((id) => ({
         action: "Open",
-        code: id.startsWith("memory") ? "memory_processing_blocked" as const : "email_not_configured" as const,
+        code: id.startsWith("search") ? "search_source_model_off" as const : "email_not_configured" as const,
         count: null,
         detail: id,
         id,
@@ -49,45 +49,45 @@ describe("useAdminAttention", () => {
     const pending = deferred<AdminAttentionResult>();
     const request = vi.fn<() => Promise<AdminAttentionResult>>()
       .mockResolvedValueOnce(attentionResult([]))
-      .mockResolvedValueOnce(attentionResult(["memory-blocked"]))
+      .mockResolvedValueOnce(attentionResult(["search-blocked"]))
       .mockResolvedValueOnce(attentionResult([]))
       .mockReturnValueOnce(pending.promise);
     const view = render(<Harness active refreshKey={1} requestAttention={request} />);
     await act(async () => { await Promise.resolve(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
-    expect(screen.getByTestId("state")).toHaveTextContent("ready:memory-blocked");
+    expect(screen.getByTestId("state")).toHaveTextContent("ready:search-blocked");
     await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
-    expect(screen.getByTestId("state")).not.toHaveTextContent("memory-blocked");
+    expect(screen.getByTestId("state")).not.toHaveTextContent("search-blocked");
     await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
     view.rerender(<Harness active={false} refreshKey={1} requestAttention={request} />);
-    await act(async () => { pending.resolve(attentionResult(["memory-old"])); await pending.promise; });
+    await act(async () => { pending.resolve(attentionResult(["search-old"])); await pending.promise; });
     await act(async () => { await vi.advanceTimersByTimeAsync(75_000); window.dispatchEvent(new Event("focus")); });
     expect(request).toHaveBeenCalledTimes(4);
-    expect(screen.getByTestId("state")).not.toHaveTextContent("memory-old");
+    expect(screen.getByTestId("state")).not.toHaveTextContent("search-old");
   });
 
   it("retains only unavailable sources with their original observation time, then removes confirmed recovery", async () => {
     const partial = attentionResult(["updated-email"]);
     if (!partial.ok) throw new Error("fixture_invalid");
     partial.attention.checkedAt = "2026-09-07T12:00:25.000Z";
-    partial.attention.unavailable = ["memory"];
+    partial.attention.unavailable = ["search"];
     const recovered = attentionResult([]);
     if (!recovered.ok) throw new Error("fixture_invalid");
     recovered.attention.checkedAt = "2026-09-07T12:00:50.000Z";
     const request = vi.fn<() => Promise<AdminAttentionResult>>()
-      .mockResolvedValueOnce(attentionResult(["memory-blocked", "old-email"]))
+      .mockResolvedValueOnce(attentionResult(["search-blocked", "old-email"]))
       .mockResolvedValueOnce(partial).mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValueOnce(recovered);
     const view = render(<Harness active refreshKey={1} requestAttention={request} />);
-    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("memory-blocked,old-email"));
+    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("search-blocked,old-email"));
     view.rerender(<Harness active refreshKey={2} requestAttention={request} />);
-    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("updated-email,memory-blocked"));
-    expect(screen.getByTestId("state")).toHaveAttribute("data-stale", '{"memory-blocked":"2026-09-07T12:00:00.000Z"}');
+    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("updated-email,search-blocked"));
+    expect(screen.getByTestId("state")).toHaveAttribute("data-stale", '{"search-blocked":"2026-09-07T12:00:00.000Z"}');
     view.rerender(<Harness active refreshKey={3} requestAttention={request} />);
-    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("unavailable:updated-email,memory-blocked"));
-    expect(screen.getByTestId("state").getAttribute("data-stale")).toContain('"memory-blocked":"2026-09-07T12:00:00.000Z"');
+    await waitFor(() => expect(screen.getByTestId("state")).toHaveTextContent("unavailable:updated-email,search-blocked"));
+    expect(screen.getByTestId("state").getAttribute("data-stale")).toContain('"search-blocked":"2026-09-07T12:00:00.000Z"');
     view.rerender(<Harness active refreshKey={4} requestAttention={request} />);
-    await waitFor(() => expect(screen.getByTestId("state")).not.toHaveTextContent("memory-blocked"));
+    await waitFor(() => expect(screen.getByTestId("state")).not.toHaveTextContent("search-blocked"));
     expect(screen.getByTestId("state")).toHaveAttribute("data-stale", "{}");
   });
   it("loads only while active, refetches after reconciled mutations and on window focus", async () => {

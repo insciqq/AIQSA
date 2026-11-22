@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
 import { createGatedRunStreamFixture } from "./support/gatedRunStream";
@@ -62,7 +61,6 @@ async function installChat(page: Page, value: Awaited<ReturnType<typeof fixture>
   await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: value.chatId, title: value.artifact.title, messages,
     activeLeafMessageId: "reliability-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
     defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null }] });
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
   await page.route(`**/api/chats/${value.chatId}/active-leaf`, route => route.fulfill({ json: { ok: true } }));
 }

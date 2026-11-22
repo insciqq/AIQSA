@@ -59,7 +59,7 @@ describe("modelChipsFromEvidence", () => {
       key: "hostedSearch", tone: "muted", help: expect.stringContaining("check timed out")
     }));
   });
-  it.each(["incomplete", "rejected", "unsupported"] as const)("makes %s Memory actions visible independently of Tools", (status) => {
+  it.each(["incomplete", "rejected", "unsupported"] as const)("explains %s required tool results inside Tools, with no chip of their own", (status) => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
       compatibility: { ...evidence().compatibility!, forcedToolCall: "not_supported" },
       capabilitySetup: { policyVersion: 2, checks: { forcedToolCall: status }, attempts: {
@@ -67,10 +67,10 @@ describe("modelChipsFromEvidence", () => {
       } }
     }) });
     const chips = modelChipsFromEvidence(answer, check);
-    expect(chips).toContainEqual(expect.objectContaining({ key: "tools", tone: "ok" }));
-    expect(chips).toContainEqual(expect.objectContaining({ key: "memoryActions",
-      label: status === "unsupported" ? "Memory actions: unsupported" : "Memory actions: check incomplete",
-      help: expect.stringContaining("HTTP 400") }));
+    expect(chips).toContainEqual(expect.objectContaining({ key: "tools", tone: "ok",
+      help: expect.stringContaining("Required tool results:") }));
+    expect(chips.find(({ key }) => key === "tools")?.help).toContain("HTTP 400");
+    expect(chips.map(({ label }) => label).join(" ")).not.toMatch(/Memory/u);
   });
   it.each([
     ["incomplete", "Inconclusive: this check did not prove support."],
@@ -87,7 +87,7 @@ describe("modelChipsFromEvidence", () => {
     expect(chips).toContainEqual({ key: "json", label: "JSON", tone: "ok" });
   });
 
-  it("keeps ordinary Tools and JSON green when strict Memory calls are unsupported", () => {
+  it("keeps ordinary Tools and JSON green when required tool results are unsupported", () => {
     const check = fixtureCheck({ credentialId: "cred-primary", providerModelId: "m", evidence: evidence({
       compatibility: { ...evidence().compatibility!, probeVersion: 2, forcedToolCall: "not_supported", parallelToolCalls: "not_supported" },
       capabilitySetup: { policyVersion: 2, checks: { forcedToolCall: "unsupported", parallelToolCalls: "incomplete" },
@@ -95,7 +95,7 @@ describe("modelChipsFromEvidence", () => {
     }) });
     expect(modelChipsFromEvidence({ ...answer, adapterKind: "openrouter_chat_completions" }, check).slice(0, 2))
       .toEqual([expect.objectContaining({ key: "tools", label: "Tools", tone: "ok",
-        help: "Ordinary function calling verified with this key. Strict Memory calls: Unsupported on this route. Parallel tool calls: Inconclusive: this check did not prove support. the model returned an invalid tool call · 3 attempts." }),
+        help: "Ordinary function calling verified with this key. Required tool results: Unsupported on this route. Parallel tool calls: Inconclusive: this check did not prove support. the model returned an invalid tool call · 3 attempts." }),
       { key: "json", label: "JSON", tone: "ok" }]);
   });
 

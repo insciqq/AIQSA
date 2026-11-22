@@ -278,7 +278,6 @@ describe("list copy", () => {
       policy: { defaultModel: { ...candidate, available: true } }
     } as unknown as AdminModelPolicyCatalog;
     const systemModelPolicy = {
-      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       candidates: [],
       titleCandidates: [], documentCandidates: [],
       policy: {
@@ -345,7 +344,7 @@ describe("list copy", () => {
     systemModelPolicy.policy.imageModel = published as never;
     expect(deriveProviderUsage([openai, openrouter], { modelPolicy, search, systemModelPolicy }).get("conn-openai"))
       .toContain("Image generation");
-    expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "Memory"]]]))).toBe("Default chat provider");
+    expect(providerSubtitle(openai, new Map([[openai.id, ["Default chat", "System model"]]]))).toBe("Default chat provider");
     expect(providerSubtitle(openrouter, usage)).toBe("Qwen3 Embedding 8B, Voyage Rerank");
 
     systemModelPolicy.policy.researchResearcherModel = { ...candidate, available: false };
@@ -362,7 +361,6 @@ describe("list copy", () => {
       defaultReasoningEffort: null, displayName: id, forcedToolCall: "verified" as const, id, reasoningEfforts: [],
       structuredOutput: "verified" as const });
     const systemModelPolicy = {
-      memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
       policy: {
         chatPdfFallbackMethod: "pdf_reader",
         chatPdfModel: reader("conn-openai", "model-terra"),

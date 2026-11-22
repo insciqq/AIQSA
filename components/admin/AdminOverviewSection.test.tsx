@@ -57,9 +57,9 @@ describe("AdminOverviewSection", () => {
     expect(screen.getByRole("status")).toHaveTextContent("current health is unknown");
     expect(screen.queryByText(/No issues found|everything is working/)).not.toBeInTheDocument();
     view.rerender(<AdminOverviewSection controller={controller({ attention: {
-      checkedAt: "2026-09-07T12:00:25.000Z", items: [], unavailable: ["memory"]
+      checkedAt: "2026-09-07T12:00:25.000Z", items: [], unavailable: ["search"]
     } })} onJump={vi.fn()} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Could not check Memory");
+    expect(screen.getByRole("status")).toHaveTextContent("Could not check Search");
     expect(screen.queryByText(/No issues found|everything is working/)).not.toBeInTheDocument();
   });
   it("lists every item with its severity, count, copy and one jump action", () => {
@@ -115,12 +115,12 @@ describe("AdminOverviewSection", () => {
     view.rerender(
       <AdminOverviewSection
         controller={controller({
-          attention: { checkedAt: "2026-09-07T12:00:00.000Z", items: [items[0]!], unavailable: ["memory", "mcp"] }
+          attention: { checkedAt: "2026-09-07T12:00:00.000Z", items: [items[0]!], unavailable: ["search", "mcp"] }
         })}
         onJump={vi.fn()}
       />
     );
     expect(screen.getByRole("list", { name: "Needs attention" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Could not check Memory, MCP servers right now — those items may be missing.");
+    expect(screen.getByRole("status")).toHaveTextContent("Could not check Search, MCP servers right now — those items may be missing.");
   });
 });

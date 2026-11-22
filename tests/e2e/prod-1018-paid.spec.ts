@@ -281,8 +281,7 @@ test("MCP: an over-bound tools/call arrives cut with a marker while the next cal
   let serverId: string | null = null;
   try {
     const userId = ((await (await request.get("/api/me")).json()) as { user: { id: string } }).user.id;
-    await request.patch("/api/me/memory/settings", {
-      data: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false } }).catch(() => undefined);
+    await request.patch("/api/me/memory/preferences", { data: { memoryEnabled: false } }).catch(() => undefined);
     serverId = await publishMcpServer(request, endpoint, `Prod 1018 mail ${randomUUID().slice(0, 8)}`, userId);
     const model = await codexAnswerModel(request);
     summary.model = model.upstreamModelId;

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import type { ThreadGeneratedArtifact } from "../../lib/contracts/chats";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow, expectTouchSafe, expectWithinViewport } from "./support/layoutAssertions";
@@ -79,7 +78,6 @@ async function installChat(page: Page, fixture: Awaited<ReturnType<typeof create
   await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: fixture.chatId, title: fixture.artifact.title, messages,
     activeLeafMessageId: "creative-answer", createdAt: time, updatedAt: time, defaultModelId: "gpt-5.5", defaultProvider: "openai",
     folderId: null, pinned: false, messageCount: 2, usageStats: null }] });
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
 }
 

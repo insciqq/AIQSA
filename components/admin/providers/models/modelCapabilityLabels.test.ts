@@ -96,7 +96,7 @@ describe("modelCapabilityLabels", () => {
     // Default key: Direct PDF matches this adapter; the JSON evidence belongs to another adapter.
     expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "opus-5" })).toEqual(["PDF"]);
     expect(modelCapabilityLabels({ connection, credentialId: "cred-unchecked", modelId: "opus-5" })).toEqual([]);
-    // Strict Memory proof on the group key does not claim an ordinary Tools check.
+    // A required tool result proved on the group key does not claim an ordinary Tools check.
     expect(modelCapabilityLabels({ connection, credentialId: "cred-research", modelId: "opus-5" })).toEqual([]);
     expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "sonnet-5" })).toEqual([]);
     expect(modelCapabilityLabels({ connection, credentialId: null, modelId: "missing" })).toEqual([]);

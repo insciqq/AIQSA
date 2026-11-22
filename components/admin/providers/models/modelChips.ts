@@ -33,7 +33,6 @@ export type ModelChipKey =
   | "stream"
   | "hostedSearch"
   | "tools"
-  | "memoryActions"
   | "unavailable";
 
 export type ModelChip = Readonly<{
@@ -158,17 +157,10 @@ export function modelChipsFromEvidence(
   if (evidence.hostedSearch || evidence.capabilitySetup?.checks.hostedSearch) {
     chips.push(capabilityChip("hostedSearch", "Hosted Search", "hostedSearch", legacyStatus(evidence.hostedSearch, configuration)));
   }
-  const forcedReceipt = evidence.capabilitySetup?.checks.forcedToolCall;
-  if (forcedStatus !== "verified" && (forcedStatus || forcedReceipt)) {
-    chips.push({ key: "memoryActions", tone: forcedReceipt === "unsupported" ? "muted" : "warn",
-      label: forcedReceipt === "unsupported" ? "Memory actions: unsupported" : "Memory actions: check incomplete",
-      help: `${attemptHelp(forcedStatus, forcedReceipt, evidence.capabilitySetup?.attempts?.forcedToolCall)} ` +
-        "Memory actions require a validated tool result. Other Memory features have separate requirements. Retry checks to verify support." });
-  }
   return chips.filter((entry): entry is ModelChip => entry !== null).map((entry) => entry.key !== "tools" ? entry : {
     ...entry,
     help: [entry.help ?? "Ordinary function calling verified with this key.",
-      `Strict Memory calls: ${attemptHelp(compatibility?.forcedToolCall ?? legacyStatus(evidence.forcedToolCall, configuration),
+      `Required tool results: ${attemptHelp(forcedStatus,
         evidence.capabilitySetup?.checks.forcedToolCall, evidence.capabilitySetup?.attempts?.forcedToolCall)}`,
       `Parallel tool calls: ${attemptHelp(compatibility?.parallelToolCalls ?? legacyStatus(evidence.parallelToolCalls, configuration),
         evidence.capabilitySetup?.checks.parallelToolCalls, evidence.capabilitySetup?.attempts?.parallelToolCalls)}`].join(" ")

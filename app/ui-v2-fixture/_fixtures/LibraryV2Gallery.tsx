@@ -22,7 +22,6 @@ export type LibraryGalleryStateV2 =
   | "dirty"
   | "files"
   | "memory"
-  | "memory-disabled"
   | "skills";
 
 const assistants = ASSISTANT_FIXTURE_SUMMARIES.filter((assistant) =>
@@ -68,7 +67,7 @@ const files = [
 ] as const;
 
 export function LibraryV2Gallery({ state = "assistants" }: { state?: LibraryGalleryStateV2 }) {
-  const initialTab: LibraryTabIdV2 = state === "memory-disabled" ? "memory" : state === "dirty" || state === "all-sections" ? "assistants" : state;
+  const initialTab: LibraryTabIdV2 = state === "dirty" || state === "all-sections" ? "assistants" : state;
   const [dirty, setDirty] = useState(state === "dirty");
   const [pending, setPending] = useState<Readonly<{
     intent: LibraryNavigationIntentV2;

@@ -29,61 +29,51 @@ async function createOwner(page: Page) {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    // First access may compile the catalog and Memory routes on a reused dev stand.
+    // First access may compile the catalog and Settings routes on a reused dev stand.
     await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible({ timeout: 90_000 });
     return id;
   } catch (error) { await prisma.user.delete({ where: { id } }); throw error; }
 }
 
-test("Memory saves and forgets actual owned facts and persists the reset", async ({ page }, info) => {
+test("Memory saves the note and its switches for real and clears the note after confirming", async ({ page }, info) => {
   test.setTimeout(180_000);
   const ownerId = await createOwner(page);
   try {
     await runAccountMenuAction(page, "Memory");
     const library = page.getByTestId("library-v2");
-    const learn = library.getByRole("switch", { name: /^Learn automatically:/ });
-    await expect(learn).toBeChecked();
-    const preference = page.waitForResponse(response => response.url().endsWith("/api/me/memory/settings") && response.request().method() === "PATCH");
-    await learn.click();
+    const offers = library.getByRole("switch", { name: "Offer to remember" });
+    await expect(offers).toHaveAttribute("aria-checked", "true");
+    const preference = page.waitForResponse(response => response.url().endsWith("/api/me/memory/preferences") && response.request().method() === "PATCH");
+    await offers.click();
     expect((await preference).ok()).toBe(true);
-    await expect(learn).not.toBeChecked();
-    for (const label of ["Use memories in answers", "Search past chats", "Learn from what you use"]) {
-      await expect(library.getByRole("switch", { name: new RegExp(`^${label}:`) })).toBeChecked();
+    await expect(offers).toHaveAttribute("aria-checked", "false");
+    for (const label of ["Use Memory in answers", "Search past chats"]) {
+      await expect(library.getByRole("switch", { name: label })).toHaveAttribute("aria-checked", "true");
     }
-    await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
-    await library.getByRole("textbox", { name: "New memory", exact: true }).fill("I prefer ceramic mugs for my morning tea.");
-    const saved = page.waitForResponse(response => response.url().endsWith("/api/me/memories") && response.request().method() === "POST");
-    await library.getByRole("button", { name: "Save memory", exact: true }).click();
+    const note = library.getByRole("textbox", { name: "Memory note", exact: true });
+    await note.fill("I prefer ceramic mugs for my morning tea.");
+    const saved = page.waitForResponse(response => response.url().endsWith("/api/me/memory/note") && response.request().method() === "PUT");
+    await library.getByRole("button", { name: "Save", exact: true }).click();
     expect((await saved).ok()).toBe(true);
-    await expect(library.getByText("I prefer ceramic mugs for my morning tea.", { exact: true })).toBeVisible();
     await page.reload();
     await runAccountMenuAction(page, "Memory");
-    await expect(library.getByText("I prefer ceramic mugs for my morning tea.", { exact: true })).toBeVisible();
-    await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
-    await library.getByRole("textbox", { name: "New memory", exact: true }).fill("An unsaved draft to clear");
-    await library.getByRole("button", { name: "Forget everything…" }).click();
-    const reset = page.waitForResponse(response => response.url().endsWith("/api/me/memory/reset"));
-    await page.getByRole("alertdialog", { name: "Forget everything?" }).getByRole("button", { name: "Forget everything", exact: true }).click();
-    expect((await reset).ok()).toBe(true);
-    await expect(library.getByRole("textbox", { name: "New memory", exact: true })).toHaveCount(0);
-    await expect(library.getByText("I prefer ceramic mugs for my morning tea.", { exact: true })).toHaveCount(0);
+    await expect(note).toHaveValue("I prefer ceramic mugs for my morning tea.");
+    await expect(offers).toHaveAttribute("aria-checked", "false");
+    expect(await prisma.userMemoryNote.findUnique({ where: { userId: ownerId } }))
+      .toMatchObject({ lastChangedBy: "USER", text: "I prefer ceramic mugs for my morning tea." });
+    await library.getByRole("button", { name: "Clear note…", exact: true }).click();
+    const cleared = page.waitForResponse(response => response.url().endsWith("/api/me/memory/note") && response.request().method() === "PUT");
+    await page.getByRole("dialog", { name: "Clear your note?" }).getByRole("button", { name: "Confirm clear note" }).click();
+    expect((await cleared).ok()).toBe(true);
+    await expect(note).toHaveValue("");
     await page.reload();
     await runAccountMenuAction(page, "Memory");
-    await expect(library.getByRole("button", { name: "Add memory", exact: true }).first()).toBeEnabled();
-    const list = await page.request.get("/api/me/memories?pageSize=20");
-    expect(list.ok()).toBe(true);
-    expect((await list.json()).items).toEqual([]);
-    for (const label of ["Use memories in answers", "Search past chats", "Learn automatically", "Learn from what you use"]) {
-      await expect(library.getByRole("switch", { name: new RegExp(`^${label}:`) })).not.toBeChecked();
-    }
+    await expect(note).toHaveValue("");
     await expectNoHorizontalOverflow(page);
-    await page.screenshot({ path: info.outputPath("memory-real-reset.png") });
+    await page.screenshot({ path: info.outputPath("memory-real-note.png") });
   } finally {
     await page.goto("about:blank");
-    await prisma.$transaction([
-      prisma.memoryDeletionOutbox.deleteMany({ where: { userId: ownerId } }),
-      prisma.user.deleteMany({ where: { id: ownerId } })
-    ]);
+    await prisma.user.deleteMany({ where: { id: ownerId } });
   }
 });
 

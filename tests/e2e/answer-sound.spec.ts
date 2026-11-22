@@ -91,9 +91,7 @@ test("ordinary accounts persist mute and choice, explicitly audition native audi
           answerSoundEnabled: true, answerSoundId: label === "first" ? "rise" : "drop" } }
       } });
       userIds.push(user.id);
-      // The User insert trigger already creates the mandatory Memory row.
-      await prisma.userMemorySettings.update({ where: { userId: user.id }, data: {
-        learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false } });
+      await prisma.userSettings.update({ where: { userId: user.id }, data: { memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false } });
     }
     await installNativeAudioEvidence(page);
     await page.addInitScript(() => window.localStorage.setItem("aiqsa.answerSound", "off"));
@@ -190,7 +188,7 @@ test("ordinary accounts persist mute and choice, explicitly audition native audi
     const cleanupErrors: unknown[] = [];
     await context.close().catch((error: unknown) => { cleanupErrors.push(error); });
     // Delete only this test's accounts and runs. The User cascade removes its
-    // mandatory Memory row, so the deferred ownership guard sees no live owner.
+    // own rows, so the deferred ownership guard sees no live owner.
     // Workspace sessions restrict their chat's deletion, so they go first.
     await prisma.$transaction(async (tx) => {
       await tx.providerRunBinding.deleteMany({ where: { modelRun: { userId: { in: userIds } } } });

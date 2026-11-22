@@ -102,7 +102,7 @@ div.v2-answer-process[data-pending],
   color: var(--v2-color-text2);
 }
 
-/* Fold body: Thinking → Steps → Memory hang from one hairline. */
+/* Fold body: Thinking → Steps → Past chats hang from one hairline. */
 .v2-answer-process-body {
   display: grid;
   gap: 0.875rem;

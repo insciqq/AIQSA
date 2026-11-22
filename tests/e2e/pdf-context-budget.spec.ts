@@ -90,9 +90,7 @@ test("verified PDF pages survive upload, refresh and Library reuse and admit a l
         passwordHash: await hashPassword(user.password), emailVerifiedAt: new Date() } } } });
     await prisma.$transaction((tx) => provisionActiveUser(tx, { userId, groups: [{ groupId: group.id, role: "member" }] }));
     await prisma.userSettings.update({ where: { userId }, data: { defaultProviderModelId: setup.providerModelId,
-      defaultWorkspaceEnabled: false, defaultSearchPlan: { mode: "all_selected", optionIds: [] } } });
-    await prisma.userMemorySettings.update({ where: { userId }, data: { learnAutomatically: false,
-      referenceChatHistory: false, useMemoryFacts: false } });
+      defaultWorkspaceEnabled: false, defaultSearchPlan: { mode: "all_selected", optionIds: [] }, memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false } });
     await page.goto("about:blank");
     await page.request.post("/api/auth/logout", { data: {} });
     await loginWithPassword(page, user);

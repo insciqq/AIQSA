@@ -522,14 +522,14 @@ function SheetBody({
     (editing === null || dirty || editing.activeVersion === 0);
   const capabilityRows: ReadonlyArray<[keyof AdminProviderModelCapabilities, string, string?]> = compatible
     ? [
-        ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
+        ["toolCalling", "Tools", "Function calling for Search, MCP and the agent's tools."],
         ["streaming", "Streaming"],
         ["vision", "Image input"],
         ["parallelToolCalls", "Parallel tool calls"],
         ["nativePdfInput", "Direct PDF input", "Sends the original PDF to the provider; users get it only after the check passes."]
       ]
     : [
-        ["toolCalling", "Tools", "Function calling for Search, MCP and Memory."],
+        ["toolCalling", "Tools", "Function calling for Search, MCP and the agent's tools."],
         ["streaming", "Streaming"],
         ["vision", "Image input"],
         ["reasoning", "Reasoning"],

@@ -1,8 +1,5 @@
 import type { AdminProviderCapabilityAttempt, AdminProviderCapabilityCheck, AdminProviderCheckRun } from "@/lib/contracts/adminProviders";
-import type { AdminSystemModelPolicyCatalog } from "@/lib/contracts/adminSystemModelPolicy";
 import { decodeImageFailureDiagnostic, type ImageFailureDiagnostic } from "@/lib/contracts/imageGeneration";
-import { adminSectionPath } from "@/components/admin/adminSections";
-import type { MouseEvent } from "react";
 
 export const CAPABILITY_LABELS: Record<AdminProviderCapabilityCheck, string> = {
   modelAccess: "Model access", structuredOutput: "Strict JSON", toolCalling: "Tools",
@@ -52,47 +49,6 @@ export function providerSetupNeedsRecovery(run: AdminProviderCheckRun | null | u
     result.state === "unavailable" && result.checks?.modelAccess === "unsupported";
   return Boolean(run.results?.some((result) => !settled(result) || incompleteImageCheck(result))) ||
     run.failed.some((modelId) => !run.results?.some((result) => result.providerModelId === modelId && settled(result)));
-}
-
-/** Finished automatic setup left Memory unassigned because no qualified model exists. */
-export function providerSetupNeedsMemory(run: AdminProviderCheckRun | null | undefined): boolean {
-  return Boolean(run && run.state !== "running" && run.setup && run.setup.state !== "running" &&
-    run.setup.needsConfiguration?.includes("memory"));
-}
-
-/**
- * The installation policy now assigns Memory, so a finished run's
- * `needsConfiguration` no longer applies. An unloaded policy proves nothing.
- */
-export function systemModelPolicyAssignsMemory(policy: AdminSystemModelPolicyCatalog | null | undefined): boolean {
-  return Boolean(policy && policy.memoryPolicy.assignmentSource !== "unassigned");
-}
-
-/** A calm pointer to the Memory row in Defaults & roles; not a failure and not retryable. */
-export function AdminProviderSetupMemoryHint({ memoryAssigned = false, onOpenMemoryRole, run }: Readonly<{
-  /** Memory is assigned in the current installation policy: the hint is stale. */
-  memoryAssigned?: boolean;
-  onOpenMemoryRole?: () => void;
-  run: AdminProviderCheckRun | null | undefined;
-}>) {
-  if (memoryAssigned || !providerSetupNeedsMemory(run)) return null;
-  const href = adminSectionPath(typeof window === "undefined" ? "/admin" : window.location.href, "roles", "memory");
-  return (
-    <p className="mt-1 text-xs leading-5 text-ink-muted" data-testid="provider-setup-memory-hint">
-      Memory needs a model.{" "}
-      <a
-        className="rounded-[4px] font-medium text-proof outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-answer-paper"
-        href={href}
-        onClick={(event: MouseEvent<HTMLAnchorElement>) => {
-          if (!onOpenMemoryRole || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-          event.preventDefault();
-          onOpenMemoryRole();
-        }}
-      >
-        Choose one in Defaults &amp; roles
-      </a>
-    </p>
-  );
 }
 
 /** Receipts describe persisted results; a passed check alone is never called saved. */

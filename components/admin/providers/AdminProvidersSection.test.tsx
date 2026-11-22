@@ -527,7 +527,7 @@ describe("AdminProvidersSection", () => {
     expect(screen.getByRole("button", { name: "Check models" })).toBeEnabled();
   });
 
-  it("opens the Memory row in Defaults & roles from finished setup that left Memory unassigned", async () => {
+  it("shows a finished setup run stored with the old Memory marker without a hint or Retry", async () => {
     connections.current = connections.current.map((connection) => connection.id === "conn-openai"
       ? { ...connection, checkRun: fixtureCheckRun({ credentialId: "cred-primary", done: 2, finishedAt: "2026-09-07T12:52:00.000Z",
           id: "run-memory", reason: "setup", state: "completed", total: 2,
@@ -535,45 +535,12 @@ describe("AdminProvidersSection", () => {
           setup: { defaults: ["Chat: GPT-5.6 Terra"], needsConfiguration: ["memory"], search: "ready", state: "completed" } }) }
       : connection);
     mockFetch(connections);
-    const { onNavigateSection } = renderSection("conn-openai");
-
-    const hint = await screen.findByTestId("provider-setup-memory-hint");
-    expect(hint).toHaveTextContent("Memory needs a model. Choose one in Defaults & roles");
-    expect(screen.getByText("Automatic setup finished.")).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
-    const link = within(hint).getByRole("link", { name: "Choose one in Defaults & roles" });
-    expect(link).toHaveAttribute("href", "/admin?section=roles&resource=memory");
-    fireEvent.click(link);
-    expect(onNavigateSection).toHaveBeenCalledWith("roles", "memory");
-  });
-
-  it("drops the Memory hint from a finished setup run once the installation policy assigns Memory", async () => {
-    connections.current = connections.current.map((connection) => connection.id === "conn-openai"
-      ? { ...connection, checkRun: fixtureCheckRun({ credentialId: "cred-primary", done: 2, finishedAt: "2026-09-07T12:52:00.000Z",
-          id: "run-memory", reason: "setup", state: "completed", total: 2,
-          results: [{ providerModelId: "model-terra", state: "saved" }, { providerModelId: "model-luna", state: "saved" }],
-          setup: { defaults: ["Chat: GPT-5.6 Terra"], needsConfiguration: ["memory"], search: "ready", state: "completed" } }) }
-      : connection);
-    const memoryModel = {
-      available: true, connectionDisplayName: "OpenAI", connectionId: "conn-openai", defaultReasoningEffort: null,
-      displayName: "GPT-5.6 Luna", forcedToolCall: "verified", id: "model-luna", reasoningEfforts: [], structuredOutput: "verified"
-    };
-    const calls = mockFetch(connections, ({ method, url }) => method === "GET" && url === "/api/admin/providers/system-model-policy"
-      ? Response.json({ systemModelPolicy: {
-          memoryPolicy: { assignmentSource: "operator", model: memoryModel, reasoningEffort: null, version: 2 },
-          candidates: [], titleCandidates: [], documentCandidates: [], verificationCandidates: [], rerankerCandidates: [],
-          policy: {
-            chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null,
-            reasoningEffort: null, rerankerModel: null, systemModel: null,
-            updatedAt: "2026-09-07T12:53:00.000Z", updatedBy: null, version: 1
-          }
-        } })
-      : null);
     renderSection("conn-openai");
 
     expect(await screen.findByText("Automatic setup finished.")).toBeVisible();
-    await waitFor(() => expect(screen.queryByTestId("provider-setup-memory-hint")).not.toBeInTheDocument());
-    expect(calls.some(({ method, url }) => method === "GET" && url === "/api/admin/providers/system-model-policy")).toBe(true);
+    expect(screen.queryByText(/Memory needs a model/u)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Choose one in Defaults & roles" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/u })).not.toBeInTheDocument();
   });
 
   it("turns the provider off from the topbar switch and opens the Add provider sheet behind the primary action", async () => {

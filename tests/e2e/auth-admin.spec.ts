@@ -30,7 +30,6 @@ const adminSections = [
   { id: "providers", label: "Providers" },
   { id: "roles", label: "Defaults & roles" },
   { id: "search", label: "Search" },
-  { id: "retrieval", label: "Memory" },
   { id: "users", label: "Users" },
   { id: "groups", label: "Groups" },
   { id: "limits", label: "Budgets & limits" },
@@ -829,8 +828,9 @@ test("admin console keeps all redesigned sections operable end to end", async ({
       ["invites", "users"],
       ["access-rules", "access-rules"],
       ["safety", "users"],
-      ["knowledge", "retrieval"],
-      ["memory", "retrieval"]
+      ["knowledge", "roles"],
+      ["memory", "roles"],
+      ["retrieval", "roles"]
     ] as const) {
       await page.goto(`/admin?section=${legacy}`);
       await expect(page.getByTestId(`admin-section-${current}`)).toBeVisible();

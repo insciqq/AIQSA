@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScheduledTask, ScheduledTaskListResponse, ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
 import { createSettingsEscapeRegistry, SettingsEscapeContext } from "@/features/library-v2/settingsEscape";
-import type { ScheduledTaskMemoryAvailability, ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
+import type { ScheduledTaskWorkspaceAvailability } from "./scheduledTaskDraft";
+import { readMemorySwitches } from "@/features/settings-v2/memoryNoteApi";
+import { MEMORY_SWITCH_DEFAULTS } from "@/lib/contracts/memoryNote";
 import {
   createScheduledTask,
   deleteScheduledTask,
@@ -16,6 +18,11 @@ import {
 } from "./scheduledTasksApi";
 import { scheduledTaskCatalogFixture, scheduledTaskFixture, scheduledTaskWebhookFixture } from "./scheduledTaskFixtures";
 import { applyScheduledTask, requestScheduledTaskEdit, useScheduledTasksStore } from "./scheduledTasksStore";
+
+vi.mock("@/features/settings-v2/memoryNoteApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/features/settings-v2/memoryNoteApi")>();
+  return { ...actual, readMemorySwitches: vi.fn(async () => ({ memoryEnabled: true, pastChatSearchEnabled: true, memorySuggestionsEnabled: true })) };
+});
 
 vi.mock("./scheduledTasksApi", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./scheduledTasksApi")>();
@@ -45,10 +52,9 @@ function listed(tasks: ScheduledTask[], emailAvailable = false, telegramAvailabl
   return { tasks, limits: { maxActive: 10, maxActiveHourly: 3, maxTotal: 50 }, emailAvailable, telegramAvailable };
 }
 
-function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available",
-  memory: ScheduledTaskMemoryAvailability = "available") {
+function renderPanel(onOpenChat = vi.fn(), workspace: ScheduledTaskWorkspaceAvailability = "available") {
   account += 1;
-  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory={memory} onOpenChat={onOpenChat}
+  render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={onOpenChat}
     workspace={workspace} />);
   return { onOpenChat };
 }
@@ -294,7 +300,7 @@ describe("ScheduledTasksPanel", () => {
     ] });
     const onSignInAgain = vi.fn(async () => undefined);
     account += 1;
-    render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory="available" onOpenChat={vi.fn()}
+    render(<ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={vi.fn()}
       onSignInAgain={onSignInAgain} workspace="available" />);
 
     expect(await screen.findByText(/Failed: mail\.example\.com needs you to sign in again/u)).toBeInTheDocument();
@@ -503,7 +509,7 @@ describe("ScheduledTasksPanel", () => {
     const registry = createSettingsEscapeRegistry();
     account += 1;
     render(<SettingsEscapeContext.Provider value={registry}>
-      <ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} memory="available" onOpenChat={vi.fn()} workspace="available" />
+      <ScheduledTasksPanel accountId={`account-${account}`} catalog={catalog} onOpenChat={vi.fn()} workspace="available" />
     </SettingsEscapeContext.Provider>);
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
@@ -650,7 +656,7 @@ describe("ScheduledTasksPanel", () => {
     const memory = within(sheet).getByRole("switch", { name: "Use Memory" });
     expect(memory).toHaveAttribute("aria-checked", "true");
     expect(memory).toBeEnabled();
-    expect(memory).toHaveAccessibleDescription("Reads what Memory knows about you. Automations never add to Memory.");
+    expect(memory).toHaveAccessibleDescription("Reads your Memory note and may search your past chats. Automations never change Memory.");
     fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Brief" } });
     fireEvent.change(within(sheet).getByLabelText("Instructions"), { target: { value: "Summarize" } });
     fireEvent.click(memory);
@@ -659,15 +665,14 @@ describe("ScheduledTasksPanel", () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ memoryEnabled: false, title: "Brief" })));
   });
 
-  it.each([
-    ["paused", "Memory is paused, so runs read nothing. Turn it on in Settings › Memory."],
-    ["needs_setup", "Memory needs administrator setup, so runs read nothing yet."]
-  ] as const)("shows the owner's %s Memory on the task's switch and keeps the task's own choice editable", async (memory, hint) => {
+  it("shows the owner's Memory turned off on the task's switch and keeps the task's own choice editable", async () => {
+    const hint = "Memory is off, so runs neither read your note nor search past chats. Turn it on in Settings › Memory.";
+    vi.mocked(readMemorySwitches).mockResolvedValueOnce({ ...MEMORY_SWITCH_DEFAULTS, memoryEnabled: false });
     const task = scheduledTaskFixture({ memoryEnabled: false });
     list.mockResolvedValue(listed([task]));
     detail.mockResolvedValue({ task, recentRuns: [] });
     update.mockResolvedValueOnce({ ...task, memoryEnabled: true, revision: 2 });
-    renderPanel(vi.fn(), "available", memory);
+    renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "More actions for Weekday news brief" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
     const sheet = screen.getByRole("dialog", { name: "Edit automation" });
