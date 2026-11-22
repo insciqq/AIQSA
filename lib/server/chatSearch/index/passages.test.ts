@@ -121,6 +121,20 @@ describe("past-chat passages", () => {
     expect(passage).toContain("as the demo token");
   });
 
+  it("screens a multi-line saved value whatever line endings the text and the saved value use", () => {
+    const crlf = "account=demo\r\npass=fixture-pass-42";
+    const lf = "account=demo\npass=fixture-pass-42";
+    // A file pasted with CRLF, saved with CRLF: matched before normalization changes either.
+    expect(chatSearchMessageText(crlf, [crlf])).toBe(SAVED_SECRET_MARKER);
+    expect(chatSearchMessageText(text(`Login:\r\n${crlf}\r\nThanks`), [crlf])).toBe(`Login:\n${SAVED_SECRET_MARKER}\nThanks`);
+    // A client that already wrote LF, against the value saved with CRLF.
+    expect(chatSearchMessageText(text(`Login:\n${lf}`), [crlf])).toBe(`Login:\n${SAVED_SECRET_MARKER}`);
+    // A value saved with LF, against CRLF text.
+    expect(chatSearchMessageText(text(`Login:\r\n${crlf}`), [lf])).toBe(`Login:\n${SAVED_SECRET_MARKER}`);
+    const passages = buildChatSearchPassages(chatSnapshot({ turns: [{ answer: "Saved.", question: `Keep ${crlf} please` }] }), [crlf]);
+    expect(passages.map((passage) => passage.text).join("\n")).not.toContain("fixture-pass-42");
+  });
+
   it("keeps a secret that crosses a window boundary whole and redacted", () => {
     // The token starts just before the first window's target end, so a cut there would split it.
     const answer = `${"word ".repeat(590)}${GITHUB_TOKEN} ${"after ".repeat(500)}`;

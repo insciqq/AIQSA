@@ -30,7 +30,26 @@ export function savedSecretValueIsScreened(value: string): boolean {
     (length >= SCREENED_MIXED_MIN_LENGTH && /[^\p{L}\p{M}\s]/u.test(value));
 }
 
-/** The screened values of saved secrets: each typed value and its trimmed form, once. */
+/** Text with every CRLF and lone CR as LF, as derived text and most clients write line breaks. */
+export function savedSecretLineFeeds(text: string): string {
+  return text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+}
+
+/**
+ * The values beside the form each takes with LF line endings, once each: a multi-line value saved with CRLF still
+ * matches text whose client or normalization wrote LF (review 2026-11-23). A form that is blank is left out, since
+ * it would match ordinary line breaks.
+ */
+export function savedSecretLineEndingForms(values: readonly string[]): readonly string[] {
+  const forms = new Set(values);
+  for (const value of values) {
+    const lineFeeds = savedSecretLineFeeds(value);
+    if (lineFeeds !== value && lineFeeds.trim()) forms.add(lineFeeds);
+  }
+  return [...forms];
+}
+
+/** The screened values of saved secrets: each typed value and its trimmed form, with their LF forms, once. */
 export function savedSecretScreenedValues(
   secrets: readonly Pick<AcceptedWorkspaceSecret, "name" | "value">[]
 ): readonly string[] {
@@ -46,7 +65,7 @@ export function savedSecretScreenedValues(
       if (savedSecretValueIsScreened(candidate)) values.add(candidate);
     }
   }
-  return [...values];
+  return savedSecretLineEndingForms([...values]);
 }
 
 /** Whether any string in a value, object keys included, contains one of the saved values. */

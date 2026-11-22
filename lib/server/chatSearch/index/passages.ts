@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { clipPastChatLine, PAST_CHATS_LIMITS } from "../../../contracts/pastChats";
 import { chatExportText } from "../../../domain/chatExport";
-import { redactSavedSecretValues } from "../../redaction/savedSecrets";
+import { redactSavedSecretValues, savedSecretLineFeeds } from "../../redaction/savedSecrets";
 import { redactSecrets, redactSecretsInWindows } from "../../redaction/secrets";
 import type { ChatSearchEligibilityFields } from "../eligibility";
 
@@ -15,8 +15,8 @@ import type { ChatSearchEligibilityFields } from "../eligibility";
  * its topic into vector search. The cost is that renaming a chat re-embeds that chat's passages, a few calls at the
  * measured sizes, while a turn whose text did not change is never embedded again.
  *
- * Secrets never reach a passage: each message is screened for the owner's saved secret values and for recognized
- * secrets before it is cut into windows, so a secret on a window boundary stays whole, and every finished passage
+ * Secrets never reach a passage: each message is screened for the owner's saved secret values (as written and once
+ * normalized) and for recognized secrets before it is cut into windows, so a secret on a window boundary stays whole, and every finished passage
  * (title and file names included) is screened once more, so a join cannot form one either.
  */
 
@@ -141,14 +141,35 @@ function boundedText(value: string, maximum: number): string {
   return `${value.slice(0, end).trimEnd()} ${CONTINUED}`;
 }
 
-/** A message's searchable text: its text blocks, normalized, screened for secrets and bounded. */
+/** The normalization searchable text gets: line breaks as LF, unsafe controls as spaces. */
+function normalizedText(value: string): string {
+  return savedSecretLineFeeds(value).replace(UNSAFE_CONTROLS, " ");
+}
+
+/**
+ * The saved values beside the forms they take in normalized text, once each, so a value saved with CRLF line endings
+ * or a control character still matches the text it was normalized into (review 2026-11-23).
+ */
+function normalizedSavedValues(savedSecretValues: readonly string[]): readonly string[] {
+  const forms = new Set(savedSecretValues);
+  for (const value of savedSecretValues) {
+    const normalized = normalizedText(value);
+    if (normalized !== value && normalized.trim()) forms.add(normalized);
+  }
+  return [...forms];
+}
+
+/**
+ * A message's searchable text: its text blocks, normalized, screened for secrets and bounded. Saved values are
+ * screened in the text as written, before normalization can change a value's line endings, and again in the
+ * normalized text with the values normalized the same way, so text a client already wrote with LF is screened alike.
+ */
 export function chatSearchMessageText(content: unknown, savedSecretValues: readonly string[]): string {
-  const normalized = chatExportText(content)
-    .replaceAll("\r\n", "\n").replaceAll("\r", "\n")
-    .replace(UNSAFE_CONTROLS, " ")
-    .trim();
+  const forms = normalizedSavedValues(savedSecretValues);
+  const written = redactSavedSecretValues(chatExportText(content), forms).text;
+  const normalized = normalizedText(written).trim();
   if (!normalized) return "";
-  const saved = redactSavedSecretValues(normalized, savedSecretValues).text;
+  const saved = redactSavedSecretValues(normalized, forms).text;
   // A secret on a scan window's boundary stays whole, and text past the scan bound is withheld behind a marker.
   const redacted = redactSecretsInWindows(saved, {
     maxCodeUnits: CHAT_SEARCH_PASSAGE_LIMITS.messageScanChars,
@@ -242,6 +263,7 @@ function turnPassages(
 ): ChatSearchPassageDraft[] {
   const question = turn.answerOnly ? "" : chatSearchMessageText(turn.user.content, savedSecretValues);
   const answer = chatSearchMessageText(turn.answer.content, savedSecretValues);
+  const savedForms = normalizedSavedValues(savedSecretValues);
   const files = turnFileNames(turn, fileNames);
   if (!question && !answer && files.length === 0) return [];
 
@@ -276,7 +298,7 @@ function turnPassages(
       prefix = context;
     }
     const raw = `${header}${prefix}${slice.trim()}`;
-    const text = redactSecrets(redactSavedSecretValues(raw, savedSecretValues).text).redactedText;
+    const text = redactSecrets(redactSavedSecretValues(raw, savedForms).text).redactedText;
     return {
       assistantMessageId: turn.answer.id,
       contentHash: chatSearchContentHash(text),
