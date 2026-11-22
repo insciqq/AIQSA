@@ -99,6 +99,11 @@ import {
 import {
   WORKSPACE_RUN_ATTACHMENTS_MIGRATION, workspaceRunAttachmentsFixtureSql, workspaceRunAttachmentsProofSql
 } from "./workspace-run-attachments-adoption";
+import {
+  MEMORY_NOTE_ADOPTION_MIGRATION, memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql,
+  memoryNoteAdoptionBareRepeatProofSql, memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql,
+  memoryNoteAdoptionRepeatProofSql
+} from "./memory-note-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -8078,6 +8083,14 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_TELEGRAM_LINK_RETIRED_SETTINGS_MIGRATION,
     dropTelegramLinkRetiredSettingsFixtureSql, dropTelegramLinkRetiredSettingsProofSql,
     dropTelegramLinkRetiredSettingsProofSql);
+  // Personal Memory becomes the note: switches, saved and automatic facts, the embedding role, inbound Memory MCP
+  // grants and finished chat deletions carry over once, and an installation without Memory data invents nothing.
+  // Both proofs read the old Memory tables and run the body again, so once the migration that drops those tables
+  // lands they must end before it (pass it as proofBefore).
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_NOTE_ADOPTION_MIGRATION,
+    memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql, memoryNoteAdoptionRepeatProofSql);
+  runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_NOTE_ADOPTION_MIGRATION,
+    memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql, memoryNoteAdoptionBareRepeatProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);
