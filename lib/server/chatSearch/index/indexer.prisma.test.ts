@@ -21,9 +21,7 @@ const text = (value: string) => ({ blocks: [{ text: value, type: "text" }] });
 
 afterEach(async () => {
   for (const id of owners.splice(0)) {
-    // A fenced chat references its deletion operation, which restricts deleting the owner: chats first.
     await prisma.chat.deleteMany({ where: { userId: id } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: id } });
     await prisma.usageEvent.deleteMany({ where: { userId: id } });
     await prisma.user.deleteMany({ where: { id } });
   }
@@ -86,17 +84,10 @@ async function passages(chatId: string) {
     FROM "ChatSearchPassage" WHERE "chatId" = ${chatId} ORDER BY "turnAt", "ordinal"`;
 }
 
-/** The deletion fence as admission writes it: a durable operation, then the chat leaves the live key space. */
-async function fence(chatId: string, userId: string): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const fenced = await tx.chat.findUniqueOrThrow({ select: { memorySourceRevision: true }, where: { id: chatId } });
-    const deletionId = randomUUID();
-    await tx.memoryDeletionOutbox.create({ data: { admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: fenced.memorySourceRevision,
-      alsoForgetOriginMemories: false, id: deletionId, memoryGeneration: 0, operation: "SOURCE_PURGE", targetId: chatId,
-      targetType: "CHAT@memory-chat-delete-v1", userId } });
-    await tx.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: deletionId },
-      where: { id: chatId } });
-  });
+/** The deletion fence as admission writes it: the chat is archived and fenced under the deletion's own opaque id. */
+async function fence(chatId: string): Promise<void> {
+  await prisma.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() },
+    where: { id: chatId } });
 }
 
 describe("the past-chat index in PostgreSQL", () => {
@@ -116,7 +107,7 @@ describe("the past-chat index in PostgreSQL", () => {
     expect(rows.every((row) => row.embeddingProviderModelId === "fake-embed-a" && row.embeddingDimension === 3 && row.dims === 3)).toBe(true);
     const words = await prisma.$queryRaw<Array<{ userMessageId: string }>>`
       SELECT "userMessageId" FROM "ChatSearchPassage"
-      WHERE "chatId" = ${chatId} AND "searchVectorSimple" @@ plainto_tsquery('simple', 'quirinale itinerary')`;
+      WHERE "chatId" = ${chatId} AND "searchVectorSimple" @@ plainto_tsquery('simple', 'quirinale itinerary.pdf')`;
     expect(words).toEqual([{ userMessageId: ids[0] }]);
     expect(await prisma.chatSearchState.findUniqueOrThrow({ where: { chatId } })).toMatchObject({
       attemptCount: 0, dirtyAt: null, indexedLeafMessageId: ids[3], lastErrorCode: null, nextAttemptAt: null, userId
@@ -179,7 +170,7 @@ describe("the past-chat index in PostgreSQL", () => {
     await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
     const store = createPrismaChatSearchIndexStore(prisma);
     const [claim] = await store.claimDue({ leaseUntil: new Date(Date.now() + 60_000), limit: 1, now: new Date(), ownerIds: [userId] });
-    await fence(chatId, userId);
+    await fence(chatId);
     const passageText = "Chat: Synthetic trip\n\nUser: Question\n\nAssistant: Answer";
     const draft = { assistantMessageId: ids[1]!, contentHash: chatSearchContentHash(passageText), ordinal: 0, text: passageText,
       turnAt: new Date(), userMessageId: ids[0]! };

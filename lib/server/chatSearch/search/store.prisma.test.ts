@@ -37,7 +37,7 @@ type Fixture = Readonly<{
 }>;
 
 let fixture: Fixture;
-const cleanup: { users: string[]; chats: string[]; outboxes: string[] } = { chats: [], outboxes: [], users: [] };
+const cleanup: { users: string[]; chats: string[] } = { chats: [], users: [] };
 
 const SYLLABLES = ["ka", "lo", "mi", "ra", "su", "te", "vo", "ne", "ba", "ko", "ми", "ру", "се", "то", "ва", "не"];
 
@@ -87,8 +87,9 @@ async function seedChat(input: Readonly<{ userId: string; title: string; turns: 
   text: (turn: number, window: number) => string; mode?: "NORMAL" | "EXCLUDED" | "TEMPORARY" }>): Promise<{ chatId: string; passages: PassageSeed[] }> {
   const now = new Date();
   const chat = await prisma.chat.create({ data: { memoryMode: input.mode ?? "NORMAL", title: input.title, userId: input.userId,
-    ...(input.mode === "TEMPORARY" ? { temporaryRetentionDeadline: new Date(now.getTime() + 86_400_000),
-      temporaryRetentionPolicyVersion: "temporary-24h-v1" } : {}) } });
+    // A Temporary chat already past its deadline, so cleanup may delete it (`aiqsa_temporary_chat_delete_guard`).
+    ...(input.mode === "TEMPORARY" ? { createdAt: new Date(now.getTime() - 2 * 86_400_000),
+      temporaryRetentionDeadline: new Date(now.getTime() - 60_000), temporaryRetentionPolicyVersion: "temporary-24h-v1" } : {}) } });
   cleanup.chats.push(chat.id);
   const messages: Prisma.MessageCreateManyInput[] = [];
   const passages: PassageSeed[] = [];
@@ -174,13 +175,8 @@ async function seed(): Promise<Fixture> {
   eligible.add(otherModel);
   eligible.add(otherDimension);
   // Fence the deleted chat as permanent deletion does, after its passage exists (the guard refuses new ones).
-  await prisma.$transaction(async (tx) => {
-    const outbox = await tx.memoryDeletionOutbox.create({ data: { admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: 0,
-      alsoForgetOriginMemories: false, memoryGeneration: 0, operation: "SOURCE_PURGE", targetId: deleted, targetType: "CHAT@memory-chat-delete-v1",
-      userId: owner } });
-    cleanup.outboxes.push(outbox.id);
-    await tx.chat.update({ data: { permanentDeletionAt: new Date(), permanentDeletionOperationId: outbox.id }, where: { id: deleted } });
-  });
+  await prisma.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() },
+    where: { id: deleted } });
   const counted = await prisma.chatSearchPassage.count({ where: { userId: owner } });
   return { chat: { campaign, costs, cyrillic, deleted, excluded, foreign, report, similar, temporary, ticket }, current, eligible, other, owner,
     passages: counted };
@@ -196,7 +192,6 @@ afterAll(async () => {
     await prisma.chatSearchPassage.deleteMany({ where: { chatId: { in: cleanup.chats } } });
     await prisma.message.deleteMany({ where: { chatId: { in: cleanup.chats } } });
     await prisma.chat.deleteMany({ where: { id: { in: cleanup.chats } } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { id: { in: cleanup.outboxes } } });
     await prisma.user.deleteMany({ where: { id: { in: cleanup.users } } });
   } finally {
     await prisma.$disconnect();
