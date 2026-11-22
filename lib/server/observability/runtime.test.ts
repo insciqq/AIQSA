@@ -134,15 +134,6 @@ describe("bounded observability runtime", () => {
     expect(JSON.stringify([unexpected, hostile])).not.toContain("PRIVATE_");
   });
 
-  it.each(["native_route_http_error", "native_route_capability_mismatch", "native_route_authority_changed"])(
-    "retains native adoption diagnosis %s without raw provider details", (code) => {
-      const event = record("service_operation", { subsystem: "admin", stage: "validate", outcome: "degraded",
-        code, httpStatus: 404, message: "PRIVATE_PROVIDER_BODY", credential: "PRIVATE_KEY" } as never);
-      expect(event).toMatchObject({ code, httpStatus: 404, stage: "validate", outcome: "degraded" });
-      expect(JSON.stringify(event)).not.toContain("PRIVATE_");
-    }
-  );
-
   it.each([
     ["service_operation", "admin", "assistant_listing_failed"], ["service_operation", "configuration", "skill_preference_failed"],
     ["service_operation", "admin", "skill_publication_saved"], ["service_operation", "admin", "skill_sharing_failed"],
@@ -430,9 +421,9 @@ describe("bounded observability runtime", () => {
   });
 
   it("keeps the bounded provider cause separately from the public run failure", () => {
-    const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "knowledge_answer_failed" } as const;
+    const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "model_answer_empty" } as const;
     expect(record("run_execution", { ...fields, provider_code: "provider_http_invalid_request" }))
-      .toMatchObject({ code: "knowledge_answer_failed", provider_code: "provider_http_invalid_request" });
+      .toMatchObject({ code: "model_answer_empty", provider_code: "provider_http_invalid_request" });
     const unsafe = record("run_execution", { ...fields, provider_code: "private-provider-error-body" });
     expect(unsafe.provider_code).toBe("unknown");
     expect(JSON.stringify(unsafe)).not.toContain("private-provider");

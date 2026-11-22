@@ -33,8 +33,7 @@ export type McpToolFailureGuidance = Readonly<{ message: string; reason: McpTool
 const UNAVAILABLE_CODES: ReadonlySet<string> = new Set([
   "mcp_connect_failed", "mcp_connection_forbidden", "mcp_health_check_failed", "mcp_internal_address_forbidden",
   "mcp_local_network_disabled", "mcp_network_failed", "mcp_runtime_not_ready",
-  "mcp_runtime_unavailable", "mcp_session_closed", "mcp_session_not_ready", "mcp_tls_failed", "mcp_tool_not_available",
-  "memory_egress_destination_revoked"
+  "mcp_runtime_unavailable", "mcp_session_closed", "mcp_session_not_ready", "mcp_tls_failed", "mcp_tool_not_available"
 ]);
 const CHANGED_CODES: ReadonlySet<string> = new Set([
   "mcp_accepted_generation_changed", "mcp_inventory_changed", "mcp_tool_definition_changed"

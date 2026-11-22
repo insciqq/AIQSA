@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { TELEMETRY_DURATION_BUCKETS, type TelemetryBatch, type TelemetryCounterDelta } from "./aggregator";
 import {
-  clearTelemetryIncidentUser, createPrismaTelemetryStore, telemetryCurrentBucketSql, TelemetryQueryError, telemetryDimensionHash,
+  clearTelemetryIncidentUser, createPrismaTelemetryStore, TelemetryQueryError, telemetryDimensionHash,
   telemetryWriteIsPermanent, type TelemetryDatabase
 } from "./store";
 
@@ -270,19 +270,14 @@ describe("Prisma telemetry store", () => {
     expect(page.statements[1]!.values).toContain("00000000-0000-4000-8000-000000000002");
   });
 
-  it("sums and merges every stored histogram layout in the current one, named by its array length", async () => {
-    // An earlier row's 60 s bucket (9th) is the current 10th; no earlier bucket ends at 45 s; the open last stays last.
-    expect(telemetryCurrentBucketSql(`"b"`, 9)).toBe(`(CASE cardinality("b") WHEN 12 THEN "b"[9] ELSE "b"[10] END)`);
-    expect(telemetryCurrentBucketSql(`"b"`, 8)).toBe(`(CASE cardinality("b") WHEN 12 THEN 0 ELSE "b"[9] END)`);
-    expect(telemetryCurrentBucketSql(`"b"`, 18)).toBe(`(CASE cardinality("b") WHEN 12 THEN "b"[12] ELSE "b"[19] END)`);
+  it("sums and merges histograms bucket by bucket", async () => {
     const read = fakeDatabase();
     await read.store.readCounters({ from: new Date(0), to: HOUR });
-    expect(read.statements[0]!.sql).toContain(`SUM((CASE cardinality("durationBuckets") WHEN 12 THEN "durationBuckets"[12] ` +
-      `ELSE "durationBuckets"[19] END))::bigint`);
+    expect(read.statements[0]!.sql).toContain(`SUM("durationBuckets"[1])::bigint, `);
+    expect(read.statements[0]!.sql).toContain(`SUM("durationBuckets"[19])::bigint]`);
     const written = fakeDatabase();
     await written.store.write(batch([counter("x")]));
-    expect(written.statements[0]!.sql).toContain(`(CASE cardinality("TelemetryCounter"."durationBuckets") WHEN 12 THEN ` +
-      `"TelemetryCounter"."durationBuckets"[9] ELSE "TelemetryCounter"."durationBuckets"[10] END) + EXCLUDED."durationBuckets"[10]`);
+    expect(written.statements[0]!.sql).toContain(`"TelemetryCounter"."durationBuckets"[10] + EXCLUDED."durationBuckets"[10]`);
     expect(counter("x").durationBuckets).toHaveLength(19);
   });
 

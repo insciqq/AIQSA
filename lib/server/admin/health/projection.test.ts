@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { adminHealthEventCategory } from "@/lib/contracts/adminHealth";
-import {
-  TELEMETRY_DURATION_BUCKETS, TELEMETRY_LEGACY_DURATION_BOUNDS_MS, telemetryDurationBucket, telemetryDurationBucketsInCurrentLayout
-} from "../../telemetry/aggregator";
+import { TELEMETRY_DURATION_BUCKETS } from "../../telemetry/aggregator";
 import {
   adminHealthFailureClass,
   adminHealthIncidentFrom,
@@ -81,41 +79,6 @@ describe("admin health projection", () => {
     // The median of the same kind of histogram, as a bucket bound capped by the maximum.
     expect(adminHealthQuantile(histogram({ 0: 94, 4: 6 }), 1_800, 0.5)).toBe(100);
     expect(adminHealthQuantile(histogram({ 0: 10, 4: 90 }), 1_800, 0.5)).toBe(1_800);
-  });
-
-  it("keeps the percentiles of counters written in the earlier 12-bucket layout, alone or mixed with new ones", () => {
-    const legacyBounds = TELEMETRY_LEGACY_DURATION_BOUNDS_MS[12]!;
-    // The computation before the finer buckets, over the earlier layout.
-    const legacyQuantile = (buckets: readonly number[], maxMs: number, quantile: number) => {
-      const target = Math.ceil(buckets.reduce((sum, value) => sum + value, 0) * quantile);
-      let seen = 0;
-      for (let index = 0; index < buckets.length; index += 1) {
-        seen += buckets[index]!;
-        if (seen < target) continue;
-        const bound = legacyBounds[index];
-        return bound === undefined ? maxMs : Math.min(bound, maxMs);
-      }
-      return maxMs;
-    };
-    const legacyBucket = (duration: number) => {
-      const index = legacyBounds.findIndex((bound) => duration <= bound);
-      return index === -1 ? legacyBounds.length : index;
-    };
-    const legacyDurations = [50_000, 70_000, 200_000, 400_000];
-    const legacy = new Array<number>(12).fill(0);
-    for (const duration of legacyDurations) legacy[legacyBucket(duration)]! += 1;
-    for (const quantile of [0.5, 0.95]) {
-      expect(adminHealthQuantile(telemetryDurationBucketsInCurrentLayout(legacy), 400_000, quantile))
-        .toBe(legacyQuantile(legacy, 400_000, quantile));
-    }
-    // Old and new rows of one group sum per current bucket; each percentile stays an upper bound.
-    const recent = histogram({});
-    for (const duration of [40_000, 80_000, 700_000, 1_000_000]) recent[telemetryDurationBucket(duration)]! += 1;
-    const merged = telemetryDurationBucketsInCurrentLayout(legacy).map((value, index) => value + recent[index]!);
-    expect(adminHealthQuantile(merged, 1_000_000, 0.5)).toBe(120_000);
-    expect(adminHealthQuantile(merged, 1_000_000, 0.95)).toBe(1_000_000);
-    const sorted = [...legacyDurations, 40_000, 80_000, 700_000, 1_000_000].sort((left, right) => left - right);
-    expect(adminHealthQuantile(merged, 1_000_000, 0.5)).toBeGreaterThanOrEqual(sorted[3]!);
   });
 });
 
