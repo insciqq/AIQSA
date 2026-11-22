@@ -13,8 +13,6 @@ import { mcpDispatchError } from "../mcp/dispatchStatus";
 import { mcpToolFailureGuidance } from "../mcp/toolFailureGuidance";
 import { dispatchMcpTool, mcpRunTools, mcpToolExecutionResult, resolveMcpRunTool, type McpToolRuntimeCall } from "../mcp/toolExecutor";
 import { mcpApprovalRequest, type McpApprovalRequest } from "../mcp/writeApproval";
-import { memorySearchTool } from "../memory/search/contract";
-import type { MemorySearchService } from "../memory/search/runtime";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import type { ProviderRunRequest } from "../providers/types";
 import { guardedMcpApprovalRequestForCall, mcpApprovalRequestForCall } from "../runs/mcpApprovalGate";
@@ -24,7 +22,7 @@ import { toolRunBudgetsForRequest } from "../runs/toolBudgets";
 import { createSearchPlanToolRouter, searchExecutionsFromToolResult, searchUsageAttribution } from "../search/toolExecutor";
 import type { SkillToolService } from "../skills/toolService";
 import { deliverSkillWorkspaceBundle } from "../skills/workspaceDelivery";
-import { memorySearchActivityEvent, skillToolActivityFacts, toolActivityDescriptors } from "../tools/activityDescriptors";
+import { skillToolActivityFacts, toolActivityDescriptors } from "../tools/activityDescriptors";
 import { ANALYZE_IMAGE_TOOL_NAME, analyzeImageTools } from "../tools/analyzeImage";
 import {
   APPLY_PATCH_TOOL_NAME,
@@ -50,6 +48,14 @@ import { patchActivityChanges, patchActivityEntry, planActivityEntry } from "../
 import type { HarnessToolEffects } from "../tools/harnessTool";
 import { imageGenerationTool } from "../tools/imageGeneration";
 import { executeMonitoringVerdict, monitoringVerdictTool } from "../tools/monitoringVerdict";
+import {
+  createPastChatsCallBudget,
+  pastChatsTimeZone,
+  readPastChatTool,
+  searchPastChatsTool,
+  type PastChatTools,
+  type PastChatsToolContext
+} from "../tools/pastChats";
 import { createChatFileTool, readChatFileTool, type ChatFileReader } from "../tools/readChatFile";
 import { executeReadSecret, readSecretTool } from "../tools/readSecret";
 import { changeResearchFrameEngineTool, type ChangeResearchFrameTarget } from "../tools/changeResearchFrame";
@@ -255,7 +261,8 @@ export type ToolRegistryServices = Readonly<{
   }>;
   /** The MCP runtime of this process (`getDefaultMcpRuntimeCoordinator`). */
   mcpRuntime?: () => Readonly<{ callTool: McpToolRuntimeCall; ensureAcceptedGeneration(generationId: string): Promise<boolean> }>;
-  memorySearch?: Pick<MemorySearchService, "execute">;
+  /** `search_past_chats` and `read_past_chat` (`createPrismaPastChatTools`), offered where admission froze `memory.pastChats`. */
+  pastChats?: PastChatTools;
   repository: Pick<RunRepository, "appendMcpDiscoveryEpoch" | "createScheduledTaskForCall" | "createSearchRun" |
     "loadRunFetchUrlCalls" | "manageScheduledTaskForCall" | "recordMonitoringVerdict" | "saveSkillForCall">;
   savedResults: SavedToolResultReader;
@@ -415,17 +422,21 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       ...(extra ? extra(call) : {})
     });
   const clientTools = request.toolMode !== "none";
+  const listedTool = (name: string) => (): EngineToolActivity => descriptors.get(name) ?? {};
 
-  if (clientTools && request.memorySearch && input.services.memorySearch) {
-    const definition = memorySearchTool(request.memorySearch);
-    const service = input.services.memorySearch;
-    add({ activity: named(definition, "Memory"), definition, effects: "none", observationSource: "workspace", runScopedResult: true,
-      execute: async (execution) => {
-        await input.onEvent(memorySearchActivityEvent({ ordinal: execution.ordinal, round: execution.round, state: "running" }));
-        return service.execute(execution.call, context(execution), { signal: execution.signal });
-      },
-      settled: (execution, result) => input.onEvent(memorySearchActivityEvent({ ordinal: execution.ordinal, result,
-        round: execution.round, state: result.status })) });
+  // Past-chat search (operator decision 2026-11-22, replacing `memory_search`): read only, where admission froze it. Its
+  // results stay within this run (`runScopedResult`), so a later turn searches again and every disclosure is rechecked
+  // against the owner, the switches and the chats' eligibility; one call budget counts the run's searches and reads.
+  const pastChats = input.services.pastChats;
+  if (clientTools && request.memory?.pastChats === true && pastChats) {
+    const budget = createPastChatsCallBudget();
+    const timeZone = pastChatsTimeZone(request);
+    const pastChatsContext = (execution: EngineToolExecution): PastChatsToolContext => ({ budget, chatId: input.chatId,
+      runId: input.runId, signal: execution.signal, timeZone, userId: input.userId });
+    add({ activity: listedTool(searchPastChatsTool.name), definition: searchPastChatsTool, effects: "none", observationSource: "workspace",
+      runScopedResult: true, execute: (execution) => pastChats.search(execution.call, pastChatsContext(execution)) });
+    add({ activity: listedTool(readPastChatTool.name), definition: readPastChatTool, effects: "none", observationSource: "workspace",
+      runScopedResult: true, execute: (execution) => pastChats.read(execution.call, pastChatsContext(execution)) });
   }
 
   for (const definition of skillToolsForRequest(request)) {

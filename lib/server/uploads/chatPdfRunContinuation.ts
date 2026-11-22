@@ -24,7 +24,7 @@ import { observeChatPdfPersistence } from "./chatPdfPersistenceObservability";
 export type ChatPdfRunSnapshot = AcceptedRunSnapshot;
 export const chatPdfRunSnapshot = acceptedRunSnapshot;
 
-type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" | "skillTools" | "vision"> & Readonly<{
+type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "pastChats" | "skillTools" | "vision"> & Readonly<{
   chatTitleGenerator?: ChatTitleGenerator;
   nativeEngine: NativeEngineHandlerDeps;
   pdfRepository: ReturnType<typeof createChatPdfRepository>;

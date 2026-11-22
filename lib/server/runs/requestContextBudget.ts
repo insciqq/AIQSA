@@ -93,6 +93,7 @@ function promptTokens(request: Pick<NormalizedRunRequest, "prompt">, estimate: (
     prompt.system,
     prompt.personalInstructions,
     prompt.developer,
+    prompt.memoryNote,
     prompt.responseReminder ? `Response reminder:\n${prompt.responseReminder}` : null,
     prompt.memoryActionAnswerResult ? memoryActionAnswerContract(prompt.memoryActionAnswerResult) : null
   ].reduce((total: number, part) => total + (part?.trim() ? estimate(part) : 0), 0);

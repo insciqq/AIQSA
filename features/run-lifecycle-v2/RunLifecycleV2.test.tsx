@@ -450,6 +450,23 @@ describe("Run lifecycle v2", () => {
     expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
   });
 
+  it("lists the settled answer's past-chat sources and opens one in the shell", () => {
+    const source = { chatId: "chat_1", chatTitle: "Rollback plan", date: "2026-11-02T09:30:00.000Z", excerpt: "Keep the previous image tagged.",
+      messageId: "msg_1" };
+    const artifact = { citations: [], pastChatSources: [source], reasoningText: [], sources: [], workDurationMs: 2_000 };
+    const onOpenChatMessage = vi.fn();
+    const { rerender } = render(<RunAnswerV2 artifact={artifact} content="Partial" onOpenChatMessage={onOpenChatMessage}
+      presentation={presentation({ kind: "streaming", runId: "run-p" })} />);
+    // Sources show once the answer settles: the chat load projects them from the run's own search results.
+    expect(screen.queryByTestId("past-chat-sources")).toBeNull();
+    rerender(<RunAnswerV2 artifact={artifact} content="Answer" onOpenChatMessage={onOpenChatMessage}
+      presentation={presentation({ kind: "complete", runId: "run-p" })} />);
+    const disclosure = screen.getByTestId("past-chat-sources");
+    expect(disclosure.querySelector("summary")).toHaveTextContent("Past chats · 1");
+    fireEvent.click(screen.getByRole("link", { name: "Open Rollback plan at this message", hidden: true }));
+    expect(onOpenChatMessage).toHaveBeenCalledWith("chat_1", "msg_1");
+  });
+
   it("shows the model's reasoning heading as plain text whatever the Reasoning blocks setting", () => {
     const thinking = presentation({ activity: { kind: "provider", label: "Thinking…",
       reasoningHeading: "<b>Checking</b> the diagonals" }, kind: "activity", runId: "run-heading" });

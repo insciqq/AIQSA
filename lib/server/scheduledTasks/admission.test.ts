@@ -286,13 +286,13 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(first.f.state.requests.map(conversation)).toEqual([[["user", "Summarize the synthetic fixture"]]]);
   });
 
-  it("never applies Memory to a scheduled run, even after the owner turned Memory on in its chat", async () => {
-    const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
-      comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+  it("never applies Memory to a scheduled run whose task has it off, even after the owner turned Memory on in its chat", async () => {
     const chat: RunOwnedChatRecord = { ...taskChat, memoryMode: "NORMAL" };
     const f = fixture({ chat });
-    const admit = vi.fn(async () => snapshot);
-    const sendDeps = { ...f.sendDeps, memorySearchAdmission: { admit } };
+    const admit = vi.fn(async () => ({ note: { lastChangedBy: "user" as const, revision: 1, text: "Answer briefly.",
+      updatedAt: "2026-11-20T10:00:00.000Z" }, searchAllowed: true,
+      switches: { memoryEnabled: true, memorySuggestionsEnabled: true, pastChatSearchEnabled: true } }));
+    const sendDeps = { ...f.sendDeps, memoryNote: { load: admit } };
     const scheduled = await createScheduledTaskSend({ loadOwner: f.loadOwner, sendDeps })({
       body: body({ activeLeafMessageId: chat.activeLeafMessageId, chatId: chat.id, kind: "existing" }),
       chatId: chat.id, occurrence, userId: owner.id
@@ -300,9 +300,9 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(scheduled.status).toBe(200);
     await scheduled.text();
     expect(admit).not.toHaveBeenCalled();
-    expect(f.state.created!.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(f.state.created!.normalizedRequest.memorySearch).toBeUndefined();
-    // The owner's own message in the same chat keeps standing Memory.
+    expect(f.state.created!.normalizedRequest.memory).toBeUndefined();
+    expect(f.state.created!.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    // The owner's own message in the same chat reads the note and may change it.
     const ordinary = await createSendMessageHandler({ ...sendDeps,
       resolveAuth: scheduledTaskOwnerAuth(f.loadOwner, { taskId: "task-1", userId: owner.id }) })(
       new Request(`http://localhost/api/chats/${chat.id}/messages`, { body: JSON.stringify(
@@ -310,7 +310,8 @@ describe("scheduled task admission through the ordinary send handler", () => {
       { params: { chatId: chat.id } });
     expect(ordinary.status).toBe(200);
     await ordinary.text();
-    expect(f.state.created!.normalizedRequest.memoryStandingVersion).toBe(1);
+    expect(f.state.created!.normalizedRequest.memory).toMatchObject({ changes: true, version: 1 });
+    expect(f.state.created!.normalizedRequest.prompt.memoryNote).toContain("Answer briefly.");
     expect(f.state.created).not.toHaveProperty("scheduledOccurrence");
   });
 

@@ -3,6 +3,7 @@ import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "./fetchUrlAc
 import { BROWSER_HANDOFF_OUTCOMES, type BrowserHandoffOutcome } from "./browserLive";
 import { normalizeBrowserSignInHost } from "./browserSignIn";
 import { decodeSearchPlan, type SearchPlan } from "./search";
+import { foldPastChatSources, type PastChatSource } from "./pastChats";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { isRunProviderWait, type RunProviderWait } from "./runs";
 import { decodeThreadGeneratedImage, type ThreadGeneratedImage } from "./imageGeneration";
@@ -270,6 +271,11 @@ export type ThreadArtifactSummary = {
   memoryAction?: MemoryActionFeedback;
   memoryStatus?: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE";
   memorySources?: MemoryAnswerSource[];
+  /**
+   * The past chats the answer's `search_past_chats` calls brought into its context (operator decision 2026-11-22), as
+   * the chat load found them still there and eligible: each turn once, in the order the search ranked them.
+   */
+  pastChatSources?: PastChatSource[];
   /** Merged thinking entries, THREAD_REASONING_MAX_CHARACTERS in total at most. */
   reasoningText: string[];
   /** Part of the thinking was too long to keep or show. */
@@ -1245,6 +1251,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
         return decoded.ok ? decoded.value : null;
       }, MEMORY_ANSWER_SOURCE_MAX_ITEMS).items
     : undefined;
+  const pastChatSources = Array.isArray(value.pastChatSources) ? foldPastChatSources(value.pastChatSources) : undefined;
   const memoryStatus = value.memoryStatus === "INPUT_TOO_LONG" || value.memoryStatus === "LIMITED" ||
     value.memoryStatus === "UNAVAILABLE"
     ? value.memoryStatus
@@ -1275,6 +1282,7 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(memoryAction ? { memoryAction } : {}),
     ...(memoryStatus ? { memoryStatus } : {}),
     ...(memorySources !== undefined ? { memorySources } : {}),
+    ...(pastChatSources?.length ? { pastChatSources } : {}),
     reasoningText: reasoning.reasoningText,
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks?.length ? { scheduledTasks } : {}),

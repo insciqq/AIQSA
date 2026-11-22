@@ -40,7 +40,7 @@ function chatFixture(chatId: string, title: string, turns: readonly Turn[]): Cha
     messages.push(message(`${chatId}-${index + 1}-answer`, "assistant", turn.answer, `${chatId}-${index + 1}-question`, {
       artifactSummary: { citations: [], reasoningText: [], sources: [], workDurationMs: 1_800,
         ...(turn.cards ? { resourceChanges: [...turn.cards] } : {}),
-        // The answer's past-chat sources; the cutover task names this field where the thread decodes it.
+        // The answer's past-chat sources, as the chat load projects them (`ThreadArtifactSummary.pastChatSources`).
         ...(turn.pastChats ? { pastChatSources: [...turn.pastChats] } : {}) } as ChatMessageWire["artifactSummary"]
     }));
   });

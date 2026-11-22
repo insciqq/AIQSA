@@ -89,15 +89,10 @@ import {
 } from "../../contracts/chats";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
-  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  type MemoryActionFeedback,
-  type MemoryAnswerSource
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memoryClient";
-import { loadMemoryRunSources } from "../memory/sources/runProjection";
-import {
-  loadMemoryRunPresentationStatuses,
-  type MemoryRunPresentationStatus
-} from "../memory/retrieval/runProjection";
+import type { PastChatSource } from "../../contracts/pastChats";
+import { loadPastChatSourcesByRun } from "./pastChatSources";
 import { prisma } from "../prisma";
 import { isAssistantAvailable, type AssistantBindingScope } from "../assistants/bindingAccess";
 import type { CatalogData } from "../catalog/currentUserCatalog";
@@ -146,7 +141,6 @@ import { fetchUrlActivityFacts } from "../tools/fetchUrlPlan";
 import { browserHandoffActivityFacts } from "../tools/browserHandoffActivity";
 import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
-import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadDeepResearchMarks } from "./deepResearchProjection";
 import {
   applyMemoryScopedTargetOwnerLifecycle,
@@ -382,12 +376,11 @@ type HydratedMessageRow = Prisma.MessageGetPayload<{ select: typeof hydratedMess
   subagentCallbackNames?: readonly string[];
 };
 type HydratedMessagePath = Readonly<{
-  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>;
-  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>;
-  memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>;
   messages: HydratedMessageRow[];
   /** The parent each message reads as on the visible branch (`loadActiveBranchPath`). */
   parents: ReadonlyMap<string, string | null>;
+  /** The past chats each answer's search used, still there and eligible (`loadPastChatSourcesByRun`), by run. */
+  pastChatSourcesByRun: ReadonlyMap<string, readonly PastChatSource[]>;
   scheduledTasks: CurrentScheduledTasks;
 }>;
 /**
@@ -687,11 +680,9 @@ async function hydrateMessagePath(
   const parents = new Map(messages.map((message) => [message.id, message.parentMessageId]));
   if (messages.length === 0) {
     return {
-      memoryActionsByRun: new Map(),
-      memorySourcesByRun: new Map(),
-      memoryStatusesByRun: new Map(),
       messages: [],
       parents,
+      pastChatSourcesByRun: new Map(),
       scheduledTasks: new Map()
     };
   }
@@ -707,16 +698,12 @@ async function hydrateMessagePath(
     const found = byId.get(message.id);
     return found ? [found] : [];
   });
-  const runIds = ordered.flatMap((message) =>
-    message.assistantModelRuns[0]?.id
-      ? [message.assistantModelRuns[0].id]
-      : message.branchSourceModelRun?.id
-        ? [message.branchSourceModelRun.id]
-        : []);
-  const [memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, scheduledTasks, callbackNames, research] = await Promise.all([
-    loadMemoryRunActions(tx, { runIds, userId }),
-    loadMemoryRunSources(tx, { runIds, userId }),
-    loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
+  const runs = ordered.flatMap((message) => {
+    const run = message.assistantModelRuns[0] ?? message.branchSourceModelRun;
+    return run ? [run] : [];
+  });
+  const [pastChatSourcesByRun, scheduledTasks, callbackNames, research] = await Promise.all([
+    loadPastChatSourcesByRun(tx, { runs, viewerUserId: userId }),
     loadCurrentScheduledTasks(tx, ordered.flatMap((message) =>
       (message.assistantModelRuns[0] ?? message.branchSourceModelRun)?.events ?? []), userId,
     ordered.flatMap((message) => scheduledPromptTaskId(message) ?? [])),
@@ -724,7 +711,7 @@ async function hydrateMessagePath(
     loadDeepResearchMarks(tx, { chatId, userId }, ordered.map((message) => ({ content: message.content, id: message.id, role: message.role,
       runId: message.assistantModelRuns[0]?.id ?? null, systemTurnKind: message.systemTurnKind })))
   ]);
-  return { memoryActionsByRun, memorySourcesByRun, memoryStatusesByRun, parents, scheduledTasks,
+  return { parents, pastChatSourcesByRun, scheduledTasks,
     messages: ordered.map((message) => {
       const named = callbackNames.has(message.id) ? { ...message, subagentCallbackNames: callbackNames.get(message.id)! } : message;
       return research.sentWithDeepResearch.has(message.id) ? { ...named, sentWithDeepResearch: true as const }
@@ -983,9 +970,7 @@ async function loadLatestSessionStatus(
 
 function serializeHydratedMessage(
   message: HydratedMessageRow,
-  memoryActionsByRun: ReadonlyMap<string, MemoryActionFeedback>,
-  memorySourcesByRun: ReadonlyMap<string, readonly MemoryAnswerSource[]>,
-  memoryStatusesByRun: ReadonlyMap<string, MemoryRunPresentationStatus>,
+  pastChatSourcesByRun: ReadonlyMap<string, readonly PastChatSource[]>,
   viewerUserId: string,
   scheduledTasks: CurrentScheduledTasks,
   /** The parent each message reads as on the visible branch; its own parent when absent. */
@@ -1003,9 +988,7 @@ function serializeHydratedMessage(
   const artifactSummary = modelRun
     ? summarizeMessageRunArtifacts(
         modelRun,
-        memoryActionsByRun.get(modelRun.id) ?? null,
-        memorySourcesByRun.get(modelRun.id) ?? [],
-        memoryStatusesByRun.get(modelRun.id),
+        pastChatSourcesByRun.get(modelRun.id) ?? [],
         scheduledTasks,
         // A branch copy shows the source answer's approval cards read-only.
         message.assistantModelRuns.length ? viewerUserId : undefined
@@ -1115,9 +1098,7 @@ function serializeChatDetail(input: {
     messages: input.messages.messages.map((message) =>
       serializeHydratedMessage(
         message,
-        input.messages.memoryActionsByRun,
-        input.messages.memorySourcesByRun,
-        input.messages.memoryStatusesByRun,
+        input.messages.pastChatSourcesByRun,
         input.viewerUserId,
         input.messages.scheduledTasks,
         input.messages.parents
@@ -1578,9 +1559,12 @@ function answerScheduledTaskCards(
 
 export function summarizeMessageRunArtifacts(
   run: ArtifactSummaryRun,
-  memoryAction: MemoryActionFeedback | null = null,
-  memorySources: readonly MemoryAnswerSource[] = [],
-  memoryStatus?: MemoryRunPresentationStatus,
+  /**
+   * The past chats the answer's search used, already filtered to those still there and eligible
+   * (`loadPastChatSourcesByRun`). Personal Memory's per-run sources, receipts and statuses are no longer shown
+   * (operator decision 2026-11-22): answers recorded before the memory note simply lose those lists.
+   */
+  pastChatSources: readonly PastChatSource[] = [],
   currentScheduledTasks?: CurrentScheduledTasks,
   /** The reader: only the run's initiator may decide its approval cards. */
   viewerUserId?: string
@@ -1684,9 +1668,7 @@ export function summarizeMessageRunArtifacts(
     sources.length === 0 &&
     reasoningTexts.length === 0 &&
     !grounding &&
-    !memoryAction &&
-    !memoryStatus &&
-    memorySources.length === 0 &&
+    pastChatSources.length === 0 &&
     !contextCompaction &&
     workDurationMs === null
   ) {
@@ -1702,9 +1684,7 @@ export function summarizeMessageRunArtifacts(
     ...(generatedImages.length > 0 ? { generatedImages } : {}),
     ...(generatedFiles.length > 0 ? { generatedFiles } : {}),
     ...(grounding ? { groundingDisplay: { provider: grounding.provider, suggestionsHtml: grounding.suggestionsHtml } } : {}),
-    ...(memoryAction ? { memoryAction } : {}),
-    ...(memoryStatus ? { memoryStatus } : {}),
-    ...(memorySources.length > 0 ? { memorySources: [...memorySources] } : {}),
+    ...(pastChatSources.length > 0 ? { pastChatSources: [...pastChatSources] } : {}),
     reasoningText: reasoningTexts,
     ...(reasoning.truncated ? { reasoningTruncated: true as const } : {}),
     ...(scheduledTasks.length > 0 ? { scheduledTasks } : {}),

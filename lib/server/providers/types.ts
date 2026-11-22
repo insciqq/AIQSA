@@ -197,9 +197,22 @@ export type NormalizedRunRequest = {
     maxCalls: 2;
     pageSize: 20;
   }>;
-  /** Frozen local standing-context admission; independent of tool support. */
+  /** @deprecated Decode-only: Personal Memory's standing read of runs admitted before the memory note
+   * (operator decision 2026-11-22). New admission never sets it. */
   memoryStandingVersion?: 1;
-  memorySearch?: import("../memory/search/contract").MemorySearchSnapshot;
+  /** @deprecated Decode-only: `memory_search` of runs admitted before past-chat search. New admission never sets it,
+   * and no registry offers the tool. */
+  memorySearch?: unknown;
+  /**
+   * The user's Memory as admission froze it (operator decision 2026-11-22), present only where the turn reads it: an
+   * ordinary personal or Telegram turn, an Assistant chat, or a scheduled task with its Memory switch on, in a chat that
+   * is neither Temporary nor Excluded (a task reads it whatever its chat's mode), never Discord, with the user's
+   * `memoryEnabled` on. The note's own block is `prompt.memoryNote`. `pastChats` offers `search_past_chats` and
+   * `read_past_chat` (`pastChatSearchEnabled`, tool calling); `changes` offers `manage_memory` with the self-service
+   * tools (an interactive personal chat, never a task or an Assistant chat); `offers` is `memorySuggestionsEnabled`,
+   * which the tool's prompt line follows. Retries and recovery keep it; a change applies from the next message.
+   */
+  memory?: Readonly<{ version: 1; pastChats: boolean; changes: boolean; offers: boolean }>;
   modelCapabilities: ProviderModelCapabilities;
   mcpDiscovery?: McpDiscoveryState;
   mcp?: McpRunPlanSnapshot;
@@ -234,6 +247,12 @@ export type NormalizedRunRequest = {
   reasoningEffort?: string | null;
   prompt: {
     personalInstructions?: string;
+    /**
+     * The user's memory note as admission rendered it (`renderMemoryNoteForPrompt`), frozen with the run like the
+     * personal Instructions and rendered after them (`providerInstructionsWithPersonalContext`). Absent where the run
+     * reads no Memory (`memory`).
+     */
+    memoryNote?: string;
     responseReminder?: string;
     /**
      * Exact baseline evidence: the resolved zone and its source are recorded

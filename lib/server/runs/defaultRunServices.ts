@@ -2,17 +2,16 @@ import { createMcpGuardService } from "../mcp/guard";
 import { artifactServiceForStorage } from "../artifacts/defaultArtifacts";
 import { getComputerOps } from "../connect/computerPort";
 import { isConnectEnabled } from "../connect/policy";
-import type { ConnectorTurn } from "../connectors/turn";
 import { imageGenerationForStorage } from "../images/defaultImages";
 import { defaultMcpRunPlan } from "../mcp/defaultRuntime";
-import { admitMemorySearch } from "../memory/search/admission";
-import { createPrismaMemorySearchService } from "../memory/search/runtime";
+import { loadMemoryNoteForRun } from "../memoryNote/runContext";
 import { prisma } from "../prisma";
 import { createProxyRunPlanner } from "../proxies/store";
 import { providerAdmissionService } from "../providerRuntime/defaultAdmission";
 import { providerRuntimeResolver } from "../providerRuntime/defaultRuntime";
 import { defaultSkillTools } from "../skills/defaultSkillTools";
 import type { StorageAdapter } from "../uploads/storage";
+import { createPrismaPastChatTools } from "../tools/pastChats";
 import { visionAnalysisForStorage } from "../vision/defaultVision";
 import { currentUserConnectionLabels, resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalog";
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
@@ -20,6 +19,20 @@ import type { SubagentModelCatalogSource } from "../engine/subagents/modelCatalo
 import { readSubagentDefault } from "../subagents/definitionStore";
 
 const loadCatalogData = createPrismaCatalogDataLoader({ checkDefaultAssistant: false, prisma });
+
+/**
+ * The user's Memory as a run's admission reads it: the switches and the note (`loadMemoryNoteForRun`), and whether the
+ * chat's Assistant, when it has one, is the user's own, the one Assistant chat past-chat search is offered in, as
+ * `memory_search` was.
+ */
+async function loadRunMemory(input: Readonly<{ userId: string; assistantId: string | null }>) {
+  const [memory, ownAssistant] = await Promise.all([
+    loadMemoryNoteForRun(prisma, input.userId),
+    input.assistantId ? prisma.assistantDefinition.findFirst({ select: { id: true },
+      where: { archivedAt: null, id: input.assistantId, ownerUserId: input.userId } }) : Promise.resolve(null)
+  ]);
+  return { ...memory, searchAllowed: input.assistantId === null || ownAssistant !== null };
+}
 
 /** The user's chat models as `/api/me/catalog` filters them, with their connections' labels: what admission freezes for sub-agents. */
 async function subagentModelCatalog(userId: string): Promise<SubagentModelCatalogSource> {
@@ -43,15 +56,9 @@ export function defaultRunServices(storage: StorageAdapter) {
     computerAdmission: { describe: (userId: string, deviceId: string) => getComputerOps().describe(userId, deviceId),
       enabled: isConnectEnabled },
     images: imageGenerationForStorage(storage),
-    memorySearch: createPrismaMemorySearchService(),
-    memorySearchAdmission: { async admit(userId: string, assistantId?: string | null, connectorTurn?: ConnectorTurn) {
-      const policy = await prisma.modelPolicy.findUniqueOrThrow({
-        where: { id: "installation" }, select: { memorySearchTimeoutSeconds: true }
-      });
-      return admitMemorySearch({ userId, assistantId, ...(connectorTurn ? { connectorTurn } : {}),
-        timeoutSeconds: Number(policy.memorySearchTimeoutSeconds) });
-    } },
+    memoryNote: { load: loadRunMemory },
     mcp: defaultMcpRunPlan,
+    pastChats: createPrismaPastChatTools(prisma),
     mcpGuard: createMcpGuardService(prisma),
     proxies: createProxyRunPlanner(prisma),
     providerAdmission: providerAdmissionService,

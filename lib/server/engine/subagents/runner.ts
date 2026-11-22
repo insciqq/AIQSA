@@ -336,7 +336,10 @@ function fallbackHistory(result: ProviderRunResult): ProviderHistoryItem[] {
  */
 export function subagentRequest(request: ProviderRunRequest, route: SubagentModelRoute,
   options: Readonly<{ withoutWorkspace?: boolean }> = {}): ProviderRunRequest {
-  const { personalContext: _personal, workspace, workspaceCheckpoints, workspaceImageView: _parentView, ...rest } = request;
+  // A sub-agent reads no Memory: neither the note (its prompt below keeps none of the parent's personal text) nor
+  // past-chat search (operator decision 2026-11-22).
+  const { memory: _memory, personalContext: _personal, workspace, workspaceCheckpoints, workspaceImageView: _parentView, ...rest } = request;
+  void _memory;
   void _personal;
   void _parentView;
   const recorded = request.prompt.turnGuidance ?? [];
