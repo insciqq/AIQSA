@@ -56,7 +56,6 @@ readonly COMPOSE_FLOOR=2.29.7 ENGINE_TECHNICAL_FLOOR=20.10 ENGINE_SUPPORTED_FLOO
 readonly MEMORY_FAIL_KIB=7549747 MEMORY_WARN_KIB=15099494   # 90% of 8 GiB and 16 GiB
 readonly DISK_WARN_KIB=48828125                              # 50 GB
 readonly REPOSITORY_URL=https://github.com/insciqq/AIQSA
-readonly LEGACY_RUNBOOK_URL=$REPOSITORY_URL/blob/v0.2.34/UPGRADING_FROM_MINIO.md
 readonly RUNNER_URL_DEFAULT=http://workspace-runner:4310
 readonly LOG_TAIL_LINES=60 LOGS_DEFAULT_TAIL=200
 
@@ -818,7 +817,7 @@ doctor_workspace_block() {
 }
 
 doctor_compose_config() {
-  local errors services
+  local errors
   command -v docker >/dev/null 2>&1 || return 0
   ensure_temp_dir
   errors=$TEMP_DIR/compose-config.err
@@ -830,19 +829,6 @@ doctor_compose_config() {
     return 0
   fi
   doctor_logs
-  if profile_enabled storage-migration; then
-    check FAIL legacy-storage "COMPOSE_PROFILES contains storage-migration" \
-      "Finish the v0.2.34 runbook, then drop storage-migration from COMPOSE_PROFILES: $LEGACY_RUNBOOK_URL"
-  fi
-  services=$(dc config --services 2>/dev/null) || services=""
-  if grep -qx minio-legacy <<< "$services"; then
-    check FAIL legacy-storage "a Compose override defines the minio-legacy service" \
-      "Finish the v0.2.34 runbook, then remove minio-legacy and its /legacy mount: $LEGACY_RUNBOOK_URL"
-  fi
-  if legacy_volume_present; then
-    check WARN legacy-storage "the ${PROJECT_NAME}_minio_data volume from the MinIO era still exists" \
-      "Keep it until the v0.2.34 migration is verified ($LEGACY_RUNBOOK_URL), then remove it with docker volume rm."
-  fi
 }
 
 # The active log mode, whether it keeps history across container recreation,
@@ -906,13 +892,6 @@ doctor_logs() {
     first=${first%% *}
   fi
   check PASS logs "journald: kept across container recreation in the persistent host journal (SystemMaxUse=${max_use:-default, 10% of the file system up to 4G})${first:+; history since $first}"
-}
-
-legacy_volume_present() {
-  docker_ready || return 1
-  load_project_name
-  [[ -n $PROJECT_NAME ]] || return 1
-  run docker volume inspect "${PROJECT_NAME}_minio_data" >/dev/null 2>&1
 }
 
 # ---------------------------------------------------------------- doctor: stack
@@ -980,82 +959,11 @@ doctor_stack() {
   if (( runner )) && profile_enabled workspace; then doctor_runner; fi
   doctor_storage
   doctor_host_probe
-  doctor_toolhive_leftovers
-  doctor_search_leftovers
-  doctor_docling_leftovers
   local usage="" entry
   while IFS= read -r entry; do
     [[ -n $entry ]] && usage+="${usage:+; }$entry"
   done < <(run docker system df --format '{{.Type}} {{.Size}} (reclaimable {{.Reclaimable}})' 2>/dev/null || true)
   [[ -z $usage ]] || check INFO docker-disk "$usage"
-}
-
-# Releases after v0.2.34 removed the ToolHive runtime; its volume, workload
-# containers and generated images are not Compose-managed and stay behind.
-doctor_toolhive_leftovers() {
-  local lines=() names images
-  load_project_name
-  if [[ -n $PROJECT_NAME ]]; then
-    if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-      --filter label=com.docker.compose.service=toolhive-runtime 2>/dev/null) ]]; then
-      lines+=("./aiqsa.sh up   # --remove-orphans removes the toolhive-runtime container")
-    fi
-    if run docker volume inspect "${PROJECT_NAME}_toolhive_data" >/dev/null 2>&1; then
-      lines+=("docker volume rm ${PROJECT_NAME}_toolhive_data")
-    fi
-  fi
-  names=$(run docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^aiqsa-[a-z0-9]{16,24}-[a-z0-9]{24,64}$' | tr '\n' ' ') || names=""
-  [[ -z ${names// /} ]] || lines+=("docker rm -f ${names% }")
-  images=$(run docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep '^toolhivelocal/' | tr '\n' ' ') || images=""
-  [[ -z ${images// /} ]] || lines+=("docker image rm ${images% }")
-  (( ${#lines[@]} )) || return 0
-  check WARN toolhive-leftovers "local MCP servers were removed; the old ToolHive runtime left Docker state behind" \
-    "Once this release works, remove it with:" "${lines[@]/#/  }"
-}
-
-# Releases after v0.3.26 removed the search index service with its Memory and
-# Knowledge workers (operator decisions 2026-10-23). `./aiqsa.sh up` and
-# `upgrade` remove their orphaned containers; a plain `docker compose up -d`
-# keeps them running the old image. The index volume is left for the operator
-# to delete.
-doctor_search_leftovers() {
-  local lines=() service
-  load_project_name
-  [[ -n $PROJECT_NAME ]] || return 0
-  for service in opensearch memory-search-worker knowledge-search-worker; do
-    if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-      --filter "label=com.docker.compose.service=$service" 2>/dev/null) ]]; then
-      lines+=("./aiqsa.sh up   # --remove-orphans removes the $service container")
-    fi
-  done
-  if run docker volume inspect "${PROJECT_NAME}_opensearch_data" >/dev/null 2>&1; then
-    lines+=("docker volume rm ${PROJECT_NAME}_opensearch_data")
-  fi
-  (( ${#lines[@]} )) || return 0
-  check WARN search-leftovers "the search index and Knowledge services were removed; they left Docker state behind" \
-    "Nothing reads it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
-}
-
-# Releases after v0.3.26 removed the docling parser; Tika reads Office and HTML
-# attachments (operator decision 2026-10-23). `./aiqsa.sh up` and `upgrade`
-# remove its orphaned container; a plain `docker compose up -d` keeps it
-# running. Its image stays on disk until the operator deletes it.
-doctor_docling_leftovers() {
-  local lines=() image
-  load_project_name
-  [[ -n $PROJECT_NAME ]] || return 0
-  if [[ -n $(run docker ps -aq --filter "label=com.docker.compose.project=$PROJECT_NAME" \
-    --filter label=com.docker.compose.service=docling 2>/dev/null) ]]; then
-    lines+=("./aiqsa.sh up   # --remove-orphans removes the docling container")
-  fi
-  image=$(env_value AIQSA_DOCLING_IMAGE)
-  image=${image:-ghcr.io/insciqq/aiqsa:docling}
-  if run docker image inspect "$image" >/dev/null 2>&1; then
-    lines+=("docker image rm $image")
-  fi
-  (( ${#lines[@]} )) || return 0
-  check WARN docling-leftovers "the docling parser was removed; it left Docker state behind" \
-    "Nothing uses it any more. Once this release works, remove it with:" "${lines[@]/#/  }"
 }
 
 doctor_runner() {
@@ -1322,10 +1230,6 @@ report_stack_failure() {
     note "Last $LOG_TAIL_LINES log lines of $service:"
     logs=$(dc logs --no-color --tail "$LOG_TAIL_LINES" "$service" 2>&1 | mask_stream) || true
     printf '%s\n' "$logs" | sed 's/^/  /' >&2
-    if [[ $service == migrate-bootstrap && $logs == *local_mcp_removal_acknowledgement_required* ]]; then
-      note "This release removes local MCP servers and stops until you acknowledge it." \
-        "Review the local MCP removal note in SELF_HOSTING.md, set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 in .env, then rerun ./aiqsa.sh up."
-    fi
   elif [[ -s $compose_output ]]; then
     note "Last lines of docker compose up:"
     tail -n 20 "$compose_output" | mask_stream | sed 's/^/  /' >&2
@@ -1570,29 +1474,6 @@ image_guard() {
   fi
 }
 
-legacy_guard() {
-  local services
-  if profile_enabled storage-migration; then
-    refuse "COMPOSE_PROFILES contains storage-migration." \
-      "Finish the MinIO migration on v0.2.34 first: $LEGACY_RUNBOOK_URL"
-  fi
-  services=$(dc config --services 2>/dev/null) || services=""
-  if grep -qx minio-legacy <<< "$services"; then
-    refuse "a Compose override defines the minio-legacy service." \
-      "Finish the MinIO migration on v0.2.34 and remove minio-legacy: $LEGACY_RUNBOOK_URL"
-  fi
-  if legacy_volume_present; then
-    # A completed migration leaves a valid marker; the old volume is then a kept backup.
-    if dc run --rm --no-deps -T storage-init status </dev/null >/dev/null 2>&1; then
-      note "Note: the ${PROJECT_NAME}_minio_data volume still exists; remove it once the migration is verified."
-    else
-      refuse "the ${PROJECT_NAME}_minio_data volume exists and no valid storage marker was found." \
-        "Installations from v0.2.0-v0.2.30 must stop at v0.2.34 and follow $LEGACY_RUNBOOK_URL" \
-        "If the migration is complete, start the stack (./aiqsa.sh up) and rerun the upgrade."
-    fi
-  fi
-}
-
 # Decides before anything changes; the backup itself runs right before the
 # checkout moves, after every other refusal.
 confirm_backup() {
@@ -1634,7 +1515,6 @@ cmd_upgrade() {
     refuse "HEAD is detached (the installation is on a release tag)." \
       "Installations on a detached HEAD always pass the release tag: ./aiqsa.sh upgrade --to vX.Y.Z"
   fi
-  legacy_guard
   confirm_backup
   say "Fetching releases."
   git_in fetch --tags --quiet || die "$EXIT_FAILURE" "git fetch failed; nothing was changed."
