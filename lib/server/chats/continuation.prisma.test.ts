@@ -10,7 +10,7 @@ import { cancelChatContinuation, continuationSourceHref, createChatContinuationR
 import { createChatContinuationHandler } from "./continuationHandlers";
 import { createPrismaChatRepository } from "./prismaRepository";
 import { temporaryChatRetentionDeadline } from "./temporaryRetention";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { getWorkspaceConfig } from "../workspace/config";
 import { DeterministicWorkspaceRuntime } from "../workspace/deterministicRuntime";
 import { createPrismaWorkspaceCoordinatorRepository } from "../workspace/coordinator";

@@ -8,7 +8,7 @@ vi.mock("../observability", () => ({ logEvent }));
 import { backfillCatalogCostBatch, runCatalogCostBackfill } from "./catalogCostBackfill";
 
 type Usage = { id: string; provider: string; modelId: string; providerModelId: string | null; modelRunId: string | null;
-  memoryExecutionBindingId: string | null; createdAt: Date; usageCompleteness: string; estimatedCostMicros: number | null;
+  purpose: string; createdAt: Date; usageCompleteness: string; estimatedCostMicros: number | null;
   imageGeneration: boolean; optionalDecision: boolean; chatPdfPreparation: boolean; chatTitleGeneration: boolean;
   visionAnalysis: boolean; knowledgeRelevance: boolean;
   inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: null; outputTokens: number; reasoningTokens: null; totalTokens: number };
@@ -29,7 +29,7 @@ const COST = 15_600;
 
 function usage(id: string, patch: Partial<Usage> = {}): Usage {
   return { id, provider: PRICE.provider, modelId: PRICE.modelId, providerModelId: null, modelRunId: null,
-    memoryExecutionBindingId: null, createdAt: OLD, usageCompleteness: "COMPLETE", estimatedCostMicros: null,
+    purpose: "chat_answer", createdAt: OLD, usageCompleteness: "COMPLETE", estimatedCostMicros: null,
     imageGeneration: false, optionalDecision: false, chatPdfPreparation: false, chatTitleGeneration: false,
     visionAnalysis: false, knowledgeRelevance: false, ...counts, ...patch };
 }
@@ -50,9 +50,9 @@ function matches(row: Record<string, unknown>, where: Where): boolean {
   return Object.entries(where).every(([key, condition]) => {
     const value = row[key];
     if (condition !== null && typeof condition === "object" && !(condition instanceof Date)) {
-      const { lte, gt, in: within } = condition as { lte?: Date; gt?: string; in?: unknown[] };
+      const { lte, gt, in: within, notIn } = condition as { lte?: Date; gt?: string; in?: unknown[]; notIn?: unknown[] };
       return (lte === undefined || (value as Date) <= lte) && (gt === undefined || (value as string) > gt) &&
-        (within === undefined || within.includes(value));
+        (within === undefined || within.includes(value)) && (notIn === undefined || !notIn.includes(value));
     }
     return value === condition;
   });
@@ -201,8 +201,8 @@ describe("catalog cost backfill", () => {
     expect(database.read().state.completedAt).toBeInstanceOf(Date);
   });
 
-  it("keeps a Memory receipt without cost", async () => {
-    const database = fakeDatabase(store({ usage: [usage("u-a", { providerModelId: PRICE.id, memoryExecutionBindingId: "binding-1" })] }));
+  it.each(["memory_processing", "memory_indexing", "memory_retrieval"])("keeps a Personal Memory receipt (%s) without cost", async (purpose) => {
+    const database = fakeDatabase(store({ usage: [usage("u-a", { providerModelId: PRICE.id, purpose })] }));
     await runCatalogCostBackfill(database.db, { sleep: noSleep });
     expect(database.read().usage[0]!.estimatedCostMicros).toBeNull();
     expect(database.read().state.completedAt).toBeInstanceOf(Date);

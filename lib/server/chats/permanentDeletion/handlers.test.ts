@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memoryClient";
 import {
   createPermanentChatDeleteConsumerHandler,
   createPermanentChatDeleteStatusHandler,

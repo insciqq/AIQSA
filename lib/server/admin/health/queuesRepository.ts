@@ -3,7 +3,6 @@ import type { AdminHealthQueueId } from "../../../contracts/adminHealthQueues";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { deletionJobClaimableBefore, dueAttachmentDeletionJobSql } from "../../retention/prune";
-import { adminMemoryQueueSql } from "../memory/statusRepository";
 import { ADMIN_HEALTH_QUEUE_FAILURE_WINDOW_MS, ADMIN_HEALTH_QUEUE_STATEMENT_TIMEOUT_MS } from "./queueThresholds";
 
 export type AdminHealthQueueClient = Pick<PrismaClient, "$executeRaw" | "$queryRaw" | "$transaction">;
@@ -90,12 +89,6 @@ const queueSql: Readonly<Record<AdminHealthQueueId, (window: Window) => Prisma.S
       failures."failed",
       LEAST(occurrences."oldestDueAt", due."oldestDueAt") AS "oldestDueAt"
     FROM occurrences CROSS JOIN failures CROSS JOIN due
-  `,
-  // Exactly the Memory card's queue; its failures stay on that card.
-  memory: ({ now }) => Prisma.sql`
-    SELECT memory_queue."waiting", memory_queue."inProgress" AS "running", NULL::integer AS "failed",
-      memory_queue."oldestQueuedAt" AS "oldestDueAt"
-    FROM (${adminMemoryQueueSql(now)}) AS memory_queue
   `,
   // Only installation servers that are not archived are ever claimed.
   mcp_activation: ({ since }) => Prisma.sql`

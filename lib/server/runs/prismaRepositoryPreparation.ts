@@ -23,7 +23,7 @@ import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
   decodeMemoryInitialChatMode,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
-} from "../../contracts/memory";
+} from "../../contracts/memoryClient";
 import {
   ActiveLeafConflictError,
   AttachmentLinkConflictError,
@@ -456,9 +456,6 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
     input.normalizedRequest.chatId !== input.chatId ||
     input.normalizedRequest.modelId !== input.modelId ||
     input.normalizedRequest.provider !== input.provider ||
-    input.normalizedRequest.personalContext !== undefined ||
-    input.normalizedRequest.memoryActionTools !== undefined ||
-    input.normalizedRequest.memoryHistoryTool !== undefined ||
     (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
     (input.admissionKind === "NORMAL_SEND" && input.personalChat !== undefined && (
       input.expectedActiveLeafId !== null ||

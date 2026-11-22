@@ -16,7 +16,6 @@ export const adminHealthQueueIds = [
   "attachment_processing",
   "chat_titles",
   "scheduled_tasks",
-  "memory",
   "mcp_activation",
   "workspace_cleanup",
   "file_deletion"
@@ -31,7 +30,6 @@ export const adminHealthQueueCopy: Readonly<Record<AdminHealthQueueId, Readonly<
   attachment_processing: { label: "Chat file processing", purpose: "Reads files attached in chats so answers can use them" },
   chat_titles: { label: "Chat titles", purpose: "Names new chats after their first answer" },
   scheduled_tasks: { label: "Automations", purpose: "Starts automation runs when they are due" },
-  memory: { label: "Memory learning and indexing", purpose: "Learns facts and indexes chat history, as on the Memory card" },
   mcp_activation: { label: "MCP server checks", purpose: "Checks installation MCP server settings before they go live" },
   workspace_cleanup: { label: "Workspace cleanup", purpose: "Removes sandboxes of deleted or expired Workspaces" },
   file_deletion: { label: "Stored file deletion", purpose: "Deletes stored files nothing references any more" }

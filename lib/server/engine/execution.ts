@@ -12,7 +12,6 @@ import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderEmptyAnswer } from "../providers/emptyAnswer";
 import { isProviderDeadlineExceededError } from "../providers/network";
-import { assertPersonalContextEgressSafe } from "../providers/personalContext";
 import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { providerFailureMessage, type ProviderFailureNames } from "../providers/providerFailureMessage";
 import { observedFailure } from "../providers/providerObservability";
@@ -619,7 +618,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         }
         // An approval continuation has no input of its own: nothing rides on it.
         if (!conversation.currentInputId) base = { ...base, attachments: [] };
-        assertPersonalContextEgressSafe(base);
         // The Workspace files a scheduled task's monthly rotation carried arrive before the first request,
         // so nothing the run calls meets an empty project; for any other run this does nothing.
         if (workspace && input.workspace?.prepareCarryover) {

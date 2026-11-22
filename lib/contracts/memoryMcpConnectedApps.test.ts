@@ -7,8 +7,8 @@ import {
 
 const activeApp = {
   connectionId: "grant-1",
-  resourcePath: "/mcp",
-  capability: "memory:facts",
+  resourcePath: "/mcp/hub",
+  capability: "mcp:hub",
   clientName: "Codex CLI",
   clientOrigin: "https://chatgpt.com",
   connectedAt: "2026-09-03T01:00:00.000Z",
@@ -17,7 +17,7 @@ const activeApp = {
   state: "ACTIVE"
 };
 
-describe("Memory MCP Connected Apps contracts", () => {
+describe("Inbound MCP Connected Apps contracts", () => {
   it("accepts the client-safe active and revoked projections", () => {
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [activeApp] }))
       .toEqual({ apps: [activeApp] });
@@ -33,7 +33,7 @@ describe("Memory MCP Connected Apps contracts", () => {
     })).not.toBeNull();
   });
 
-  it("rejects inconsistent states and Memory or owner fields", () => {
+  it("rejects inconsistent states and content or owner fields", () => {
     expect(decodeMemoryMcpConnectedAppsResponse({
       apps: [{ ...activeApp, revokedAt: activeApp.connectedAt }]
     })).toBeNull();
@@ -54,10 +54,17 @@ describe("Memory MCP Connected Apps contracts", () => {
     })).toBeNull();
   });
 
-  it("distinguishes Hub grants and rejects mismatched capabilities", () => {
-    const hub = { ...activeApp, connectionId: "hub-grant", resourcePath: "/mcp/hub", capability: "mcp:hub" };
-    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [activeApp, hub] })).toEqual({ apps: [activeApp, hub] });
-    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...activeApp, capability: "mcp:hub" }] })).toBeNull();
+  it("distinguishes Hub and Skills grants and rejects mismatched or retired capabilities", () => {
+    const hub = activeApp;
+    const skills = { ...activeApp, connectionId: "skills-grant", resourcePath: "/mcp/skills", capability: "skills:store",
+      scopes: ["skills:read"] };
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [hub, skills] })).toEqual({ apps: [hub, skills] });
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...skills, capability: "mcp:hub" }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: "skills:store" }] })).toBeNull();
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...skills, scopes: undefined }] })).toBeNull();
+    // The retired Personal Memory resource is no longer a connected app.
+    expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, resourcePath: "/mcp", capability: "memory:facts" }] }))
+      .toBeNull();
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: "memory:facts" }] })).toBeNull();
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, capability: undefined }] })).toBeNull();
     expect(decodeMemoryMcpConnectedAppsResponse({ apps: [{ ...hub, resourcePath: undefined }] })).toBeNull();

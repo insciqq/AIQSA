@@ -17,7 +17,6 @@ const eslintConfig = [
       "node_modules/**",
       "playwright-report/**",
       "public/pdfjs/**",
-      "scripts/longmemeval-qualification.test.ts",
       "test-results/**"
     ]
   },
@@ -93,12 +92,6 @@ const eslintConfig = [
     files: [`lib/server/providers/${architectureModules}`],
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("providers")
-    }
-  },
-  {
-    files: [`lib/server/redaction/${architectureModules}`],
-    rules: {
-      "aiqsa-architecture/architecture-boundaries": architectureBoundary("redaction")
     }
   }
 ];

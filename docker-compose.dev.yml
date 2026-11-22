@@ -38,24 +38,9 @@ services:
       # Optional: one public address every Discord connection goes to (SNI forwarding); unset uses DNS.
       AIQSA_DISCORD_CONNECT_ADDRESS: ${AIQSA_DISCORD_CONNECT_ADDRESS:-}
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:-QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=}
-      # Public deterministic development material; never use this keyring for
+      # Public deterministic development material; never use this key for
       # an installation or any non-disposable data.
-      AIQSA_MEMORY_EMBEDDING_BATCH_SIZE: ${AIQSA_MEMORY_EMBEDDING_BATCH_SIZE:-16}
-      AIQSA_MEMORY_IDENTITY_WRITE_PROFILE: ${AIQSA_MEMORY_IDENTITY_WRITE_PROFILE:-UNICODE_V2}
-      AIQSA_MEMORY_FINGERPRINT_KEYRING: current=v1,v1=CwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSo=
       AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
-      # Next dev retains substantially more tracing state per background pass
-      # than the standalone production worker. Explicit kicks remain immediate.
-      AIQSA_MEMORY_COORDINATOR_INTERVAL_MS: ${AIQSA_MEMORY_COORDINATOR_INTERVAL_MS:-30000}
-      # Next dev may pause the instrumentation event loop while compiling a
-      # newly reached route. Keep one paid provider call inside its lease;
-      # production retains the shorter independently heartbeated default.
-      AIQSA_MEMORY_COORDINATOR_LEASE_MS: ${AIQSA_MEMORY_COORDINATOR_LEASE_MS:-660000}
-      AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS: ${AIQSA_MEMORY_DELETION_CLAIMS_PER_PASS:-64}
-      AIQSA_MEMORY_DELETION_PARALLELISM: ${AIQSA_MEMORY_DELETION_PARALLELISM:-1}
-      AIQSA_MEMORY_JOB_CLAIMS_PER_PASS: ${AIQSA_MEMORY_JOB_CLAIMS_PER_PASS:-16}
-      AIQSA_MEMORY_JOB_PARALLELISM: ${AIQSA_MEMORY_JOB_PARALLELISM:-2}
-      AIQSA_MEMORY_JOB_PER_USER_PARALLELISM: ${AIQSA_MEMORY_JOB_PER_USER_PARALLELISM:-1}
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-10}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ""
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ""

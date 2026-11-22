@@ -2,8 +2,8 @@ import { logEvent, reportSubsystemFailure, reportSubsystemHealthy } from "../obs
 import { BACKGROUND_WORKER_HEARTBEAT_INTERVAL_MS, type BackgroundWorkerHeartbeat } from "./heartbeat";
 import type { BackgroundWorker } from "./worker";
 
-/** Passes and the legacy coordinator drain in parallel within this bound, then each closing write gets
- * `BACKGROUND_WORKER_SHUTDOWN_STEP_MS`, so the whole stop stays inside Compose's 30 s grace period. */
+/** Passes drain within this bound, then each closing write gets `BACKGROUND_WORKER_SHUTDOWN_STEP_MS`, so the
+ * whole stop stays inside Compose's 30 s grace period. */
 export const BACKGROUND_WORKER_DRAIN_MS = 15_000;
 export const BACKGROUND_WORKER_SHUTDOWN_STEP_MS = 4_000;
 
@@ -14,23 +14,12 @@ export type BackgroundWorkerSignals = Readonly<{
   on(signal: ShutdownSignal, listener: () => void): unknown;
 }>;
 
-/**
- * The old Memory coordinator, started in the same process for the Memory job kinds that still exist until the
- * Memory removal deletes it. Deletion never depends on it: a blocked or failed start is logged and the
- * background passes keep running.
- */
-export type LegacyBackgroundCoordinator = Readonly<{
-  start(): Promise<"blocked" | "ready">;
-  stop(): Promise<unknown>;
-}>;
-
 export type BackgroundWorkerProcessDependencies = Readonly<{
   /** Builds the loop from the passes registered by now. */
   createWorker: () => BackgroundWorker;
   disconnect: () => Promise<void>;
   heartbeat: BackgroundWorkerHeartbeat;
   heartbeatIntervalMs?: number;
-  legacy?: LegacyBackgroundCoordinator;
   signals: BackgroundWorkerSignals;
 }>;
 
@@ -60,7 +49,6 @@ export async function runBackgroundWorkerProcess(
   dependencies.signals.on("SIGTERM", requestStop);
   let worker: BackgroundWorker | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let legacyStart: Promise<unknown> | null = null;
   try {
     try {
       await dependencies.heartbeat.begin();
@@ -82,30 +70,11 @@ export async function runBackgroundWorkerProcess(
           error, stage: "heartbeat", subsystem: "background" })
       );
     }, dependencies.heartbeatIntervalMs ?? BACKGROUND_WORKER_HEARTBEAT_INTERVAL_MS);
-    if (dependencies.legacy) {
-      const legacy = dependencies.legacy;
-      legacyStart = Promise.resolve().then(() => legacy.start()).then((status) => {
-        if (status === "blocked") {
-          logEvent("runtime_lifecycle", { action: "skip", code: "background_legacy_coordinator_blocked",
-            outcome: "blocked", stage: "startup", subsystem: "memory" });
-        }
-      }, (error: unknown) => {
-        reportSubsystemFailure({ action: "skip", code: "background_legacy_coordinator_failed", error,
-          stage: "startup", subsystem: "memory" });
-      });
-    }
     await stopRequested;
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
     const running = worker;
-    await Promise.all([
-      within(BACKGROUND_WORKER_DRAIN_MS, async () => running?.stop(BACKGROUND_WORKER_DRAIN_MS - 1_000)),
-      within(BACKGROUND_WORKER_DRAIN_MS, async () => {
-        // A start still in flight may start the coordinator after a stop: stop after it settles.
-        await legacyStart;
-        await dependencies.legacy?.stop();
-      })
-    ]);
+    await within(BACKGROUND_WORKER_DRAIN_MS, async () => running?.stop(BACKGROUND_WORKER_DRAIN_MS - 1_000));
     await within(BACKGROUND_WORKER_SHUTDOWN_STEP_MS, dependencies.heartbeat.stop);
     await within(BACKGROUND_WORKER_SHUTDOWN_STEP_MS, dependencies.disconnect);
     logEvent("runtime_lifecycle", { outcome: "completed", stage: "shutdown", subsystem: "background" });

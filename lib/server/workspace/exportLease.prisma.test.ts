@@ -2,14 +2,10 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { Prisma } from "@prisma/client";
 import { textMessageContent } from "@/lib/domain/content";
 import { WORKSPACE_MCP_TOOL_ALLOWLIST, workspaceMessageManifestPath, workspaceRunOutputDirectory } from "@/lib/domain/workspace";
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
-import { lockMemorySourceChat } from "@/lib/server/memory/sourceState";
-import { memoryPersistence } from "@/lib/server/memory/coordinator/observability";
-import { createPrismaMemoryCoordinatorRepository } from "@/lib/server/memory/coordinator/prismaRepository";
-import type { MemoryJobClaim } from "@/lib/server/memory/coordinator/types";
-import { createTelemetryAggregator } from "@/lib/server/telemetry/aggregator";
 import { databaseFailureCode, databaseFailureKind } from "@/lib/server/observability/databaseFailure";
 import { prisma } from "@/lib/server/prisma";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
@@ -63,8 +59,6 @@ async function cleanupFixtures(): Promise<void> {
   await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-  // The held-chat-row Memory commit's own job; its settings row goes with the user.
-  await prisma.memoryJob.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
 }
 
@@ -1072,12 +1066,18 @@ describe("Prisma Workspace export behind a held chat row", () => {
       dispose: () => raw.removeSession({ runtimeSandboxId: live.runtimeSandboxId, sessionId: session.id }) };
   }
 
-  /** Holds the chat row FOR SHARE, as a Memory history commit verifying its source snapshot does. */
-  function holdChatLikeMemoryCommit(chat: Readonly<{ chatId: string; userId: string }>, milliseconds: number) {
+  /** Holds the chat row FOR SHARE in another transaction, as a long reader of the chat's source snapshot would. */
+  async function lockChatRowForShare(tx: Prisma.TransactionClient, chat: Readonly<{ chatId: string; userId: string }>) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "Chat" WHERE "id" = ${chat.chatId} AND "userId" = ${chat.userId} FOR SHARE`;
+    return rows.length === 1;
+  }
+
+  function holdChatRow(chat: Readonly<{ chatId: string; userId: string }>, milliseconds: number) {
     let acquired!: () => void;
     const locked = new Promise<void>((resolve) => { acquired = resolve; });
     const released = prisma.$transaction(async (tx) => {
-      if (!await lockMemorySourceChat(tx, { chatId: chat.chatId, lock: "SHARE", userId: chat.userId })) throw new Error("fixture_chat_missing");
+      if (!await lockChatRowForShare(tx, chat)) throw new Error("fixture_chat_missing");
       acquired();
       await new Promise((resolve) => setTimeout(resolve, milliseconds));
     }, { maxWait: 2_000, timeout: milliseconds + 10_000 });
@@ -1090,7 +1090,7 @@ describe("Prisma Workspace export behind a held chat row", () => {
     const holds: Array<Promise<void>> = [];
     const step = async (input: Input) => {
       if (holds.length === 0) {
-        const hold = holdChatLikeMemoryCommit(chat, milliseconds);
+        const hold = holdChatRow(chat, milliseconds);
         holds.push(hold.released);
         await hold.held;
       }
@@ -1111,10 +1111,10 @@ describe("Prisma Workspace export behind a held chat row", () => {
   }
 
   // Production (2026-10-09): a finished answer's export sealed its capture while
-  // a Memory history commit of the same chat held the chat row FOR SHARE for
-  // about 6 s; the seal's default 5 s transaction expired waiting for the
-  // chat lock and the run ended with its files lost.
-  it("hands off while a Memory commit holds the chat row through seal and the handoff record, then publishes once", async () => {
+  // another transaction of the same chat held the chat row FOR SHARE for about
+  // 6 s; the seal's default 5 s transaction expired waiting for the chat lock
+  // and the run ended with its files lost.
+  it("hands off while another transaction holds the chat row through seal and the handoff record, then publishes once", async () => {
     const live = await liveRunWithReport();
     try {
       const base = createPrismaWorkspaceCoordinatorRepository(prisma);
@@ -1164,7 +1164,7 @@ describe("Prisma Workspace export behind a held chat row", () => {
     }
   }, 90_000);
 
-  it("hands off after a Memory commit holds the chat row through the export's initialization", async () => {
+  it("hands off after another transaction holds the chat row through the export's initialization", async () => {
     const live = await liveRunWithReport();
     try {
       const base = createPrismaWorkspaceCoordinatorRepository(prisma);
@@ -1230,54 +1230,18 @@ describe("Prisma Workspace export behind a held chat row", () => {
     }
   }, 90_000);
 
-  /**
-   * A real Memory history commit (`commitJobSuccess` of a claimed INDEX_HISTORY
-   * job, through the coordinator's persistence record) whose apply holds the
-   * chat row FOR SHARE for `milliseconds`, as the 2026-10-09 commit did.
-   */
-  async function memoryHistoryCommitHolding(chat: Readonly<{ chatId: string; userId: string }>, milliseconds: number) {
-    await prisma.userMemorySettings.upsert({ create: { userId: chat.userId }, update: {}, where: { userId: chat.userId } });
-    const id = randomUUID();
-    const claimToken = `hold:${id}`;
-    const leaseExpiresAt = new Date(Date.now() + 120_000);
-    await prisma.memoryJob.create({ data: {
-      id, userId: chat.userId, kind: "INDEX_HISTORY", state: "CLAIMED", attemptCount: 1, leaseToken: claimToken, leaseExpiresAt,
-      pipelineVersion: "memory-history-hold-test", memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0,
-      idempotencyFingerprint: createHash("sha256").update(id).digest("hex")
-    } });
-    const claim: MemoryJobClaim = {
-      activeLeafMessageId: null, attemptCount: 1, branchGeneration: null, chatId: null, claimToken, id,
-      idempotencyFingerprint: createHash("sha256").update(id).digest("hex"), kind: "INDEX_HISTORY", leaseExpiresAt,
-      memoryGenerationSnapshot: 0, memoryRevisionSnapshot: 0, pipelineVersion: "memory-history-hold-test", recoveredLease: false,
-      sourceHash: null, sourceMessageId: null, sourceRevision: null, stage: null, targetFactVersionId: null, userId: chat.userId
-    };
-    let acquired!: () => void;
-    const locked = new Promise<void>((resolve) => { acquired = resolve; });
-    const committed = memoryPersistence(claim, "complete", () => createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
-      acceptedResultHash: createHash("sha256").update(`result:${id}`).digest("hex"), claim, now: new Date(), stage: "lexical_apply",
-      apply: async (tx) => {
-        if (!await lockMemorySourceChat(tx, { chatId: chat.chatId, lock: "SHARE", userId: chat.userId })) throw new Error("fixture_chat_missing");
-        acquired();
-        await new Promise((resolve) => setTimeout(resolve, milliseconds));
-        return undefined;
-      }
-    }));
-    return { held: Promise.race([locked, committed.then(() => { throw new Error("fixture_hold_not_acquired"); })]), committed };
-  }
-
-  // Production (2026-10-09): proving which transaction held the chat row and how
-  // long the export's seal waited for it took PostgreSQL logs. Telemetry alone
-  // now names both: the holder as an error incident, the waiter's lock wait.
-  it("reports a Memory commit holding the chat row 6 s as an incident and the export seal's lock wait behind it", async () => {
+  // Production (2026-10-09): proving how long the export's seal waited for a
+  // held chat row took PostgreSQL logs. Its telemetry now names the lock wait.
+  it("reports the export seal's lock wait behind a chat row held for 6 s", async () => {
     const live = await liveRunWithReport();
     const writer = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       const base = createPrismaWorkspaceCoordinatorRepository(prisma);
-      const commits: Array<Promise<boolean>> = [];
+      const holds: Array<Promise<void>> = [];
       const sealOutputCapture: typeof base.sealOutputCapture = async (input) => {
-        if (commits.length === 0) {
-          const hold = await memoryHistoryCommitHolding(live, 6_000);
-          commits.push(hold.committed);
+        if (holds.length === 0) {
+          const hold = holdChatRow(live, 6_000);
+          holds.push(hold.released);
           await hold.held;
         }
         return base.sealOutputCapture(input);
@@ -1286,23 +1250,11 @@ describe("Prisma Workspace export behind a held chat row", () => {
         runtime: live.runtime, storage: createMemoryStorageAdapter(), repository: { ...base, sealOutputCapture } });
       await expect(coordinator.handoff({ runId: live.runId, userId: live.userId, workspace: live.workspace }))
         .resolves.toEqual({ status: "ready" });
-      await expect(Promise.all(commits)).resolves.toEqual([true]);
+      await Promise.all(holds);
       const records = writer.mock.calls.flatMap(([chunk]) => String(chunk).split("\n").flatMap((line) => {
         try { return [JSON.parse(line) as Record<string, unknown>]; } catch { return []; }
       }));
 
-      // The holder: an error past the request budget, so an incident naming the transaction, job kind and hold.
-      const holder = records.filter((record) => record.event === "db_transaction" && record.subsystem === "memory");
-      expect(holder).toEqual([expect.objectContaining({ level: "error", operation: "job_commit", job_kind: "INDEX_HISTORY",
-        outcome: "committed" })]);
-      expect(holder[0]!.duration_ms).toBeGreaterThanOrEqual(6_000);
-      const aggregator = createTelemetryAggregator();
-      aggregator.observe(holder[0]);
-      expect(aggregator.drain().incidents).toEqual([expect.objectContaining({ event: "db_transaction", level: "error",
-        subsystem: "memory", details: expect.objectContaining({ operation: "job_commit", job_kind: "INDEX_HISTORY",
-          duration_ms: holder[0]!.duration_ms, outcome: "committed" }) })]);
-      expect(records).toContainEqual(expect.objectContaining({ event: "job_persistence", subsystem: "memory", stage: "complete",
-        outcome: "confirmed", duration_ms: holder[0]!.duration_ms }));
 
       // The waiter: the seal waited out its 2 s lock bound behind that row, and its record says how long.
       const waits = records.filter((record) => record.event === "runtime_lifecycle" && record.stage === "export" &&
@@ -1316,8 +1268,8 @@ describe("Prisma Workspace export behind a held chat row", () => {
       expect(records.filter((record) => record.event === "db_transaction" && record.subsystem === "workspace"))
         .toEqual(expect.arrayContaining([expect.objectContaining({ operation: "export_seal", outcome: "rolled_back",
           db_failure: "lock_timeout" })]));
-      // Content-free: neither record names the chat, the run's rows or a statement.
-      expect(JSON.stringify([...holder, ...waits])).not.toMatch(new RegExp(`${live.chatId}|SELECT|FOR SHARE`, "u"));
+      // Content-free: no record names the chat, the run's rows or a statement.
+      expect(JSON.stringify(waits)).not.toMatch(new RegExp(`${live.chatId}|SELECT|FOR SHARE`, "u"));
       expect(await base.outputHandoffReady({ runId: live.runId, sessionId: live.sessionId })).toBe(true);
     } finally {
       writer.mockRestore();

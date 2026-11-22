@@ -38,10 +38,9 @@ async function revokeInboundMcpGrants(
 }
 
 /**
- * Ends every ACTIVE inbound grant of one account, Memory `/mcp` and Hub `/mcp/hub` alike, inside
- * the caller's account-security transaction. A later consent reactivates a grant under a new
- * revision. Returns the number of grants revoked. Owned here, outside `lib/server/memoryMcp/`, because the Hub's
- * grants outlive inbound Memory MCP.
+ * Ends every ACTIVE inbound grant of one account (Hub, Skills and any inert grant of the retired Memory resource)
+ * inside the caller's account-security transaction. A later consent reactivates a grant under a new revision.
+ * Returns the number of grants revoked.
  */
 export function revokeInboundMcpGrantsForUser(
   tx: Prisma.TransactionClient,

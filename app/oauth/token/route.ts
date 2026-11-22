@@ -1,4 +1,4 @@
-import { defaultInboundMcpTokenHandler } from "@/lib/server/memoryMcp/oauth/default";
+import { defaultInboundMcpTokenHandler } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const runtime = "nodejs";
 

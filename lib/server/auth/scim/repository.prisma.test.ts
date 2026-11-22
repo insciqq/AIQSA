@@ -327,7 +327,7 @@ describe("SCIM repository", () => {
         const leaver = userId(await scim.createUser(parseScimUserBody({ externalId: fixture.externalId("leaver"), userName: fixture.email("leaver") }), now));
         const tokenHash = await session(leaver);
         const connections = [
-          await mcp.connect(leaver, INBOUND_MCP_TEST_AUTHORITIES.memory),
+          await mcp.connect(leaver, INBOUND_MCP_TEST_AUTHORITIES.skills),
           await mcp.connect(leaver, INBOUND_MCP_TEST_AUTHORITIES.hub)
         ];
 

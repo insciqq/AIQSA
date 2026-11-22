@@ -63,12 +63,7 @@ import {
   type ThreadSearchSource
 } from "./searchSources";
 import {
-  MEMORY_ANSWER_SOURCE_MAX_ITEMS,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-  decodeMemoryActionFeedback,
-  decodeMemoryAnswerSource,
-  type MemoryActionFeedback,
-  type MemoryAnswerSource,
   type MemoryChatMode
 } from "./memoryClient";
 import {
@@ -268,9 +263,6 @@ export type ThreadArtifactSummary = {
   generatedFiles?: ThreadGeneratedFile[];
   generatedImages?: ThreadGeneratedImage[];
   groundingDisplay?: ThreadGroundingDisplay | null;
-  memoryAction?: MemoryActionFeedback;
-  memoryStatus?: "INPUT_TOO_LONG" | "LIMITED" | "UNAVAILABLE";
-  memorySources?: MemoryAnswerSource[];
   /**
    * The past chats the answer's `search_past_chats` calls brought into its context (operator decision 2026-11-22), as
    * the chat load found them still there and eligible: each turn once, in the order the search ranked them.
@@ -1238,19 +1230,9 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
   const generatedArtifacts = Array.isArray(value.generatedArtifacts)
     ? decodeOptionalItems(value.generatedArtifacts, decodeThreadGeneratedArtifact, 16, (artifact) => artifact.versionId).items
     : undefined;
-  const memoryActionResult = value.memoryAction === undefined ? null : decodeMemoryActionFeedback(value.memoryAction);
-  const memoryAction: MemoryActionFeedback | undefined = memoryActionResult?.ok ? memoryActionResult.value : undefined;
-  const memorySources = Array.isArray(value.memorySources)
-    ? decodeOptionalItems(value.memorySources, (source) => {
-        const decoded = decodeMemoryAnswerSource(source);
-        return decoded.ok ? decoded.value : null;
-      }, MEMORY_ANSWER_SOURCE_MAX_ITEMS).items
-    : undefined;
+  // Summaries cached before v0.5.0 may still carry Personal Memory's `memoryAction`, `memoryStatus` and `memorySources`;
+  // they are left out, so those answers read without them (operator decision 2026-11-22).
   const pastChatSources = Array.isArray(value.pastChatSources) ? foldPastChatSources(value.pastChatSources) : undefined;
-  const memoryStatus = value.memoryStatus === "INPUT_TOO_LONG" || value.memoryStatus === "LIMITED" ||
-    value.memoryStatus === "UNAVAILABLE"
-    ? value.memoryStatus
-    : undefined;
   const skillCatalogOmittedCount = Number.isSafeInteger(value.skillCatalogOmittedCount) &&
     (value.skillCatalogOmittedCount as number) >= 0
     ? value.skillCatalogOmittedCount as number
@@ -1274,9 +1256,6 @@ function decodeThreadArtifactSummary(value: unknown): ThreadArtifactSummary | nu
     ...(generatedImages ? { generatedImages } : {}),
     ...(generatedFiles !== undefined ? { generatedFiles } : {}),
     ...(groundingDisplay !== undefined ? { groundingDisplay } : {}),
-    ...(memoryAction ? { memoryAction } : {}),
-    ...(memoryStatus ? { memoryStatus } : {}),
-    ...(memorySources !== undefined ? { memorySources } : {}),
     ...(pastChatSources?.length ? { pastChatSources } : {}),
     reasoningText: reasoning.reasoningText,
     ...(reasoning.truncated || value.reasoningTruncated === true ? { reasoningTruncated: true as const } : {}),

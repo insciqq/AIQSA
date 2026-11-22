@@ -148,7 +148,7 @@ function memoryStore(counters: readonly Counter[], incidents: readonly Telemetry
 const queueRows: AdminHealthQueueRow[] = [
   { queue: "chat_titles", state: "stalled", waiting: 4, running: 0, oldestSeconds: 3 * 3_600, failed24h: 0,
     slowAfterSeconds: 600, stalledAfterSeconds: 1_800 },
-  { queue: "memory", state: "ok", waiting: 0, running: 0, oldestSeconds: null, failed24h: 0, slowAfterSeconds: 600, stalledAfterSeconds: 1_800 }
+  { queue: "mcp_activation", state: "ok", waiting: 0, running: 0, oldestSeconds: null, failed24h: 0, slowAfterSeconds: 600, stalledAfterSeconds: 1_800 }
 ];
 
 function report(index: number, userId: string, fields: Partial<AnswerProblemReportListRow> = {}): AnswerProblemReportListRow {

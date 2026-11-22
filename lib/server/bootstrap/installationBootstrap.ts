@@ -1,4 +1,3 @@
-import { adoptMemoryModelRecommendation } from "./memoryRecommendationAdoption";
 import { randomUUID as randomNodeUuid } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
@@ -342,13 +341,6 @@ async function synchronizeInstallationFoundation(
     update: {},
     where: { id: "installation" }
   });
-  await tx.memoryUtilityModelPolicy.upsert({
-    create: { id: "installation" },
-    // Migration owns compatibility; reruns preserve every assignment and clear.
-    update: {},
-    where: { id: "installation" }
-  });
-  await adoptMemoryModelRecommendation(tx);
   await tx.workspacePolicy.upsert({
     create: {
       enabled: true,
@@ -483,12 +475,6 @@ export async function bootstrapInstallationDatabase(
         });
         const catalog = await synchronizeInstallationFoundation(tx, now());
         await ensureFullAccessGroup(tx, state.adoptedUserId);
-        await tx.userMemorySettings.upsert({
-          create: { userId: state.adoptedUserId },
-          select: { userId: true },
-          update: {},
-          where: { userId: state.adoptedUserId }
-        });
 
         return {
           catalogModelCount: catalog.modelCount,

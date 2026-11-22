@@ -152,10 +152,10 @@ export function decodeAdminProviderCapabilityAttempts(value: unknown): NonNullab
 
 export type AdminProviderCompatibilityEvidence = {
   directPdf: AdminProviderCompatibilityStatus;
-  /** Ordinary automatic function calling, independent of strict Memory calls. */
+  /** Ordinary automatic function calling, independent of forced strict calls. */
   toolCalling?: AdminProviderCompatibilityStatus;
   parallelToolCalls?: AdminProviderCompatibilityStatus;
-  /** Exact forced, strict function-call contract used by Memory action roles.
+  /** Exact forced, strict function-call contract the System model's check requires.
    * Omitted by pre-v1-extension evidence and therefore not verified. */
   forcedToolCall?: AdminProviderCompatibilityStatus;
   /** Missing in legacy checks: image input has not been verified. */
@@ -355,7 +355,8 @@ export type AdminProviderCheckRunState = "cancelled" | "completed" | "interrupte
 /** Why a background capability check started; the banner copy depends on it. */
 export type AdminProviderCheckRunReason = "credential" | "model" | "requested" | "setup";
 
-/** Roles setup left for an operator choice because no qualified target exists. */
+/** Roles setup left for an operator choice because no qualified target exists. `memory` is legacy: only setup
+ * results stored before v0.5.0 name the retired Memory utility role, and nothing produces it now. */
 export const ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS = ["memory"] as const;
 export type AdminProviderSetupConfigurationNeed = typeof ADMIN_PROVIDER_SETUP_CONFIGURATION_NEEDS[number];
 
@@ -463,7 +464,6 @@ export type AdminProviderDeleteBlocker = {
     | "credentials"
     | "group_assignments"
     | "installation_default"
-    | "memory_bindings"
     | "models"
     | "resource_enabled"
     | "run_bindings"

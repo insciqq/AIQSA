@@ -2,10 +2,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { ARTIFACT_LIMITS, type ArtifactOperation, type ArtifactReference } from "@/lib/contracts/artifacts";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "../prisma";
-import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
+import { temporaryChatRetentionDeadline } from "../chats/temporaryRetention";
 import type { StorageAdapter, StoredObjectInput } from "../uploads/storage";
 import { createPrismaRetentionRepository } from "../retention/prune";
 import type { ProviderRunRequest } from "../providers/types";
@@ -35,10 +35,9 @@ async function fixture(temporary = false) {
   const { owner, chat } = await prisma.$transaction(async (tx) => {
     const owner = await tx.user.create({ data: { id: `artifact-test-${randomUUID()}`, displayName: "Artifact test", status: "active" } });
     const now = new Date();
-    const deadline = temporary ? temporaryRetentionDeadline(now) : null;
+    const deadline = temporary ? temporaryChatRetentionDeadline(now) : null;
     const chat = await tx.chat.create({ data: { userId: owner.id, title: "Artifact test", memoryMode: temporary ? "TEMPORARY" : "EXCLUDED",
       ...(deadline ? { temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION, temporaryRetentionDeadline: deadline } : {}) } });
-    if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: chat.id, deadline, now, userId: owner.id });
     return { owner, chat };
   });
   const objects = new Map<string, StoredObjectInput>();
@@ -52,13 +51,12 @@ async function fixture(temporary = false) {
   return { owner, chat, service, storage, objects, setBeforePut(value: typeof beforePut) { beforePut = value; },
     async cleanup() {
       if (temporary) {
-        await prisma.$transaction(async (tx) => {
-          await tx.memoryDeletionOutbox.updateMany({ where: { userId: owner.id, operation: "TEMPORARY_DELETE" }, data: {
-            state: "RUNNING", leaseToken: "artifact-test-cleanup", leaseExpiresAt: new Date(Date.now() + 60_000), completedAt: null, nextAttemptAt: null
-          } });
-          await tx.chat.deleteMany({ where: { userId: owner.id } });
-        });
-        await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: owner.id } });
+        // A Temporary chat is deleted once its deadline has passed.
+        await prisma.$executeRaw`
+          UPDATE "Chat" SET "createdAt" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '2 days',
+            "temporaryRetentionDeadline" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '1 minute'
+          WHERE "userId" = ${owner.id} AND "memoryMode" = 'TEMPORARY'::"MemoryChatMode"`;
+        await prisma.chat.deleteMany({ where: { userId: owner.id } });
       }
       await prisma.user.deleteMany({ where: { id: owner.id } });
       await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { contains: owner.id } } });

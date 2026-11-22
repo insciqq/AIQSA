@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memoryClient";
 import { workspaceSandboxName } from "@/lib/domain/workspace";
 import { prisma } from "@/lib/server/prisma";
 import { createPermanentChatDeletionPass, createTemporaryChatDeletionPass } from "@/lib/server/background/chatDeletionPasses";

@@ -9,7 +9,6 @@ import { logEvent } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
-import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { isRetiredAnswerReviewStep } from "./retiredAnswerReview";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "./runRepositoryContract";
@@ -66,10 +65,9 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
     if (loaded.modelRun.status === "preparing") {
       if (!deps.repository.continueWorkspacePreparedRun) throw new WorkspaceFollowupError("workspace_followup_unavailable");
       created = await deps.repository.continueWorkspacePreparedRun({
-        admission: { ...admission(), memoryMaterializer: createPreparingMemoryMaterializer(prepared, runtime.adapter, runtime.toolBridge) },
+        admission: admission(),
         claimToken: claim.claimToken, created: admitted
       });
-      prepared = applyPreparingMaterialization(prepared, created);
       // The run's first execution: its wait for the answer began at admission.
       // A run resumed after a crash records no time to first output.
       created = { ...created, acceptedAt: loaded.modelRun.createdAt };

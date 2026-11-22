@@ -26,10 +26,6 @@ function dependencies(order: string[], overrides: Partial<BackgroundWorkerProces
       stop: async () => { order.push("heartbeat.stop"); }
     },
     heartbeatIntervalMs: 60_000,
-    legacy: {
-      start: async () => { order.push("legacy.start"); return "ready"; },
-      stop: async () => { order.push("legacy.stop"); }
-    },
     signals: shutdown,
     ...overrides
   };
@@ -41,36 +37,17 @@ async function settle(): Promise<void> {
 }
 
 describe("background worker process", () => {
-  it("starts the passes before the legacy coordinator and stops in the contract order", async () => {
+  it("starts the passes and stops in the contract order", async () => {
     const order: string[] = [];
     const { deps, shutdown } = dependencies(order);
     const running = runBackgroundWorkerProcess(deps);
     await settle();
-    expect(order).toEqual(["heartbeat.begin", "worker.start", "heartbeat.beat", "legacy.start"]);
+    expect(order).toEqual(["heartbeat.begin", "worker.start", "heartbeat.beat"]);
     shutdown.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
-    expect(order.slice(4).sort()).toEqual(["disconnect", "heartbeat.stop", "legacy.stop", "worker.stop"]);
-    // Passes and the legacy coordinator drain before readiness clears and the connection closes.
-    expect(order.slice(-2)).toEqual(["heartbeat.stop", "disconnect"]);
+    // Passes drain before readiness clears and the connection closes.
+    expect(order.slice(3)).toEqual(["worker.stop", "heartbeat.stop", "disconnect"]);
     expect(shutdown.listeners()).toBe(0);
-  });
-
-  it("keeps deleting when the legacy Memory coordinator is blocked or fails", async () => {
-    for (const legacyStart of [
-      async () => "blocked" as const,
-      async () => { throw new Error("synthetic_keyring_missing"); }
-    ]) {
-      const order: string[] = [];
-      const { deps, shutdown } = dependencies(order, {
-        legacy: { start: legacyStart, stop: async () => { order.push("legacy.stop"); } }
-      });
-      const running = runBackgroundWorkerProcess(deps);
-      await settle();
-      expect(order).toContain("worker.start");
-      expect(order).not.toContain("worker.stop");
-      shutdown.emit("SIGINT");
-      await expect(running).resolves.toBe(0);
-    }
   });
 
   it("exits non-zero and disconnects when the worker cannot start", async () => {

@@ -90,8 +90,8 @@ export async function backfillCatalogCostBatch(db: PrismaClient, id = "20260930"
       const rows = await tx.usageEvent.findMany({
         where: { createdAt: { lte: state.cutoffAt }, ...(state.usageCursor ? { id: { gt: state.usageCursor } } : {}),
           estimatedCostMicros: null, usageCompleteness: "COMPLETE", imageGeneration: false, optionalDecision: false,
-          // Memory settlement compares the receipt with its binding's own snapshot.
-          memoryExecutionBindingId: null },
+          // Personal Memory's receipts were settled against their own call's snapshot, so they stay unpriced.
+          purpose: { notIn: ["memory_processing", "memory_indexing", "memory_retrieval"] } },
         orderBy: { id: "asc" }, take: size,
         select: { id: true, provider: true, modelId: true, providerModelId: true, inputTokens: true, cachedInputTokens: true,
           cacheWriteInputTokens: true, outputTokens: true, reasoningTokens: true, totalTokens: true }

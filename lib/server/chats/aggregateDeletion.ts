@@ -1,6 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { BackgroundWorkError } from "../background/errors";
-import { purgeLegacyMemoryRowsOfChat } from "../background/legacyMemoryRows";
 import type { StorageAdapter } from "../uploads/storage";
 import { WorkspaceRuntimeError, type WorkspaceRuntime } from "../workspace/runtime";
 import { removeWorkspaceForDeletion } from "../workspace/removal";
@@ -177,7 +176,6 @@ export async function deleteChatAggregate(
     attachments: readonly ChatAttachmentSnapshot[];
     chatExists: boolean;
     dispositions: readonly ChatObjectDisposition[];
-    now: Date;
     scope: ChatAggregateScope;
     /** Exactly the chat row to delete; the caller's fence (Temporary mode, the permanent-deletion fence). */
     chatWhere: Prisma.ChatWhereInput;
@@ -207,8 +205,6 @@ export async function deleteChatAggregate(
     where: { chatId: scope.chatId, userId: scope.userId }
   });
   const runIds = runs.map(({ id }) => id);
-  // Until the old Memory tables are dropped, their rows of this chat must go first (restrictive keys).
-  await purgeLegacyMemoryRowsOfChat(tx, scope, { now: input.now, runIds });
   await tx.sharedChatSnapshot.deleteMany({ where: { chatId: scope.chatId, ownerUserId: scope.userId } });
   if (current.length > 0) {
     await tx.attachment.deleteMany({ where: { chatId: scope.chatId, userId: scope.userId } });

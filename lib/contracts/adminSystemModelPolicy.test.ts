@@ -3,7 +3,6 @@ import { decodeAdminSystemModelPolicyResponse, initialChatTitleReasoningEffort }
 
 const response = {
   systemModelPolicy: {
-    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
     candidates: [{
       connectionDisplayName: "Provider",
       connectionId: "connection-1",
@@ -67,31 +66,10 @@ describe("administrator system model policy contract", () => {
     for (const patch of [{ researchResearcherModel: null }, { researchResearcherModel: null, researchResearcherReasoningEffort: "low" },
       { researchResearcherModel: { ...candidate, available: "yes" }, researchResearcherReasoningEffort: null }]) expect(decode(patch)).toBeNull();
   });
-  it("rejects forged or malformed recommendation readiness and qualification evidence", () => {
-    const entry = { id: "terra-low", modelName: "Terra", displayName: "My model", providerModelId: "model-1", connectionId: "connection-1",
-      reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } };
-    const decode = (value: unknown) => decodeAdminSystemModelPolicyResponse({ systemModelPolicy: {
-      ...response.systemModelPolicy, memoryPolicy: { ...response.systemModelPolicy.memoryPolicy, recommendations: [value] }
-    } });
-    expect(decode(entry)).not.toBeNull();
-    expect(decode({ ...entry, evidence: { ...entry.evidence, passedCases: 4 } })).not.toBeNull();
-    for (const patch of [{ providerModelId: null, connectionId: null }, { unavailableReason: ["not_installed"] },
-      { evidence: { ...entry.evidence, passedCases: 6 } }, { evidence: { ...entry.evidence, passedCases: 0 } },
-      { evidence: { ...entry.evidence, totalCases: -1 } }, { evidence: { ...entry.evidence, passedCases: 4.5 } },
-      { evidence: { ...entry.evidence, latencyP95Ms: 1 } }]) {
-      expect(decode({ ...entry, ...patch })).toBeNull();
-    }
-  });
-  it.each([
-    undefined,
-    { assignmentSource: ["operator"], model: null, reasoningEffort: null, version: 1 },
-    { assignmentSource: "unassigned", model: { ...response.systemModelPolicy.candidates[0], available: true }, reasoningEffort: null, version: 1 },
-    { assignmentSource: "guessed", model: null, reasoningEffort: null, version: 1 },
-    { assignmentSource: "operator", model: null, reasoningEffort: "high", version: 1 },
-    { assignmentSource: "operator", model: null, reasoningEffort: null, version: 0 },
-    { assignmentSource: "inherited", model: { ...response.systemModelPolicy.candidates[0], available: "yes" }, reasoningEffort: null, version: 1 }
-  ])("rejects missing or malformed independent Memory policy", (memoryPolicy) => {
-    expect(decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy, memoryPolicy } })).toBeNull();
+  it("ignores the retired Memory utility policy a previous release served", () => {
+    const decoded = decodeAdminSystemModelPolicyResponse({ systemModelPolicy: { ...response.systemModelPolicy,
+      memoryPolicy: { assignmentSource: "operator", model: null, reasoningEffort: null, version: 3 } } });
+    expect(decoded).toEqual(response);
   });
 
   it("decodes the catalog-safe policy projection", () => {

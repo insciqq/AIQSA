@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
 import { hashToken } from "@/lib/server/auth/token";
-import { createPrismaInboundMcpOAuthRepository } from "@/lib/server/memoryMcp/oauth/repository";
+import { createPrismaInboundMcpOAuthRepository } from "@/lib/server/mcp/inboundOAuth/repository";
 
 const ISSUER = "https://aiqsa.example";
 const REDIRECT_URI = "http://127.0.0.1:43119/callback";
@@ -13,7 +13,7 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export const INBOUND_MCP_TEST_AUTHORITIES = {
   hub: { capability: "mcp:hub", resource: `${ISSUER}/mcp/hub` },
-  memory: { capability: "memory:facts", resource: `${ISSUER}/mcp` }
+  skills: { capability: "skills:store", resource: `${ISSUER}/mcp/skills`, scopes: ["skills:read"] }
 } as const;
 
 export type InboundMcpTestAuthority =

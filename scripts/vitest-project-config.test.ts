@@ -104,7 +104,6 @@ describe("hermetic environment partition", () => {
       for (const file of [
         "lib/server/example.prisma.test.ts",
         "components/example.integration.test.tsx",
-        "scripts/longmemeval-qualification.test.ts",
         "tests/e2e/example.test.ts",
         "benchmarks/knowledge/example.test.ts"
       ]) {

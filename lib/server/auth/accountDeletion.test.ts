@@ -3,9 +3,6 @@ import type { PrismaClient } from "@prisma/client";
 
 const calls = vi.hoisted(() => [] as string[]);
 
-vi.mock("../background/legacyMemoryRows", () => ({
-  async purgeLegacyMemoryRowsOfAccount(_tx: unknown, userId: string) { calls.push(`legacy:${userId}`); }
-}));
 vi.mock("../mcp/personalArchive", () => ({
   async archivePersonalMcpServers(_tx: unknown, input: { ownerUserId: string }) { calls.push(`archive:${input.ownerUserId}`); }
 }));
@@ -51,10 +48,10 @@ beforeEach(() => {
 });
 
 describe("stale account deletion", () => {
-  it("deletes the account in one step, its old Memory rows first, without the Memory coordinator", async () => {
+  it("deletes the account in one step", async () => {
     const commands = createAdminUserSessionCommands(fakePrisma({}));
     await expect(commands.deleteStaleUser({ actingAdminUserId: "admin-1", userId: "user-1" })).resolves.toBe("deleted");
-    expect(calls).toEqual(["lock", "legacy:user-1", "telemetry:user-1", "refusals", "delete:user-1"]);
+    expect(calls).toEqual(["lock", "telemetry:user-1", "refusals", "delete:user-1"]);
   });
 
   it("stays pending while personal MCP servers drain, then completes", async () => {
@@ -79,7 +76,7 @@ describe("stale account deletion", () => {
       calls.length = 0;
       const commands = createAdminUserSessionCommands(prisma);
       await expect(commands.deleteStaleUser({ actingAdminUserId: "admin-1", userId: "user-1" })).resolves.toBe(expected);
-      expect(calls.filter((call) => call.startsWith("legacy") || call.startsWith("delete"))).toEqual([]);
+      expect(calls.filter((call) => call.startsWith("telemetry") || call.startsWith("delete"))).toEqual([]);
     }
   });
 

@@ -2433,8 +2433,6 @@
   "background_worker_heartbeat_clock_invalid",
   "background_worker_startup_failed",
   "background_worker_heartbeat_failed",
-  "background_legacy_coordinator_blocked",
-  "background_legacy_coordinator_failed",
   "chat_deletion_attachment_owner_mismatch",
   "chat_deletion_workspace_runtime_unavailable",
   "chat_deletion_workspace_cleanup_failed",

@@ -73,7 +73,7 @@ function sources(overrides: Partial<HealthReportSources> = {}): HealthReportSour
         queue({ queue: "attachment_processing" }),
         queue({ queue: "chat_titles", state: "stalled", waiting: 4, running: 0, oldestSeconds: 3 * 3_600 }),
         queue({ queue: "scheduled_tasks", state: "slow", waiting: 2, running: 1, oldestSeconds: 20 * 60, failed24h: 3 }),
-        queue({ queue: "memory", state: "unavailable", waiting: null, running: null, failed24h: null })
+        queue({ queue: "mcp_activation", state: "unavailable", waiting: null, running: null, failed24h: null })
       ] })
     },
     findings: vi.fn().mockResolvedValue([
@@ -120,7 +120,7 @@ describe("health report collection", () => {
     expect(report.errorsByCategory).toEqual({ ...categories, providers: 9, requests: 3, runs: 20, background: 10 });
     expect(report.providerFailures.map((row) => row.key)).toEqual(["c", "a"]);
     expect(report.restarts).toEqual([{ role: "app", starts: 3, restarts: 2 }]);
-    expect(report.queues.map((row) => row.queue)).toEqual(["chat_titles", "scheduled_tasks", "memory"]);
+    expect(report.queues.map((row) => row.queue)).toEqual(["chat_titles", "scheduled_tasks", "mcp_activation"]);
     expect(report.incidents).toHaveLength(10);
     expect(report.incidentsTruncated).toBe(true);
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
@@ -160,7 +160,7 @@ describe("health report text", () => {
     expect(text).not.toContain("memory_coordinator");
     expect(text).toContain("  STALLED      Chat titles · 4 waiting, 0 running · oldest due 3 hours ago\n");
     expect(text).toContain("  SLOW         Automations · 2 waiting, 1 running · oldest due 20 minutes ago · 3 failed in 24 hours\n");
-    expect(text).toContain("  UNAVAILABLE  Memory learning and indexing · could not be read\n");
+    expect(text).toContain("  UNAVAILABLE  MCP server checks · could not be read\n");
     expect(text).toContain("  2026-10-07 09:59:12  error  app  provider_operation  ref 1a2b3c4d\n" +
       "      code provider_rate_limited · answer · OpenAI · gpt-5 · HTTP 429\n");
   });

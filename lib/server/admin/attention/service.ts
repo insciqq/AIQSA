@@ -1,13 +1,10 @@
-import { adminMemoryProcessingCopy } from "../../../domain/adminMemoryProcessing";
 import { formatEstimatedCostMicros } from "../../../domain/formatEstimatedCost";
-import { adminMemoryProcessingIssueKey } from "../../../contracts/adminMemory";
 import type { AdminDashboard } from "../../../contracts/admin";
 import type {
   AdminAttention,
   AdminAttentionItem,
   AdminAttentionSource
 } from "../../../contracts/adminAttention";
-import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection } from "../../../contracts/adminProviders";
 import type { AdminSearchCatalog } from "../../../contracts/adminSearch";
 import { activeChatPdfReader, type AdminSystemModelPolicyCatalog } from "../../../contracts/adminSystemModelPolicy";
@@ -30,7 +27,6 @@ export type AdminAttentionSources = Readonly<{
   dashboard(actingAdminUserId: string): Promise<AdminAttentionDashboardInput>;
   email(): Promise<AdminEmailState | null>;
   mcp(actingAdminUserId: string): Promise<readonly AdminMcpServer[]>;
-  memory(): Promise<AdminMemoryStatus>;
   providers(): Promise<readonly AdminProviderConnection[]>;
   search(actingAdminUserId: string): Promise<AdminSearchCatalog>;
   systemRoles(): Promise<AdminSystemModelPolicyCatalog>;
@@ -48,7 +44,6 @@ export type AdminAttentionInputs = Readonly<{
   dashboard: AdminAttentionDashboardInput | null;
   email: AdminEmailState | null;
   mcp: readonly AdminMcpServer[] | null;
-  memory: AdminMemoryStatus | null;
   providers: readonly AdminProviderConnection[] | null;
   search: AdminSearchCatalog | null;
   systemRoles: AdminSystemModelPolicyCatalog | null;
@@ -303,14 +298,7 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
       "system",
       "System model",
       policy.systemModel,
-      "chat summaries for continuing in a new chat and Memory ranking without a reranker need a checked model",
-      "warn"
-    ),
-    roleItem(
-      "memory",
-      "Memory utility model",
-      catalog.memoryPolicy.model,
-      "Memory learning and generated history context need a checked model",
+      "chat summaries for continuing in a new chat need a checked model",
       "warn"
     ),
     pdfReader
@@ -343,76 +331,18 @@ function systemRoleItems(catalog: AdminSystemModelPolicyCatalog): AdminAttention
           "warn"
         )
       : null,
-    // Without a reranker Memory ranks with the System model, so a missing one
-    // needs nothing; an assigned reranker that is unavailable breaks Memory ranking.
+    // Without a reranker past-chat search keeps its fused order, so a missing one needs nothing; an assigned
+    // reranker that is unavailable is never replaced by another model.
     policy.rerankerModel
       ? roleItem(
           "reranker",
           "Reranking",
           policy.rerankerModel,
-          "Memory ranks with the System model until a reranker is assigned",
+          "past-chat search keeps its own order until a reranker is assigned",
           "neutral"
         )
       : null
   ].filter((item): item is AdminAttentionItem => item !== null);
-}
-
-function memoryItems(memory: AdminMemoryStatus): AdminAttentionItem[] {
-  const items: AdminAttentionItem[] = memory.processing.issues.map((issue) => {
-    const copy = adminMemoryProcessingCopy(issue);
-    return {
-      action: copy.action,
-      code: "memory_processing_blocked",
-      count: issue.count || null,
-      detail: copy.detail,
-      id: `memory_processing_blocked:${adminMemoryProcessingIssueKey(issue)}`,
-      severity: issue.severity,
-      target: { section: copy.section, ...(copy.section === "roles" ? { resource: "memory" } : {}) },
-      title: copy.title
-    };
-  });
-  if (memory.worker.state === "NOT_RUNNING" && memory.processing.enabled) {
-    items.push({
-      action: "Open Memory",
-      code: "memory_worker_not_running",
-      count: null,
-      detail: `New facts are not learned until the worker starts${
-        memory.queue.inProgress > 0 ? ` · ${plural(memory.queue.inProgress, "job")} in progress` : ""
-      }${
-        memory.queue.length > 0 ? ` · ${plural(memory.queue.length, "job")} waiting` : ""
-      }`,
-      id: "memory_worker_not_running",
-      severity: "bad",
-      target: { section: "retrieval" },
-      title: "Memory worker is not running"
-    });
-  }
-  if (memory.worker.state === "STALLED" && memory.processing.enabled &&
-    !memory.processing.issues.some(({ reason }) => reason === "STALLED")) {
-    items.push({
-      action: "Open Memory",
-      code: "memory_worker_stalled",
-      count: memory.queue.length + memory.queue.inProgress,
-      detail: "The worker is responding, but its queue is not progressing. Check recovery status and worker logs.",
-      id: "memory_worker_stalled",
-      severity: "warn",
-      target: { section: "retrieval" },
-      title: "Memory queue is stalled"
-    });
-  }
-  if (memory.index.readiness === "REBUILD_REQUIRED" && memory.processing.enabled) {
-    items.push({
-      action: "Open Memory",
-      code: "memory_index_rebuild_required",
-      count: null,
-      detail: "Semantic recall stays off until the index is rebuilt",
-      id: "memory_index_rebuild_required",
-      severity: "warn",
-      target: { section: "retrieval" },
-      title: "Memory index needs a rebuild"
-    });
-  }
-  return items;
 }
 
 function mcpItems(servers: readonly AdminMcpServer[]): AdminAttentionItem[] {
@@ -474,10 +404,7 @@ export function deriveAdminAttentionItems(inputs: AdminAttentionInputs): AdminAt
     ...(inputs.health ? healthAttentionItems(inputs.health, inputs.providers) : []),
     ...(inputs.queues ? queueAttentionItems(inputs.queues) : []),
     ...(inputs.search ? searchItems(inputs.search, inputs.providers) : []),
-    ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles).filter((item) =>
-      item.target.resource !== "memory" || !inputs.memory?.processing.issues.some((issue) =>
-        issue.stage === "LEARNING" && ["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"].includes(issue.reason))) : []),
-    ...(inputs.memory ? memoryItems(inputs.memory) : []),
+    ...(inputs.systemRoles ? systemRoleItems(inputs.systemRoles) : []),
     ...(inputs.mcp ? mcpItems(inputs.mcp) : []),
     ...(inputs.email ? emailItems(inputs.email) : []),
     ...(inputs.skills ? [{ action: "Review Skills", code: "skills_pending_approval" as const,
@@ -509,12 +436,11 @@ export function createAdminAttentionService(input: Readonly<{
           return null;
         }
       }
-      const [dashboard, providers, search, systemRoles, memory, mcp, email, skills, assistants, usageLimits, health, queues] = await Promise.all([
+      const [dashboard, providers, search, systemRoles, mcp, email, skills, assistants, usageLimits, health, queues] = await Promise.all([
         load("dashboard", () => sources.dashboard(actingAdminUserId)),
         load("providers", () => sources.providers()),
         load("search", () => sources.search(actingAdminUserId)),
         load("system_roles", () => sources.systemRoles()),
-        load("memory", () => sources.memory()),
         load("mcp", () => sources.mcp(actingAdminUserId)),
         load("email", () => sources.email()),
         sources.skills ? load("skills", () => sources.skills!(actingAdminUserId)) : Promise.resolve(0),
@@ -530,7 +456,6 @@ export function createAdminAttentionService(input: Readonly<{
           dashboard,
           email,
           mcp,
-          memory,
           providers,
           search,
           systemRoles,

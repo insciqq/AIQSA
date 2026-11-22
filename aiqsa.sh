@@ -74,7 +74,6 @@ readonly BACKUP_FORMAT=1
 # Services that keep running while the backup stops application writers.
 readonly BACKUP_KEEP_RUNNING=" postgres seaweedfs minio tika workspace-runner "
 readonly ONE_SHOT_SERVICES=" migrate-bootstrap storage-init "
-readonly KEY_ID_PATTERN='^[a-z][a-z0-9_-]{0,63}$'
 
 # Options.
 COMMAND=""
@@ -787,7 +786,7 @@ doctor_config() {
     elif loopback_address "$bind" && [[ $base_url == https://* || ! $host =~ ^(localhost|127\.[0-9.]+|\[::1\])$ ]]; then
       check INFO base-url "$base_url with a loopback bind: a reverse proxy is expected" \
         "Point the proxy at $bind:${port:-3000}, set AIQSA_TRUST_PROXY_HEADERS=1 and AIQSA_TRUSTED_PROXY_COUNT for your proxy chain," \
-        "and give it an upstream read timeout above the Memory admission timeout (30 s by default, up to 120 s)."
+        "and give it an upstream read timeout of 60 s or more: event streams send a heartbeat every 15 s."
     elif ! loopback_address "$bind" && [[ $base_url == http://* ]]; then
       check WARN base-url "$base_url is served over plain HTTP on $bind" \
         "Bind to loopback and terminate TLS in a reverse proxy for internet access."
@@ -1129,14 +1128,13 @@ doctor_summary() {
 
 # ---------------------------------------------------------------- configure
 
-GENERATED_KEYS=(AIQSA_AUTH_SESSION_SECRET AIQSA_ENCRYPTION_KEY AIQSA_MEMORY_FINGERPRINT_KEYRING
+GENERATED_KEYS=(AIQSA_AUTH_SESSION_SECRET AIQSA_ENCRYPTION_KEY
   AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY AIQSA_POSTGRES_PASSWORD AIQSA_S3_SECRET_ACCESS_KEY)
 
 generated_key() {
   case $1 in
     AIQSA_INITIAL_ADMIN_PASSWORD | AIQSA_AUTH_SESSION_SECRET | AIQSA_POSTGRES_PASSWORD | AIQSA_S3_SECRET_ACCESS_KEY \
-      | AIQSA_ENCRYPTION_KEY | AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY | AIQSA_MEMORY_FINGERPRINT_KEYRING \
-      | AIQSA_WORKSPACE_RUNNER_TOKEN) return 0 ;;
+      | AIQSA_ENCRYPTION_KEY | AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY | AIQSA_WORKSPACE_RUNNER_TOKEN) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1145,14 +1143,13 @@ generated_key() {
 generate_value() {
   local secret
   case $1 in
-    AIQSA_ENCRYPTION_KEY | AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY | AIQSA_MEMORY_FINGERPRINT_KEYRING)
+    AIQSA_ENCRYPTION_KEY | AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY)
       secret=$(openssl rand -base64 32) || return 1
       [[ $secret =~ ^[A-Za-z0-9+/]{43}=$ ]] || return 1 ;;
     *)
       secret=$(openssl rand -hex 32) || return 1
       [[ $secret =~ ^[0-9a-f]{64}$ ]] || return 1 ;;
   esac
-  if [[ $1 == AIQSA_MEMORY_FINGERPRINT_KEYRING ]]; then secret="current=v1,v1=$secret"; fi
   REPLY=$secret
 }
 
@@ -1880,22 +1877,6 @@ backup_restart() {
   fi
 }
 
-# The non-secret Memory key IDs a restore needs: never key material.
-manifest_key_ids() {
-  local entries=() entry ids="" current=""
-  IFS=',' read -r -a entries <<< "$(env_value AIQSA_MEMORY_FINGERPRINT_KEYRING)"
-  for entry in ${entries[@]+"${entries[@]}"}; do
-    entry=${entry//[[:space:]]/}
-    if [[ $entry == current=* ]]; then
-      current=${entry#current=}
-    elif [[ $entry == *=?* && ${entry%%=*} =~ $KEY_ID_PATTERN ]]; then
-      ids+="${ids:+,}${entry%%=*}"
-    fi
-  done
-  [[ $current =~ $KEY_ID_PATTERN ]] || current=""
-  printf '%s\n' "memory_fingerprint_key_ids=$ids" "memory_fingerprint_current=$current"
-}
-
 # backup_manifest DIR MIGRATION OBJECTS IMAGES: plain key=value lines, no secrets.
 backup_manifest() {
   local dir=$1 migration=$2 objects=$3 images=$4 file service image seen=" " commit
@@ -1911,7 +1892,6 @@ backup_manifest() {
       seen+="$service "
       printf 'image.%s=%s\n' "$service" "$image"
     done <<< "$images"
-    manifest_key_ids
   } > "$dir/manifest"
 }
 
@@ -2190,7 +2170,7 @@ restore_abort() {
 
 cmd_restore() {
   require_linux
-  local dir=$RESTORE_DIR version target=$ENV_FILE saved=() log script code
+  local dir=$RESTORE_DIR version target=$ENV_FILE saved=() log
   restore_verify "$dir"
   version=$REPLY
   if [[ -e $ENV_FILE || -L $ENV_FILE ]]; then
@@ -2255,15 +2235,8 @@ cmd_restore() {
   say "Restoring PostgreSQL."
   pg_tool rc pg_restore --no-owner --exit-on-error -U "$(pg_user)" -d "$(pg_db)" <"$dir/postgres.dump" >"$log" 2>&1 \
     || restore_step_failed "pg_restore failed" "$log"
-  for script in memory:restore:reconcile; do
-    say "Reconciling: $script."
-    if ! rc run --rm --no-deps -T -e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES \
-      -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio \
-      --entrypoint npm memory-worker run "$script" </dev/null >"$log" 2>&1; then
-      code=$(sed -n 's/.*"code":"\([A-Za-z0-9_]*\)".*/\1/p' "$log" | tail -n 1)
-      restore_step_failed "$script failed with ${code:-an unknown code}; deletion duties remain, so the restore is not promoted" "$log"
-    fi
-  done
+  # Deletion obligations live on their rows (chats fenced or past their Temporary deadline), so the restored
+  # installation's background worker finishes them; there is nothing to reconcile here.
   say "Removing the isolated project $RESTORE_PROJECT."
   restore_project_remove
   RESTORE_PHASE=started

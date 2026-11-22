@@ -7,13 +7,8 @@ import { removePermanentlyDeletedArchivedChat } from "@/components/app-shell/arc
 import {
   activatePermanentChatDeletionAccount
 } from "@/components/app-shell/permanentChatDeletionStore";
-import {
-  activateMemorySettings,
-  useMemorySettingsStore
-} from "@/components/app-shell/memorySettingsStore";
 import { applyThemeId, type ThemeId } from "@/components/app-shell/theme";
 import type { AnswerSoundId } from "@/lib/contracts/answerSound";
-import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
 import { useEffect, useRef, useState } from "react";
 import { LibraryV2, SectionHeading } from "@/features/library-v2/LibraryV2";
 import type { LibraryTabIdV2, LibraryTabV2 } from "@/features/library-v2/contracts";
@@ -62,27 +57,6 @@ function initialSection(state: SettingsGalleryStateV2): LibraryTabIdV2 {
   return state.startsWith("telegram-") ? "telegram" : "account";
 }
 
-const archiveMemorySettings: MemoryConsumerSettingsResponse = {
-  capabilities: {
-    automaticLearningAvailable: true,
-    decayAvailable: true,
-    managementAvailable: true,
-    naturalLanguageActionsAvailable: true,
-    permanentChatDeletion: true,
-    pastChatIndexingAvailable: true,
-    retrievalAvailable: true,
-    temporaryChats: true
-  },
-  resetState: "IDLE",
-  settings: {
-    decayEnabled: false,
-    learnAutomatically: true,
-    referenceChatHistory: true,
-    useMemoryFacts: true
-  },
-  status: "ON"
-};
-
 /**
  * The sections of Settings that were the Settings dialog, on the Settings
  * surface: General, Account (a fixture form that turns unsaved), Data with
@@ -130,12 +104,6 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
     applyThemeId(next);
   };
   const openArchive = () => {
-    activateMemorySettings("ui-v2-fixture");
-    useMemorySettingsStore.setState({
-      data: archiveMemorySettings,
-      error: null,
-      loadState: "ready"
-    });
     void activatePermanentChatDeletionAccount(
       "ui-v2-fixture",
       removePermanentlyDeletedArchivedChat
@@ -228,8 +196,8 @@ export function SettingsV2Gallery({ state = "appearance" }: { state?: SettingsGa
         <div className="v2-settings-page">
           <SectionHeading description="Connect these and other AI agents to AIQSA.">Claude Code &amp; Codex</SectionHeading>
           <div className="v2-settings-owner-slot" data-testid="settings-connected-apps-owner">
-            <p>Codex · Active · Personal Memory facts</p>
-            <p>Revoking access keeps stored Memory facts.</p>
+            <p>Codex · Active · MCP Hub</p>
+            <p>Revoking access keeps your MCP connections.</p>
           </div>
         </div>
       )

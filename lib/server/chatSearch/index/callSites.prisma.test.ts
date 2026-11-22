@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memoryClient";
 import { createPrismaChatRepository } from "../../chats/prismaRepository";
 import { TEMPORARY_CHAT_RETENTION_MS } from "../../chats/temporaryRetention";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";

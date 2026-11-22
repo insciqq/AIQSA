@@ -1,4 +1,3 @@
-import { adoptMemoryModelRecommendation } from "../lib/server/bootstrap/memoryRecommendationAdoption";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { aiqsaPostgresRuntimeUrl } from "../lib/server/postgresRuntimeOptions";
 import { hashCanonicalMcpValue } from "../lib/server/mcp/definitions";
@@ -295,11 +294,6 @@ async function main() {
     await seedLocalOrdinaryUser(user);
   }
 
-  await prisma.userMemorySettings.createMany({
-    data: [ids.user, ...LOCAL_ORDINARY_USERS.map((user) => user.id)].map((userId) => ({ userId })),
-    skipDuplicates: true
-  });
-
   const { providerModelIds } = await synchronizeCodeOwnedCatalog(prisma, {
     mode: "local_seed"
   });
@@ -325,16 +319,6 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
-  await prisma.memoryUtilityModelPolicy.upsert({
-    create: { id: "installation" },
-    // Migration owns compatibility; reruns preserve every assignment and clear.
-    update: {},
-    where: { id: "installation" }
-  });
-  await prisma.$transaction((tx) => adoptMemoryModelRecommendation(tx), {
-    isolationLevel: "Serializable", maxWait: 10_000, timeout: 30_000
-  });
-
   await prisma.group.upsert({
     create: {
       id: ids.group,

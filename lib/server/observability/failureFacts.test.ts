@@ -4,7 +4,6 @@ import path from "node:path";
 import { inspect } from "node:util";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
-import { MemoryCoordinatorError } from "../memory/coordinator/errors";
 import { McpSafeFetchError } from "../mcp/safeFetch";
 import { ProviderSafeFetchError } from "../providers/providerSafeFetch";
 import { WorkspaceRuntimeError } from "../workspace/runtime";
@@ -96,19 +95,6 @@ describe("failure facts of a cause chain", () => {
     const facts = describeFailureFacts(spawn);
     expect(facts).toEqual({ sys_code: "ENOENT", syscall: "spawn" });
     expect(JSON.stringify(facts)).not.toContain("private");
-  });
-
-  it("keeps a coordinator failure free of its cause yet retains the cause's facts", () => {
-    const expired = expiredTransaction();
-    const failure = new MemoryCoordinatorError("memory_fact_apply_retryable", true, { factsOf: expired });
-    expect(failure).not.toHaveProperty("cause");
-    expect(failure.message).toBe("memory_fact_apply_retryable");
-    expect([databaseFailureCode(failure), databaseFailureKind(failure)]).toEqual(["P2028", "transaction_expired"]);
-    const event = record("job_attempt", { error: failure, subsystem: "memory", stage: "process", outcome: "failed", code: failure.code });
-    expect(event).toMatchObject({ error_class: "MemoryCoordinatorError", prisma_code: "P2028", db_failure: "transaction_expired",
-      tx_timeout_ms: 5000, tx_elapsed_ms: 5012, cause_class: "PrismaClientKnownRequestError" });
-    expect(event.cause_site).toMatch(TEST_SITE);
-    expectContentFree(event);
   });
 
   it("drops values outside the closed vocabulary and never states facts for ordinary progress", () => {

@@ -18,7 +18,7 @@ export async function register(): Promise<void> {
       // product path continue without it.
       reportSubsystemFailure({ error, subsystem: "telemetry", stage: "startup", code: "telemetry_startup_failed", action: "degrade" });
     }
-    announceProcess({ attachments: "starting", memory: "unknown", mcp: "starting", workspace: "unknown", email: "unknown" });
+    announceProcess({ attachments: "starting", mcp: "starting", workspace: "unknown", email: "unknown" });
     const { startNativeRoutingAdoption } = await import("./lib/server/bootstrap/nativeRoutingAdoption");
     startNativeRoutingAdoption();
     const { startDecisionModelAdoption } = await import("./lib/server/bootstrap/decisionModelAdoption");

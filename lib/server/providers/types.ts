@@ -11,7 +11,6 @@ import type {
   SearchProtocol,
   ValidatedSearchQuery
 } from "../../domain/search";
-import type { MemoryActionAnswerResult } from "./memoryActionAnswer";
 import type { ArtifactResourcePolicy } from "../artifacts/resourcePolicy";
 
 export type NormalizedSearchPlanOption = Readonly<{
@@ -188,21 +187,12 @@ export type NormalizedRunRequest = {
   };
   /** Accepted model output allowance used by internal compaction utilities. */
   generationBudget?: import("./modelOutputAllowance").ModelGenerationBudget;
-  /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
-   * admission rejects it and execution/recovery terminalize it. */
-  memoryActionTools?: Readonly<{ version: "model-driven-v2" }>;
-  /** @deprecated Decode-only marker for pre-v1 persisted snapshots. New
-   * admission rejects it and execution/recovery terminalize it. */
-  memoryHistoryTool?: Readonly<{
-    maxCalls: 2;
-    pageSize: 20;
-  }>;
-  /** @deprecated Decode-only: Personal Memory's standing read of runs admitted before the memory note
-   * (operator decision 2026-11-22). New admission never sets it. */
-  memoryStandingVersion?: 1;
-  /** @deprecated Decode-only: `memory_search` of runs admitted before past-chat search. New admission never sets it,
-   * and no registry offers the tool. */
-  memorySearch?: unknown;
+  /*
+   * A request admitted before v0.5.0 may still carry Personal Memory's fields (`personalContext`,
+   * `memoryStandingVersion`, `memorySearch`, `memoryActionTools`, `memoryHistoryTool`,
+   * `prompt.memoryActionAnswerResult`); they are not part of this type and nothing reads them (operator decision
+   * 2026-11-22), so such a run's chat opens and continues without them.
+   */
   /**
    * The user's Memory as admission froze it (operator decision 2026-11-22), present only where the turn reads it: an
    * ordinary personal or Telegram turn, an Assistant chat, or a scheduled task with its Memory switch on, in a chat that
@@ -232,14 +222,6 @@ export type NormalizedRunRequest = {
    * names it (`lib/server/tools/computerBinding.ts`). Absent: no computer. */
   computer?: import("../tools/computerBinding").FrozenComputerBinding;
   modelId: string;
-  personalContext?: Readonly<{
-    approxTokens: number;
-    itemCount: number;
-    memoryGeneration: number;
-    memoryRevision: number;
-    mode: "prefetched" | "standing-v1";
-    text: string;
-  }>;
   skills?: import("../skills/runManifest").FrozenSkillManifest | import("../skills/runManifest").LegacySkillManifest;
   params: Record<string, unknown>;
   /** Provider-neutral reasoning control frozen at admission. Historical
@@ -268,9 +250,6 @@ export type NormalizedRunRequest = {
       timeZoneSource: "client" | "utc_fallback";
     };
     developer: string | null;
-    /** Server-owned, content-free result of the bounded Memory control/action
-     * stage. Provider adapters render the corresponding fixed answer contract. */
-    memoryActionAnswerResult?: MemoryActionAnswerResult;
     system: string | null;
     /**
      * The parts appended to `system` that hold only for this turn (its paths,

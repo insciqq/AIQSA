@@ -1,4 +1,4 @@
-import { defaultInboundMcpAuthorizationHandlers } from "@/lib/server/memoryMcp/oauth/default";
+import { defaultInboundMcpAuthorizationHandlers } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const runtime = "nodejs";
 

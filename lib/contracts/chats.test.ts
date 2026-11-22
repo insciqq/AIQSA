@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { MEMORY_ANSWER_SOURCE_MAX_ITEMS } from "./memoryClient";
 import {
   CHAT_BRANCH_PREVIEW_MAX_LENGTH,
   CHAT_HISTORY_PAGE_SIZE,
@@ -756,8 +755,8 @@ describe("chat wire contracts", () => {
     expect(decoded("not-an-object")).toBeNull();
     expect(decoded(corrupted[1])).toEqual({ citations: [], reasoningText: ["Kept"], sources: [] });
     expect(decoded(corrupted[2])?.citations).toEqual([citation(1)]);
-    expect(decoded(corrupted[3])).toEqual({ citations: [], generatedImages: [], memorySources: [],
-      reasoningText: [], sources: [] });
+    // Personal Memory's retired fields of a summary cached before v0.5.0 are left out.
+    expect(decoded(corrupted[3])).toEqual({ citations: [], generatedImages: [], reasoningText: [], sources: [] });
     // Mandatory message fields still fail closed.
     expect(decodeChatMessagesPageResponse({
       messages: [rootMessage, { ...answer(null), role: "system" }],
@@ -962,132 +961,31 @@ describe("chat wire contracts", () => {
     expect(preview.charCodeAt(preview.length - 1)).not.toBeGreaterThanOrEqual(0xd800);
   });
 
-  it.each([18, MEMORY_ANSWER_SOURCE_MAX_ITEMS])(
-    "preserves a completed Workspace answer with %i Memory sources when reloading",
-    (sourceCount) => {
-      const memorySources = Array.from({ length: sourceCount }, (_, index) => ({
-        actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
-        date: summary.createdAt,
-        memoryRef: `opaque-memory-${index}`,
-        origin: "Earlier planning chat",
-        sourceAvailable: true,
-        chatGroup: "chat-1",
-        sourceType: "PAST_CHAT",
-        text: `Planning note ${index + 1}`
-      }));
-      const generatedFiles = [{
-        attachmentId: "generated-document",
-        byteSize: 9323,
-        fileName: "application.docx",
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        relativePath: "application.docx"
-      }];
-      const artifactSummary = {
-        citations: [], generatedFiles, memorySources, reasoningText: [], sources: []
-      };
-      const decode = (sources: unknown) => decodeChatDetailResponse({
-        chat: detailChat({
-          messages: [{ ...message, artifactSummary: { ...artifactSummary, memorySources: sources } }],
-          usageStats
-        })
-      });
-
-      expect(decode(memorySources)?.messages[0]).toMatchObject({
-        artifactSummary: { generatedFiles, memorySources },
-        content: message.content,
-        status: "complete"
-      });
-      expect(decode([...memorySources, { ...memorySources[0], memoryRef: "" }])?.messages[0]?.artifactSummary)
-        .toMatchObject({ generatedFiles, memorySources });
-      expect(decode(Array.from(
-        { length: MEMORY_ANSWER_SOURCE_MAX_ITEMS + 1 },
-        () => memorySources[0]
-      ))?.messages[0]?.artifactSummary?.memorySources).toHaveLength(MEMORY_ANSWER_SOURCE_MAX_ITEMS);
-    }
-  );
-
-  it("keeps committed Memory action feedback and strips retrieval receipts", () => {
-    const artifactSummary = {
+  it("reads an answer recorded before v0.5.0 without its Personal Memory sources, receipt or status", () => {
+    const generatedFiles = [{
+      attachmentId: "generated-document",
+      byteSize: 9323,
+      fileName: "application.docx",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      relativePath: "application.docx"
+    }];
+    const recorded = {
       citations: [],
-      memoryAction: {
-        memoryRef: "opaque-memory-ref",
-        operation: "UPDATE",
-        statement: "I prefer concise answers.",
-        status: "COMMITTED"
-      },
-      memoryReceipt: {
-        itemCount: 1,
-        items: [{ includedText: "private retrieved content" }],
-        outcome: "USED"
-      },
+      generatedFiles,
+      memoryAction: { memoryRef: "opaque-memory-ref", operation: "UPDATE", statement: "I prefer concise answers.", status: "COMMITTED" },
+      memoryReceipt: { itemCount: 1, items: [{ includedText: "private retrieved content" }], outcome: "USED" },
+      memorySources: [{ actions: ["CORRECT", "FORGET", "NOT_RELEVANT"], date: summary.createdAt, memoryRef: "opaque-memory-1",
+        sourceAvailable: true, sourceType: "SAVED_MEMORY", text: "Planning note" }],
+      memoryStatus: "UNAVAILABLE",
       reasoningText: [],
       sources: []
     };
-    const decode = (value: unknown) => decodeChatDetailResponse({
-      chat: detailChat({
-        messages: [{ ...message, artifactSummary: value }],
-        usageStats
-      })
-    });
-
-    expect(decode(artifactSummary)?.messages[0]?.artifactSummary).toEqual({
-      citations: [],
-      memoryAction: {
-        memoryRef: "opaque-memory-ref",
-        operation: "UPDATE",
-        statement: "I prefer concise answers.",
-        status: "COMMITTED"
-      },
-      reasoningText: [],
-      sources: []
-    });
-    expect(decode({
-      citations: [],
-      memoryStatus: "UNAVAILABLE",
-      reasoningText: [],
-      sources: []
-    })?.messages[0]?.artifactSummary).toEqual({
-      citations: [],
-      memoryStatus: "UNAVAILABLE",
-      reasoningText: [],
-      sources: []
-    });
-    expect(decode({
-      citations: [],
-      memoryStatus: "LIMITED",
-      reasoningText: [],
-      sources: []
-    })?.messages[0]?.artifactSummary).toEqual({
-      citations: [],
-      memoryStatus: "LIMITED",
-      reasoningText: [],
-      sources: []
-    });
-    expect(decode({
-      citations: [],
-      memoryStatus: "INPUT_TOO_LONG",
-      reasoningText: [],
-      sources: []
-    })?.messages[0]?.artifactSummary).toEqual({
-      citations: [],
-      memoryStatus: "INPUT_TOO_LONG",
-      reasoningText: [],
-      sources: []
-    });
-    // An unknown (newer) status or a feedback carrying a private field is left
-    // out; the answer and its page stay readable.
-    expect(decode({
-      citations: [],
-      memoryStatus: "FAILED_SAFE",
-      reasoningText: [],
-      sources: []
-    })?.messages[0]?.artifactSummary).toEqual({ citations: [], reasoningText: [], sources: [] });
-    const withPrivateField = decode({
-      ...artifactSummary,
-      memoryAction: { ...artifactSummary.memoryAction, targetId: "private" }
-    })?.messages[0]?.artifactSummary;
-    expect(withPrivateField).toEqual({ citations: [], reasoningText: [], sources: [] });
-    expect(JSON.stringify(withPrivateField)).not.toContain("private");
+    const decoded = decodeChatDetailResponse({
+      chat: detailChat({ messages: [{ ...message, artifactSummary: recorded }], usageStats })
+    })?.messages[0];
+    expect(decoded).toMatchObject({ content: message.content, status: "complete" });
+    expect(decoded?.artifactSummary).toEqual({ citations: [], generatedFiles, reasoningText: [], sources: [] });
+    expect(JSON.stringify(decoded)).not.toMatch(/opaque-memory|private retrieved|Planning note/u);
   });
 
   it("strictly decodes distinct lifecycle, Archived, and source-resolution wires", () => {

@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { chromium, type BrowserContext, type Page } from "@playwright/test";
 import { hashPassword } from "../lib/server/auth/password";
-import { codexLbOverridesFromConfig, findAuthorizationUrl } from "./memory-mcp-codex-smoke-support";
+import { codexLbOverridesFromConfig, findAuthorizationUrl } from "./codex-smoke-support";
 import {
   assertSmokeInstalledPackage, assertSmokeNativeReport, auditSkillsAgentEvents,
   createSmokeSkill, killSmokeProcess, parseSkillsAgentsSmokeTarget,

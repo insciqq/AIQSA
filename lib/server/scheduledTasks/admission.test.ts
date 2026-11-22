@@ -245,7 +245,6 @@ describe("scheduled task admission through the ordinary send handler", () => {
     expect(request.mcp).toBeUndefined();
     expect(request.mcpDiscovery).toBeUndefined();
     expect(request.workspace).toBeUndefined();
-    expect(request.memoryStandingVersion).toBeUndefined();
     expect(f.state.failedCode).toBeNull();
     expect(f.native.published).toEqual(["Fake answer: Summarize the synthetic fixture"]);
     expect(f.loadOwner).toHaveBeenCalledWith({ taskId: "task-1", userId: owner.id });

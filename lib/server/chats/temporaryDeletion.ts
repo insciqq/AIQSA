@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { BackgroundWorkError } from "../background/errors";
-import { settleLegacyMemoryWorkOfChat } from "../background/legacyMemoryRows";
 import {
   ACTIVE_RUN_STATUSES,
   chatDeletionLeaseLost,
@@ -58,9 +57,6 @@ async function settleOverdueRuns(
   });
   if (runs.length === 0) return;
   const runIds = runs.map(({ id }) => id);
-  await settleLegacyMemoryWorkOfChat(tx, scope, {
-    errorCode: "memory_temporary_retention_expired", now, runIds
-  });
   await tx.modelRunToolCall.updateMany({
     data: { completedAt: now, result: json({ error: "temporary_retention_expired" }), state: "cancelled" },
     where: { modelRunId: { in: runIds }, state: "pending" }
@@ -136,7 +132,6 @@ export async function deleteExpiredTemporaryChat(
       chatExists: true,
       chatWhere: { memoryMode: "TEMPORARY" },
       dispositions,
-      now: context.now,
       scope
     });
     if (!(await context.complete(tx))) chatDeletionLeaseLost();

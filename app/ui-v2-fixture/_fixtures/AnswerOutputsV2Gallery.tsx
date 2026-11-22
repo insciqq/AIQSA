@@ -18,7 +18,6 @@ import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AnswerOutputsV2 } from "@/features/answer-outputs-v2/AnswerOutputsV2";
 import { researchAnswerViewV2 } from "@/features/answer-outputs-v2/researchAnswerView";
 import { McpApprovalCardsV2, McpApprovalContinuationTurnV2 } from "@/features/answer-outputs-v2/McpApprovalCardV2";
-import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import { mcpApprovalContinuationText, type McpApprovalCard } from "@/lib/contracts/mcpApprovals";
 
 export type AnswerOutputsGalleryState =
@@ -104,35 +103,36 @@ const reasoningArtifact: ThreadArtifactSummary = {
   workDurationMs: 12_400
 };
 
-/* The full settled anatomy: Thinking → Steps → Memory in the fold, a
-   "Memory saved." notice above the text, and no Sources chip. */
+/* The settled anatomy with Memory: Thinking → Steps → Past chats in the fold, the memory note's change card below
+   the text, and no Sources chip. */
 const memoryArtifact: ThreadArtifactSummary = {
   citations: [],
-  memoryAction: {
-    memoryRef: "mr1.gallery-save-reference",
-    operation: "SAVE",
-    statement: "I prefer SI units in answers.",
-    status: "COMMITTED"
-  },
-  memorySources: [
+  pastChatSources: [
     {
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      chatId: "gallery-chat-dog",
+      chatTitle: "Beagle care",
       date: "2026-09-02T09:00:00.000Z",
-      memoryRef: "mr1.gallery-source-1",
-      sourceAvailable: true,
-      sourceType: "SAVED_MEMORY",
-      text: "My dog is called Bruno and he is a beagle."
+      excerpt: "My dog is called Bruno and he is a beagle.",
+      messageId: "gallery-message-dog"
     },
     {
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
+      chatId: "gallery-chat-move",
+      chatTitle: "Moving to Lisbon",
       date: "2026-08-28T09:00:00.000Z",
-      memoryRef: "mr1.gallery-source-2",
-      sourceAvailable: true,
-      sourceType: "LEARNED_MEMORY",
-      text: "I live in Lisbon."
+      excerpt: "I live in Lisbon now.",
+      messageId: "gallery-message-move"
     }
   ],
-  reasoningText: ["Two facts are already in memory; the unit preference is new and worth saving."],
+  reasoningText: ["Two earlier chats answer the question; the unit preference is new and the user asked to remember it."],
+  resourceChanges: [{
+    action: "added",
+    after: "Prefers SI units in answers.",
+    before: null,
+    previousText: "",
+    resource: "memory_note",
+    revision: 2,
+    version: 1
+  }],
   sources: [],
   workDurationMs: 8_300
 };
@@ -196,8 +196,8 @@ const computerToolActivity: ThreadToolActivity = {
 
 const memoryToolActivity: ThreadToolActivity = {
   calls: [
-    { durationMs: 640, round: 1, status: "complete", toolName: "web_search" },
-    { durationMs: 1_400, round: 2, serverName: "Memory", status: "complete", toolName: "save_memory" }
+    { durationMs: 640, round: 1, status: "complete", toolName: "search_past_chats" },
+    { durationMs: 1_400, round: 2, status: "complete", toolName: "manage_memory" }
   ]
 };
 
@@ -348,12 +348,6 @@ export function AnswerOutputsV2Gallery({
                   <div className="v2-answer-lead">
                     <span className="v2-answer-identity">Research assistant</span>
                   </div>
-                ) : null}
-                noticeSlot={artifact?.memoryAction ? (
-                  <MemoryActionConfirmationV2
-                    action={artifact.memoryAction}
-                    onOpenMemorySettings={() => undefined}
-                  />
                 ) : null}
                 presentation={{ kind: "complete", runId: "answer-outputs-run" }}
                 toolActivity={state === "memory" ? memoryToolActivity : state === "computer" ? computerToolActivity : null}

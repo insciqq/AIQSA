@@ -320,7 +320,7 @@ export function createRunContext(deps: RunContextDeps): RunContext {
     const attachments = providerAttachmentBudgetTokens({ attachments: request.attachments, estimateImageTokens: imageTokenEstimator(request),
       estimateTokens: estimate, modelCapabilities: request.modelCapabilities });
     return measureContext({ anchor, calibration, estimate,
-      fixedTokens: estimate([request.prompt, request.personalContext?.text ?? null, request.tools ?? []]) + attachments,
+      fixedTokens: estimate([request.prompt, request.tools ?? []]) + attachments,
       ...(deps.projection.images ? { images: deps.projection.images } : {}), items, recorded: deps.record, target });
   }
 

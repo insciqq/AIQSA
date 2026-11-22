@@ -27,7 +27,6 @@ import type { PreparingRunAdmissionResponse } from "../../contracts/runs";
 import type { UsageLimitRefusalResponse } from "../../contracts/usageLimits";
 import { decideUsageAdmission } from "../../domain/usageLimits";
 import type { UsageLimitStatus, UsageLimitsRepository } from "../usageLimits/repository";
-import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "./preparingRunMaterialization";
 import { getAuthConfig, type AuthConfig } from "../auth/config";
 import type {
   CancelModelRunNotCancelableResponse,
@@ -772,7 +771,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       return runPreparationFailureResponse(preparation);
     }
 
-    let preparedData = materializePreparedRunData(preparation.prepared);
+    const preparedData = materializePreparedRunData(preparation.prepared);
     const engineRefusal = engineAdmissionRefusal(preparedData);
     if (engineRefusal) return Response.json({ error: engineRefusal.code }, { status: engineRefusal.status });
     const researchRefusal = deepResearchAdmissionResponse(deps, preparedData.normalizedRequest);
@@ -818,11 +817,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...workspaceNotRequestedReason(sendBody, preparedData.normalizedRequest.workspace?.enabled === true),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
-        memoryMaterializer: createPreparingMemoryMaterializer(
-          preparedData,
-          preparation.adapter,
-          preparation.toolBridge
-        ),
         normalizedRequest: preparedData.normalizedRequest,
         ...(personalChat ? { personalChat } : {}),
         ...(preparedData.followupAdmission ? { followupAdmission: preparedData.followupAdmission } : {}),
@@ -902,7 +896,6 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
     // Callbacks of sub-agents that ended while no answer ran go into this one (coalesced, after it starts).
     signalSubagentCallbackFlush(created.runId);
     if (created.deferredPdf || created.deferredWorkspace) return admittedPdfResponse(deps, created, auth.userId);
-    preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,
@@ -1026,7 +1019,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       return runPreparationFailureResponse(preparation);
     }
 
-    let preparedData = materializePreparedRunData(preparation.prepared);
+    const preparedData = materializePreparedRunData(preparation.prepared);
     // A PDF retry reuses its frozen preparation: it rechecks that the chat is
     // still bound to the same Assistant but never replays the override change.
     const chatAssistant = preparedData.chatAssistant && retry
@@ -1064,11 +1057,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         ...workspaceNotRequestedReason(body, preparedData.normalizedRequest.workspace?.enabled === true),
         providerAdmissionPlan: preparedData.providerAdmissionPlan,
         modelId: preparedData.normalizedRequest.modelId,
-        memoryMaterializer: createPreparingMemoryMaterializer(
-          preparedData,
-          preparation.adapter,
-          preparation.toolBridge
-        ),
         normalizedRequest: preparedData.normalizedRequest,
         preSendAssistantMessageId: source.assistantMessage?.id ?? null,
         ...(preparedData.followupAdmission ? { followupAdmission: preparedData.followupAdmission } : {}),
@@ -1127,7 +1115,6 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       throw error;
     }
     if (created.deferredPdf) return admittedPdfResponse(deps, created, auth.userId);
-    preparedData = applyPreparingMaterialization(preparedData, created);
     const runtime = await acceptedRuntimeBinding(
       deps,
       created.runId,

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { chatTitleWork } from "@/tests/support/chatTitles";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
 import { createPrismaAdminProviderRepository } from "../admin/providers/prismaRepository";

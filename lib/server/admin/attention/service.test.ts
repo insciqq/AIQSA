@@ -1,8 +1,6 @@
-import { memoryRecoveryStatusFixture, memoryWorkerStatusFixture } from "@/tests/support/memoryStatus";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminDashboard } from "../../../contracts/admin";
 import { adminAttentionItemSource, decodeAdminAttentionResponse } from "../../../contracts/adminAttention";
-import type { AdminMemoryStatus } from "../../../contracts/adminMemory";
 import type { AdminProviderConnection, AdminProviderModel } from "../../../contracts/adminProviders";
 import { EMPTY_ADMIN_MODEL_PRICES } from "../../../contracts/adminProviderModelPrices";
 import type { AdminSearchCatalog, AdminSearchIntegration } from "../../../contracts/adminSearch";
@@ -161,7 +159,6 @@ const roleCandidate = {
 
 function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {}): AdminSystemModelPolicyCatalog {
   return {
-    memoryPolicy: { assignmentSource: "operator", model: { ...roleCandidate, available: true }, reasoningEffort: null, version: 7 },
     candidates: [],
     titleCandidates: [], documentCandidates: [],
     ineligible: { chat_titles: [], direct_pdf: [], memory: [], vision: [] },
@@ -180,17 +177,6 @@ function roles(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {})
     verificationCandidates: []
   };
 }
-
-const memoryOk: AdminMemoryStatus = {
-  processing: { enabled: true, issues: [] },
-  searchTimeout: { seconds: 30, version: 1 },
-  configuredTargets: [],
-  index: { generation: 1, readiness: "READY" },
-  queue: { inProgress: 0, length: 0, oldestAgeSeconds: null },
-  rebuild: { state: "NOT_REQUIRED" },
-  recovery: memoryRecoveryStatusFixture(),
-  worker: memoryWorkerStatusFixture()
-};
 
 function mcpServer(overrides: Partial<AdminMcpServer> = {}): AdminMcpServer {
   return {
@@ -260,7 +246,6 @@ const quiet: AdminAttentionInputs = {
   dashboard: { users: [user({ id: "admin-1", role: "admin" })] },
   email: email({ active: { activatedAt: at, activatedByUserId: "admin-1", configuration: smtp, enabled: true, passwordConfigured: true, version: 1 } }),
   mcp: [mcpServer()],
-  memory: memoryOk,
   providers: [connection({ activeChecks: [check({})] })],
   search: searchCatalog([integration({ ready: true, readiness: "ready" })]),
   systemRoles: roles()
@@ -506,7 +491,7 @@ describe("deriveAdminAttentionItems", () => {
 
   it("does not ask for a reranker, but still names a broken one", () => {
     expect(items({ systemRoles: roles({ rerankerModel: null }) })).toEqual([]);
-    // Memory ranks with an assigned reranker, so an unavailable one still needs a fix.
+    // Past-chat search reranks with an assigned reranker, so an unavailable one still needs a fix.
     expect(items({ systemRoles: roles({ rerankerModel: { ...roleCandidate, available: false } }) })).toEqual([
       expect.objectContaining({ id: "system_role_unavailable:reranker", severity: "bad" })
     ]);
@@ -543,84 +528,6 @@ describe("deriveAdminAttentionItems", () => {
       })]);
     expect(items({ systemRoles: roles({ chatTitleModel: null }) })).toEqual([]);
     expect(items({ systemRoles: roles({ chatTitleModel: { ...roleCandidate, available: true } }) })).toEqual([]);
-  });
-
-  it("reports a stopped Memory worker and a required index rebuild", () => {
-    const result = items({
-      memory: {
-        ...memoryOk,
-        index: { generation: 1, readiness: "REBUILD_REQUIRED" },
-        queue: { inProgress: 2, length: 4, oldestAgeSeconds: 10 },
-        rebuild: { state: "AVAILABLE" },
-        worker: memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "HEARTBEAT_STALE", lastSeenAgeSeconds: null })
-      }
-    });
-    expect(result).toEqual([
-      expect.objectContaining({
-        code: "memory_worker_not_running",
-        detail: "New facts are not learned until the worker starts · 2 jobs in progress · 4 jobs waiting",
-        severity: "bad",
-        target: { section: "retrieval" }
-      }),
-      expect.objectContaining({ code: "memory_index_rebuild_required", severity: "warn" })
-    ]);
-  });
-
-  it("keeps distinct history issues visible with stable separate identities", () => {
-    const result = items({ memory: { ...memoryOk, processing: { enabled: true, issues: [
-      { stage: "HISTORY", reason: "PROCESSING_FAILED", count: 1, oldestAgeSeconds: 300, severity: "bad" },
-      { stage: "HISTORY", reason: "RETRYING", count: 1, oldestAgeSeconds: 1800, severity: "warn" }
-    ] } } });
-    expect(result).toHaveLength(2);
-    expect(new Set(result.map(item => item.id)).size).toBe(2);
-    expect(result.map(item => [item.title, item.count, item.target.section])).toEqual([
-      ["Memory history processing failed", 1, "retrieval"],
-      ["Memory history processing needs attention", 1, "retrieval"]
-    ]);
-  });
-
-  it("reports live queue stalls without calling the process stopped or duplicating a stage alert", () => {
-    const memory = { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null },
-      worker: memoryWorkerStatusFixture({ state: "STALLED", reason: "QUEUE_STALLED" }) };
-    expect(items({ memory })).toEqual([expect.objectContaining({ code: "memory_worker_stalled", count: 2 })]);
-    const issues = [{ stage: "HISTORY", reason: "STALLED", count: 2, oldestAgeSeconds: 1000, severity: "warn" }] as const;
-    expect(items({ memory: { ...memory, processing: { enabled: true, issues: [...issues] } } }))
-      .toEqual([expect.objectContaining({ code: "memory_processing_blocked" })]);
-  });
-
-  it.each(["MODEL_UNAVAILABLE", "CAPABILITY_UNAVAILABLE", "CONFIGURATION_REQUIRED"] as const)(
-    "reports three blocked learning jobs despite RUNNING and READY, deduplicating %s role alerts", (reason) => {
-      const systemRoles = roles();
-      systemRoles.memoryPolicy.model = null;
-      const result = items({ systemRoles, memory: {
-        ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 1865 },
-        processing: { enabled: true, issues: [{ stage: "LEARNING", reason, severity: "bad", count: 3, oldestAgeSeconds: 1865 }] }
-      } });
-      expect(result.filter((item) => item.target.resource === "memory")).toEqual([
-        expect.objectContaining({ code: "memory_processing_blocked", count: 3, severity: "bad",
-          detail: expect.stringContaining("oldest 31m"), title: "Memory is not learning new facts",
-          target: { section: "roles", resource: "memory" } })
-      ]);
-      expect(JSON.stringify(result)).not.toMatch(/consent|memory_execution_|private/u);
-    }
-  );
-
-  it("reports a current failed job outside the active queue, then clears only with recovered data", () => {
-    const result = items({ memory: { ...memoryOk,
-      processing: { enabled: true, issues: [{ stage: "LEARNING", reason: "PROCESSING_FAILED", severity: "bad", count: 1, oldestAgeSeconds: 3600 }] }
-    } });
-    expect(result).toEqual([expect.objectContaining({ code: "memory_processing_blocked", count: 1,
-      target: { section: "retrieval" }, detail: expect.stringContaining("has not recovered") })]);
-    expect(items({ memory: memoryOk })).toEqual([]);
-  });
-
-  it("keeps stalled work a warning and does not turn progressing, idle or paused Memory into a failure", () => {
-    expect(items({ memory: { ...memoryOk,
-      processing: { enabled: true, issues: [{ stage: "HISTORY", reason: "STALLED", severity: "warn", count: 4, oldestAgeSeconds: 1900 }] }
-    } })).toEqual([expect.objectContaining({ severity: "warn", count: 4 })]);
-    expect(items({ memory: { ...memoryOk, queue: { inProgress: 0, length: 3, oldestAgeSeconds: 30 } } })).toEqual([]);
-    expect(items({ memory: { ...memoryOk, queue: { inProgress: 2, length: 0, oldestAgeSeconds: null } } })).toEqual([]);
-    expect(items({ memory: { ...memoryOk, processing: { enabled: false, issues: [] }, worker: memoryWorkerStatusFixture({ state: "NOT_RUNNING", reason: "HEARTBEAT_STALE", lastSeenAgeSeconds: null }) } })).toEqual([]);
   });
 
   it("lists MCP servers that need authorization or runtime repair", () => {
@@ -765,7 +672,6 @@ describe("createAdminAttentionService", () => {
       dashboard: vi.fn().mockResolvedValue(quiet.dashboard),
       email: vi.fn().mockResolvedValue(quiet.email),
       mcp: vi.fn().mockResolvedValue(quiet.mcp),
-      memory: vi.fn().mockResolvedValue(quiet.memory),
       providers: vi.fn().mockResolvedValue(quiet.providers),
       search: vi.fn().mockResolvedValue(quiet.search),
       systemRoles: vi.fn().mockResolvedValue(quiet.systemRoles),
@@ -787,12 +693,12 @@ describe("createAdminAttentionService", () => {
       now: () => new Date(at),
       sources: sources({
         email: vi.fn().mockResolvedValue(email()),
-        memory: vi.fn().mockRejectedValue(new Error("worker table missing"))
+        mcp: vi.fn().mockRejectedValue(new Error("server table missing"))
       })
     });
     const result = await service.list("admin-1");
     expect(result.items.map((item) => item.code)).toEqual(["email_not_configured"]);
-    expect(result.unavailable).toEqual(["memory"]);
+    expect(result.unavailable).toEqual(["mcp"]);
   });
 
   it("links pending Skill reviews to the approval queue and distinguishes an unavailable count", async () => {

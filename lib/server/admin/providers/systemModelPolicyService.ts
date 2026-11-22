@@ -29,8 +29,6 @@ import { scheduleChatSearchReembedding } from "../../chatSearch/index/dirty";
 import { logEvent } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
-import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
-import { listMemoryModelRecommendations, memoryRecommendationMatches } from "../../memory/modelRecommendations";
 import { systemModelRoleEligible } from "../../providerRuntime/systemModelCapabilities";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createVisionModelRoleResolver } from "../../providerRuntime/visionModelRole";
@@ -335,14 +333,11 @@ export function createAdminSystemModelPolicyService(
     resolveVisionRole?: ReturnType<typeof createVisionModelRoleResolver>["resolve"];
     resolveChatPdfRole?: ReturnType<typeof createChatPdfModelRoleResolver>["resolve"];
     resolveRole?: ReturnType<typeof createSystemModelRoleResolver>["resolve"];
-    resolveMemoryRole?: ReturnType<typeof createMemoryUtilityModelRoleResolver>["resolve"];
   }> = {}
 ) {
   const loadRole = dependencies.loadRole ?? loadInstallationAnswerProviderRole;
   const resolveRole = dependencies.resolveRole ??
     createSystemModelRoleResolver(prisma, { loadRole }).resolve;
-  const resolveMemoryRole = dependencies.resolveMemoryRole ??
-    createMemoryUtilityModelRoleResolver(prisma, { loadRole }).resolve;
   const resolveChatTitleRole = dependencies.resolveChatTitleRole ??
     createChatTitleModelRoleResolver(prisma, loadRole).resolve;
   const resolveMcpGuardRole = dependencies.resolveMcpGuardRole ?? createMcpGuardModelRoleResolver(prisma, loadRole).resolve;
@@ -688,31 +683,7 @@ export function createAdminSystemModelPolicyService(
         ...serializeAdminAnswerModel(policy.embeddingProviderModel as AdminAnswerModelRow),
         available: embeddingCandidates.some((candidate) => candidate.id === policy.embeddingProviderModelId)
       } : null;
-      const [memoryPolicy, memoryResolution] = await Promise.all([
-        prisma.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" }, include: {
-          providerModel: { include: {
-            activeCredentialChecks: { select: { connectionVersion: true, credentialId: true,
-              credentialVersionId: true, evidence: true, modelVersion: true, status: true } },
-            connection: { include: { defaultCredential: {
-              include: { activeVersion: { select: { id: true, revokedAt: true } } }
-            } } }
-          } }
-        } }),
-        resolveMemoryRole()
-      ]);
-      if (!memoryPolicy) throw new Error("installation_memory_utility_policy_missing");
       return {
-        memoryPolicy: {
-          assignmentSource: memoryPolicy.assignmentSource.toLowerCase() as AdminSystemModelPolicyCatalog["memoryPolicy"]["assignmentSource"],
-          model: memoryPolicy.providerModel ? {
-            ...serializeSystemModel(memoryPolicy.providerModel as SystemModelRow),
-            available: memoryResolution.ok && memoryResolution.providerModelId === memoryPolicy.providerModelId &&
-              memoryResolution.policyVersion === memoryPolicy.version
-          } : null,
-          reasoningEffort: memoryPolicy.reasoningEffort,
-          recommendations: await listMemoryModelRecommendations(prisma, models, loadRole),
-          version: memoryPolicy.version
-        },
         candidates: deployments.filter((model) => model.structuredOutput === "verified" &&
           model.forcedToolCall === "verified"),
         titleCandidates: deployments.filter((model) => model.structuredOutput === "verified"),
@@ -808,67 +779,6 @@ export function createAdminSystemModelPolicyService(
           version: policy.version
         }
       };
-    },
-
-    async updateMemory(input: Readonly<{
-      expectedVersion: number;
-      providerModelId: string | null;
-      reasoningEffort: string | null;
-      userId: string;
-      /** Automation only adopts a never-assigned role; explicit clears survive. */
-      assignmentSource?: "BOOTSTRAP" | "OPERATOR";
-      recommendationId?: string;
-    }>): Promise<void> {
-      try {
-        await prisma.$transaction(async (tx) => {
-          const [policy] = await tx.$queryRaw<Array<{ version: number; assignmentSource: string }>>(Prisma.sql`
-            SELECT version, "assignmentSource" FROM "MemoryUtilityModelPolicy"
-            WHERE id = 'installation' FOR UPDATE
-          `);
-          if (!policy) throw new Error("installation_memory_utility_policy_missing");
-          if (policy.version !== input.expectedVersion ||
-            input.assignmentSource === "BOOTSTRAP" && policy.assignmentSource !== "UNASSIGNED") {
-            throw new AdminSystemModelPolicyServiceError("system_model_policy_stale");
-          }
-          if (!await tx.user.findFirst({ select: { id: true },
-            where: { id: input.userId, role: "admin", status: "active" } })) {
-            throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-          }
-          if (input.providerModelId === null && input.reasoningEffort !== null) {
-            throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
-          }
-          if (input.recommendationId && input.providerModelId === null) {
-            throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-          }
-          if (input.providerModelId !== null) {
-            const role = await loadRole(tx, { providerModelId: input.providerModelId });
-            if (!systemModelRoleEligible(role, "memory")) {
-              throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-            }
-            if (input.reasoningEffort !== null && !supportsReasoningEffort(role, input.reasoningEffort)) {
-              throw new AdminSystemModelPolicyServiceError("system_model_policy_reasoning_unavailable");
-            }
-            if (input.recommendationId && !memoryRecommendationMatches(role, input.recommendationId, input.reasoningEffort) ||
-              input.assignmentSource === "BOOTSTRAP" && !input.recommendationId) {
-              throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-            }
-          }
-          await tx.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-            providerModelId: input.providerModelId, reasoningEffort: input.reasoningEffort,
-            assignmentSource: input.assignmentSource ?? "OPERATOR", updatedByUserId: input.userId,
-            version: { increment: 1 }
-          } });
-        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 10_000, timeout: 30_000 });
-      } catch (error) {
-        if (error instanceof ProviderAdmissionError ||
-          error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
-          throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
-        }
-        if (isPolicyWriteConflict(error)) {
-          throw new AdminSystemModelPolicyServiceError("system_model_policy_stale");
-        }
-        throw error;
-      }
     },
 
     async verifyRole(input: Readonly<{

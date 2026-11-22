@@ -21,8 +21,6 @@ function transactional<T extends Record<string, unknown>>(db: T): T & {
   const transaction = Object.assign({
     $executeRaw: vi.fn(async () => 0),
     $queryRaw: vi.fn(async () => [{ id: "installation" }]),
-    memoryExecutionBinding: { count: vi.fn(async () => 0) },
-    memoryUtilityModelPolicy: { count: vi.fn(async () => 0), findUnique: vi.fn(async () => null) },
     publishedImageModel: { count: vi.fn(async () => 0) },
     systemModelPolicy: { findUnique: vi.fn(async () => null) },
     chatTitleGeneration: { count: vi.fn(async () => 0) }
@@ -339,9 +337,8 @@ describe("Prisma admin provider repository", () => {
         updateMany: vi.fn(async () => ({ count: 0 }))
       },
       searchIntegrationRevision: { count: vi.fn(async () => kind === "search_revision_references" ? 2 : 0) },
-      memoryUtilityModelPolicy: { count: vi.fn(async () => kind === "system_model" ? 1 : 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
-      systemModelPolicy: { count: vi.fn(async () => 0) },
+      systemModelPolicy: { count: vi.fn(async () => kind === "system_model" ? 1 : 0) },
       userSettings: { count: vi.fn(async () => 0) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -380,39 +377,6 @@ describe("Prisma admin provider repository", () => {
       status: "conflict"
     });
     expect(db.publishedImageModel.count).toHaveBeenCalledWith({ where: { providerModelId: "model-1" } });
-    expect(remove).not.toHaveBeenCalled();
-  });
-
-  it("blocks provider model deletion while a live or recoverable Memory call retains it", async () => {
-    const remove = vi.fn(async () => ({}));
-    const countMemory = vi.fn(async () => 2);
-    const db = transactional({
-      accessGrant: { count: vi.fn(async () => 0) },
-      assistantDefinition: { count: vi.fn(async () => 0) },
-      chat: { count: vi.fn(async () => 0) },
-      memoryExecutionBinding: { count: countMemory },
-      modelPolicy: { count: vi.fn(async () => 0) },
-      providerModel: {
-        delete: remove,
-        findUnique: vi.fn(async () => ({ enabled: false, templateKey: null }))
-      },
-      chatPdfAttachmentPreparation: { count: vi.fn().mockResolvedValue(0) },
-      providerRunBinding: {
-        count: vi.fn(async () => 0),
-        updateMany: vi.fn(async () => ({ count: 0 }))
-      },
-      searchIntegrationRevision: { count: vi.fn(async () => 0) },
-      searchStrategy: { count: vi.fn(async () => 0) },
-      systemModelPolicy: { count: vi.fn(async () => 0) },
-      userSettings: { count: vi.fn(async () => 0) }
-    });
-    const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
-
-    await expect(repository.deleteModel("model-1")).resolves.toEqual({
-      blockers: [{ count: 2, kind: "memory_bindings" }],
-      status: "conflict"
-    });
-    expect(countMemory).toHaveBeenCalledWith({ where: { providerModelId: "model-1" } });
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -739,7 +703,7 @@ describe("Prisma admin provider repository", () => {
       | { strings?: readonly string[] }
       | undefined;
     const cleanupSql = cleanupQuery?.strings?.join(" ") ?? "";
-    expect(cleanupSql).toContain('FROM "MemoryExecutionBinding"');
+    expect(cleanupSql).toContain('FROM "ProviderRunBinding"');
     expect(createSearchOption).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: scenario.optionRowId,
@@ -1123,7 +1087,6 @@ describe("Prisma admin provider repository", () => {
         draftConfig: candidate().connection.configuration, draftVersion: 1, family: "openrouter", id: "connection-1" })) },
       providerModel: { findFirst: vi.fn(async () => ({ activeConfig: candidate().model.configuration, activeVersion: 6,
         displayName: "Model", draftConfig: candidate().model.configuration, draftVersion: 7, id: "model-1" })) },
-      memoryUtilityModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-1" })) },
       systemModelPolicy: { findUnique: vi.fn(async () => ({ providerModelId: "model-2", chatTitleProviderModelId: "model-1",
         researchResearcherProviderModelId: "model-1", researchVerifierProviderModelId: "model-1",
         visionProviderModelId: null, chatPdfProviderModelId: "model-1", chatPdfNativeProviderModelId: "model-3" })) }
@@ -1131,7 +1094,7 @@ describe("Prisma admin provider repository", () => {
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
     const loaded = await repository.loadModelActivationCandidate({ connectionId: "connection-1", modelId: "model-1" });
     expect(loaded?.model).toMatchObject({ activeConfiguration: candidate().model.configuration,
-      assignedRoles: ["memory", "chat_titles", "research_researcher", "research_verifier", "chat_pdf"] });
+      assignedRoles: ["chat_titles", "research_researcher", "research_verifier", "chat_pdf"] });
     expect(db.systemModelPolicy.findUnique).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({ researchResearcherProviderModelId: true, researchVerifierProviderModelId: true }), where: { id: "installation" } }));
   });
 
@@ -1266,7 +1229,6 @@ describe("Prisma admin provider repository", () => {
       searchOption: { count: vi.fn(async () => 0) },
       searchStrategy: { count: vi.fn(async () => 0) },
       systemModelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
-      memoryUtilityModelPolicy: { updateMany: vi.fn(async () => ({ count: 1 })) },
       userSettings: { updateMany: vi.fn(async () => ({ count: 1 })) }
     });
     const repository = createPrismaAdminProviderRepository(db as unknown as PrismaClient);
@@ -1275,16 +1237,6 @@ describe("Prisma admin provider repository", () => {
       status: "deleted"
     });
     expect(deleteConnection).toHaveBeenCalledWith({ where: { id: "connection-1" } });
-    expect(db.memoryUtilityModelPolicy.updateMany).toHaveBeenCalledWith({
-      data: {
-        providerModelId: null,
-        reasoningEffort: null,
-        assignmentSource: "OPERATOR",
-        updatedByUserId: null,
-        version: { increment: 1 }
-      },
-      where: { providerModelId: { in: ["model-1"] } }
-    });
     expect(db.userSettings.updateMany).toHaveBeenCalledWith({
       data: { defaultProviderModelId: null },
       where: { defaultProviderModelId: { in: ["model-1"] } }

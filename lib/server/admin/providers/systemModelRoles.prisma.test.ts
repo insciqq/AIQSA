@@ -6,10 +6,6 @@ import { createAdminSystemModelPolicyService } from "./systemModelPolicyService"
 import { createPrismaAdminProviderRepository } from "./prismaRepository";
 import { loadInstallationAnswerProviderRole } from "../../providerRuntime/admission";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
-import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
-import { resolveCurrentMemoryUtilityPolicy } from "../../memory/execution/policy";
-import { adoptMemoryModelRecommendation } from "../../bootstrap/memoryRecommendationAdoption";
-import { MEMORY_MODEL_RECOMMENDATIONS } from "../../memory/modelRecommendations";
 import { structuredOutputVerificationEvidence } from "../../providers/structuredOutputEvidence";
 import { createChatTitleModelRoleResolver } from "../../providerRuntime/chatTitleModelRole";
 import { createVisionModelRoleResolver } from "../../providerRuntime/visionModelRole";
@@ -21,13 +17,10 @@ import { createDecisionModelRoleResolver } from "../../providerRuntime/decisionM
 
 afterAll(() => prisma.$disconnect());
 
-type MemoryRecommendation = typeof MEMORY_MODEL_RECOMMENDATIONS[number];
-
 async function fixture(run: (input: {
-  db: PrismaClient; adminId: string; titles: string; memory: string; vision: string; embedding: string; reranker: string;
-  addMemoryModel: (recommendation: MemoryRecommendation) => Promise<string>;
+  db: PrismaClient; adminId: string; titles: string; system: string; vision: string; embedding: string; reranker: string;
   addDecisionModel: () => Promise<string>;
-}) => Promise<void>, qualifiedMemory = false) {
+}) => Promise<void>) {
   const rolledBack = new Error("fixture_rollback");
   try {
     await prisma.$transaction(async (tx) => {
@@ -39,34 +32,26 @@ async function fixture(run: (input: {
       } }) as unknown as PrismaClient;
       const adminId = randomUUID();
       await tx.user.create({ data: { id: adminId, displayName: "Role test administrator", role: "admin", status: "active" } });
-      async function model(purpose: "titles" | "memory" | "vision" | "embedding" | "reranker" | "decision", suppliedRecommendation?: MemoryRecommendation) {
+      // `system`: an answer deployment with verified structured output and forced tool calls, as the System model needs.
+      async function model(purpose: "titles" | "system" | "vision" | "embedding" | "reranker" | "decision") {
         const id = randomUUID();
-        const recommendation = suppliedRecommendation ?? (qualifiedMemory && purpose === "memory"
-          ? MEMORY_MODEL_RECOMMENDATIONS.find((entry) => entry.id === "terra-low-memory-v1") : undefined);
-        const family = recommendation?.adapterKind === "deepseek_responses_native" ? "deepseek"
-          : recommendation?.adapterKind === "gemini_interactions_native" ? "gemini"
-          : purpose === "reranker" || purpose === "decision" || recommendation?.adapterKind === "openrouter_chat_completions" ? "openrouter" : "openai_compatible";
-        const answer = purpose === "titles" || purpose === "memory" || purpose === "vision";
+        const family = purpose === "reranker" || purpose === "decision" ? "openrouter" : "openai_compatible";
+        const answer = purpose === "titles" || purpose === "system" || purpose === "vision";
         const modelClass = purpose === "embedding" ? "embedding" : purpose === "reranker" ? "reranker" : purpose === "decision" ? "decision" : "answer";
-        const adapterKind = recommendation?.adapterKind ?? (answer ? "openai_responses_compatible" : purpose === "embedding" ? "openai_embeddings_compatible" : purpose === "decision" ? "openrouter_decisions" : "openrouter_rerank");
+        const adapterKind = answer ? "openai_responses_compatible" : purpose === "embedding" ? "openai_embeddings_compatible" : purpose === "decision" ? "openrouter_decisions" : "openrouter_rerank";
         const capabilities = { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false,
-          vision: purpose === "vision", toolCalling: purpose === "memory", streaming: answer,
-          ...(recommendation ? { reasoning: true, defaultReasoningEffort: recommendation.reasoningEffort,
-            reasoningEfforts: recommendation.reasoningEffort === "none" ? ["none", "high"] : ["low", "medium", "high"],
-            contextWindow: 128000, maxOutputTokens: 8192 } : {}) };
-        const selectedProviders = purpose === "decision" ? ["typesafe"] : purpose === "reranker" ? ["Together"]
-          : recommendation && "openRouterProvider" in recommendation ? [recommendation.openRouterProvider] : [];
+          vision: purpose === "vision", toolCalling: purpose === "system", streaming: answer };
+        const selectedProviders = purpose === "decision" ? ["typesafe"] : purpose === "reranker" ? ["Together"] : [];
         const configuration = { adapterKind, answerSelectable: answer, modelClass,
-          capabilities, defaultParams: recommendation ? { maxOutputTokens: 8192 } : {},
-          upstreamModelId: recommendation?.upstreamModelId ?? (purpose === "reranker" ? "qwen/qwen3-reranker-8b" : purpose === "decision" ? JEV_MODEL_ID : "fixture"),
+          capabilities, defaultParams: {},
+          upstreamModelId: purpose === "reranker" ? "qwen/qwen3-reranker-8b" : purpose === "decision" ? JEV_MODEL_ID : "fixture",
           ...(selectedProviders.length ? { openRouterRouting: { mode: "only_selected", providers: selectedProviders } } : {}),
           ...(purpose === "embedding" ? { embedding: { nativeDimension: 1024, targetDimension: 1024, supportsMrl: false,
             providerFamily: family, queryInstructionTemplate: null } } : {}) };
         const connection = await tx.providerConnection.create({ data: { id: randomUUID(), displayName: purpose, family,
           enabled: true, activeVersion: 1, activatedAt: new Date(), activeConfig: {
             allowPrivateNetwork: false, apiRoot: family === "openrouter" ? "https://openrouter.ai/api/v1"
-              : family === "deepseek" ? "https://api.deepseek.com" : family === "gemini"
-                ? "https://generativelanguage.googleapis.com/v1beta" : "https://provider.example.test/v1",
+              : "https://provider.example.test/v1",
             authenticationMode: "bearer", responseTimeoutMs: 300_000
           } } });
         const credential = await tx.providerCredential.create({ data: { id: randomUUID(), connectionId: connection.id,
@@ -82,11 +67,11 @@ async function fixture(run: (input: {
         const evidence = { method: "tiny_generation", detail: "ok", selectedProviders,
           upstreamModelId: configuration.upstreamModelId,
           compatibility: { probeVersion: 1, modelAccess: "verified", streaming: answer ? "verified" : "not_supported",
-            usage: "not_supported", directPdf: "not_supported", structuredOutput: purpose === "memory" || purpose === "titles" ? "verified" : "not_supported",
-            forcedToolCall: purpose === "memory" ? "verified" : "not_supported", vision: purpose === "vision" ? "verified" : "not_supported" },
-          ...(purpose === "memory" || purpose === "titles"
+            usage: "not_supported", directPdf: "not_supported", structuredOutput: purpose === "system" || purpose === "titles" ? "verified" : "not_supported",
+            forcedToolCall: purpose === "system" ? "verified" : "not_supported", vision: purpose === "vision" ? "verified" : "not_supported" },
+          ...(purpose === "system" || purpose === "titles"
             ? { structuredOutput: structuredOutputVerificationEvidence(adapterKind, configuration.upstreamModelId) } : {}),
-          ...(purpose === "memory" ? { forcedToolCall: proof } : {}),
+          ...(purpose === "system" ? { forcedToolCall: proof } : {}),
           ...(purpose === "vision" ? { visionInput: proof } : {}),
           ...(purpose === "embedding" ? { embedding: { probeVersion: 1, document: true, query: true, dimensions: 1024 } } : {}),
           ...(purpose === "decision" ? { decisions: { probeVersion: 1, adapterKind: "openrouter_decisions",
@@ -97,9 +82,8 @@ async function fixture(run: (input: {
           status: "available", evidence, checkedAt: new Date() } });
         return id;
       }
-      await run({ db, adminId, titles: await model("titles"), memory: await model("memory"), vision: await model("vision"),
-        embedding: await model("embedding"), reranker: await model("reranker"),
-        addMemoryModel: (recommendation) => model("memory", recommendation), addDecisionModel: () => model("decision") });
+      await run({ db, adminId, titles: await model("titles"), system: await model("system"), vision: await model("vision"),
+        embedding: await model("embedding"), reranker: await model("reranker"), addDecisionModel: () => model("decision") });
       await tx.$executeRawUnsafe("SET CONSTRAINTS ALL IMMEDIATE");
       throw rolledBack;
     }, { timeout: 30_000 });
@@ -108,7 +92,7 @@ async function fixture(run: (input: {
 
 describe("persisted independent System Model roles", () => {
   it("persists independent Vision assignment, clear and exact evidence revocation", async () => {
-    await fixture(async ({ db, adminId, vision, memory }) => {
+    await fixture(async ({ db, adminId, vision, system }) => {
       await db.systemModelPolicy.update({ where: { id: "installation" }, data: {
         visionProviderModelId: null, visionReasoningEffort: null,
         chatPdfProviderModelId: vision, chatPdfReasoningEffort: null
@@ -121,7 +105,7 @@ describe("persisted independent System Model roles", () => {
       expect(await resolver.resolve()).toMatchObject({ ok: true, providerModelId: vision });
       expect((await service.list()).visionAnalysisAvailable).toBe(true);
       current = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await expect(service.update({ userId: adminId, expectedVersion: current.version, visionProviderModelId: memory, visionReasoningEffort: null }))
+      await expect(service.update({ userId: adminId, expectedVersion: current.version, visionProviderModelId: system, visionReasoningEffort: null }))
         .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
       await db.providerModel.update({ where: { id: vision }, data: { enabled: false } });
       expect(await resolver.resolve()).toMatchObject({ ok: false, code: "system_model_unavailable" });
@@ -158,7 +142,6 @@ describe("persisted independent System Model roles", () => {
     await fixture(async ({ db, adminId, addDecisionModel }) => {
       const id = await addDecisionModel();
       const before = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      const memory = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       const service = createAdminSystemModelPolicyService(db);
       await service.update({ expectedVersion: before.version, userId: adminId,
         decisionProviderModelId: id, decisionFeatures: { skillSuggestions: true, skillCatalogRelevance: false } });
@@ -168,7 +151,6 @@ describe("persisted independent System Model roles", () => {
       const saved = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
       expect(saved).toMatchObject({ providerModelId: before.providerModelId, rerankerProviderModelId: before.rerankerProviderModelId,
         decisionConfiguredAt: expect.any(Date), decisionFeaturesJson: { skillSuggestions: true, skillCatalogRelevance: false } });
-      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(memory);
       await expect(service.update({ expectedVersion: before.version, userId: adminId, decisionProviderModelId: null }))
         .rejects.toMatchObject({ code: "system_model_policy_stale" });
       if (!admitted.ok) throw new Error("decision_fixture_admission_failed");
@@ -181,152 +163,6 @@ describe("persisted independent System Model roles", () => {
       });
     });
   });
-  it.each(["INHERITED", "BOOTSTRAP", "UNASSIGNED"] as const)("adopts a qualified Memory target once from %s without altering System or later overrides", async (assignmentSource) => {
-    await fixture(async ({ db, adminId, memory, titles }) => {
-      const system = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-        providerModelId: assignmentSource === "UNASSIGNED" ? null : titles, reasoningEffort: null, assignmentSource,
-        recommendationAdoptionVersion: 0, recommendationAdoptionReason: null
-      } });
-      const before = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await adoptMemoryModelRecommendation(db);
-      const adopted = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      expect(adopted).toMatchObject({ providerModelId: memory, reasoningEffort: "low", assignmentSource: "BOOTSTRAP",
-        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "applied", version: before.version + 1 });
-      await adoptMemoryModelRecommendation(db);
-      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(adopted);
-      const service = createAdminSystemModelPolicyService(db);
-      expect((await service.list()).memoryPolicy.recommendations?.find((entry) =>
-        entry.id === "terra-low-memory-v1" && entry.providerModelId === memory))
-        .toMatchObject({ providerModelId: memory, unavailableReason: null });
-      await service.updateMemory({ expectedVersion: adopted.version, providerModelId: null, reasoningEffort: null, userId: adminId });
-      const cleared = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await adoptMemoryModelRecommendation(db);
-      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(cleared);
-      expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(system);
-    }, true);
-  });
-
-  it("preserves manual assignments and explicit clears even on first recommendation adoption", async () => {
-    await fixture(async ({ db, memory }) => {
-      for (const recommendationAdoptionVersion of [0, 1]) for (const providerModelId of [memory, null]) {
-        await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-          providerModelId, reasoningEffort: providerModelId ? "high" : null, assignmentSource: "OPERATOR",
-          recommendationAdoptionVersion, recommendationAdoptionReason: recommendationAdoptionVersion ? "preserved_operator" : null
-        } });
-        const before = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-        await adoptMemoryModelRecommendation(db);
-        expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
-          providerModelId, reasoningEffort: before.reasoningEffort, assignmentSource: "OPERATOR", version: before.version,
-          recommendationAdoptionVersion: 2, recommendationAdoptionReason: "preserved_operator"
-        });
-      }
-    }, true);
-  });
-
-  it("records unavailable qualification without replacing the inherited model or claiming readiness", async () => {
-    await fixture(async ({ db, memory }) => {
-      await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-        providerModelId: memory, reasoningEffort: null, assignmentSource: "INHERITED",
-        recommendationAdoptionVersion: 0, recommendationAdoptionReason: null
-      } });
-      const before = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await adoptMemoryModelRecommendation(db);
-      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toMatchObject({
-        providerModelId: memory, version: before.version, assignmentSource: "INHERITED",
-        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "no_eligible_model"
-      });
-    });
-  });
-
-  it("upgrades the previous adoption once, preferring native Flash, both Gemini routes and GPT-6.1 Sol before Terra", async () => {
-    await fixture(async ({ db, memory, addMemoryModel }) => {
-      const targets = new Map<string, string>([["terra-low-memory-v1", memory]]);
-      for (const recommendation of MEMORY_MODEL_RECOMMENDATIONS) {
-        if (!targets.has(recommendation.id)) targets.set(recommendation.id, await addMemoryModel(recommendation));
-      }
-      const expectedOrder = ["deepseek-flash-none-memory-v1", "gemini-flash-native-low-memory-v2",
-        "gemini-flash-openrouter-low-memory-v2", "sol-low-memory-v1", "terra-low-memory-v1"];
-      for (const id of expectedOrder) {
-        expect((await createAdminSystemModelPolicyService(db).list()).memoryPolicy.recommendations
-          ?.find((entry) => entry.id === id && entry.providerModelId === targets.get(id)), id)
-          .toMatchObject({ providerModelId: targets.get(id), unavailableReason: null });
-        await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-          providerModelId: memory, reasoningEffort: "low", assignmentSource: "BOOTSTRAP",
-          recommendationAdoptionVersion: 1, recommendationAdoptionReason: "applied"
-        } });
-        await adoptMemoryModelRecommendation(db);
-        const selected = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-        expect(selected).toMatchObject({ providerModelId: targets.get(id), assignmentSource: "BOOTSTRAP",
-          reasoningEffort: id === "deepseek-flash-none-memory-v1" ? "none" : "low",
-          recommendationAdoptionVersion: 2, recommendationAdoptionReason: "applied" });
-        await db.providerModel.update({ where: { id: targets.get(id)! }, data: { enabled: false } });
-        await adoptMemoryModelRecommendation(db);
-        expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(selected);
-      }
-    }, true);
-  });
-
-  it("consumes the upgrade without selecting an unchecked key or retrying after later verification", async () => {
-    await fixture(async ({ db, memory }) => {
-      const checks = await db.providerModelCredentialCheck.findMany({ where: { providerModelId: memory } });
-      await db.providerModelCredentialCheck.deleteMany({ where: { providerModelId: memory } });
-      await db.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: {
-        providerModelId: null, reasoningEffort: null, assignmentSource: "UNASSIGNED",
-        recommendationAdoptionVersion: 1, recommendationAdoptionReason: "no_eligible_model"
-      } });
-      await adoptMemoryModelRecommendation(db);
-      const skipped = await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      expect(skipped).toMatchObject({ providerModelId: null, reasoningEffort: null, assignmentSource: "UNASSIGNED",
-        recommendationAdoptionVersion: 2, recommendationAdoptionReason: "no_eligible_model" });
-      await db.providerModelCredentialCheck.createMany({ data: checks.map((check) => ({ ...check,
-        evidence: check.evidence as Prisma.InputJsonValue,
-        latestRefreshError: check.latestRefreshError === null ? Prisma.DbNull : check.latestRefreshError as Prisma.InputJsonValue
-      })) });
-      expect((await createAdminSystemModelPolicyService(db).list()).memoryPolicy.recommendations
-        ?.find((entry) => entry.id === "terra-low-memory-v1" && entry.providerModelId === memory))
-        .toMatchObject({ unavailableReason: null });
-      await adoptMemoryModelRecommendation(db);
-      expect(await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(skipped);
-    }, true);
-  });
-
-  it("keeps Memory independent through System edits, explicit clear, capability loss and provider deletion", async () => {
-    await fixture(async ({ db, adminId, memory, titles }) => {
-      const service = createAdminSystemModelPolicyService(db);
-      const originalSystem = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      const version = async () => (await db.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
-      const initialVersion = await version();
-      await service.updateMemory({ expectedVersion: initialVersion, providerModelId: memory, reasoningEffort: null, userId: adminId });
-      const admitted = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
-      expect(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
-      expect(await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(originalSystem);
-      await service.update({ expectedVersion: originalSystem.version, chatTitleProviderModelId: titles,
-        chatTitleReasoningEffort: null, userId: adminId });
-      const afterSystemEdit = await resolveCurrentMemoryUtilityPolicy(db, adminId, { embeddingProviderModelId: null });
-      expect(afterSystemEdit.targets.get("MEMORY_STATEMENT_CLASSIFY")).toEqual(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY"));
-      await expect(service.updateMemory({ expectedVersion: initialVersion, providerModelId: null,
-        reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_stale" });
-      await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: titles,
-        reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
-      await service.updateMemory({ expectedVersion: await version(), providerModelId: null, reasoningEffort: null, userId: adminId });
-      expect((await service.list()).memoryPolicy).toMatchObject({ model: null, assignmentSource: "operator" });
-      await expect(service.updateMemory({ expectedVersion: await version(), providerModelId: memory,
-        reasoningEffort: null, userId: adminId, assignmentSource: "BOOTSTRAP" })).rejects.toMatchObject({ code: "system_model_policy_stale" });
-      expect(admitted.targets.get("MEMORY_STATEMENT_CLASSIFY")?.snapshot.providerModelId).toBe(memory);
-      await service.updateMemory({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
-      await db.providerModel.update({ where: { id: memory }, data: { enabled: false } });
-      expect(await createMemoryUtilityModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
-      expect((await service.list()).memoryPolicy.model).toMatchObject({ id: memory, available: false });
-      const repository = createPrismaAdminProviderRepository(db);
-      expect(await repository.deleteModel(memory)).toMatchObject({ status: "conflict", blockers: [{ count: 1, kind: "system_model" }] });
-      const model = await db.providerModel.findUniqueOrThrow({ where: { id: memory } });
-      expect(await repository.deleteConnection(model.connectionId)).toEqual({ status: "deleted" });
-      expect((await service.list()).memoryPolicy).toMatchObject({ model: null, assignmentSource: "operator" });
-      expect((await service.list()).policy.chatTitleModel?.id).toBe(titles);
-    });
-  });
-
   it("provisions helpers only through the exact default key and keeps repeat checks idempotent", async () => {
     await fixture(async ({ db, reranker }) => {
       const target = await db.providerModel.findUniqueOrThrow({ where: { id: reranker }, include: { connection: true } });
@@ -354,20 +190,20 @@ describe("persisted independent System Model roles", () => {
   });
 
   it("saves roles independently and keeps the document model when the System Model is cleared", async () => {
-    await fixture(async ({ db, adminId, memory, vision, reranker }) => {
+    await fixture(async ({ db, adminId, system, vision, reranker }) => {
       const service = createAdminSystemModelPolicyService(db);
       const version = async () => (await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
-      await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+      await service.update({ expectedVersion: await version(), providerModelId: system, reasoningEffort: null, userId: adminId });
       await service.update({ expectedVersion: await version(), chatPdfProviderModelId: vision, chatPdfReasoningEffort: null,
         userId: adminId });
       await service.update({ expectedVersion: await version(), rerankerProviderModelId: reranker, userId: adminId });
       const catalog = await service.list();
-      expect(catalog.candidates.map((item) => item.id)).toContain(memory);
+      expect(catalog.candidates.map((item) => item.id)).toContain(system);
       expect(catalog.candidates.map((item) => item.id)).not.toContain(vision);
       expect(catalog.documentCandidates.map((item) => item.id)).toContain(vision);
-      expect(catalog.documentCandidates.map((item) => item.id)).not.toContain(memory);
+      expect(catalog.documentCandidates.map((item) => item.id)).not.toContain(system);
       expect(catalog.rerankerCandidates.map((item) => item.id)).toContain(reranker);
-      expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: memory });
+      expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: system });
       expect(await createChatPdfModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: vision });
       await expect(service.update({ expectedVersion: await version(), providerModelId: vision, reasoningEffort: null, userId: adminId }))
         .rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
@@ -378,22 +214,22 @@ describe("persisted independent System Model roles", () => {
   });
 
   it("preserves unrelated evidence on role checks and fences changed versions or revoked credentials", async () => {
-    await fixture(async ({ db, adminId, memory, vision }) => {
+    await fixture(async ({ db, adminId, system, vision }) => {
       const repository = createPrismaAdminProviderRepository(db);
-      const model = await db.providerModel.findUniqueOrThrow({ where: { id: memory }, include: { connection: true } });
+      const model = await db.providerModel.findUniqueOrThrow({ where: { id: system }, include: { connection: true } });
       const credentialId = model.connection.defaultCredentialId!;
-      const candidate = await repository.loadActiveRefreshCandidate({ connectionId: model.connectionId, credentialId, providerModelId: memory });
+      const candidate = await repository.loadActiveRefreshCandidate({ connectionId: model.connectionId, credentialId, providerModelId: system });
       expect(candidate).not.toBeNull();
-      const old = await db.providerModelCredentialCheck.findFirstOrThrow({ where: { providerModelId: memory } });
+      const old = await db.providerModelCredentialCheck.findFirstOrThrow({ where: { providerModelId: system } });
       const evidence = old.evidence as unknown as AdminProviderTestEvidence;
       expect(await repository.storeActiveRefreshCas({ candidate: candidate!, capabilityRole: "vision", checkedAt: new Date(),
         evidence: { ...evidence, compatibility: { ...evidence.compatibility!, vision: "not_supported" } }, status: "available" })).toBe("stored");
-      expect(await loadInstallationAnswerProviderRole(db, { providerModelId: memory })).toMatchObject({
+      expect(await loadInstallationAnswerProviderRole(db, { providerModelId: system })).toMatchObject({
         verifiedStructuredOutput: true, verifiedForcedToolCall: true
       });
       const service = createAdminSystemModelPolicyService(db);
       const policy = await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-      await service.update({ expectedVersion: policy.version, providerModelId: memory, reasoningEffort: null, userId: adminId });
+      await service.update({ expectedVersion: policy.version, providerModelId: system, reasoningEffort: null, userId: adminId });
       await db.providerConnection.update({ where: { id: model.connectionId }, data: { activeVersion: 2 } });
       expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
       expect(await repository.storeActiveRefreshCas({ candidate: candidate!, capabilityRole: "memory", checkedAt: new Date(),
@@ -406,31 +242,8 @@ describe("persisted independent System Model roles", () => {
   });
 });
 
-it("admits one concurrent Memory policy writer without changing the System policy", async () => {
-  const original = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  const originalSystem = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  const adminId = randomUUID();
-  await prisma.user.create({ data: { id: adminId, displayName: "Concurrent policy administrator", role: "admin", status: "active" } });
-  try {
-    const service = createAdminSystemModelPolicyService(prisma);
-    const results = await Promise.allSettled([1, 2].map(() => service.updateMemory({
-      expectedVersion: original.version, providerModelId: null, reasoningEffort: null, userId: adminId
-    })));
-    expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
-    expect(results.find(({ status }) => status === "rejected")).toMatchObject({
-      reason: { code: "system_model_policy_stale" }
-    });
-    expect(await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } }))
-      .toMatchObject({ providerModelId: null, reasoningEffort: null, version: original.version + 1, assignmentSource: "OPERATOR" });
-    expect(await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).toEqual(originalSystem);
-  } finally {
-    await prisma.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: original });
-    await prisma.user.delete({ where: { id: adminId } });
-  }
-});
-
 it("adopts titles once, rejects stale setup and preserves an explicit clear", async () => {
-  await fixture(async ({ db, adminId, titles, memory }) => {
+  await fixture(async ({ db, adminId, titles, system }) => {
     await db.systemModelPolicy.update({ where: { id: "installation" }, data: {
       chatTitleProviderModelId: null, chatTitleReasoningEffort: null, chatTitleConfiguredAt: null
     } });
@@ -441,9 +254,9 @@ it("adopts titles once, rejects stale setup and preserves an explicit clear", as
       reasoningEffort: null, userId: adminId })).toBe(true);
     expect(await policy()).toMatchObject({ chatTitleProviderModelId: titles, chatTitleConfiguredAt: expect.any(Date),
       providerModelId: original.providerModelId, version: original.version + 1 });
-    await expect(service.adoptChatTitle({ expectedVersion: original.version, providerModelId: memory,
+    await expect(service.adoptChatTitle({ expectedVersion: original.version, providerModelId: system,
       reasoningEffort: null, userId: adminId })).rejects.toMatchObject({ code: "system_model_policy_stale" });
-    expect(await service.adoptChatTitle({ expectedVersion: (await policy()).version, providerModelId: memory,
+    expect(await service.adoptChatTitle({ expectedVersion: (await policy()).version, providerModelId: system,
       reasoningEffort: null, userId: adminId })).toBe(false);
     await service.update({ expectedVersion: (await policy()).version, chatTitleProviderModelId: null,
       chatTitleReasoningEffort: null, userId: adminId });
@@ -455,10 +268,10 @@ it("adopts titles once, rejects stale setup and preserves an explicit clear", as
 });
 
 it("persists a structured-only title assignment, retains admitted identity and preserves an explicit clear", async () => {
-  await fixture(async ({ db, adminId, titles, memory }) => {
+  await fixture(async ({ db, adminId, titles, system }) => {
     const service = createAdminSystemModelPolicyService(db);
     const version = async () => (await db.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } })).version;
-    await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+    await service.update({ expectedVersion: await version(), providerModelId: system, reasoningEffort: null, userId: adminId });
     const priorVersion = await version();
     await service.update({ expectedVersion: priorVersion, chatTitleProviderModelId: titles, chatTitleReasoningEffort: null, userId: adminId });
     const admitted = await createChatTitleModelRoleResolver(db).resolve();
@@ -466,7 +279,7 @@ it("persists a structured-only title assignment, retains admitted identity and p
     const catalog = await service.list();
     expect(catalog.titleCandidates.map((model) => model.id)).toContain(titles);
     expect(catalog.candidates.map((model) => model.id)).not.toContain(titles);
-    expect(catalog.policy.systemModel?.id).toBe(memory);
+    expect(catalog.policy.systemModel?.id).toBe(system);
     expect(catalog.policy.chatTitleModel).toMatchObject({ id: titles, available: true });
     await expect(service.update({ expectedVersion: priorVersion, chatTitleProviderModelId: null, chatTitleReasoningEffort: null, userId: adminId }))
       .rejects.toMatchObject({ code: "system_model_policy_stale" });
@@ -475,7 +288,7 @@ it("persists a structured-only title assignment, retains admitted identity and p
     await expect(service.update({ expectedVersion: await version(), chatTitleProviderModelId: titles, chatTitleReasoningEffort: "max", userId: adminId }))
       .rejects.toMatchObject({ code: "system_model_policy_reasoning_unavailable" });
     await service.update({ expectedVersion: await version(), chatTitleProviderModelId: null, chatTitleReasoningEffort: null, userId: adminId });
-    await service.update({ expectedVersion: await version(), providerModelId: memory, reasoningEffort: null, userId: adminId });
+    await service.update({ expectedVersion: await version(), providerModelId: system, reasoningEffort: null, userId: adminId });
     expect(await createChatTitleModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
     expect(admitted).toMatchObject({ ok: true, providerModelId: titles });
     await service.update({ expectedVersion: await version(), chatTitleProviderModelId: titles, chatTitleReasoningEffort: null, userId: adminId });
@@ -483,6 +296,6 @@ it("persists a structured-only title assignment, retains admitted identity and p
     await db.providerCredentialVersion.update({ where: { id: admitted.role.snapshot.credentialVersionId! }, data: { revokedAt: new Date() } });
     expect(await createChatTitleModelRoleResolver(db).resolve()).toMatchObject({ ok: false });
     expect((await service.list()).policy.chatTitleModel).toMatchObject({ id: titles, available: false });
-    expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: memory });
+    expect(await createSystemModelRoleResolver(db).resolve()).toMatchObject({ ok: true, providerModelId: system });
   });
 });

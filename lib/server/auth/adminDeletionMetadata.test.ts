@@ -63,7 +63,7 @@ describe("admin deletion metadata", () => {
     ).toEqual({
       canDelete: true,
       reason: null,
-      summary: "2 private Memory or personal MCP records will be fenced and durably purged before the account is removed."
+      summary: "2 personal MCP records will be fenced and durably purged before the account is removed."
     });
 
     expect(

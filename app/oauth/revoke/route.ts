@@ -1,4 +1,4 @@
-import { defaultInboundMcpRevocationHandler } from "@/lib/server/memoryMcp/oauth/default";
+import { defaultInboundMcpRevocationHandler } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const runtime = "nodejs";
 

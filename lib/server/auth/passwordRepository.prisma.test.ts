@@ -92,83 +92,21 @@ function deferred() {
   return { promise, resolve };
 }
 
-/** One ACTIVE global Memory fact; account-security revocation must leave it untouched. */
-async function seedMemoryFact(userId: string): Promise<Readonly<{ factId: string; versionId: string }>> {
-  const scope = await prisma.memoryScope.create({
-    data: { scopeType: "GLOBAL_USER", userId }
-  });
-  const factId = randomUUID();
-  const versionId = randomUUID();
-  const eventId = randomUUID();
-  const statement = "Synthetic account-security fact.";
-  await prisma.$transaction(async (tx) => {
-    await tx.memoryFact.create({
-      data: {
-        canonicalKey: `account-security.${factId}`,
-        category: "about_you",
-        id: factId,
-        scopeId: scope.id,
-        state: "ORPHANED",
-        userId
-      }
-    });
-    await tx.memoryEvent.create({
-      data: {
-        actorType: "USER",
-        actorUserId: userId,
-        factId,
-        factVersionId: versionId,
-        id: eventId,
-        operation: "EXPLICIT_SAVE",
-        userId
-      }
-    });
-    await tx.memoryFactVersion.create({
-      data: {
-        category: "about_you",
-        confidence: 1,
-        createdByEventId: eventId,
-        directness: "DIRECT",
-        displayText: statement,
-        factId,
-        id: versionId,
-        importance: 1,
-        languageCode: "en",
-        modality: "STATE",
-        normalizedSearchText: statement.toLowerCase(),
-        pipelineVersion: "account-security-test-v1",
-        safetyClassificationState: "PENDING",
-        sensitivityClass: "NORMAL",
-        sourceMode: "EXPLICIT",
-        state: "ACTIVE",
-        structuredValue: { statement },
-        userId
-      }
-    });
-    await tx.memoryFact.update({
-      data: { currentVersionId: versionId, state: "ACTIVE" },
-      where: { id: factId }
-    });
-  });
-  return { factId, versionId };
-}
-
-async function expectMemoryFactIntact(fact: Readonly<{ factId: string; versionId: string }>) {
-  await expect(prisma.memoryFact.findUniqueOrThrow({
-    select: { currentVersionId: true, state: true },
-    where: { id: fact.factId }
-  })).resolves.toEqual({ currentVersionId: fact.versionId, state: "ACTIVE" });
-  await expect(prisma.memoryFactVersion.findUniqueOrThrow({
-    select: { contentPurgedAt: true, displayText: true, state: true },
-    where: { id: fact.versionId }
-  })).resolves.toEqual({
-    contentPurgedAt: null,
-    displayText: "Synthetic account-security fact.",
-    state: "ACTIVE"
+/** The user's Memory note; account-security revocation must leave it untouched. */
+async function seedMemoryNote(userId: string): Promise<void> {
+  await prisma.userMemoryNote.create({
+    data: { lastChangedBy: "USER", text: "Synthetic account-security note.", userId }
   });
 }
 
-/** Old Memory and Hub tokens are dead, and a new consent works again. */
+async function expectMemoryNoteIntact(userId: string) {
+  await expect(prisma.userMemoryNote.findUniqueOrThrow({
+    select: { revision: true, text: true },
+    where: { userId }
+  })).resolves.toEqual({ revision: 1, text: "Synthetic account-security note." });
+}
+
+/** Old Hub and Skills tokens are dead, and a new consent works again. */
 async function expectInboundMcpRevokedAndReconsentable(input: Readonly<{
   connections: Awaited<ReturnType<InboundMcpTestClient["connect"]>>[];
   mcp: InboundMcpTestClient;
@@ -184,7 +122,7 @@ async function expectInboundMcpRevokedAndReconsentable(input: Readonly<{
     select: { resourcePath: true, revokedAt: true, state: true },
     where: { userId: input.userId }
   });
-  expect(new Set(grants.map((grant) => grant.resourcePath))).toEqual(new Set(["/mcp", "/mcp/hub"]));
+  expect(new Set(grants.map((grant) => grant.resourcePath))).toEqual(new Set(["/mcp/skills", "/mcp/hub"]));
   expect(grants.every((grant) =>
     grant.state === "REVOKED" && grant.revokedAt?.getTime() === input.revokedAt.getTime()
   )).toBe(true);
@@ -263,7 +201,7 @@ describe("Prisma-backed password reset completion", () => {
     }
   });
 
-  it("revokes Memory and Hub inbound MCP grants with the reset while keeping Memory facts", async () => {
+  it("revokes Skills and Hub inbound MCP grants with the reset while keeping the Memory note", async () => {
     const target = await createResetFixture({ tokenCount: 1 });
     const other = await createResetFixture({ tokenCount: 0 });
     const mcp = await createInboundMcpTestClient(prisma, resetNow);
@@ -271,11 +209,11 @@ describe("Prisma-backed password reset completion", () => {
     const repository = createPrismaPasswordAuthRepository(prisma);
 
     try {
-      const fact = await seedMemoryFact(target.userId);
-      const memory = await mcp.connect(target.userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      await seedMemoryNote(target.userId);
+      const skills = await mcp.connect(target.userId, INBOUND_MCP_TEST_AUTHORITIES.skills);
       const hub = await mcp.connect(target.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
       // A consent approved before the reset must not be exchangeable after it.
-      const pendingMemoryCode = await pendingClient.approve(target.userId, INBOUND_MCP_TEST_AUTHORITIES.memory);
+      const pendingSkillsCode = await pendingClient.approve(target.userId, INBOUND_MCP_TEST_AUTHORITIES.skills);
       const bystander = await mcp.connect(other.userId, INBOUND_MCP_TEST_AUTHORITIES.hub);
       await expect(mcp.access(hub)).resolves.toBe(true);
       const [targetDevice, bystanderDevice] = await Promise.all([target.userId, other.userId].map((userId) =>
@@ -292,16 +230,16 @@ describe("Prisma-backed password reset completion", () => {
       // Whoever held the old password may have paired a computer: AIQSA Connect devices go too.
       await expect(prisma.connectDevice.findUnique({ where: { id: targetDevice!.id } })).resolves.toBeNull();
       await expect(prisma.connectDevice.findUnique({ where: { id: bystanderDevice!.id } })).resolves.not.toBeNull();
-      await expect(pendingClient.exchange(pendingMemoryCode)).resolves.toBeNull();
+      await expect(pendingClient.exchange(pendingSkillsCode)).resolves.toBeNull();
       await expectInboundMcpRevokedAndReconsentable({
-        connections: [memory, hub],
+        connections: [skills, hub],
         mcp,
         reason: "password_reset",
         revokedAt: resetNow,
         userId: target.userId
       });
       await expect(mcp.access(bystander)).resolves.toBe(true);
-      await expectMemoryFactIntact(fact);
+      await expectMemoryNoteIntact(target.userId);
     } finally {
       await deleteFixtures(target, other);
       await mcp.cleanup();
@@ -315,9 +253,9 @@ describe("Prisma-backed password reset completion", () => {
     const repository = createPrismaPasswordChangeRepository(prisma);
 
     try {
-      const fact = await seedMemoryFact(fixture.userId);
+      await seedMemoryNote(fixture.userId);
       const connections = [
-        await mcp.connect(fixture.userId, INBOUND_MCP_TEST_AUTHORITIES.memory),
+        await mcp.connect(fixture.userId, INBOUND_MCP_TEST_AUTHORITIES.skills),
         await mcp.connect(fixture.userId, INBOUND_MCP_TEST_AUTHORITIES.hub)
       ];
       const identity = await prisma.authIdentity.findUniqueOrThrow({ where: { id: fixture.identityId } });
@@ -351,7 +289,7 @@ describe("Prisma-backed password reset completion", () => {
         revokedAt: resetNow,
         userId: fixture.userId
       });
-      await expectMemoryFactIntact(fact);
+      await expectMemoryNoteIntact(fixture.userId);
     } finally {
       await deleteFixtures(fixture);
       await mcp.cleanup();

@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { anthropicStrictSchema, anthropicToolSchemas } from "./anthropicStrictSchema";
 import { anthropicMessagesToolBridge } from "../tools/bridges";
 import { fetchUrlTool } from "../tools/fetchUrlPlan";
-import { memoryFactExtractionTool } from "../memory/learning/extraction/prompt";
 import { analyzeImageTool } from "../tools/analyzeImage";
+import { complexStrictTool } from "./complexStrictTool.testFixtures";
 
 describe("Anthropic strict schema projection", () => {
   // A strict tool with bounds Anthropic does not take; `fetch_url` left strict schemas when it gained an optional `proxy`.
@@ -30,13 +30,14 @@ describe("Anthropic strict schema projection", () => {
     expect(projected).toMatchObject({ additionalProperties: false, type: "object" });
   });
 
-  it("retains the complete Memory declaration when its grammar exceeds the union limit", () => {
-    const original = JSON.stringify(memoryFactExtractionTool);
-    const wire = anthropicMessagesToolBridge.serializeTool(memoryFactExtractionTool).tool;
+  it("retains the complete declaration of a tool whose grammar exceeds the union limit", () => {
+    const tool = complexStrictTool();
+    const original = JSON.stringify(tool);
+    const wire = anthropicMessagesToolBridge.serializeTool(tool).tool;
     expect(wire.strict).toBe(false);
-    expect(wire.input_schema).toBe(memoryFactExtractionTool.inputSchema);
-    expect(JSON.stringify(memoryFactExtractionTool)).toBe(original);
-    expect(memoryFactExtractionTool.strict).toBe(true);
+    expect(wire.input_schema).toBe(tool.inputSchema);
+    expect(JSON.stringify(tool)).toBe(original);
+    expect(tool.strict).toBe(true);
   });
 
   it("budgets unions across all strict tools and keeps unrelated simple tools strict", () => {

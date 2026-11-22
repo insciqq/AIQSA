@@ -5,7 +5,6 @@ import {
   evaluateHealthRules,
   failedRunFindings,
   healthAttentionItems,
-  memoryRebuildFindings,
   readHealthCounterRows,
   type HealthAttentionConnection,
   type HealthCounterRows,
@@ -218,15 +217,6 @@ describe("new errors", () => {
   });
 });
 
-describe("Memory index rebuilds per owner", () => {
-  it("raises once one owner reaches the daily rebuild threshold, naming how many owners did", () => {
-    expect(memoryRebuildFindings({ maxPerOwner: 2, ownersAtThreshold: 0 })).toEqual([]);
-    expect(memoryRebuildFindings({ maxPerOwner: 5, ownersAtThreshold: 2 })).toEqual([
-      { atLeast: 3, code: "memory_index_rebuilds_repeated", maxPerOwner: 5, owners: 2 }
-    ]);
-  });
-});
-
 describe("failed runs", () => {
   const RUN_A = "1a2b3c4d-1111-4111-8111-111111111111";
   const load = {
@@ -296,8 +286,7 @@ describe("healthAttentionItems", () => {
     { code: "process_restarting", role: "memory_coordinator", starts: 4 },
     { code: "logs_dropped", lines: 1 },
     { code: "background_failures", subsystem: "knowledge", errors: 25 },
-    { code: "operation_timeouts_rising", operation: { kind: "tool", name: "vision" }, timeouts: 3, total: 8 },
-    { atLeast: 3, code: "memory_index_rebuilds_repeated", maxPerOwner: 5, owners: 2 }
+    { code: "operation_timeouts_rising", operation: { kind: "tool", name: "vision" }, timeouts: 3, total: 8 }
   ];
 
   it("writes plain-English copy with a provider page or Health jump and no raw codes", () => {
@@ -313,19 +302,17 @@ describe("healthAttentionItems", () => {
       { code: "process_restarting", count: 4, id: "process_restarting:memory_coordinator", severity: "bad", target: { section: "health" }, title: "A service keeps restarting" },
       { code: "logs_dropped", count: 1, id: "logs_dropped", severity: "warn", target: { section: "health" }, title: "Log lines were dropped" },
       { code: "background_failures", count: 25, id: "background_failures:knowledge", severity: "warn", target: { section: "health" }, title: "Background work is failing" },
-      { code: "operation_timeouts_rising", count: 3, id: "operation_timeouts_rising:tool:vision", severity: "warn", target: { section: "health" }, title: "Operations are timing out" },
-      { code: "memory_index_rebuilds_repeated", count: 5, id: "memory_index_rebuilds_repeated", severity: "warn", target: { section: "health" }, title: "Memory index keeps rebuilding" }
+      { code: "operation_timeouts_rising", count: 3, id: "operation_timeouts_rising:tool:vision", severity: "warn", target: { section: "health" }, title: "Operations are timing out" }
     ]);
     expect(items.map((item) => item.detail)).toEqual([
       "OpenAI rejected its key 3 times in the last hour, after its last successful request — check the key",
       "OpenRouter reported no remaining quota or balance 1 time in the last hour — check the provider account",
       "OpenAI · 6 of 20 requests failed in the last hour (rate limits 4, network errors 1)",
       "12 requests ended with a server error in the last hour",
-      "The Memory worker started 4 times in the last hour — check its logs",
+      "The background worker started 4 times in the last hour — check its logs",
       "1 log line could not be written in the last hour, so some diagnostics are missing",
       "Knowledge removal · 25 errors in the last hour",
-      "Image analysis · 3 of 8 ran out of time in the last 24 hours",
-      "2 owners had the Memory index rebuilt 3 or more times in the last 24 hours, up to 5 for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons"
+      "Image analysis · 3 of 8 ran out of time in the last 24 hours"
     ]);
     const copy = JSON.stringify(items.map(({ action, detail, title }) => ({ action, detail, title })));
     expect(copy).not.toMatch(/provider_|_rejected|memory_coordinator|conn-|\b40[0-9]\b/u);

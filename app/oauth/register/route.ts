@@ -1,4 +1,4 @@
-import { defaultInboundMcpRegistrationHandler } from "@/lib/server/memoryMcp/oauth/default";
+import { defaultInboundMcpRegistrationHandler } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const runtime = "nodejs";
 
