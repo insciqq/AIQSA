@@ -2,6 +2,7 @@
 paths:
   - "lib/server/memoryNote/**"
   - "lib/server/chatSearch/**"
+  - "lib/server/background/chatSearchPasses.ts"
   - "lib/server/tools/{manageMemory,pastChats}.ts"
   - "lib/contracts/{memoryNote,pastChats}.ts"
   - "features/settings-v2/MemoryNoteSettingsV2.tsx"

@@ -4,6 +4,8 @@ paths:
   - "lib/server/retention/**"
   - "lib/server/bootstrap/**"
   - "lib/server/storageMigration/**"
+  - "lib/server/background/**"
+  - "lib/server/usageLimits/**"
   - "aiqsa.sh"
 ---
 # Persistence

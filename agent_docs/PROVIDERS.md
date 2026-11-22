@@ -6,6 +6,8 @@ paths:
   - "lib/server/search/**"
   - "lib/server/speechToText/**"
   - "lib/server/vision/**"
+  - "lib/server/catalog/**"
+  - "lib/server/images/**"
 ---
 # Providers
 
