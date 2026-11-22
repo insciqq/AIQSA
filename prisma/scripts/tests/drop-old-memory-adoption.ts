@@ -82,7 +82,10 @@ export function oldMemoryLeftoverSql(fixtureTables: readonly string[] = []): str
     FROM pg_constraint AS constraint_row
     JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
     JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    -- PostgreSQL 18 records NOT NULL as constraints named after their column (and keeps the name across a column
+    -- rename); the column checks below judge those columns, so not-null rows are left out here.
     WHERE namespace.nspname = current_schema() AND relation.relname NOT IN (SELECT name FROM kept_table)
+      AND constraint_row.contype <> 'n'
       AND ((constraint_row.conname ~* 'memory' AND constraint_row.conname NOT IN (${list(KEPT_CONSTRAINTS)}))
         OR pg_get_constraintdef(constraint_row.oid) ~ '''memory-(job|delete)''|"(${DROPPED_COLUMNS.join("|")})"'
         OR EXISTS (SELECT 1 FROM regexp_matches(pg_get_constraintdef(constraint_row.oid), ${OLD_IDENTIFIER}, 'g') AS named(parts)
