@@ -207,6 +207,24 @@ describe("sub-agent thread view", () => {
       answer.unmount();
     }
   });
+
+  it("names the sub-agent's own running call, which carries its thread, and waits only for a child's (codex review 2026-11-23)", async () => {
+    const own = { origin: "web_search" as const, round: 1, status: "running" as const, subagentThreadId: "thread-researcher",
+      subagentTurnId: "turn-live", toolName: "search_web" };
+    const childStep = { ...own, subagentThreadId: "thread-scout", subagentTurnId: "turn-scout" };
+    const liveLine = () => document.querySelector("[data-live='true'] .v2-answer-process-label")?.textContent ?? null;
+    for (const [calls, waits] of [[[own], false], [[childStep], true]] as const) {
+      const turn = subagentTurn("turn-live", "running", { toolActivity: { calls: [...calls] } });
+      vi.stubGlobal("fetch", subagentFetch([{ path: threadPath,
+        respond: () => jsonResponse(subagentView("chat-a", subagentThread("thread-researcher"), [turn])) }]).fetch);
+      const { view } = renderView();
+      await waitFor(() => expect(liveLine()).not.toBeNull());
+      if (waits) expect(liveLine()).toBe("Waiting for sub-agents…");
+      else expect(liveLine()).not.toBe("Waiting for sub-agents…");
+      view.unmount();
+      resetSubagentStoreForTest();
+    }
+  });
 });
 
 for (const sendWithEnter of [true, false]) {

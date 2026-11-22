@@ -61,13 +61,25 @@ function turnWorkDurationMs(turn: SubagentTurnView): number | null {
   return Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
-function TurnV2({ chatId, latest, parentName, turn }: Readonly<{ chatId: string; latest: boolean; parentName: string | null; turn: SubagentTurnView }>) {
+/**
+ * The turn's calls as the live line reads them: the sub-agent's own calls carry its thread like every step a
+ * sub-agent makes, so only a child's work (another thread's) reads as the wait for sub-agents (codex review 2026-11-23).
+ */
+function ownTurnCalls(turn: SubagentTurnView, threadId: string) {
+  return turn.toolActivity?.calls.map((call) => {
+    if (call.subagentThreadId !== threadId) return call;
+    const { subagentThreadId: _thread, ...own } = call;
+    return own;
+  });
+}
+
+function TurnV2({ chatId, latest, parentName, threadId, turn }: Readonly<{ chatId: string; latest: boolean; parentName: string | null; threadId: string; turn: SubagentTurnView }>) {
   const active = isActiveSubagentState(turn.state);
   const state = subagentStatePresentation(turn.state, turn.outcome, turn.reason, parentName);
   const reason = subagentReasonText(turn.reason, parentName);
   const liveLabel = !active ? null : turn.state === "waiting" ? state.label
     // The same line an answer shows for the same work; a sub-agent's turn has no server phase.
-    : liveStatusLabelV2({ idle: runWaitingPhraseV2(turn.id), toolCalls: turn.toolActivity?.calls, workspaceActivity: turn.workspaceActivity });
+    : liveStatusLabelV2({ idle: runWaitingPhraseV2(turn.id), toolCalls: ownTurnCalls(turn, threadId), workspaceActivity: turn.workspaceActivity });
   return (
     <article className="v2-subagent-turn" data-state={turn.state} data-turn-id={turn.id}>
       <div className="v2-subagent-brief">
@@ -263,7 +275,7 @@ export function SubagentThreadViewV2({
             ) : null}
             {view.truncated ? <p className="v2-subagent-thread-note">Earlier turns are not shown.</p> : null}
             {view.turns.map((turn, index) => (
-              <TurnV2 chatId={target.chatId} key={turn.id} latest={index === view.turns.length - 1} parentName={parentName} turn={turn} />
+              <TurnV2 chatId={target.chatId} key={turn.id} latest={index === view.turns.length - 1} parentName={parentName} threadId={target.threadId} turn={turn} />
             ))}
           </>
         )}
