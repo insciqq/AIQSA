@@ -5,10 +5,8 @@ import type { AcceptedWorkspaceSecret } from "../workspace/secrets/store";
  * How derived text recognizes the values of the owner's saved secrets
  * (Settings > Secrets): writes repeating one are refused, and indexing
  * replaces them with a marker before anything is stored, embedded or recalled
- * (today Memory: `lib/server/memory/persistence/savedSecrets.ts`,
- * `lib/server/memory/history/sourceProjection.ts`,
- * `lib/server/memory/history/toolEvents.ts`,
- * `lib/server/memory/savedSecretScrub.ts`). Matching is exact and literal, on
+ * (the memory note and past-chat search; `./savedSecretLoader.ts` loads the
+ * values). Matching is exact and literal, on
  * each value and its trimmed form, so it behaves the same in every language.
  *
  * Only values that look like secrets are screened (review 2026-10-23): at
