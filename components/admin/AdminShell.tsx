@@ -352,8 +352,7 @@ export function AdminShell({
         </div>
       </aside>
 
-      {/* Topbar openers and section detail panes share one focus scope so Back returns focus to the opener. */}
-      <div className="flex min-w-0 flex-col" data-admin-task-focus-scope="true">
+      <div className="flex min-w-0 flex-col">
         <header
           className="sticky top-0 z-20 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-trace-subtle bg-app-canvas px-4 sm:px-6"
           data-testid="admin-topbar"

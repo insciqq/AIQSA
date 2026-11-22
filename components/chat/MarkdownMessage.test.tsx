@@ -98,25 +98,11 @@ describe("MarkdownMessage", () => {
     expect(container.querySelector("em, strong, code, del, [data-math-display]")).toBeNull();
   });
 
-  it("keeps an escaped citation opener literal beside an active citation", () => {
-    const renderCitation = vi.fn((handle: string, key: string) =>
-      <button key={key} type="button">[{handle}]</button>);
-    const { container } = render(<MarkdownMessage
-      content={"Literal \\[K1] and active [K1]."} renderCitation={renderCitation} />);
-    expect(container.textContent).toBe("Literal [K1] and active [K1].");
-    expect(screen.getAllByRole("button", { name: "[K1]" })).toHaveLength(1);
-    expect(renderCitation).toHaveBeenCalledTimes(1);
-  });
-
-  it("activates only known citations after safe Markdown parsing", () => {
-    const renderCitation = vi.fn((handle: string, key: string) =>
-      handle === "K1" || handle === "K12.1"
-        ? <button key={key} type="button">[{handle}]</button>
-        : null);
+  it("shows bracketed reference markers of old answers as their plain text", () => {
     const { container } = render(
       <MarkdownMessage
         content={[
-          "Claim [K1] and **another [K12.1]**, but unknown [K2].",
+          "Claim [K1] and **another [K12.1]**, escaped \\[K2].",
           "",
           "Keep `[K1]` in code, [K1](https://example.com) as a link, and [[K1]](https://invalid.example) inert.",
           "",
@@ -124,25 +110,14 @@ describe("MarkdownMessage", () => {
           "[K1]",
           "```"
         ].join("\n")}
-        renderCitation={renderCitation}
       />
     );
 
-    expect(screen.getByRole("button", { name: "[K1]" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "[K12.1]" })).toBeVisible();
-    expect(screen.getByText("[K2]", { exact: false })).toBeVisible();
+    expect(container.querySelector("p")?.textContent).toBe("Claim [K1] and another [K12.1], escaped [K2].");
     expect(screen.getAllByText("[K1]", { selector: "code" })).toHaveLength(2);
-    expect(screen.getByRole("link", { name: "K1" })).toHaveAttribute(
-      "href",
-      "https://example.com"
-    );
-    expect(screen.queryByRole("button", { name: "[K2]" })).not.toBeInTheDocument();
-    // A citation inside link text is CommonMark link text and stays inert.
-    const nested = screen.getByRole("link", { name: "[K1]" });
-    expect(nested).toHaveAttribute("href", "https://invalid.example");
-    expect(nested.querySelector("button")).toBeNull();
-    expect(container.querySelectorAll("button")).toHaveLength(3);
-    expect(renderCitation).toHaveBeenCalledWith("K2", expect.any(String));
+    expect(screen.getByRole("link", { name: "K1" })).toHaveAttribute("href", "https://example.com");
+    expect(screen.getByRole("link", { name: "[K1]" })).toHaveAttribute("href", "https://invalid.example");
+    expect(container.querySelectorAll("p button")).toHaveLength(0);
   });
 
   it("renders the reported MAD answer with inline and display LaTeX math", async () => {
@@ -472,15 +447,12 @@ describe("MarkdownMessage", () => {
     }
   });
 
-  it("keeps shorter embedded fences and citation-shaped data inside a longer code block", () => {
+  it("keeps shorter embedded fences inside a longer code block", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const renderCitation = vi.fn((handle: string, key: string) => <button key={key}>[{handle}]</button>);
     const code = 'const __entry__: Archive<Row> = source;\n```\n[K2]\n```\n';
-    render(<MarkdownMessage content={`\`\`\`\`\n${code}\`\`\`\`\n\n[K1]`} renderCitation={renderCitation} />);
+    render(<MarkdownMessage content={`\`\`\`\`\n${code}\`\`\`\`\n\n[K1]`} />);
     expect(screen.getAllByRole("button", { name: "Copy code" })).toHaveLength(1);
-    expect(screen.queryByRole("button", { name: "[K2]" })).toBeNull();
-    expect(screen.getByRole("button", { name: "[K1]" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
     expect(writeText).toHaveBeenCalledWith(code);
   });
@@ -663,15 +635,10 @@ describe("MarkdownMessage fenced blocks", () => {
     const code = '<img src=x onerror=alert(1)>\n[K2]\n*literal*\n';
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    const renderCitation = vi.fn((handle: string, key: string) => <button key={key}>[{handle}]</button>);
-    const { container } = render(<MarkdownMessage
-      content={`Before\n${opening}\n${code}${closing ?? ""}`}
-      renderCitation={renderCitation}
-    />);
+    const { container } = render(<MarkdownMessage content={`Before\n${opening}\n${code}${closing ?? ""}`} />);
 
     expect(screen.getByRole("region", { name: "Scrollable code block" }).textContent).toBe(code);
     expect(container.querySelector("img, script, em")).toBeNull();
-    expect(renderCitation).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
     expect(writeText).toHaveBeenCalledWith(code);
     await waitFor(() => expect(screen.getAllByText("Copied").length).toBeGreaterThan(0));
@@ -892,19 +859,12 @@ describe("MarkdownMessage dialect", () => {
     expect(container.textContent).toBe("A &lt; © &bogus;");
   });
 
-  it("keeps a citation-shaped reference definition as text and never links citations", () => {
-    const renderCitation = vi.fn((handle: string, key: string) => <button key={key} type="button">[{handle}]</button>);
-    const { container } = render(<MarkdownMessage
-      content={"[K1]: https://example.com\n\nSee [K1] and &#91;K1&#93;."}
-      renderCitation={renderCitation}
-    />);
+  it("keeps a reference definition as text and never links a bracketed label by it", () => {
+    const { container } = render(<MarkdownMessage content={"[K1]: https://example.com\n\nSee [K1] and &#91;K1&#93;."} />);
     const [definition, prose] = container.querySelectorAll("p");
     expect(container.querySelector("a")).toBeNull();
     expect(definition).toHaveTextContent("[K1]: https://example.com");
     expect(prose.textContent).toBe("See [K1] and [K1].");
-    // Only literal brackets activate; a decoded character reference never does.
-    expect(prose.querySelectorAll("button")).toHaveLength(1);
-    expect(renderCitation).toHaveBeenCalledTimes(2);
   });
 });
 

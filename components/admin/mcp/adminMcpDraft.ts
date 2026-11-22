@@ -44,13 +44,6 @@ export function requestMcpClientSecret(form: AdminMcpServerForm): string | undef
   return form.draft.auth.mode === "client_credentials" && secret ? secret : undefined;
 }
 
-export type McpToolInventoryDiff = Readonly<{
-  added: McpToolInventoryEntry[];
-  changed: McpToolInventoryEntry[];
-  removed: McpToolInventoryEntry[];
-  unchanged: McpToolInventoryEntry[];
-}>;
-
 type McpOAuthAuthPolicy = Extract<McpDraftConfiguration["auth"], { mode: "oauth" }>;
 
 const HOSTED_NOTION_MCP_ORIGIN = "https://mcp.notion.com";
@@ -189,55 +182,6 @@ export function enabledMcpToolInventory(
 ): McpToolInventoryEntry[] {
   const disabled = new Set(disabledToolNames ?? []);
   return tools.filter((tool) => !disabled.has(tool.name));
-}
-
-export function staleDisabledMcpToolNames(
-  draft: McpDraftConfiguration,
-  tools: readonly McpToolInventoryEntry[]
-): string[] {
-  const advertised = new Set(tools.map((tool) => tool.name));
-  return (draft.disabledToolNames ?? []).filter((name) => !advertised.has(name));
-}
-
-export function withMcpToolEnabled(
-  draft: McpDraftConfiguration,
-  name: string,
-  enabled: boolean
-): McpDraftConfiguration {
-  const disabled = new Set(draft.disabledToolNames ?? []);
-  if (enabled) disabled.delete(name);
-  else disabled.add(name);
-  const { disabledToolNames: _disabledToolNames, ...definition } = draft;
-  const disabledToolNames = [...disabled].sort();
-  return disabledToolNames.length ? { ...definition, disabledToolNames } : definition;
-}
-
-export function diffMcpToolInventory(
-  active: readonly McpToolInventoryEntry[],
-  candidate: readonly McpToolInventoryEntry[]
-): McpToolInventoryDiff {
-  const activeByName = new Map(active.map((tool) => [tool.name, tool]));
-  const candidateByName = new Map(candidate.map((tool) => [tool.name, tool]));
-  const added: McpToolInventoryEntry[] = [];
-  const changed: McpToolInventoryEntry[] = [];
-  const removed: McpToolInventoryEntry[] = [];
-  const unchanged: McpToolInventoryEntry[] = [];
-
-  for (const tool of candidate) {
-    const previous = activeByName.get(tool.name);
-    if (!previous) {
-      added.push(tool);
-    } else if (previous.description !== tool.description) {
-      changed.push(tool);
-    } else {
-      unchanged.push(tool);
-    }
-  }
-  for (const tool of active) {
-    if (!candidateByName.has(tool.name)) removed.push(tool);
-  }
-
-  return { added, changed, removed, unchanged };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

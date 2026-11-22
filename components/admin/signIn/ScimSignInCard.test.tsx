@@ -191,7 +191,7 @@ describe("SCIM sign-in card", () => {
           lastAcceptedAt: "2026-10-08T09:00:00.000Z",
           lastAttemptAt: "2026-10-08T10:00:00.000Z",
           lastFailureAt: "2026-10-08T10:00:00.000Z",
-          lastFailureCode: "owner_transfer_required"
+          lastFailureCode: "last_admin"
         }
       }),
       tokens: Array.from({ length: 5 }, (_, index) => token(`token-000${index}`))
@@ -202,8 +202,7 @@ describe("SCIM sign-in card", () => {
     expect(within(card).getByRole("button", { name: "Generate token" })).toBeDisabled();
     expect(within(card).getByTestId("admin-sign-in-health"))
       .toHaveTextContent("Last SCIM request failed");
-    // A failure recorded before the upgrade that removed shared ownership stays readable.
     expect(within(card).getByTestId("admin-sign-in-health"))
-      .toHaveTextContent("the deactivation waited for an ownership transfer");
+      .toHaveTextContent("the deactivation would have left no active administrator");
   });
 });

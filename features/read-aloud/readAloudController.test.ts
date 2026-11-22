@@ -126,7 +126,7 @@ describe("createReadAloudController", () => {
   it("does not become active for an answer with nothing to read", () => {
     const fake = fakeSynth();
     const controller = controllerFor(fake);
-    controller.start("a1", "[K1]");
+    controller.start("a1", "— …");
     expect(controller.activeId()).toBeNull();
     expect(fake.synth.speak).not.toHaveBeenCalled();
   });

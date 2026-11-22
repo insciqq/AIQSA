@@ -51,12 +51,12 @@ describe("answerSpeech", () => {
     expect(speech.sentences.join(" ")).not.toContain("npm");
   });
 
-  it("reads links as their text and drops citations, numbered markers and URLs", () => {
+  it("reads links as their text and drops numbered markers and URLs", () => {
     const speech = answerSpeech(
-      "See [the guide](https://example.com/guide) [1](https://a.example) and [K1] [[K2]] or https://www.example.org/x?y=1 now [K3].",
+      "See [the guide](https://example.com/guide) [1](https://a.example) or https://www.example.org/x?y=1 now.",
       "en"
     );
-    expect(speech.sentences).toEqual(["See the guide and or example.org now."]);
+    expect(speech.sentences).toEqual(["See the guide or example.org now."]);
   });
 
   it("replaces images with a spoken phrase", () => {
@@ -83,8 +83,8 @@ describe("answerSpeech", () => {
     expect(answerSpeech("Ací tens el codi:\n\n```ts\nconst value = 1;\n```", "ca-ES").sentences).toEqual(["Ací tens el codi:", "Bloc de codi omés."]);
   });
 
-  it("returns nothing to read when only punctuation or citations remain", () => {
-    expect(answerSpeech("[K1] — …", "en").sentences).toEqual([]);
+  it("returns nothing to read when only punctuation remains", () => {
+    expect(answerSpeech("— …", "en").sentences).toEqual([]);
     expect(answerSpeech("   ", "en").sentences).toEqual([]);
   });
 });
