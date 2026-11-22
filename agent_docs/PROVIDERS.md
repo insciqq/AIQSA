@@ -23,7 +23,7 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 
 ## Capability evidence
 
-- A capability counts only after a successful probe on the exact active connection, model, credential and route; names and metadata prove nothing. Structured output, strict Memory actions, image input and PDF input are proven independently.
+- A capability counts only after a successful probe on the exact active connection, model, credential and route; names and metadata prove nothing. Structured output, image input and PDF input are proven independently.
 - Add provider, Add model and Test & Save run every implemented probe for the model class (direct PDF included) and publish each success with its enabled flag on the exact tested revision. A partial failure keeps usable models and proofs.
 - Bootstrap creates one built-in connection per family. Until it has a key or was activated it is a placeholder, not a connection: lists leave it out, and the family's first Add provider configures it under the chosen name with its built-in Search sources (operator report 2026-10-23, `lib/domain/providerTemplates.ts`).
 - On a connection with a single enabled key, every later check of the live model revision turns on each capability it verifies and never turns one off because a probe failed or was skipped (operator decision 2026-10-15). So a recheck can re-enable what an administrator switched off; only the check right after the administrator's own model save keeps the saved flags, and discovery never re-enables anything.
@@ -61,8 +61,9 @@ Search has no application limit on calls per answer or results per engine (opera
 ## Documents, embeddings and reranking
 
 - Chat PDF work freezes its own admitted destination and evidence. A failed model route never switches silently to local extraction or another provider.
-- Vector spaces never mix, an invalid vector rejects the whole batch, and reusing an older generation needs proof of the same canonical vector space, not a matching model name.
-- A reranker receives a sanitized query and documents behind opaque handles and returns scores only. Coverage must be complete and one-to-one, and a broken selected reranker never falls through to an unselected one or the System Model.
+- Past-chat search has one embedding role, Embeddings in Admin › Defaults & roles (2026-11-22, `lib/server/providerRuntime/embeddingModelRole.ts`), on installation credentials and admitted only with embedding evidence on the exact active connection, model and credential. Not set means search by words only; set but unusable keeps its code and is never replaced by another model. v0.5.0 adopted the model the old Memory used (`agent_docs/PERSISTENCE.md`).
+- Changing the role re-embeds the passages in the background (`scheduleChatSearchReembedding`); meanwhile they stay searchable by words, since search reads only vectors of the current role. Vector spaces never mix, and an invalid vector rejects the whole batch.
+- A reranker receives a sanitized query and documents behind opaque handles and returns scores only. Coverage must be complete and one-to-one, and a broken selected reranker never falls through to an unselected one or the System Model; past-chat search then keeps its fused order.
 
 ## Prices and usage
 

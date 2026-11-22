@@ -1,8 +1,8 @@
 # AIQSA
 
-AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGPL, built for the operator's colleagues on two production installations; there is no work for a hypothetical outside audience (operator decision 2026-10-22). A chat is an agent with web search, MCP tools, the sandboxed Workspace, image generation, artifacts, Personal Memory, Skills, Assistants, scheduled tasks and saved secrets; administration makes providers, models and tools available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions.
+AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGPL, built for the operator's colleagues on two production installations; there is no work for a hypothetical outside audience (operator decision 2026-10-22). A chat is an agent with web search, MCP tools, the sandboxed Workspace, image generation, artifacts, a memory note and past-chat search, Skills, Assistants, scheduled tasks and saved secrets; administration makes providers, models and tools available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions.
 
-Scope (operator decisions 2026-10-22 and 2026-10-23): Projects and Knowledge (document retrieval) are removed with their data; the Codex Agent mode and OpenSearch are removed. Answer Review is removed (operator decision 2026-10-25). Native Anthropic stays. Personal Memory is being replaced (operator decision 2026-11-22): automatic fact learning, the fact store, the remember-command classifier, Memory maintenance and inbound Memory MCP are removed with their data. What stays is one short note per user, which the user edits and the agent changes only with a visible card, and search over the user's past chats, which must work well. Until that work ships, [Memory](agent_docs/MEMORY.md) describes the subsystem being removed; do not extend it. Assistants, Telegram and Skills stay. The native agent engine replaced the old run core ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
+Scope (operator decisions 2026-10-22 and 2026-10-23): Projects and Knowledge (document retrieval) are removed with their data; the Codex Agent mode and OpenSearch are removed. Answer Review is removed (operator decision 2026-10-25). Native Anthropic stays. Personal Memory was replaced in v0.5.0 (operator decision 2026-11-22): automatic fact learning, the fact store, the remember-command classifier, Memory maintenance and inbound Memory MCP were removed with their data. What stays is one short note per user, which the user edits and the agent changes only with a visible card, and search over the user's past chats, which must work well ([Memory](agent_docs/MEMORY.md)). Assistants, Telegram and Skills stay. The native agent engine replaced the old run core ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
 
 Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector (also the search store), S3-compatible private object storage, a Tika parser sidecar, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
 
@@ -10,7 +10,7 @@ Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL wit
 
 - `app/` holds pages and routes; `app/api/` handlers stay thin and call into `lib/server/`.
 - `lib/contracts/` holds client-safe wire shapes and is a dependency leaf; `lib/domain/` holds pure shared rules; `lib/browser/` holds browser-only helpers.
-- `lib/server/` holds everything server-only: repositories, providers, the run pipeline (`runs/`), `memory/`, `mcp/`, `workspace/`, `auth/` and the rest.
+- `lib/server/` holds everything server-only: repositories, providers, the run pipeline (`runs/`), `memoryNote/`, `chatSearch/`, `mcp/`, `workspace/`, `auth/` and the rest.
 - `features/` and `components/` hold the browser UI.
 - `prisma/` holds the schema, append-only migrations and bootstrap; `ops/` holds companion image builds; `scripts/` holds tooling, smokes and the task ledger; `tests/` holds end-to-end and integration suites; `benchmarks/` is opt-in.
 
@@ -44,7 +44,7 @@ npm run task:check       # after any task ledger change
 | Deployment shape, services, dependency direction, any new external destination | [Architecture](agent_docs/ARCHITECTURE.md) |
 | Prisma schema, migrations, retention, deletion, backup and restore | [Persistence](agent_docs/PERSISTENCE.md) |
 | Provider adapters, model roles, capability checks, Search, embeddings, reranking, prices | [Providers](agent_docs/PROVIDERS.md) |
-| Personal Memory | [Memory](agent_docs/MEMORY.md) |
+| The memory note, past-chat search | [Memory](agent_docs/MEMORY.md) |
 | The agent and its runs: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery, outputs | [Run contracts](agent_docs/RUN_CONTRACTS.md) |
 | UI behavior and visual design | [Frontend](agent_docs/FRONTEND.md) |
 | Sessions, secrets, untrusted content, MCP trust, the Workspace sandbox, artifacts, dependencies | [Security](agent_docs/SECURITY.md) |

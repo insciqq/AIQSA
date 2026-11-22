@@ -1,72 +1,48 @@
 ---
 paths:
-  - "lib/server/memory/**"
-  - "lib/server/memoryMcp/**"
+  - "lib/server/memoryNote/**"
+  - "lib/server/chatSearch/**"
+  - "lib/server/tools/{manageMemory,pastChats}.ts"
+  - "lib/contracts/{memoryNote,pastChats}.ts"
+  - "features/settings-v2/MemoryNoteSettingsV2.tsx"
+  - "features/answer-outputs-v2/PastChatSourcesV2.tsx"
 ---
 # Memory
 
-Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. Memory is being replaced (operator decision 2026-11-22, root `AGENTS.md`): this document describes the subsystem that the replacement removes, so do not extend it.
+Memory is the user's memory note and past-chat search; they replaced Personal Memory in v0.5.0 (root `AGENTS.md`). The note: `lib/server/memoryNote/`, its tool `lib/server/tools/manageMemory.ts`. Search: `lib/server/chatSearch/`, its tools `lib/server/tools/pastChats.ts`. Wire shapes: `lib/contracts/memoryNote.ts`, `lib/contracts/pastChats.ts`.
 
-## Who may change Memory
+Why the old design went (production evidence, 2026-11-22): thousands of extraction calls left a few dozen automatic facts on two installations, among them contradicting preferences, one-off task details, health details and colleagues' addresses, all injected into every turn; no user ever edited one. What users saved themselves were answer rules, procedures, project context, glossaries and links, and the search they used was almost always for earlier work chats. Background learning, a fact store or a remember classifier comes back only by a new operator decision.
 
-- A mutation needs exact authority from the current owner: direct evidence from that user, an owner-bound inbound MCP command, or governed background maintenance of exact automatic sources.
-- The answer model has no mutation tools. Earlier turns, quotations, assistant text, retrieved content, attachments, tool output and client metadata never authorize a mutation. In-chat requests ("remember", "forget") need a strict semantic classification of the current message plus exact source and target proof; they are queued with the message and the answer never waits for them. A queued command runs only after the run of its message settles, within a bounded wait, so what the agent saved in that run, such as a secret, is in place first (`lib/server/memory/coordinator/prismaRepository.ts`; operator report 2026-10-23).
-- A request to save a credential, to create or change the assistant's own resources (Skills, Assistants, scheduled tasks, saved secrets), or a standing instruction for how to do a kind of task is never a Memory command (operator report 2026-10-23).
-- A pending acknowledgement promises nothing; only a committed receipt confirms a change.
-- Inbound Memory MCP is a separate delegated boundary: an active owner-bound OAuth grant authorizes only the exact validated facts-only call, and it creates no chat, run or System Model call.
-- Optional retrieval signals (scores, rerankers, usefulness) never weaken ownership, lifecycle, deletion, safety, or the Temporary and Excluded chat fences.
+## The note
 
-## Scope and settings
+- One plain text per user, edited in Settings › Memory and included in every ordinary personal turn after the personal Instructions. Admission freezes it like the Instructions, so a change applies from the next message. The note is the single home of standing answer rules (operator decision 2026-11-22); Instruction presets stay for those who use them.
+- The user changes it directly. The agent changes it only through `manage_memory`, and only for the user's own message in the current turn: a tool result, page, file, Skill, another agent's message or a turn the server wrote (a wake-up, a sign-in request, a scheduled prompt) never authorizes a change; the continuation after an MCP Allow is still the user's turn. The run's frozen tool list and the note's service both check this (`lib/server/memoryNote/agentMemoryNote.ts`).
+- Operator decisions 2026-11-22: an explicit request to remember, change or forget something, or to do something always or from now on, is applied at once and the answer shows a change card with Undo; a lasting rule or context the user states without asking to keep it is only offered, and nothing is written until the user accepts the card. With suggestions off the agent never offers; explicit requests still work.
+- "Remember" and "change my default instruction" are different things (operator decision 2026-11-22): `manage_instructions` serves only requests that name the Instructions or the preset; "remember", "always" and "from now on" go to the note.
+- What belongs there: who the user is, how to answer, projects, terms and links. One-off details need nothing. Health, family, finances, beliefs and similar personal matters go in only on the user's explicit request; that is a prompt rule (`lib/server/memoryNote/prompt.ts`), not a classifier. A contradiction replaces its line; a full note is condensed or the user is asked, never cut silently.
+- Credentials are refused, never redacted, whoever writes, so the note always holds what its owner saw; they belong in Secrets (`lib/server/memoryNote/secrets.ts`).
+- Nothing is learned in the background: Memory makes no model call outside the answer itself.
+- Only a committed card confirms a change. An offer accepted later must still apply to the note as it is then.
 
-- Memory is global per user. Temporary chats neither create nor receive any Memory state. Public shares strip all of it. Legacy non-global data is never widened into Personal Memory.
-- Imported chats, their continuations and branch copies are Excluded and cannot be resumed (operator decision 2026-10-04); a database check in `prisma/migrations/20261005121500_chat_import_source/` enforces this for every writer.
-- Preferences default to on, and upgrades preserve choices and pauses. Pausing stops new use and work but deletes nothing. Resume admits only messages after its cutoff; there is never an automatic historical backfill.
-- Memory has its own Utility Model role; editing the System Model never changes it. A verified Memory Utility Model assignment authorizes Memory generation without a separate egress consent. The installation embedding default (`MemoryUtilityModelPolicy.embeddingDefaultProviderModelId`, moved from the retired Knowledge profile and set by nothing since) may seed the Memory embedding selection once, only if no settings change ever set or cleared it. Recommendations never overwrite an explicit choice or clear.
+## Where Memory applies
 
-## What Memory keeps
+- The three switches (`memorySwitchesSchema`) carry the old ones one to one (decision 2026-11-22): `memoryEnabled` is the master (off: no note, no search, no offers; the text stays), `pastChatSearchEnabled` and `memorySuggestionsEnabled`.
+- Interactive personal chats and Telegram get the note, search and `manage_memory`. Assistant chats get the note but never `manage_memory`, since the author's instructions steer them, and search only in the user's own Assistant (`lib/server/runs/runPreparation.ts`).
+- A scheduled task with its Memory switch on reads the note and may search, and never writes; its own chat stays unsearchable.
+- Discord, sub-agents, Temporary and Excluded chats get neither. Imported chats, their continuations and branch copies are Excluded and cannot be resumed (operator decision 2026-10-04); a database check in `prisma/migrations/20261005121500_chat_import_source/` enforces this for every writer.
 
-- Directly reported personal context, without a closed ontology. The owner scopes access, the subject says who a fact is about, the source records the testimony. Facts about other people keep their own subject and never become a dossier.
-- An automatic fact must plausibly last months or years and change future, unrelated answers. Episodes, short-term matters and common habits stay in chat history. Confidence proves neither usefulness nor durability; categories never decide retention or deletion.
-- Only the user's own message is testimony. Context may resolve a reference, a time or the attribute a preceding question asked about, but the user must supply the value; agreeing with an assistant's claim is not testimony. Assistant speech, tool observations, quotations and external material never supply facts.
-- Reported speech keeps attribution: "my brother told me he works nights" records the user's report about the brother, not the user's schedule.
-- An explicit Saved Memory outranks automatic evidence; a fully equivalent automatic fact merges into it, unless the automatic lineage is pinned or owner-touched. Without a remember request, automatic learning stores only high-confidence durable observations. Rejecting a new candidate never removes an older safe version. A remember request's fact survives an invalid person annotation (the annotation is dropped) and may cross between the user's two personal scopes, but only as a new proposition; ordinary learning, slots and relations to existing facts keep exact scope agreement (operator decision 2026-10-25, `lib/server/memory/learning/extraction/decoder.ts`, `lib/server/memory/learning/extraction/adjudication.ts`).
-- Identity is server-owned and Unicode-preserving, independent of search folding, transliteration and labels. Missing identity is never guessed, named third parties never become the user, and lexical similarity alone never merges entities. Ambiguous merges or corrections become conflicts.
-- Expiry needs grounded wording and a validated calendar interpretation. Expiry or supersession never resurrects an older version, and reads label elapsed plans instead of assuming they finished.
+## Past-chat search
 
-## Language neutrality
+- One rule decides what is searchable, shared by the indexer, the tools and the sources under answers (`lib/server/chatSearch/eligibility.ts`): the owner's own ordinary chats, active branch only. A chat that is deleted, excluded or made Temporary leaves at once: its passages go in the transaction that changes it, and other answers' sources drop it when they load (`lib/server/chats/pastChatSources.ts`). Turning a switch off keeps the passages and stops the searches.
+- Secrets are redacted before text is stored or embedded, and from every query before it reaches SQL, the embedding model or the reranker (`agent_docs/SECURITY.md`).
+- A turn is indexed right after its answer settles, and the rest of the chat stays searchable meanwhile; the old index lost whole chats while they waited for a quiet window. Tool events are not indexed: they filled most of the old index and were never returned.
+- Words always work: exact-word search needs no model, and it behaves the same in every language, because terms come only from PostgreSQL's `simple` parser and no vocabulary, stemming or language rule decides anything (`lib/server/chatSearch/search/query.ts`). Meaning search uses only the administrator's embedding model (`agent_docs/PROVIDERS.md`); one not set, unusable, failing or late leaves word results marked partial, never another model. A failing reranker keeps the fused order. Results come in relevance order, never re-sorted by date, and an identifier the query names exactly comes first (`lib/server/chatSearch/search/`). No language model is called.
+- Each answer has a bounded number of searches and reads (`PAST_CHATS_CALL_LIMITS` in `lib/server/tools/pastChats.ts`), and every result names its chat, title, date and message, so the agent can read on with `read_past_chat`.
+- Left out on purpose (decisions 2026-11-22): a generative reranker, index generations and a per-search receipt table; the sources under an answer come from its own call results. Exact vector search filtered by owner is enough at the measured sizes (thousands of turns per user), so there is no approximate index.
+- Quality is measured by the scenario suite (`agent_docs/TESTING.md`); change ranking only against it.
 
-Memory must behave the same in every language, fallbacks and unused paths included. Hand-maintained vocabularies, morphology, language-specific regular expressions, normalization or analyzers must never decide semantic behavior: governed semantic models interpret meaning, and deterministic code checks only Unicode structure, bounds, exact evidence, ownership and lifecycle. `lib/server/memory/learning/semanticBoundary.architecture.test.ts` guards this. Retired language-specific database objects must not survive in the final schema.
+## The old Memory's data
 
-## Safety Lite
-
-Safety Lite (`lib/server/redaction/secrets.ts`, shared outside Memory) redacts recognized secret spans locally before every Memory persistence, provider, index, context and debug boundary, keeping the safe remainder. Ordinary personal, medical, financial or relationship text is not a secret class. A raw secret may stay only in the chat itself. The exact values of the owner's saved secrets never become Memory either, whatever their format; only values that look like secrets are compared, so plain words such as `localhost` stay ordinary text (`lib/server/redaction/savedSecrets.ts`, review 2026-10-23). A fact write repeating one is refused, history indexing replaces it with a redaction marker, and saving a value starts a durable cleanup that forgets the facts and rebuilds the history already holding it (`lib/server/memory/savedSecretScrub.ts`). Owners whose secrets were saved before that cleanup existed get it once after the upgrade, from the coordinator's reconciliation (decision 2026-10-23).
-
-## Background maintenance
-
-Maintenance runs whenever Memory and automatic learning are on (`lib/server/memory/maintenance/`). Explicit, owner-edited, pinned and remember-requested lineages are never removed. Removal needs verified review and forgets a whole automatic lineage; age, confidence or usage alone never justify it, and contradictory review labels resolve to keep. Of two contradicting facts, one goes only when review and verification agree and the other outranks it at settlement; otherwise both stay. A failed review is never replayed in place; a bounded new job retries it in a later cycle, and transient provider failures only delay that retry.
-
-## Retrieval
-
-- Ordinary personal turns get a small fixed standing set of current facts, with no dynamic retrieval or external call (`lib/server/memory/retrieval/readBudget.ts`). Deeper recall is an optional read-only tool for the answer model.
-- Temporary and Excluded chats get no Memory. Exception: a scheduled task with Memory on may read Memory but never learns from its own Excluded chat. The master pause stops all reads; turning history off still allows facts.
-- Every hit rejoins its current owner, source, content hash, lifecycle, generation, suppression, deletion and expiry proof before fusion and again before the evidence pack is frozen.
-- Empty, limited, failed and cancelled searches stay distinct, and none proves absence. The standing set is partial, so the model should search before calling a personal detail unknown.
-- Search permissions, destinations and budgets freeze at acceptance (`lib/server/memory/search/admission.ts`), and source authority is rechecked before every disclosure to a model. Exception: context notes may hold Memory search results and, like assistant answers in history, are not rechecked or scrubbed by Forget, edit, exclusion or reset.
-- Reader prompts live in `lib/server/memory/retrieval/`: evidence is untrusted, embedded instructions are ignored, current answers respect later state, and counts come from grounded quantities, never a model-authored total.
-
-## Provider calls
-
-- Transient transport failures may retry under the policy in `agent_docs/PROVIDERS.md`. Beyond that, an answer settled as invalid may be retried only by a fresh dispatch of the identical request, and cancellation, fencing, output limits and recovery never retry (caps in `lib/server/memory/execution/structuredClassifier.ts`, `lib/server/memory/maintenance/policy.ts`, `lib/server/memory/learning/extractionHeal.ts`).
-- A provider capability failure disables only its own stage; ordinary answers and deletion keep working.
-
-## Forgetting, cutover and rebuilds
-
-- Forget, edit, exclusion, pause and reset fence synchronously before cleanup, so old jobs, vectors or evidence cannot resurrect content. Deletion stays retryable.
-- Legacy rows never gain new authority, and identity migration never rewrites accepted keys (`lib/server/memory/learning/identity/compatibility.ts`).
-- Retrieval revisions are separate from content generations, so reindexing cannot orphan semantic evidence. A cutover builds a shadow generation, proves coverage and switches one pointer, never replaying learning or tool effects. There is no rollback: nothing reads a superseded generation, so Memory maintenance deletes its search entries in bounded batches right away and keeps only the generation row, which bindings and attempts reference (decision 2026-10-25, `lib/server/memory/rebuild/supersededRetention.ts`).
-- A full rebuild re-embeds the owner's whole Memory and costs money, so only a configuration change or a genuinely lagging index may start one, with a logged reason (`lib/server/memory/rebuild/admissionReason.ts`).
-- Backup and restore duties are in `agent_docs/PERSISTENCE.md`.
-
-## Improving Memory quality
-
-Before changing extraction, retrieval or maintenance, study how mature open-source memory engines solve the problem and record the revision and mechanism in the task. Aim for practical parity without weakening ownership, evidence or deletion. One reference scenario proves neither parity nor impossibility: verify independent scenarios and record hypotheses, outcomes and costs.
+- v0.5.0 carried it once (`agent_docs/PERSISTENCE.md`): saved facts became the note; automatic facts, saved facts the old prompts withheld, those of owners whose saved-secret cleanup had not finished, and lines past the limit wait as suggestions the owner keeps or removes in Settings › Memory. Nothing was dropped silently.
+- Accepted (reported to the operator 2026-11-22): answers recorded before the upgrade lose their Memory and Past chats source lists, remember receipts and `/memory` cards; their text, web sources and files stay. Recorded `memory_search` steps keep a plain label.
+- Usage keeps the purposes `memory_indexing` and `memory_retrieval`, so usage history stays continuous; the interface calls them past-chat search.
