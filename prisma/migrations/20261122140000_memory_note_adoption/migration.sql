@@ -15,10 +15,13 @@
 --    to forget its memories is not carried: the user asked to forget it.
 --    Saved facts (explicit, or automatic from a remember request) become the note, one
 --    line per fact in the order they were saved, trimmed, exact duplicates once. Lines
---    after the first that does not fit 6 000 characters, and saved facts classified
---    as secret, wait as SAVED_OVERFLOW suggestions; every other automatic fact waits
---    as an AUTOMATIC suggestion. A suggestion keeps its fact's creation time and is
---    clipped at 6 000 characters; a blank fact carries nothing.
+--    after the first that does not fit 6 000 characters, and saved facts the old Memory
+--    kept out of prompts (classified HIGHLY_SENSITIVE or SECRET: its prompts read only
+--    NORMAL and SENSITIVE, lib/server/memory/persistence/reusableFactAuthority.ts), wait
+--    as SAVED_OVERFLOW suggestions, so the note widens no prompt and the owner decides;
+--    every other automatic fact waits as an AUTOMATIC suggestion. A suggestion keeps
+--    its fact's creation time and is clipped at 6 000 characters; a blank fact carries
+--    nothing.
 -- 3. The past-chat embedding role takes the embedding model the installation uses:
 --    the one most owners selected, else the old installation default; never a model
 --    that is gone, nothing when none was in use, and never over a value already set.
@@ -74,7 +77,8 @@ WITH spaces AS (
     regexp_replace(version."displayText", '^' || spaces."characters" || '+|' || spaces."characters" || '+$', '', 'g') AS "text",
     (version."sourceMode" = 'EXPLICIT'::"MemoryFactSourceMode"
       OR COALESCE(version."semanticFrame"->>'memoryDirective' = 'EXPLICIT_REMEMBER', FALSE)) AS "saved",
-    (version."sensitivityClass" = 'SECRET'::"MemorySensitivityClass") AS "secret"
+    -- Kept out of every prompt by the old Memory, so never put into the note.
+    (version."sensitivityClass" NOT IN ('NORMAL'::"MemorySensitivityClass", 'SENSITIVE'::"MemorySensitivityClass")) AS "withheld"
   FROM "MemoryFact" AS fact
   CROSS JOIN spaces
   INNER JOIN "MemoryFactVersion" AS version
@@ -183,17 +187,17 @@ WITH spaces AS (
     AND NOT EXISTS (SELECT 1 FROM "UserMemoryNote" AS note WHERE note."userId" = fact."userId")
     AND NOT EXISTS (SELECT 1 FROM "MemoryLegacySuggestion" AS waiting WHERE waiting."userId" = fact."userId")
 ), lines AS (
-  -- An exact duplicate is carried once: saved before automatic, the secret-classified copy
+  -- An exact duplicate is carried once: saved before automatic, the copy kept out of prompts
   -- first, then the earliest.
   SELECT DISTINCT ON (carried."userId", carried."text") carried.*
   FROM carried
   WHERE carried."text" <> ''
-  ORDER BY carried."userId", carried."text", carried."saved" DESC, carried."secret" DESC, carried."createdAt", carried."factId"
+  ORDER BY carried."userId", carried."text", carried."saved" DESC, carried."withheld" DESC, carried."createdAt", carried."factId"
 ), placed AS (
   SELECT lines.*,
-    CASE WHEN lines."saved" AND NOT lines."secret" THEN
+    CASE WHEN lines."saved" AND NOT lines."withheld" THEN
       sum(char_length(lines."text") + 1) OVER (
-        PARTITION BY lines."userId", lines."saved" AND NOT lines."secret"
+        PARTITION BY lines."userId", lines."saved" AND NOT lines."withheld"
         ORDER BY lines."createdAt", lines."factId"
         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
       ) - 1

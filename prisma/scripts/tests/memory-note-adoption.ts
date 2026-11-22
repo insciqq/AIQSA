@@ -49,7 +49,8 @@ type FactSpec = Readonly<{
   scope?: string;
   /** The chat an explicit save came from. */
   sourceChat?: string;
-  secret?: boolean;
+  /** Absent: NORMAL. The old Memory's prompts read only NORMAL and SENSITIVE facts. */
+  sensitivity?: "SENSITIVE" | "HIGHLY_SENSITIVE" | "SECRET";
   /** Safety classification never finished. */
   pending?: boolean;
   /** Expires right after the fixture commits, so the upgrade finds it expired. */
@@ -80,13 +81,18 @@ const facts: readonly FactSpec[] = [
   { at: at(12), id: "mna-s12", mode: "EXPLICIT", owner: "mna-saver", pending: true, text: quote("Synthetic unclassified fact.") },
   { at: at(13), id: "mna-s13", mode: "AUTOMATIC", owner: "mna-saver", text: quote("Synthetic unsupported fact.") },
   { at: at(14), id: "mna-s14", mode: "EXPLICIT", owner: "mna-saver", text: quote("   ") },
+  // Kept out of prompts by the old Memory: a suggestion, never a note line. SENSITIVE was read, so it stays in the note.
+  { at: at(15), id: "mna-s15", mode: "EXPLICIT", owner: "mna-saver", sensitivity: "HIGHLY_SENSITIVE",
+    text: quote("Synthetic highly sensitive fact.") },
+  { at: at(16), id: "mna-s16", mode: "EXPLICIT", owner: "mna-saver", sensitivity: "SENSITIVE", text: quote("Synthetic sensitive fact.") },
   // Saved facts over the limit: the first two fill exactly 6 000 characters.
   { at: at(1), id: "mna-o1", mode: "EXPLICIT", owner: "mna-overflow", text: "repeat('a', 3000)" },
   { at: at(2), id: "mna-o2", mode: "EXPLICIT", owner: "mna-overflow", text: "repeat('b', 2999)" },
   { at: at(3), id: "mna-o3", mode: "EXPLICIT", owner: "mna-overflow", text: quote("c") },
   { at: at(4), id: "mna-o4", mode: "EXPLICIT", owner: "mna-overflow", text: quote("Short rule.") },
   { at: at(5), evidence: ["mna-overflow-m1"], id: "mna-o5", mode: "AUTOMATIC", owner: "mna-overflow", text: "repeat('d', 6100)" },
-  { at: at(6), id: "mna-o6", mode: "EXPLICIT", owner: "mna-overflow", secret: true, text: quote("Synthetic secret-class fact.") },
+  { at: at(6), id: "mna-o6", mode: "EXPLICIT", owner: "mna-overflow", sensitivity: "SECRET",
+    text: quote("Synthetic secret-class fact.") },
   // Memory off still carries the owner's facts.
   { at: at(1), id: "mna-m1", mode: "EXPLICIT", owner: "mna-master-off", text: quote("Synthetic paused-owner fact.") },
   // Learning paused since 2026-10-15: evidence from inside the pause never counted.
@@ -130,7 +136,7 @@ INSERT INTO "MemoryFactVersion" (id, "userId", "factId", "displayText", "normali
   "safetyClassifierPolicyVersion", "safetyClassificationReasonCode", "safetyClassifiedAt", "semanticFrame", "expiresAt",
   "createdByEventId", "pipelineVersion", "systemFrom", "createdAt")
 VALUES ('${version}', '${fact.owner}', '${fact.id}', ${fact.text}, 'synthetic', 'en', '{}'::jsonb,
-  'other', 'STATE', '${fact.mode}', '${state}', 1, 0.5, 'DIRECT', '${fact.secret ? "SECRET" : "NORMAL"}',
+  'other', 'STATE', '${fact.mode}', '${state}', 1, 0.5, 'DIRECT', '${fact.sensitivity ?? "NORMAL"}',
   ${fact.pending ? "'PENDING', NULL, NULL, NULL" : `'CLASSIFIED', 'memory-safety-lite-v1', 'lite_non_secret_default', '${fact.at}'`},
   ${fact.frame ? `'{"memoryDirective":"${fact.frame}"}'::jsonb` : "NULL"},
   ${fact.expiring ? "CURRENT_TIMESTAMP + INTERVAL '1 millisecond'" : "NULL"},
@@ -264,7 +270,7 @@ CREATE TABLE "_MemoryNoteAdoptionFixture" AS SELECT ${oldMemoryDigest} AS "oldMe
 
 const expectedNotes: readonly (readonly [string, string])[] = [
   ["mna-saver", [quote("Answer in short bullet points."), quote("I work on the billing team."), quote("My manager is Dana."),
-    quote("Use metric units.")].join(` || ${NEWLINE} || `)],
+    quote("Use metric units."), quote("Synthetic sensitive fact.")].join(` || ${NEWLINE} || `)],
   ["mna-overflow", `repeat('a', 3000) || ${NEWLINE} || repeat('b', 2999)`],
   ["mna-master-off", quote("Synthetic paused-owner fact.")],
   ["mna-deleter", quote("Synthetic kept-chat fact.")]
@@ -272,6 +278,7 @@ const expectedNotes: readonly (readonly [string, string])[] = [
 
 const expectedSuggestions: readonly (readonly [string, "AUTOMATIC" | "SAVED_OVERFLOW", string, string])[] = [
   ["mna-saver", "AUTOMATIC", quote("Prefers dark mode."), at(5)],
+  ["mna-saver", "SAVED_OVERFLOW", quote("Synthetic highly sensitive fact."), at(15)],
   ["mna-overflow", "SAVED_OVERFLOW", quote("c"), at(3)],
   ["mna-overflow", "SAVED_OVERFLOW", quote("Short rule."), at(4)],
   ["mna-overflow", "AUTOMATIC", "repeat('d', 6000)", at(5)],
@@ -324,7 +331,7 @@ DO $$ BEGIN
   IF (SELECT char_length("text") FROM "UserMemoryNote" WHERE "userId" = 'mna-overflow') <> 6000
     THEN RAISE EXCEPTION 'memory_note_adoption_note_limit'; END IF;
 
-  -- Suggestions: overflow and secret-class saved facts, and ordinary automatic facts with a live source, clipped.
+  -- Suggestions: overflow, highly sensitive and secret-class saved facts, and automatic facts with a live source, clipped.
   IF (SELECT count(*) FROM "MemoryLegacySuggestion") <> ${expectedSuggestions.length}
     OR EXISTS (${actualSuggestions} EXCEPT ${suggestionsValues}) OR EXISTS (${suggestionsValues} EXCEPT ${actualSuggestions})
     THEN RAISE EXCEPTION 'memory_note_adoption_suggestions'; END IF;
