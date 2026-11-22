@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Writable } from "node:stream";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { version } from "../../../package.json";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import {
-  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
+  ENUMERATIONS, MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
   getContext, registerRouteTemplates, reportReadiness, runInBackground, runWithContext,
   serializeEvent, setProcessRole, writeEmergencyFailure
 } from "./runtime.cjs";
@@ -141,6 +142,42 @@ describe("bounded observability runtime", () => {
       expect(JSON.stringify(event)).not.toContain("PRIVATE_");
     }
   );
+
+  it.each([
+    ["service_operation", "admin", "assistant_listing_failed"], ["service_operation", "configuration", "skill_preference_failed"],
+    ["service_operation", "admin", "skill_publication_saved"], ["service_operation", "admin", "skill_sharing_failed"],
+    ["service_operation", "admin", "skill_share_request_withdrawn"], ["service_operation", "admin", "skill_share_request_approved"],
+    ["service_operation", "admin", "skill_share_request_rejected"], ["service_operation", "configuration", "subagent_definitions_failed"],
+    ["runtime_lifecycle", "workspace", "workspace_agent_stop_unproven"]
+  ] as const)("keeps the logged code %s/%s/%s by name instead of unknown", (event, subsystem, code) => {
+    expect(record(event, { subsystem, stage: "write", outcome: "failed", code })).toMatchObject({ code });
+  });
+
+  it("keeps the runner's project restore stage", () => {
+    expect(record("runtime_lifecycle", { subsystem: "workspace", stage: "restore", outcome: "failed", action: "stop" }))
+      .toMatchObject({ stage: "restore", level: "error" });
+  });
+
+  it("validates each named union of events.ts against exactly its values", () => {
+    const file = "lib/server/observability/events.ts";
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const aliases = new Map(source.statements.filter(ts.isTypeAliasDeclaration).map((alias) => [alias.name.text, alias.type]));
+    // The string literals a union resolves to, through the named unions it includes; null for any other type.
+    const values = (type: ts.TypeNode): string[] | null => {
+      const members = ts.isUnionTypeNode(type) ? [...type.types] : [type];
+      const resolved = members.map((member) => ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal) ? [member.literal.text]
+        : ts.isTypeReferenceNode(member) && ts.isIdentifier(member.typeName) && aliases.has(member.typeName.text)
+          ? values(aliases.get(member.typeName.text)!) : null);
+      return resolved.every((entry) => entry !== null) ? resolved.flat() : null;
+    };
+    const unions = Object.fromEntries([...aliases].flatMap(([name, type]) => {
+      const literal = values(type);
+      return literal ? [[name, [...literal].sort()]] : [];
+    }));
+    const runtime = Object.fromEntries(Object.entries(ENUMERATIONS).map(([name, list]) => [name, [...list].sort()]));
+    for (const list of Object.values(ENUMERATIONS)) expect(new Set(list).size).toBe(list.length);
+    expect(runtime).toEqual(unions);
+  });
 
   it("shares CJS and bundled entry context, including concurrent callbacks and fresh job roots", async () => {
     const cjs = require("./runtime.cjs") as typeof import("./runtime.cjs");
