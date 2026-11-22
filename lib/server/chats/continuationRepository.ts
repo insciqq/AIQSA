@@ -7,9 +7,8 @@ import { estimateCostMicros, normalizeTokenUsage } from "../../domain/usage";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { formatChatRoutePath } from "../../domain/chatRoute";
 import { resolveChatAccess } from "./access";
-import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
+import { temporaryChatRetentionDeadline } from "./temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "../../contracts/subagents";
 import {
@@ -370,7 +369,8 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
         const newChatId = randomUUID();
         const requestMessageId = randomUUID();
         const messageId = randomUUID();
-        const deadline = chat.memoryMode === "TEMPORARY" ? temporaryRetentionDeadline(new Date()) : null;
+        // A continued Temporary chat is Temporary too, with its own deadline (its deletion obligation).
+        const deadline = chat.memoryMode === "TEMPORARY" ? temporaryChatRetentionDeadline(new Date()) : null;
         await tx.chat.create({ data: {
           id: newChatId, title: boundedChatTitle(`Continued: ${chat.title}`),
           defaultProviderModelId: operation.requestedProviderModelId ?? chat.defaultProviderModelId, memoryMode: chat.memoryMode,
@@ -401,12 +401,9 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           id: messageId, parentMessageId: requestMessageId, chatId: newChatId, role: "assistant", status: "complete",
           content: textMessageContent(`Conversation summary\n\n${summary}`)
         } });
-        const newChat = await lockMemorySourceChat(tx, { chatId: newChatId, lock: "UPDATE", userId: source.userId });
-        if (!newChat) throw new ChatContinuationError("chat_summary_failed", 502);
-        await applyMemorySourceMutations(tx, {
-          chat: newChat, hooks: defaultMemorySourceMutationHooks, mutations: ["NORMAL_APPEND"], patch: { activeLeafMessageId: messageId }
-        });
-        if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: newChatId, deadline, now: new Date(), userId: source.userId });
+        await tx.chat.update({ data: { activeLeafMessageId: messageId }, select: { id: true }, where: { id: newChatId } });
+        // The new chat is searchable as its mode allows: a continued Temporary, Excluded or imported chat stays out.
+        await markChatSearchDirty(tx, { chatId: newChatId, userId: source.userId });
         const settled = await tx.chatContinuation.updateMany({ where: { id: claim.id, attemptId: claim.attemptId, status: "running", cancelRequestedAt: null,
           OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { gt: new Date() } }] }, data: { status: "complete", newChatId, errorCode: null } });
         if (settled.count !== 1) throw new ChatContinuationError("chat_changed");

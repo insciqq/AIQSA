@@ -19,8 +19,6 @@ import {
   requestBodyErrorResponse,
   RequestBodyTooLargeError
 } from "../http/requestBody";
-import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { logEvent } from "../observability";
 import { databaseFailureCode, retainDatabaseFailure } from "../observability/databaseFailure";
 
@@ -133,18 +131,13 @@ export async function importChatForUser(
           }))
         });
       }
-      const locked = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
-      if (!locked) throw new Error("chat_import_chat_missing");
-      // Every personal leaf change goes through the source-state owner; an
-      // Excluded chat admits nothing to Memory there.
-      await applyMemorySourceMutations(tx, {
-        chat: locked,
-        hooks: defaultMemorySourceMutationHooks,
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: ids.get(activeLeafLocalId(chat))! }
+      // An imported chat stays Excluded, so past-chat search never indexes it and nothing marks it. The source's last
+      // activity, not the import time, is the chat's time.
+      await tx.chat.update({
+        data: { activeLeafMessageId: ids.get(activeLeafLocalId(chat))!, updatedAt },
+        select: { id: true },
+        where: { id: chatId }
       });
-      // The leaf write stamped the import time; the source's last activity wins.
-      await tx.chat.update({ data: { updatedAt }, select: { id: true }, where: { id: chatId } });
       return { messages: chat.messages.length, status: "imported" as const };
     }, IMPORT_TRANSACTION);
   } catch (error) {

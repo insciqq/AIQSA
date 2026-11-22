@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { resolveChatAccess } from "../chats/access";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
 import { lockRunSettlementScope } from "../runs/prismaRepositoryShared";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { appendRunOutputEvents } from "../runs/prismaRepositoryToolLoop";
@@ -142,6 +143,9 @@ export function createWorkspaceCheckpointStore(prisma: PrismaClient, maximumByte
       if (["pending", "running"].includes(tool.state)) await tx.modelRunToolCall.update({ where: { id: tool.id }, data: {
         result: json(snapshot), state: "complete", completedAt: new Date() } });
       await appendRunOutputEvents(tx, run.id, runOutputArtifactEvents(result.artifacts ?? []));
+      // Files attached after the answer settled are new names in its past-chat passages. Last, so the index state
+      // is the final lock this transaction takes.
+      if (terminalRecovery) await markChatSearchDirty(tx, { chatId: run.chatId, userId: run.userId });
       return result;
     },
     decode,

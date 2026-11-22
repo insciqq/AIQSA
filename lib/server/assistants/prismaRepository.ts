@@ -18,12 +18,6 @@ import { resolveCurrentUserCatalogSelection } from "../catalog/currentUserCatalo
 import { createPrismaCatalogDataLoader } from "../catalog/prismaCatalogData";
 import { projectMcpRunPlanStartability } from "../mcp/runPlan";
 import { loadMcpRunPlanRecordsForServers } from "../mcp/runPlanRepository";
-import { lockMemorySettings } from "../memory/persistence/transaction";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import {
-  applyMemoryScopedTargetOwnerLifecycle,
-  type MemorySourceMutationHooks
-} from "../memory/sourceState";
 import { prisma } from "../prisma";
 import { shippedSkillAccessWhere } from "../skills/prismaRepository";
 import {
@@ -409,7 +403,6 @@ export type PrismaAssistantRepositoryOptions = {
     tx: Prisma.TransactionClient,
     userId: string
   ): Promise<AssistantCatalogView | null>;
-  memorySourceHooks?: MemorySourceMutationHooks;
   now?(): Date;
 };
 
@@ -599,7 +592,6 @@ export function createPrismaAssistantRepository(
   client: PrismaClient = prisma,
   options: PrismaAssistantRepositoryOptions = {}
 ) {
-  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   const loadCatalogView = options.loadCatalogView ?? (async (
     tx: Prisma.TransactionClient,
     userId: string
@@ -913,8 +905,7 @@ export function createPrismaAssistantRepository(
       archived: boolean
     ): Promise<AssistantWriteResult> {
       return client.$transaction(async (tx) => {
-        // Memory admission holds the owner before the definition. Keep the
-        // same order before the availability hook acquires Memory settings.
+        // Owner before definition, the order the Assistant writers take.
         await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
         const locked = await tx.$queryRaw<
           Array<{ archivedAt: Date | null; id: string; version: number }>
@@ -927,11 +918,6 @@ export function createPrismaAssistantRepository(
         const definition = locked[0];
         if (!definition) return { kind: "not_found" as const };
         if (definition.version !== expectedVersion) return { kind: "version_conflict" as const };
-
-        const availabilityChanged = (definition.archivedAt !== null) !== archived;
-        if (availabilityChanged) {
-          await lockMemorySettings(tx, userId, false);
-        }
 
         await tx.assistantDefinition.update({
           data: {
@@ -947,14 +933,6 @@ export function createPrismaAssistantRepository(
           await tx.assistantListingRequest.updateMany({
             data: { state: "withdrawn" },
             where: { assistantId, state: "pending" }
-          });
-        }
-        if (availabilityChanged) {
-          await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
-            kind: "ASSISTANT_ACCESS_CHANGE",
-            sourceSnapshots: [],
-            targetId: assistantId,
-            userId
           });
         }
         return { assistantId, kind: "ok" as const };

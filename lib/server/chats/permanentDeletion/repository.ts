@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { PERMANENT_CHAT_DELETION_DUTY } from "../../background/duties";
+import { clearChatSearch } from "../../chatSearch/index/dirty";
 import { prisma } from "../../prisma";
 import type { PermanentChatDeletionRepository } from "./service";
 
@@ -110,6 +111,8 @@ export function createPrismaPermanentChatDeletionRepository(
           }
         });
         if (fenced.count !== 1) return { kind: "not_found" as const };
+        // Past-chat search stops returning the chat at the fence, not when the purge gets to it.
+        await clearChatSearch(tx, { chatId: input.chatId });
         await tx.sharedChatSnapshot.updateMany({
           data: { revokedAt: input.now },
           where: {

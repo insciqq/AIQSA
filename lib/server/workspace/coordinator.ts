@@ -40,6 +40,7 @@ import { uploadFormatForExtension, type UploadKind } from "@/lib/domain/uploadFo
 import { hashCanonicalMcpValue } from "@/lib/server/mcp/definitions";
 import type { NormalizedRunWorkspace } from "@/lib/server/providers/types";
 import { workspaceAncestorMessageIds, workspaceInboxAttachmentWhere } from "./inboxSelection";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "@/lib/server/tools/types";
 import {
   getStoredObjectStream,
@@ -917,7 +918,7 @@ export function createPrismaWorkspaceCoordinatorRepository(
       return exportTransaction("export_complete", async (tx) => {
         if (!(await hasActiveExportLease(tx, lease))) return false;
         const binding = await tx.workspaceRunBinding.findUniqueOrThrow({
-          select: { outputCapture: true, outputs: { select: {
+          select: { modelRun: { select: { chatId: true, userId: true } }, outputCapture: true, outputs: { select: {
             byteSize: true, checksum: true, relativePath: true, attachment: { select: { mimeType: true } }
           } } }, where: { modelRunId: lease.runId }
         });
@@ -930,6 +931,11 @@ export function createPrismaWorkspaceCoordinatorRepository(
             exportState: "COMPLETE", lastExportErrorCode: null },
           where: { exportLeaseToken: lease.token, exportState: "EXPORTING", modelRunId: lease.runId, workspaceSessionId: lease.sessionId }
         });
+        // The answer's files are searchable names in its past-chat passages, and an export may complete after the
+        // answer settled. The lease check above locked the chat row first, in the order the index pass takes it.
+        if (updated.count === 1 && binding.outputs.length > 0) {
+          await markChatSearchDirty(tx, binding.modelRun);
+        }
         return updated.count === 1;
       });
     },

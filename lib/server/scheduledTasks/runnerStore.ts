@@ -8,8 +8,6 @@ import {
   type ScheduledTaskSchedule
 } from "../../contracts/scheduledTasks";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { applyMemorySourceMutations, type LockedMemorySourceChat } from "../memory/sourceState";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { moveShownMonitoringCheck } from "../runs/chatListTime";
@@ -939,12 +937,10 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
 
     async archiveRotatedChat({ chatId, taskId, userId }) {
       return prisma.$transaction(async (tx) => {
-        const [chat] = await tx.$queryRaw<Array<LockedMemorySourceChat & {
-          pinned: boolean; permanentDeletionAt: Date | null;
+        const [chat] = await tx.$queryRaw<Array<{
+          archived: boolean; folderId: string | null; memoryMode: string; pinned: boolean; permanentDeletionAt: Date | null;
         }>>(Prisma.sql`
-          SELECT "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode", "memoryBranchGeneration",
-            "memorySourceRevision", "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline", "pinned",
-            "permanentDeletionAt"
+          SELECT "archived", "folderId", "memoryMode"::text AS "memoryMode", "pinned", "permanentDeletionAt"
           FROM "Chat" WHERE "id" = ${chatId} AND "userId" = ${userId}
           FOR UPDATE
         `);
@@ -963,9 +959,8 @@ export function createPrismaScheduledTaskRunnerStore(prisma: PrismaClient): Sche
           ) AS "busy"
         `);
         if (busy?.busy !== false) return false;
-        await applyMemorySourceMutations(tx, {
-          chat, hooks: defaultMemorySourceMutationHooks, mutations: ["CHAT_ARCHIVE_OR_RESTORE"], patch: { archived: true }
-        });
+        // Archiving changes nothing past-chat search reads, so the chat is not marked.
+        await tx.chat.update({ data: { archived: true }, select: { id: true }, where: { id: chatId } });
         return true;
       });
     },
