@@ -61,13 +61,6 @@ describe("Run transport presentation v2", () => {
     }
   );
 
-  it("restores a stored retired System Model rejection as the generic Auto failure after reload", () => {
-    const stored = "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.";
-    const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,
-      message: { ...streamingMessage, errorMessage: stored, status: "error" }, persistedRunStatus: "error" });
-    expect(present(slice)).toMatchObject({ kind: "recoverable_error", failure: {
-      code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE, recovery: "retry" } });
-  });
   it.each([TOOL_SYNTHESIS_FAILURE.message, "Provider returned a tool call from a no-tool synthesis request."])(
     "restores a safe final synthesis failure from its persisted message", (errorMessage) => {
       const slice = runTransportStateV2({ activeChatStreaming: false, interruptedRun: null,

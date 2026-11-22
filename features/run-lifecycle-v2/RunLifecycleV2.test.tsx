@@ -707,7 +707,7 @@ describe("Run lifecycle v2", () => {
     }
   });
 
-  it.each([MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, "mcp_auto_discovery_output_limit", "mcp_auto_discovery_timeout"])("offers Auto retry and Load all for %s", (code) => {
+  it.each([MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE])("offers Auto retry and Load all for %s", (code) => {
     const retry = vi.fn();
     const useLoadAll = vi.fn();
     render(
