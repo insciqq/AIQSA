@@ -94,18 +94,25 @@ async function seedChat(input: Readonly<{ userId: string; title: string; turns: 
   cleanup.chats.push(chat.id);
   const messages: Prisma.MessageCreateManyInput[] = [];
   const passages: PassageSeed[] = [];
-  for (let turn = 0; turn < input.turns; turn += 1) {
+  // One branch, oldest turn (the last index) at its root and turn 0's answer its active leaf, as search reads only the active branch.
+  let parentMessageId: string | null = null;
+  for (let turn = input.turns - 1; turn >= 0; turn -= 1) {
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
     const turnAt = new Date(BASE - (input.firstMinute + turn) * 60_000);
-    messages.push({ chatId: chat.id, content: { blocks: [{ text: "question", type: "text" }] }, createdAt: turnAt, id: userMessageId, role: "user" },
-      { chatId: chat.id, content: { blocks: [{ text: "answer", type: "text" }] }, createdAt: turnAt, id: assistantMessageId, role: "assistant" });
+    messages.push({ chatId: chat.id, content: { blocks: [{ text: "question", type: "text" }] }, createdAt: turnAt, id: userMessageId,
+      parentMessageId, role: "user" },
+    { chatId: chat.id, content: { blocks: [{ text: "answer", type: "text" }] }, createdAt: turnAt, id: assistantMessageId,
+      parentMessageId: userMessageId, role: "assistant" });
+    parentMessageId = assistantMessageId;
     for (let window = 0; window < input.windows; window += 1) {
       passages.push({ assistantMessageId, chatId: chat.id, id: randomUUID(), ordinal: window, text: input.text(turn, window), turnAt,
         userId: input.userId, userMessageId });
     }
   }
+  // Parents come first, so a batch never names a parent a later batch inserts.
   for (let start = 0; start < messages.length; start += 1_000) await prisma.message.createMany({ data: messages.slice(start, start + 1_000) });
+  if (parentMessageId) await prisma.chat.update({ data: { activeLeafMessageId: parentMessageId }, where: { id: chat.id } });
   return { chatId: chat.id, passages };
 }
 
@@ -335,5 +342,49 @@ describe("past-chat search SQL", () => {
     const foreignIds = (await prisma.chatSearchPassage.findMany({ select: { id: true }, where: { chatId: { in: [fixture.chat.foreign,
       fixture.chat.deleted, fixture.chat.excluded] } } })).map((row) => row.id);
     expect(await store.passages(scope(), foreignIds)).toEqual([]);
+  });
+
+  it("returns only the active branch after a switch to a sibling, the shared ancestry included, before any reindex", async () => {
+    const at = (minute: number) => new Date(BASE - minute * 60_000);
+    const chat = await prisma.chat.create({ data: { title: "Special branches", userId: fixture.owner } });
+    cleanup.chats.push(chat.id);
+    const say = async (role: "assistant" | "user", parentMessageId: string | null, minute: number) => (await prisma.message.create({
+      data: { chatId: chat.id, content: { blocks: [{ text: role, type: "text" }] }, createdAt: at(minute), parentMessageId, role } })).id;
+    const rootQuestion = await say("user", null, 352);
+    const rootAnswer = await say("assistant", rootQuestion, 352);
+    const abandonedQuestion = await say("user", rootAnswer, 351);
+    const abandonedAnswer = await say("assistant", abandonedQuestion, 351);
+    // The edited question, a sibling of the abandoned one, made later.
+    const keptQuestion = await say("user", rootAnswer, 350);
+    const keptAnswer = await say("assistant", keptQuestion, 350);
+    const passage = (userMessageId: string, assistantMessageId: string, minute: number, words: string): PassageSeed => ({ assistantMessageId,
+      chatId: chat.id, id: randomUUID(), ordinal: 0, text: `Chat: Special branches\n\nUser: ${words}\n\nAssistant: Noted.`, turnAt: at(minute),
+      userId: fixture.owner, userMessageId });
+    const shared = passage(rootQuestion, rootAnswer, 352, "Shared xylophone ancestry");
+    const abandoned = passage(abandonedQuestion, abandonedAnswer, 351, "Abandoned zeppelin plan");
+    const kept = passage(keptQuestion, keptAnswer, 350, "Kept quokka plan");
+    await insertPassages([shared, abandoned, kept]);
+    // Only the passages of this chat fall in this window.
+    const window = { from: at(353), until: at(349) };
+    const ids = [shared.id, abandoned.id, kept.id];
+    const readIds = async () => (await store.passages(scope(), ids)).map((row) => row.id).sort();
+
+    // Indexed while the first branch was active, the sibling's passage not yet removed or written.
+    await prisma.chat.update({ data: { activeLeafMessageId: abandonedAnswer }, where: { id: chat.id } });
+    expect(await readIds()).toEqual([shared.id, abandoned.id].sort());
+    expect((await store.recent(scope({ range: window }), 8)).map((row) => row.id)).toEqual([abandoned.id]);
+    expect(chatIds(await searchAs(fixture.owner, fixture.current, "zeppelin"))).toContain(chat.id);
+
+    // The switch only marks the chat for the indexer; search must not wait for it.
+    await prisma.chat.update({ data: { activeLeafMessageId: keptAnswer }, where: { id: chat.id } });
+    expect(await readIds()).toEqual([shared.id, kept.id].sort());
+    expect((await store.recent(scope({ range: window }), 8)).map((row) => row.id)).toEqual([kept.id]);
+    expect(chatIds(await searchAs(fixture.owner, fixture.current, "zeppelin"))).not.toContain(chat.id);
+    expect(chatIds(await searchAs(fixture.owner, fixture.current, "quokka"))).toContain(chat.id);
+    expect(chatIds(await searchAs(fixture.owner, fixture.current, "xylophone"))).toContain(chat.id);
+
+    // A chat with no active leaf has no branch to search, as the indexer builds none.
+    await prisma.chat.update({ data: { activeLeafMessageId: null }, where: { id: chat.id } });
+    expect(await readIds()).toEqual([]);
   });
 });
