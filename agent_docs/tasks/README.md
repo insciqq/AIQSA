@@ -22,7 +22,7 @@ The task ledger holds queued, multi-session and parallel work. Same-session work
 
 1. Inspect Git state, the operator's scope, the relevant code and the area documents named in the root `AGENTS.md`.
 2. Claim the task with `start` before implementing. Record the verification scope you intend to use (`agent_docs/TESTING.md`), then implement the smallest complete slice.
-3. Keep progress, decisions, exact evidence and blockers in the task. For complex work, make `Plan`, `Progress` and `Decisions` detailed enough that a fresh agent can continue from the task and the checkout alone.
+3. Keep decisions, exact evidence and blockers in the task. When the work spans sessions, add `Progress` with what a fresh agent needs to continue from the task and the checkout alone; never restate commits or diffs Git already holds.
 4. Do the root final review, then `complete` the verified task yourself. If required evidence is unavailable, `block` the task with the exact condition instead.
 5. Continue with another task only under broad implementation permission and only if one is concrete and unblocked.
 
@@ -32,13 +32,15 @@ One integrating agent owns the ledger, conflicts, review and the combined verifi
 
 ## Task shape
 
-`node scripts/task-ledger.mjs new <slug> --summary "<outcome>"` creates the only valid scaffold: metadata `Status`, `Depends on`, `Blocked by`, `Durable rationale`, then `Goal`, `Context`, `Scope`, `Out Of Scope`, `Acceptance Criteria`, `Plan`, `Progress`, `Decisions`, `Verification`. Replace every placeholder before `promote`; use exact task stems in `Depends on`, or `none`.
+`node scripts/task-ledger.mjs new <slug> --summary "<outcome>"` creates the scaffold: metadata `Status`, `Depends on`, `Blocked by`, `Durable rationale`, then the required sections `Goal`, `Context`, `Scope`, `Acceptance Criteria`, `Decisions`, `Verification`. Replace every placeholder before `promote`; use exact task stems in `Depends on`, or `none`.
+
+Add an optional section only when it carries something the required ones do not: `Out Of Scope` for a boundary a worker would otherwise cross, `Plan` for an ordering that matters (checkboxes are not required or checked), `Progress` for a multi-session handoff. A section that is present appears once and is not empty. Older tasks that carry all nine sections stay valid.
 
 In `Context`, link the code and documents that matter and describe only the intended change; current behavior lives in the code.
 
 `Durable rationale` is `none` for almost every task. Use `moved to agent_docs/<FILE>.md` only when the task produced something future work needs and the code cannot show: an operator decision, an accepted risk, or an invariant with its reason. Write it into that document under the rules in the root `AGENTS.md` ("Writing agent docs"); a description of the new feature does not belong there.
 
-Before `complete`: `Plan` has no unchecked items, `Progress` and `Decisions` have no scaffold text (`- None.` is fine), `Verification` lists checked evidence or `Not run: <check> — <reason>`, and `Durable rationale` is no longer `pending`. Unavailable-only evidence cannot complete a task.
+Before `complete`: `Verification` lists checked evidence or `Not run: <check> — <reason>` and no unchecked items, `Progress`, if present, no longer reads `- Not started.`, and `Durable rationale` is no longer `pending`. Unavailable-only evidence cannot complete a task.
 
 ## Drafts and archive
 

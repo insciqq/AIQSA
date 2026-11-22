@@ -28,13 +28,12 @@ const REQUIRED_SECTIONS = [
   "Goal",
   "Context",
   "Scope",
-  "Out Of Scope",
   "Acceptance Criteria",
-  "Plan",
-  "Progress",
   "Decisions",
   "Verification"
 ];
+// Optional sections may be omitted; when present they must appear once and not be empty.
+const OPTIONAL_SECTIONS = ["Out Of Scope", "Plan", "Progress"];
 const READINESS_PLACEHOLDERS = [
   "Link the current owner documents and relevant code paths before promotion.",
   "Define the implementation slice.",
@@ -267,10 +266,13 @@ function cycleErrors(records) {
 
 function contentErrors(record) {
   const errors = [];
-  for (const name of REQUIRED_SECTIONS) {
+  for (const name of [...REQUIRED_SECTIONS, ...OPTIONAL_SECTIONS]) {
     const occurrences = sectionOccurrences(record.body, name);
+    if (occurrences.length === 0 && OPTIONAL_SECTIONS.includes(name)) continue;
     if (occurrences.length !== 1) {
-      errors.push(`${record.relativePath}: expected exactly one ## ${name} section`);
+      errors.push(
+        `${record.relativePath}: expected ${OPTIONAL_SECTIONS.includes(name) ? "at most" : "exactly"} one ## ${name} section`
+      );
       continue;
     }
     if (!section(record.body, name)) {
@@ -288,12 +290,6 @@ function readinessErrors(record) {
     }
   }
 
-  const plan = section(record.body, "Plan") ?? "";
-  if (!/-\s*\[[ xX]\]\s+\S/mu.test(plan)) {
-    errors.push(`${record.relativePath}: ## Plan needs at least one concrete checkbox milestone`);
-  }
-
-  const verification = section(record.body, "Verification") ?? "";
   const evidence = verificationEvidence(record.body);
   if (evidence.planned + evidence.passed + evidence.unavailable === 0) {
     errors.push(`${record.relativePath}: ## Verification needs at least one concrete planned or unavailable check`);
@@ -361,17 +357,8 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
 
 function completionReadiness(record, root) {
   const errors = [];
-  const plan = section(record.body, "Plan") ?? "";
-  const uncheckedPlanItems = [...plan.matchAll(/^-\s*\[\s\]\s+\S.*$/gmu)].length;
-  if (uncheckedPlanItems > 0) {
-    errors.push(`${record.relativePath}: ## Plan has ${uncheckedPlanItems} unchecked milestone(s); remove or resolve every item before completion`);
-  }
-
   if ((section(record.body, "Progress") ?? "").trim() === "- Not started.") {
-    errors.push(`${record.relativePath}: ## Progress must replace the scaffold value \`- Not started.\` before completion`);
-  }
-  if ((section(record.body, "Decisions") ?? "").trim() === "- None yet.") {
-    errors.push(`${record.relativePath}: ## Decisions must replace the scaffold value \`- None yet.\`; use \`- None.\` when no task-local decision was needed`);
+    errors.push(`${record.relativePath}: ## Progress still holds the scaffold value \`- Not started.\`; record the handoff state or remove the section before completion`);
   }
 
   const evidence = verificationEvidence(record.body);
@@ -525,7 +512,7 @@ export function createTask({ root = process.cwd(), slug, summary, date = new Dat
     throw new Error(`${relativePath} must be ignored before local task creation`);
   }
   mkdirSync(path.dirname(destination), { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, { encoding: "utf8", flag: "wx" });
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, { encoding: "utf8", flag: "wx" });
   return stem;
 }
 
