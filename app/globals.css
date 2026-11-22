@@ -62,32 +62,6 @@ select {
   }
 }
 
-/* Control Center responds to the width of its owned task surface. */
-[data-admin-task-container="true"] {
-  container-name: admin-task-workspace;
-  container-type: inline-size;
-}
-
-@container admin-task-workspace (min-width: 64rem) {
-  [data-admin-task-layout="true"] {
-    display: grid;
-  }
-
-  [data-admin-task-layout="true"] > [data-admin-task-view="index"],
-  [data-admin-task-layout="true"] > [data-admin-task-view="detail"] {
-    display: block;
-  }
-
-  [data-admin-task-layout="true"] > [data-admin-task-view="index"] {
-    border-right-width: 1px;
-    border-bottom-width: 0;
-  }
-
-  [data-admin-task-back="responsive"] {
-    display: none;
-  }
-}
-
 /* Prevent iOS focus zoom from invalidating dynamic-viewport dialogs and Composer. */
 @media (max-width: 1023px), (hover: none), (pointer: coarse) {
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
