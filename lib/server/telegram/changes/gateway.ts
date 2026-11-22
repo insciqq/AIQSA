@@ -54,7 +54,7 @@ export type TelegramChangeGateway = Readonly<{
   act(input: Readonly<{ operation: TelegramChangeOperation; userId: string }>): Promise<TelegramChangeOutcome>;
 }>;
 
-function request(path: string, method: "DELETE" | "GET" | "PATCH" | "POST", body?: unknown): Request {
+function request(path: string, method: "DELETE" | "GET" | "PATCH" | "POST" | "PUT", body?: unknown): Request {
   return new Request(`http://localhost${path}`, body === undefined ? { method } : {
     body: JSON.stringify(body), headers: { "content-type": "application/json" }, method
   });
