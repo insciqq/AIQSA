@@ -7,14 +7,13 @@ import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepo
 import { claimSubagentCallbacksForRun } from "./subagentBackground/store";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
+import { temporaryChatRetentionDeadline } from "../chats/temporaryRetention";
 import {
   assertWorkspaceFollowupClaim, predecessorReleasesSuccessor, prepareWorkspaceFollowupAdmission,
   storeWorkspaceFollowupAdmission, WorkspaceFollowupError
 } from "./workspaceFollowupPersistence";
-import { logEvent, runWithContext } from "../observability";
-import { observedFailure } from "../providers/providerObservability";
-import { logRunPersistence } from "./runObservability";
-import { retainRunPrismaCode } from "./prismaRepositoryObservability";
+import { logEvent } from "../observability";
 import { randomUUID } from "node:crypto";
 import {
   Prisma,
@@ -22,7 +21,6 @@ import {
   type PrismaClient
 } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
-import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { memoryRoleUsagePurpose } from "../../domain/usagePurpose";
 import { titleFromMessageContent } from "../chats/titlePolicy";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
@@ -32,14 +30,6 @@ import {
   sameProviderAdmissionPlan,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
-import type {
-  MemoryRunControlCache,
-  MemoryRunRetrievalService
-} from "../memory/retrieval";
-import {
-  boundedMemoryAdmissionDeadlineMs,
-  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
-} from "../memory/admissionDeadline";
 import {
   assertMemoryExecutionBindingLineage,
   MEMORY_EXECUTION_RECOVERY_HORIZON_MS,
@@ -55,9 +45,6 @@ import {
   MEMORY_ACTION_NO_COMMIT_RESULT,
   MEMORY_ACTION_PENDING_RESULT
 } from "../providers/memoryActionAnswer";
-import { admitMemoryAction } from "../memory/actions/actionAdmission";
-import { enqueueMemoryCommand } from "../memory/commands/repository";
-import { memorySha256 } from "../memory/persistence/lexical";
 import {
   decodeMemoryReadOnlyControlReuseProof,
   type MemoryReadOnlyControlReuseProof
@@ -72,8 +59,6 @@ import {
 } from "../memory/persistence/transaction";
 import {
   applyMemorySourceMutations,
-  lockMemorySourceChat,
-  MemorySourceStateConflictError,
   type LockedMemorySourceChat,
   type MemorySourceMutationHooks,
   type MemorySourceSnapshot
@@ -99,15 +84,8 @@ import {
 // Users never see Memory failures; the stable error code keeps the reason.
 import { RUN_PREPARATION_FAILURE_MESSAGE } from "../../contracts/runs";
 import {
-  MEMORY_PREPARATION_INTERRUPTED_CODE,
   MEMORY_PREPARATION_SKIPPED_CODE,
-  failedSafeActionForRun,
-  failedSafeActionFromBudget,
-  memoryPreparationCauseCode,
-  memoryPreparationFailOpen,
-  memoryPreparationFailureCode,
-  type MemoryFailedSafeAction,
-  type MemoryPreparationStage
+  failedSafeActionFromBudget
 } from "./preparingFailOpen";
 import type { McpRunPlanBinding } from "../mcp/runPlan";
 import {
@@ -118,7 +96,6 @@ import {
   createMemoryPreparingBaseSnapshot,
   decodeMemoryPreparingBaseSnapshot,
   decodeMemoryPreparingSettingsSnapshot,
-  dormantMemoryAttemptResult,
   memoryControlReuseSettingsHash,
   memoryPreparingHash,
   memoryPreparingSettingsSnapshot,
@@ -168,8 +145,7 @@ import {
   insertAcceptedProviderRunBindings,
   insertAcceptedSkillRunBindings,
   persistAcceptedRunDefaults,
-  repeatableReadTransaction,
-  RunTransactionDeadlineError
+  repeatableReadTransaction
 } from "./prismaRepositoryBindings";
 import {
   activeModelRunStatuses,
@@ -697,7 +673,7 @@ async function createPreparingAttempt(
   return attemptId;
 }
 
-type TemporaryPreparingRunAdmissionInput = Readonly<{
+type DispatchablePreparingRunAdmissionInput = Readonly<{
   assistantMessageId: string;
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   folderId: string | null;
@@ -705,27 +681,21 @@ type TemporaryPreparingRunAdmissionInput = Readonly<{
   memoryRevision: number;
   normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
   runId: string;
-  /**
-   * An answer to a scheduled task's prompt (its scheduled run or a later one)
-   * that reads no Memory, whatever its chat's Memory mode.
-   */
+  /** An answer to a scheduled task's prompt (its scheduled run or a later one), whatever its chat's Memory mode. */
   scheduledPrompt?: true;
   settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
 
 /**
- * Temporary Chat and scheduled task turns without Memory (an answer
- * to a task's prompt whose admission froze no standing read) bypass Personal
- * Memory preparation entirely. The ordinary run is made dispatchable in the
- * admission transaction, while no Memory attempt/binding receives the
- * content-bearing base request.
+ * Every run is dispatchable in its admission transaction (operator decision 2026-11-22: Personal Memory's preparation is
+ * removed). What a run reads of the memory note was frozen into its request before admission
+ * (`lib/server/runs/runPreparation.ts`), so no Memory attempt or binding receives the content-bearing base request.
  */
-export async function finalizeTemporaryPreparingRunAdmission(
+export async function finalizeDispatchablePreparingRunAdmission(
   tx: Pick<Prisma.TransactionClient, "modelRun">,
-  input: TemporaryPreparingRunAdmissionInput
-): Promise<PreparingRunAdmissionResult | null> {
-  if (input.chatMemoryMode !== "TEMPORARY" && !input.scheduledPrompt) return null;
+  input: DispatchablePreparingRunAdmissionInput
+): Promise<PreparingRunAdmissionResult> {
   await tx.modelRun.update({
     data: {
       normalizedRequest: json(input.normalizedRequest),
@@ -743,120 +713,6 @@ export async function finalizeTemporaryPreparingRunAdmission(
     runId: input.runId,
     ...(input.scheduledPrompt ? { scheduledPrompt: true as const } : {}),
     settingsSnapshot: input.settingsSnapshot,
-    userMessageId: input.userMessageId
-  };
-}
-
-type UnavailablePreparingRunAdmissionInput = Readonly<{
-  admissionKind: "NORMAL_SEND" | "REGENERATE";
-  assistantIdSnapshot: string | null;
-  assistantMessageId: string;
-  baseSnapshot: ReturnType<typeof createMemoryPreparingBaseSnapshot>;
-  chatId: string;
-  chatMemoryMode: "NORMAL" | "EXCLUDED";
-  folderId: string | null;
-  lifecycleSnapshot: Pick<
-    MemorySourceSnapshot,
-    "activeLeafMessageId" | "memoryBranchGeneration" | "memorySourceRevision"
-  >;
-  normalizedRequest: PreparingRunAdmissionInput["normalizedRequest"];
-  now: Date;
-  preSendActiveLeafMessageId: string | null;
-  runId: string;
-  userId: string;
-  userMessageId: string;
-}>;
-
-/**
- * If the bounded Memory-specific portion of initial admission cannot finish,
- * admit the ordinary run with a durable, content-free FAILED_SAFE receipt.
- * This path deliberately avoids UserMemorySettings and index reads while the
- * surrounding admission transaction still proves the ordinary run, DAG,
- * attachment, provider, MCP, and Skill authorities.
- */
-export async function finalizeUnavailablePreparingRunAdmission(
-  tx: Prisma.TransactionClient,
-  input: UnavailablePreparingRunAdmissionInput
-): Promise<PreparingRunAdmissionResult> {
-  const settingsSnapshot = memoryPreparingSettingsSnapshot(
-    TEMPORARY_PREPARING_SETTINGS
-  );
-  const attemptId = await createPreparingAttempt(tx, {
-    admissionKind: input.admissionKind,
-    assistantIdSnapshot: input.assistantIdSnapshot,
-    assistantMessageId: input.assistantMessageId,
-    attemptOrdinal: 0,
-    baseSnapshot: input.baseSnapshot,
-    chatId: input.chatId,
-    chatMemoryMode: input.chatMemoryMode,
-    folderIdSnapshot: input.folderId,
-    lifecycleSnapshot: input.lifecycleSnapshot,
-    now: input.now,
-    preSendActiveLeafMessageId: input.preSendActiveLeafMessageId,
-    runId: input.runId,
-    settings: TEMPORARY_PREPARING_SETTINGS,
-    userId: input.userId,
-    userMessageId: input.userMessageId
-  });
-  const budgetSnapshot = {
-    ...memoryActionLifecycleBudgetSnapshot({
-      activeLeafMessageId: input.lifecycleSnapshot.activeLeafMessageId!,
-      branchGeneration: input.lifecycleSnapshot.memoryBranchGeneration,
-      sourceRevision: input.lifecycleSnapshot.memorySourceRevision
-    }),
-    itemCount: 0,
-    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
-    reason: "memory_admission_deadline_exceeded",
-    schemaVersion: 2
-  };
-  await tx.memoryRetrievalAttempt.update({
-    data: {
-      budgetSnapshot: json(budgetSnapshot),
-      consumedAt: input.now,
-      degradationCode: "memory_admission_deadline_exceeded",
-      outcome: "FAILED_SAFE",
-      state: "CONSUMED",
-      updatedAt: input.now
-    },
-    where: { id: attemptId }
-  });
-  await tx.modelRunMemoryBinding.create({
-    data: {
-      boundedSafeQuerySnapshot: null,
-      contextTextHash: memoryPreparingTextHash(""),
-      contextTokenCount: 0,
-      degradationCode: "memory_admission_deadline_exceeded",
-      finalizedAt: input.now,
-      finalizedRevisionSnapshot: 0,
-      indexGenerationId: null,
-      memoryGenerationSnapshot: 0,
-      modelRunId: input.runId,
-      outcome: "FAILED_SAFE",
-      queryHash: memoryPreparingTextHash(""),
-      queryPlannerVersion: MEMORY_PREPARING_QUERY_PLANNER_VERSION,
-      retrievalAttemptId: attemptId,
-      retrievalPipelineVersion: MEMORY_PREPARING_RETRIEVAL_PIPELINE_VERSION,
-      retrievalRevisionSnapshot: 0,
-      settingsSnapshot: json(settingsSnapshot),
-      userId: input.userId
-    }
-  });
-  await tx.modelRun.update({
-    data: {
-      normalizedRequest: json(input.normalizedRequest),
-      status: "streaming"
-    },
-    where: { id: input.runId }
-  });
-  return {
-    assistantMessageId: input.assistantMessageId,
-    attemptId,
-    chatMemoryMode: input.chatMemoryMode,
-    folderId: input.folderId,
-    memoryGeneration: 0,
-    memoryRevision: 0,
-    runId: input.runId,
-    settingsSnapshot,
     userMessageId: input.userMessageId
   };
 }
@@ -898,54 +754,13 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
   }
 }
 
-async function enqueuePreparingMemoryCommand(
-  tx: Prisma.TransactionClient,
-  input: PreparingRunAdmissionInput,
-  settings: LockedMemorySettings,
-  source: Readonly<{
-    assistantMessageId: string;
-    chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
-    memoryBranchGeneration: number;
-    memorySourceRevision: number;
-    userMessageId: string;
-  }>
-): Promise<boolean> {
-  // A turn the server wrote for the user is never a Memory command.
-  if (input.admissionKind !== "NORMAL_SEND" || input.scheduledOccurrence || input.systemTurnKind ||
-    source.chatMemoryMode !== "NORMAL" ||
-    !settings.useMemoryFacts ||
-    admitMemoryAction(textFromContentBlocks(input.content)).state !== "SEMANTIC_CANDIDATE") {
-    return false;
-  }
-  if (input.assistant && !await tx.assistantDefinition.findFirst({
-    select: { id: true },
-    where: { archivedAt: null, id: input.assistant.assistantId, ownerUserId: input.userId }
-  })) return false;
-  await enqueueMemoryCommand(tx, settings, {
-    activeLeafMessageId: source.assistantMessageId,
-    branchGeneration: source.memoryBranchGeneration,
-    chatId: input.chatId,
-    sourceHash: memorySha256(input.content),
-    sourceMessageId: source.userMessageId,
-    sourceRevision: source.memorySourceRevision
-  });
-  return true;
-}
-
 export async function admitPreparingRunWithClient(
   prismaClient: PrismaClient,
   input: PreparingRunAdmissionInput,
   memorySourceHooks?: MemorySourceMutationHooks,
-  options: Readonly<{
-    deadlineAtMs?: number;
-    memoryUnavailableFallback?: boolean;
-  }> = {}
+  options: Readonly<{ deadlineAtMs?: number }> = {}
 ): Promise<PreparingRunAdmissionResult> {
   assertPreparingAdmissionInput(input);
-  const baseSnapshot = createMemoryPreparingBaseSnapshot({
-    normalizedRequest: input.normalizedRequest,
-    providerRequestPreview: input.providerRequestPreview
-  });
   return mapActiveRunConflict(() =>
     repeatableReadTransaction(prismaClient, async (tx) => {
       // Match account/settings owner -> chat lock order before freezing secrets.
@@ -953,9 +768,8 @@ export async function admitPreparingRunWithClient(
       else if (input.workspaceFollowup && !await lockPreparingMemoryOwner(tx, input.userId)) {
         throw new WorkspaceFollowupError("workspace_followup_unavailable");
       }
-      // Command acceptance shares the owner serialization used by every
-      // Memory writer, before any source-chat row is locked.
-      if (!options.memoryUnavailableFallback && !await lockPreparingMemoryOwner(tx, input.userId)) {
+      // The owner before any chat row, in the order account deletion and the memory note's writers take.
+      if (!await lockPreparingMemoryOwner(tx, input.userId)) {
         throw new MemoryPreparingRunConflictError("memory_owner_unavailable", false);
       }
       if (input.normalizedRequest.instructionPreset) await assertInstructionPresetSelection(
@@ -1373,17 +1187,10 @@ export async function admitPreparingRunWithClient(
         });
       }
 
-      // A scheduled task's run and every other answer to its prompt never change
-      // Personal Memory, whatever the chat's mode: no synchronous `/memory`
-      // command or queued one from a possibly model-written prompt, and no
-      // learning (its prompt mark). It reads Memory only through the standing
-      // read its preparation froze while the task had Memory on; otherwise it
-      // bypasses Personal Memory.
+      // No admission reads Personal Memory's settings any more (operator decision 2026-11-22): the run's frozen request
+      // carries what it reads of the memory note, and the receipt's settings fields stay at their empty values.
       const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
-      const scheduledWithoutMemory = scheduledPrompt && input.normalizedRequest.memoryStandingVersion !== 1;
-      const settings = lockedChat.memoryMode === "TEMPORARY" || scheduledWithoutMemory || options.memoryUnavailableFallback
-        ? TEMPORARY_PREPARING_SETTINGS
-        : await loadPreparingSettings(tx, input.userId, true);
+      const settings = TEMPORARY_PREPARING_SETTINGS;
 
       const run = await tx.modelRun.create({
         data: {
@@ -1482,7 +1289,7 @@ export async function admitPreparingRunWithClient(
         return admitted;
       }
 
-      const temporaryResult = await finalizeTemporaryPreparingRunAdmission(tx, {
+      return finalizeDispatchablePreparingRunAdmission(tx, {
         assistantMessageId,
         chatMemoryMode: lockedChat.memoryMode,
         folderId: lockedChat.folderId,
@@ -1490,72 +1297,10 @@ export async function admitPreparingRunWithClient(
         memoryRevision: settings.memoryRevision,
         normalizedRequest: input.normalizedRequest,
         runId: run.id,
-        ...(scheduledWithoutMemory ? { scheduledPrompt: true as const } : {}),
-        settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
-        userMessageId
-      });
-      if (temporaryResult) return temporaryResult;
-
-      if (options.memoryUnavailableFallback &&
-        lockedChat.memoryMode !== "TEMPORARY") {
-        return finalizeUnavailablePreparingRunAdmission(tx, {
-          admissionKind: input.admissionKind,
-          assistantIdSnapshot: input.assistant?.assistantId ?? null,
-          assistantMessageId,
-          baseSnapshot,
-          chatId: input.chatId,
-          chatMemoryMode: lockedChat.memoryMode,
-          folderId: lockedChat.folderId,
-          lifecycleSnapshot: admittedSourceSnapshot,
-          normalizedRequest: input.normalizedRequest,
-          now: admissionNow,
-          preSendActiveLeafMessageId,
-          runId: run.id,
-          userId: input.userId,
-          userMessageId
-        });
-      }
-
-      const attemptId = await createPreparingAttempt(tx, {
-        admissionKind: input.admissionKind,
-        assistantIdSnapshot: input.assistant?.assistantId ?? null,
-        assistantMessageId,
-        attemptOrdinal: 0,
-        baseSnapshot,
-        chatId: input.chatId,
-        chatMemoryMode: lockedChat.memoryMode,
-        folderIdSnapshot: lockedChat.folderId,
-        lifecycleSnapshot: admittedSourceSnapshot,
-        now: admissionNow,
-        preSendActiveLeafMessageId,
-        runId: run.id,
-        settings,
-        userId: input.userId,
-        userMessageId
-      });
-
-      // A task turn reads only: its prompt never queues a Memory command.
-      const memoryCommandQueued = !scheduledPrompt && await enqueuePreparingMemoryCommand(tx, input, settings, {
-        assistantMessageId,
-        chatMemoryMode: lockedChat.memoryMode,
-        memoryBranchGeneration: admittedSourceSnapshot.memoryBranchGeneration,
-        memorySourceRevision: admittedSourceSnapshot.memorySourceRevision,
-        userMessageId
-      });
-
-      return {
-        assistantMessageId,
-        attemptId,
-        chatMemoryMode: lockedChat.memoryMode,
-        folderId: lockedChat.folderId,
-        memoryGeneration: settings.memoryGeneration,
-        ...(memoryCommandQueued ? { memoryCommandQueued: true } : {}),
-        memoryRevision: settings.memoryRevision,
-        runId: run.id,
         ...(scheduledPrompt ? { scheduledPrompt: true as const } : {}),
         settingsSnapshot: memoryPreparingSettingsSnapshot(settings),
         userMessageId
-      };
+      });
     }, options)
   );
 }
@@ -3508,45 +3253,56 @@ export type PreparingSettlementInput = Readonly<{
   userId: string;
 }>;
 
-export async function settleTerminalMemorySource(
+export type TerminalChatSourceInput = Readonly<{
+  assistantMessageId: string | null;
+  chatId: string;
+  runId: string;
+  status: "cancelled" | "complete" | "error";
+  userId: string;
+}>;
+
+/**
+ * A run's terminal write to its chat, inside the transaction that settles the run: the chat moves to the top of the
+ * chat list (a monitoring check keeps its place, `chatListTime.ts`), a Temporary chat's deletion deadline moves to a
+ * day after this answer, and a main-agent answer marks the chat for past-chat search, whatever its outcome, since the
+ * pass reconciles the passages with the active branch (`lib/server/chatSearch/index/dirty.ts`). The chat row is
+ * locked before the mark, in the order the index pass takes it. A chat that is gone, fenced for permanent deletion or
+ * has no personal owner (a legacy Project chat) is left alone; its runs still settle.
+ */
+export async function settleTerminalChatSource(
   tx: Prisma.TransactionClient,
-  input: Readonly<{
-    assistantMessageId: string | null;
-    chatId: string;
-    runId: string;
-    status: "cancelled" | "complete" | "error";
-    userId: string;
-  }>,
-  memorySourceHooks?: MemorySourceMutationHooks
+  input: TerminalChatSourceInput
 ): Promise<void> {
-  const ownership = await tx.chat.findUnique({
-    select: { userId: true },
+  const [chat] = await tx.$queryRaw<Array<{ memoryMode: string }>>(Prisma.sql`
+    SELECT "memoryMode"::text AS "memoryMode"
+    FROM "Chat"
+    WHERE "id" = ${input.chatId} AND "userId" = ${input.userId} AND "permanentDeletionAt" IS NULL
+    FOR UPDATE
+  `);
+  if (!chat) return;
+  const keptChatTime = await monitoringCheckChatTime(tx, { chatId: input.chatId, runId: input.runId });
+  const now = new Date();
+  await tx.chat.update({
+    data: chat.memoryMode === "TEMPORARY"
+      ? { temporaryRetentionDeadline: temporaryChatRetentionDeadline(now), updatedAt: now }
+      : { updatedAt: now },
+    select: { id: true },
     where: { id: input.chatId }
   });
-  if (ownership && ownership.userId === null) {
-    // A legacy Project chat has no personal owner and never enters the
-    // personal Memory source state machine; its runs still settle.
-    return;
-  }
-  const chat = await lockMemorySourceChat(tx, {
-    chatId: input.chatId,
-    lock: "UPDATE",
-    userId: input.userId
-  });
-  if (!chat) throw new MemorySourceStateConflictError();
-  // A monitoring check's terminal write keeps its chat's place in the chat list (`chatListTime.ts`).
-  const keptChatTime = await monitoringCheckChatTime(tx, { chatId: input.chatId, runId: input.runId });
-  await applyMemorySourceMutations(tx, {
-    chat,
-    hooks: memorySourceHooks,
-    mutations: ["TERMINAL_SETTLEMENT"],
-    terminalSettlement: {
-      assistantMessageId: input.assistantMessageId,
-      runId: input.runId,
-      status: input.status
-    }
-  });
   if (keptChatTime) await keepChatListTime(tx, input.chatId, keptChatTime);
+  if (input.assistantMessageId) await markChatSearchDirty(tx, { chatId: input.chatId, userId: input.userId });
+}
+
+/**
+ * The name the run side's settlement paths still call, with the old Memory hooks they still pass; the hooks are
+ * ignored. Use {@link settleTerminalChatSource}.
+ */
+export async function settleTerminalMemorySource(
+  tx: Prisma.TransactionClient,
+  input: TerminalChatSourceInput,
+  _retiredMemoryHooks?: unknown
+): Promise<void> {
+  await settleTerminalChatSource(tx, input);
 }
 
 export async function settlePreparingRunInTransaction(
@@ -3694,525 +3450,18 @@ function runAcceptedWorkspaceFields(admission: PreparingRunAdmissionInput) {
 export async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput,
-  memoryRetrieval: MemoryRunRetrievalService,
-  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
-  memorySourceHooks?: MemorySourceMutationHooks,
-  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+  memorySourceHooks?: MemorySourceMutationHooks
 ): Promise<PreparingRunAdmissionResult & Readonly<{
   acceptedAt: Date;
   materializedRequest?: PreparingRunMaterializedRequest;
 }>> {
-  const memoryAdmissionDeadlineAtMs =
-    Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
-      ? MEMORY_STANDING_PREPARATION_TIMEOUT_MS : boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs));
-  let created: PreparingRunAdmissionResult;
-  try {
-    created = await admitPreparingRunWithClient(
-      prismaClient,
-      admission,
-      memorySourceHooks,
-      {
-        deadlineAtMs: memoryAdmissionDeadlineAtMs -
-          MEMORY_PREPARING_ADMISSION_RESERVE_MS
-      }
-    );
-  } catch (error) {
-    if (!(error instanceof RunTransactionDeadlineError)) throw error;
-    // The timed-out transaction rolled back atomically. Retry only the
-    // ordinary admission shape and persist a zero-item FAILED_SAFE receipt;
-    // no Memory settings, index, utility, or model decision is consulted.
-    const fallback = await admitPreparingRunWithClient(
-      prismaClient,
-      admission,
-      memorySourceHooks,
-      {
-        memoryUnavailableFallback: true
-      }
-    );
-    logEvent("run_accepted", { run_id: fallback.runId,
-      kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-      preparation: fallback.deferredPdf ? "pdf" : "ready", ...runAcceptedWorkspaceFields(admission) });
-    return { ...fallback, acceptedAt: new Date() };
-  }
-  // Temporary and scheduled task turns without a standing read (any
-  // answer to a task's prompt, as admission read it) were made dispatchable
-  // without Personal Memory.
-  const withoutMemory = created.chatMemoryMode === "TEMPORARY" ||
-    (created.scheduledPrompt === true && admission.normalizedRequest.memoryStandingVersion !== 1);
+  const created = await admitPreparingRunWithClient(prismaClient, admission, memorySourceHooks);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
-    preparation: created.deferredPdf ? "pdf" : withoutMemory ? "ready" : "memory",
-    ...runAcceptedWorkspaceFields(admission) });
-  const acceptedAt = new Date();
-  if (created.deferredPdf || created.deferredWorkspace || withoutMemory) return { ...created, acceptedAt };
-  // Durable acceptance transfers cancellation from the HTTP request to the
-  // run owner. Stop still aborts this controller; recovery sees an active owner
-  // until Memory settlement. PDF preparation already owns its own registration.
-  const registration = activeRunControllerRegistry.register(created.runId);
-  if (!registration) {
-    logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed", code: "memory_preparing_attempt_unavailable" });
-    throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
-  }
-  try {
-    return await runWithContext({ run_id: created.runId, user_id: admission.userId }, async () => {
-      const startedAt = Date.now();
-      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "started" });
-      const result = await continuePreparingRunWithClient(prismaClient, { ...admission, signal: registration.signal }, created,
-        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineAtMs);
-      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "completed",
-        duration_ms: Math.max(0, Date.now() - startedAt) });
-      return { ...result, acceptedAt };
-    });
-  } finally {
-    registration.release();
-  }
+    preparation: created.deferredPdf ? "pdf" : "ready", ...runAcceptedWorkspaceFields(admission) });
+  return { ...created, acceptedAt: new Date() };
 }
 
-async function continuePreparingRunWithClient(
-  prismaClient: PrismaClient,
-  admission: PreparingRunAdmissionInput,
-  created: PreparingRunAdmissionResult,
-  memoryRetrieval: MemoryRunRetrievalService,
-  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
-  memorySourceHooks: MemorySourceMutationHooks | undefined,
-  memoryAdmissionDeadlineAtMs: number
-): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
-  const remainingAtStartMs = Math.max(0, memoryAdmissionDeadlineAtMs - Date.now());
-  const retrievalReserveMs = Math.min(
-    MEMORY_PREPARING_RETRIEVAL_RESERVE_MS,
-    Math.floor(remainingAtStartMs / 4)
-  );
-  const completionReserveMs = Math.min(
-    MEMORY_PREPARING_COMPLETION_RESERVE_MS,
-    Math.floor(remainingAtStartMs * 0.18)
-  );
-  const finalizationReserveMs = Math.min(
-    MEMORY_PREPARING_FINALIZATION_RESERVE_MS,
-    Math.floor(remainingAtStartMs / 10)
-  );
-  let currentAttemptId = created.attemptId;
-  let currentSettings = {
-    memoryGeneration: created.memoryGeneration,
-    memoryRevision: created.memoryRevision,
-    settingsSnapshot: created.settingsSnapshot
-  };
-  const memoryControlCache: MemoryRunControlCache = {
-    admissionDeadlineAtMs: memoryAdmissionDeadlineAtMs -
-      retrievalReserveMs,
-    ...(admission.normalizedRequest.memoryStandingVersion === 1
-      ? { standingDeadlineAtMs: memoryAdmissionDeadlineAtMs - retrievalReserveMs } : {})
-  };
-  const commandPending = Boolean(created.memoryCommandQueued && admission.memoryMaterializer);
-  const fallbackMaterializedRequest = created.memoryCommandQueued
-    ? admission.memoryMaterializer?.(null, MEMORY_ACTION_PENDING_RESULT) ?? undefined
-    : undefined;
-  const fallbackAnswerResult = commandPending
-    ? MEMORY_ACTION_PENDING_RESULT
-    : MEMORY_ACTION_NO_COMMIT_RESULT;
-  // The latest attempt budget returned by retrieval; it carries this run's
-  // synchronous action evidence across attempts.
-  let deadlineFallbackBudget: Readonly<Record<string, unknown>> = {
-    itemCount: 0,
-    memoryActionAnswerResult: fallbackAnswerResult,
-    reason: "memory_admission_deadline_exceeded",
-    schemaVersion: 2
-  };
-  // The budget retrieval returned for the current attempt only; its utility
-  // declarations describe exactly that attempt's executions.
-  let attemptBudget: Readonly<Record<string, unknown>> | null = null;
-  let stage: MemoryPreparationStage = "guard";
-  let fallbackAttempted = false;
-  // Utility and inventory declarations must describe the attempt being
-  // finalized; action evidence comes separately from `deadlineFallbackBudget`.
-  const currentAttemptFallbackBudget = (): Readonly<Record<string, unknown>> =>
-    attemptBudget ?? (memoryControlCache.settingsDriftFailedSafeAttemptId === currentAttemptId
-      ? memoryControlCache.settingsDriftFailedSafeBudget : undefined) ?? {
-      itemCount: 0,
-      memoryActionAnswerResult: fallbackAnswerResult,
-      schemaVersion: 2
-    };
-  /**
-   * The one zero-item FAILED_SAFE finalization a run may attempt. It reads no
-   * Memory and rechecks run status, attempt, shape, DAG and every non-Memory
-   * authority itself. Returns null when the action outcome cannot be reported
-   * exactly or the guarded finalization did not apply.
-   */
-  const finalizeFailedSafe = async (
-    degradationCode: "memory_admission_deadline_exceeded" | "memory_admission_settings_changed" |
-      typeof MEMORY_PREPARATION_SKIPPED_CODE,
-    stageBudget: Readonly<Record<string, unknown>>,
-    preparationFailureCode?: string
-  ): Promise<(PreparingRunAdmissionResult & Readonly<{
-    materializedRequest?: PreparingRunMaterializedRequest;
-  }>) | null> => {
-    fallbackAttempted = true;
-    const action: MemoryFailedSafeAction = failedSafeActionForRun({
-      budgetSnapshot: deadlineFallbackBudget,
-      commandPending,
-      executedAction: memoryControlCache.actionResolved === true
-        ? memoryControlCache.actionResult ?? null
-        : undefined
-    });
-    if (action.kind === "fail") return null;
-    const materializedRequest = action.kind === "pending" ? fallbackMaterializedRequest
-      : action.kind === "exact" ? admission.memoryMaterializer?.(null, action.answer) ?? undefined
-      : undefined;
-    if (action.kind !== "none" && !materializedRequest) return null;
-    const {
-      memoryActionAnswerResult: _memoryActionAnswerResult,
-      memoryActionResult: _memoryActionResult,
-      ...budgetCore
-    } = stageBudget;
-    const budgetSnapshot = {
-      ...budgetCore,
-      memoryActionAnswerResult: action.kind === "exact" ? action.answer
-        : action.kind === "pending" ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT,
-      ...(action.kind === "exact" ? { memoryActionResult: action.feedback } : {}),
-      ...(preparationFailureCode ? { preparationFailureCode } : {})
-    };
-    const fallbackFinalized = await finalizePreparingRunWithClient(
-      prismaClient,
-      {
-        ...(admission.assistant ? { assistant: admission.assistant } : {}),
-        attemptId: currentAttemptId,
-        ...(degradationCode === "memory_admission_deadline_exceeded"
-          ? { deadlineFallbackBudget: budgetSnapshot }
-          : { failedSafeFallback: { budgetSnapshot, degradationCode } }),
-        ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
-        normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
-        providerAdmissionPlan: admission.providerAdmissionPlan,
-        providerRequestPreview: materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
-        runId: created.runId,
-        ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
-        userId: admission.userId
-      },
-      memoryExecutionAuthority
-    );
-    if (!fallbackFinalized) return null;
-    logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "degraded",
-      code: preparationFailureCode ?? degradationCode });
-    return {
-      ...created,
-      ...(materializedRequest ? { materializedRequest } : {}),
-      attemptId: currentAttemptId,
-      memoryGeneration: currentSettings.memoryGeneration,
-      memoryRevision: currentSettings.memoryRevision,
-      settingsSnapshot: currentSettings.settingsSnapshot
-    };
-  };
-  const finalizeDeadlineFallback = async (): Promise<PreparingRunAdmissionResult & Readonly<{
-    materializedRequest?: PreparingRunMaterializedRequest;
-  }>> => {
-    // Errors from this guarded finalization belong to finalize authority.
-    stage = "finalize";
-    const fallback = await finalizeFailedSafe(
-      "memory_admission_deadline_exceeded",
-      currentAttemptFallbackBudget()
-    );
-    if (!fallback) {
-      throw new MemoryPreparingRunConflictError(
-        "memory_preparing_deadline_fallback_unavailable",
-        false
-      );
-    }
-    return fallback;
-  };
-  const finalizeSettingsDriftFallback = async (): Promise<PreparingRunAdmissionResult & Readonly<{
-    materializedRequest?: PreparingRunMaterializedRequest;
-  }>> => {
-    // Errors from this guarded finalization belong to finalize authority.
-    stage = "finalize";
-    const fallback = await finalizeFailedSafe(
-      "memory_admission_settings_changed",
-      currentAttemptFallbackBudget()
-    );
-    if (!fallback) {
-      throw new MemoryPreparingRunConflictError(
-        "memory_preparing_settings_fallback_unavailable",
-        false
-      );
-    }
-    return fallback;
-  };
-  try {
-    // A durable command cannot fall back to a request that denies its pending
-    // work. The accepted no-commit reserve is larger than v3; if a custom
-    // materializer still rejects both, stop before dispatching a false claim.
-    if (created.memoryCommandQueued && admission.memoryMaterializer && !fallbackMaterializedRequest) {
-      throw new MemoryPreparingRunConflictError("memory_final_request_invalid", false);
-    }
-    for (
-      let attemptOrdinal = 0;
-      attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS;
-      attemptOrdinal += 1
-    ) {
-      let completedStandingPack = false;
-      let standingFinalization: PreparingRunFinalizationInput | null = null;
-      let standingMaterializedRequest: PreparingRunMaterializedRequest | undefined;
-      attemptBudget = null;
-      try {
-        stage = "begin";
-        const began = await beginPreparingRunAttemptWithClient(prismaClient, {
-          attemptId: currentAttemptId,
-          deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            retrievalReserveMs,
-          now: new Date(),
-          runId: created.runId,
-          userId: admission.userId
-        });
-        if (!began) {
-          throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
-        }
-        stage = "retrieve";
-        let attemptResult = admission.memoryMaterializer
-          ? await memoryRetrieval.retrieve({
-                attemptId: currentAttemptId,
-                chatId: admission.chatId,
-                controlCache: memoryControlCache,
-                expected: {
-                  activeIndexGenerationId:
-                    currentSettings.settingsSnapshot.activeIndexGenerationId,
-                  assistantId: admission.assistant?.assistantId ?? null,
-                  chatMemoryMode: created.chatMemoryMode,
-                  folderId: created.folderId,
-                  memoryGeneration: currentSettings.memoryGeneration,
-                  memoryRevision: currentSettings.memoryRevision,
-                  settings: currentSettings.settingsSnapshot
-                },
-                normalizedRequest: admission.normalizedRequest,
-                ...(admission.normalizedRequest.memoryStandingVersion === 1
-                  ? { readMode: "STANDING_V1" as const } : {}),
-                ...(created.scheduledPrompt ? { scheduledPrompt: true as const } : {}),
-                modelRunId: created.runId,
-                memoryCommandQueued: created.memoryCommandQueued,
-                now: new Date(),
-                ...(admission.signal ? { signal: admission.signal } : {}),
-                userId: admission.userId
-              })
-          : dormantMemoryAttemptResult(currentSettings.settingsSnapshot);
-        stage = "materialize";
-        deadlineFallbackBudget = attemptResult.budgetSnapshot;
-        attemptBudget = attemptResult.budgetSnapshot;
-        const rawActionAnswerResult = attemptResult.budgetSnapshot.memoryActionAnswerResult;
-        const actionAnswerResult = rawActionAnswerResult === undefined
-          ? null
-          : decodeMemoryActionAnswerResult(rawActionAnswerResult);
-        if (rawActionAnswerResult !== undefined && !actionAnswerResult) {
-          throw new MemoryPreparingRunConflictError("memory_attempt_result_invalid", false);
-        }
-        let materializedRequest: PreparingRunMaterializedRequest | undefined;
-        if (attemptResult.preparedContext || actionAnswerResult) {
-          const personalContext = attemptResult.preparedContext
-            ? {
-                approxTokens: attemptResult.preparedContext.approxTokens,
-                itemCount: attemptResult.items?.length ?? 0,
-                memoryGeneration: currentSettings.memoryGeneration,
-                memoryRevision: currentSettings.memoryRevision,
-                mode: admission.normalizedRequest.memoryStandingVersion === 1
-                  ? "standing-v1" as const : "prefetched" as const,
-                text: attemptResult.preparedContext.text
-              }
-            : null;
-          materializedRequest = admission.memoryMaterializer?.(
-            personalContext,
-            actionAnswerResult ?? undefined
-          ) ?? undefined;
-          if (!materializedRequest) {
-            attemptResult = {
-              budgetSnapshot: {
-                ...attemptResult.budgetSnapshot,
-                itemCount: 0,
-                reason: "final_context_budget_unavailable"
-              },
-              items: [],
-              outcome: "FAILED_SAFE",
-              preparedContext: null,
-              querySnapshot: attemptResult.querySnapshot ?? null
-            };
-            materializedRequest = actionAnswerResult
-              ? admission.memoryMaterializer?.(null, actionAnswerResult) ?? undefined
-              : undefined;
-            if (actionAnswerResult && !materializedRequest) {
-              attemptResult = {
-                ...attemptResult,
-                budgetSnapshot: {
-                  ...attemptResult.budgetSnapshot,
-                  memoryActionAnswerResult: fallbackAnswerResult
-                }
-              };
-              // Pending command truth survives optional read/materialization
-              // failure through the already-budgeted zero-context request.
-              materializedRequest = fallbackMaterializedRequest ?? admission.memoryMaterializer?.(
-                null,
-                fallbackAnswerResult
-              ) ?? undefined;
-            }
-          }
-        }
-        deadlineFallbackBudget = attemptResult.budgetSnapshot;
-        attemptBudget = attemptResult.budgetSnapshot;
-        stage = "complete";
-        const completed = await completePreparingRunAttemptWithClient(prismaClient, {
-          attemptId: currentAttemptId,
-          deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            completionReserveMs,
-          result: attemptResult,
-          runId: created.runId,
-          userId: admission.userId
-        });
-        if (!completed) {
-          throw new MemoryPreparingRunConflictError("memory_preparing_attempt_unavailable", false);
-        }
-        stage = "finalize";
-        const finalization: PreparingRunFinalizationInput & Readonly<{ deadlineAtMs: number }> = {
-          ...(admission.assistant ? { assistant: admission.assistant } : {}),
-          attemptId: currentAttemptId,
-          ...(admission.mcpBindings ? { mcpBindings: admission.mcpBindings } : {}),
-          ...(admission.skillBindings ? { skillBindings: admission.skillBindings } : {}),
-          deadlineAtMs: memoryAdmissionDeadlineAtMs -
-            finalizationReserveMs,
-          normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
-          providerAdmissionPlan: admission.providerAdmissionPlan,
-          providerRequestPreview:
-            materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
-          runId: created.runId,
-          userId: admission.userId
-        };
-        completedStandingPack = attemptResult.outcome === "DEGRADED" &&
-          attemptResult.degradationCode === "memory_admission_deadline_standing_only";
-        if (completedStandingPack) {
-          standingFinalization = finalization;
-          standingMaterializedRequest = materializedRequest;
-        }
-        const finalized = await finalizePreparingRunWithClient(
-          prismaClient, finalization, memoryExecutionAuthority
-        );
-        if (!finalized) {
-          throw new MemoryPreparingRunConflictError("memory_preparing_finalize_conflict", false);
-        }
-        return {
-          ...created,
-          attemptId: currentAttemptId,
-          memoryGeneration: currentSettings.memoryGeneration,
-          memoryRevision: currentSettings.memoryRevision,
-          settingsSnapshot: currentSettings.settingsSnapshot,
-          ...(materializedRequest ? { materializedRequest } : {})
-        };
-      } catch (error) {
-        const failedStage = stage;
-        if (error instanceof RunTransactionDeadlineError) {
-          if (completedStandingPack && standingFinalization &&
-            Date.now() < memoryAdmissionDeadlineAtMs) {
-            try {
-              const finalized = await finalizePreparingRunWithClient(
-                prismaClient,
-                { ...standingFinalization, deadlineAtMs: memoryAdmissionDeadlineAtMs },
-                memoryExecutionAuthority
-              );
-              if (finalized) return {
-                ...created,
-                attemptId: currentAttemptId,
-                memoryGeneration: currentSettings.memoryGeneration,
-                memoryRevision: currentSettings.memoryRevision,
-                settingsSnapshot: currentSettings.settingsSnapshot,
-                ...(standingMaterializedRequest
-                  ? { materializedRequest: standingMaterializedRequest } : {})
-              };
-            } catch (retryError) {
-              if (!(retryError instanceof RunTransactionDeadlineError)) throw retryError;
-            }
-          }
-          return await finalizeDeadlineFallback();
-        }
-        if (
-          error instanceof MemoryPreparingRunConflictError &&
-          error.code === "memory_admission_settings_changed" &&
-          error.retryable &&
-          attemptOrdinal === MEMORY_PREPARING_MAX_ATTEMPTS - 1
-        ) {
-          return await finalizeSettingsDriftFallback();
-        }
-        const mayRetry = error instanceof MemoryPreparingRunConflictError &&
-          error.retryable && (
-            attemptOrdinal === 0 ||
-            error.code === "memory_admission_settings_changed" &&
-              attemptOrdinal < MEMORY_PREPARING_MAX_ATTEMPTS - 1
-          );
-        if (!mayRetry) {
-          throw error;
-        }
-        let retry;
-        try {
-          stage = "retry";
-          retry = await retryPreparingRunAttemptWithClient(prismaClient, {
-            attemptId: currentAttemptId,
-            deadlineAtMs: memoryAdmissionDeadlineAtMs -
-              retrievalReserveMs,
-            now: new Date(),
-            runId: created.runId,
-            userId: admission.userId
-          });
-        } catch (retryError) {
-          if (retryError instanceof RunTransactionDeadlineError) {
-            return await finalizeDeadlineFallback();
-          }
-          throw retryError;
-        }
-        if (!retry) {
-          stage = failedStage;
-          throw error;
-        }
-        currentAttemptId = retry.attemptId;
-        currentSettings = retry;
-      }
-    }
-    throw new MemoryPreparingRunConflictError("memory_preparing_retry_conflict", false);
-  } catch (error) {
-    // Class (a) failures answer without Memory through one guarded fallback;
-    // Stop, deletion, authority and accounting conflicts stay fail-closed.
-    const errorCode = memoryPreparationFailureCode(error, stage);
-    const decision = memoryPreparationFailOpen({
-      alreadyFallenBack: fallbackAttempted,
-      error,
-      ...(admission.signal ? { signal: admission.signal } : {}),
-      stage
-    });
-    if (decision.kind === "skip") {
-      try {
-        const skipped = await finalizeFailedSafe(
-          MEMORY_PREPARATION_SKIPPED_CODE,
-          currentAttemptFallbackBudget(),
-          memoryPreparationCauseCode(decision.cause)
-        );
-        if (skipped) return skipped;
-        logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed",
-          code: MEMORY_PREPARATION_SKIPPED_CODE });
-      } catch (fallbackError) {
-        logEvent("run_preparation", { error: fallbackError, run_id: created.runId, stage: "preparing", outcome: "failed",
-          code: memoryPreparationFailureCode(fallbackError, "finalize") });
-      }
-    }
-    logEvent("run_preparation", { run_id: created.runId, stage: "preparing",
-      outcome: observedFailure(error, admission.signal).reason === "cancelled" ? "cancelled" : "failed",
-      code: errorCode });
-    try {
-      const settled = await settlePreparingRunFailureWithClient(prismaClient, {
-        attemptId: currentAttemptId,
-        errorCode,
-        message: RUN_PREPARATION_FAILURE_MESSAGE,
-        runId: created.runId,
-        state: "FAILED",
-        userId: admission.userId
-      }, memorySourceHooks).catch(retainRunPrismaCode);
-      logRunPersistence(created.runId, "preparation", settled ? "confirmed" : "not_applied");
-    } catch (settlementError) {
-      logRunPersistence(created.runId, "preparation", "unconfirmed", settlementError);
-    }
-    throw error;
-  }
-}
-
-/** Required gates settle before Personal Memory receives its immutable base. */
 async function continueDeferredPreparedRunWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{
@@ -4220,10 +3469,6 @@ async function continueDeferredPreparedRunWithClient(
     claimToken: string;
     created: PreparingRunAdmissionResult;
   }>,
-  memoryRetrieval: MemoryRunRetrievalService,
-  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
-  memorySourceHooks?: MemorySourceMutationHooks,
-  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS,
   gate: "pdf" | "workspace" = "pdf"
 ): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
   const { admission, created } = input;
@@ -4231,7 +3476,7 @@ async function continueDeferredPreparedRunWithClient(
     ? new ChatPdfPreparationError(`pdf_preparation_${kind}`, kind === "ambiguous")
     : new WorkspaceFollowupError(kind === "ambiguous" ? "workspace_followup_interrupted" :
       kind === "invalid" ? "workspace_followup_invalid" : "workspace_followup_unavailable");
-  const admitted = await repeatableReadTransaction(prismaClient, async (tx) => {
+  return repeatableReadTransaction(prismaClient, async (tx) => {
     if (!(await lockPreparingMemoryOwner(tx, admission.userId))) {
       throw failure("unavailable");
     }
@@ -4250,190 +3495,16 @@ async function continueDeferredPreparedRunWithClient(
       chat.activeLeafMessageId !== created.assistantMessageId) {
       throw failure("unavailable");
     }
-    if (created.chatMemoryMode === "TEMPORARY") {
-      // These scopes never create or read Personal Memory attempts.
-      if (chat.memoryMode !== "TEMPORARY") {
-        throw failure("unavailable");
-      }
-      await tx.modelRun.update({ where: { id: created.runId }, data: {
-        normalizedRequest: json(admission.normalizedRequest), status: "streaming"
-      } });
-      return { created, ready: null, interrupted: false, complete: true };
-    }
-    const source = gate === "pdf" ? created.pdfMemorySource : created.workspaceMemorySource;
-    if (!source || chat.userId !== admission.userId ||
-      chat.memoryMode !== created.chatMemoryMode || chat.folderId !== created.folderId ||
-      chat.memoryBranchGeneration !== source.memoryBranchGeneration ||
-      chat.memorySourceRevision !== source.memorySourceRevision) {
+    // The run's frozen request decided what it reads of the memory note for the chat's mode at admission: a chat whose
+    // mode changed since (now Temporary, or excluded from Memory) is no longer the one it was admitted in.
+    if (chat.userId !== admission.userId || chat.memoryMode !== created.chatMemoryMode) {
       throw failure("unavailable");
     }
-    const settings = await loadPreparingSettings(tx, admission.userId, true);
-    const memoryCommandQueued = await enqueuePreparingMemoryCommand(tx, admission, settings, {
-      assistantMessageId: created.assistantMessageId,
-      chatMemoryMode: created.chatMemoryMode,
-      memoryBranchGeneration: source.memoryBranchGeneration,
-      memorySourceRevision: source.memorySourceRevision,
-      userMessageId: created.userMessageId
-    });
-    const existing = await lockPreparingAttempt(tx, { runId: run.id, userId: admission.userId });
-    if (existing) {
-      const exactBase = existing.expiresAt > new Date() &&
-        existing.baseRequestHash === memoryPreparingHash(createMemoryPreparingBaseSnapshot({
-          normalizedRequest: admission.normalizedRequest, providerRequestPreview: admission.providerRequestPreview
-        }));
-      // A crash-interrupted standing read is LOCAL_ONLY and executes no
-      // synchronous action, so this durable owner may answer without Memory.
-      // It must also own no utility execution: nothing external is settled.
-      const interrupted = exactBase && existing.state === "EXECUTING" &&
-        admission.normalizedRequest.memoryStandingVersion === 1 &&
-        await tx.memoryExecutionBinding.count({ where: {
-          retrievalAttemptId: existing.id, userId: admission.userId
-        } }) === 0;
-      if ((!interrupted && !["PENDING", "READY"].includes(existing.state)) || !exactBase) {
-        // An executing Memory attempt may already own external effects. Its
-        // ordinary terminal settlement preserves those receipts; never replay.
-        throw failure("ambiguous");
-      }
-      const settingsSnapshot = decodeMemoryPreparingSettingsSnapshot(existing.settingsSnapshot);
-      if (!settingsSnapshot) throw failure("invalid");
-      return { created: { ...created, memoryCommandQueued, attemptId: existing.id,
-        memoryGeneration: existing.memoryGenerationSnapshot,
-        memoryRevision: existing.retrievalRevisionSnapshot, settingsSnapshot },
-        ready: existing.state === "READY" ? existing : null, interrupted, complete: false };
-    }
-    const attemptId = await createPreparingAttempt(tx, {
-      admissionKind: admission.admissionKind, assistantIdSnapshot: admission.assistant?.assistantId ?? null,
-      assistantMessageId: created.assistantMessageId, attemptOrdinal: 0,
-      baseSnapshot: createMemoryPreparingBaseSnapshot({ normalizedRequest: admission.normalizedRequest,
-        providerRequestPreview: admission.providerRequestPreview }),
-      chatId: admission.chatId, chatMemoryMode: created.chatMemoryMode, folderIdSnapshot: created.folderId,
-      lifecycleSnapshot: source, now: new Date(), preSendActiveLeafMessageId: source.preSendActiveLeafMessageId,
-      runId: run.id, settings, userId: admission.userId, userMessageId: created.userMessageId
-    });
-    return { created: { ...created, memoryCommandQueued, attemptId, memoryGeneration: settings.memoryGeneration,
-      memoryRevision: settings.memoryRevision, settingsSnapshot: memoryPreparingSettingsSnapshot(settings) },
-      ready: null, interrupted: false, complete: false };
+    await tx.modelRun.update({ where: { id: created.runId }, data: {
+      normalizedRequest: json(admission.normalizedRequest), status: "streaming"
+    } });
+    return created;
   });
-  if (admitted.complete) return admitted.created;
-  /** The durable owner's one zero-item FAILED_SAFE finalization; it runs in
-   * its own guarded transaction after admission committed. */
-  const finalizeDeferredFailedSafe = async (
-    attemptId: string,
-    action: MemoryFailedSafeAction,
-    budgetSnapshot: Readonly<Record<string, unknown>>,
-    preparationFailureCode: string
-  ): Promise<(PreparingRunAdmissionResult & Readonly<{
-    materializedRequest?: PreparingRunMaterializedRequest;
-  }>) | null> => {
-    if (action.kind === "fail") return null;
-    const answer = action.kind === "exact" ? action.answer
-      : action.kind === "pending" ? MEMORY_ACTION_PENDING_RESULT : MEMORY_ACTION_NO_COMMIT_RESULT;
-    const materializedRequest = action.kind === "none" ? undefined
-      : admission.memoryMaterializer?.(null, answer) ?? undefined;
-    if (action.kind !== "none" && !materializedRequest) return null;
-    const {
-      memoryActionAnswerResult: _memoryActionAnswerResult,
-      memoryActionResult: _memoryActionResult,
-      ...budgetCore
-    } = budgetSnapshot;
-    const finalized = await finalizePreparingRunWithClient(prismaClient, {
-      ...admission,
-      attemptId,
-      failedSafeFallback: {
-        budgetSnapshot: {
-          ...budgetCore,
-          memoryActionAnswerResult: answer,
-          ...(action.kind === "exact" ? { memoryActionResult: action.feedback } : {}),
-          preparationFailureCode
-        },
-        degradationCode: MEMORY_PREPARATION_SKIPPED_CODE
-      },
-      normalizedRequest: materializedRequest?.normalizedRequest ?? admission.normalizedRequest,
-      providerRequestPreview: materializedRequest?.providerRequestPreview ?? admission.providerRequestPreview,
-      runId: created.runId
-    }, memoryExecutionAuthority);
-    if (!finalized) return null;
-    logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "degraded",
-      code: preparationFailureCode });
-    return { ...admitted.created, ...(materializedRequest ? { materializedRequest } : {}) };
-  };
-  if (admitted.interrupted) {
-    // Open executions settle without replay inside the fallback transaction.
-    const commandPending = Boolean(admitted.created.memoryCommandQueued && admission.memoryMaterializer);
-    let skipped: Awaited<ReturnType<typeof finalizeDeferredFailedSafe>> = null;
-    try {
-      skipped = await finalizeDeferredFailedSafe(
-        admitted.created.attemptId,
-        commandPending ? { kind: "pending" } : { kind: "none" },
-        { itemCount: 0, schemaVersion: 2 },
-        MEMORY_PREPARATION_INTERRUPTED_CODE
-      );
-    } catch {
-      skipped = null;
-    }
-    if (!skipped) {
-      logEvent("run_preparation", { run_id: created.runId, stage: "preparing", outcome: "failed",
-        code: MEMORY_PREPARATION_INTERRUPTED_CODE });
-      throw failure("ambiguous");
-    }
-    return skipped;
-  }
-  if (admitted.ready) {
-    const attempt = admitted.ready;
-    const itemCount = await prismaClient.memoryRetrievalAttemptItem.count({ where: { attemptId: attempt.id } });
-    const budget = isRecord(attempt.budgetSnapshot) ? attempt.budgetSnapshot : {};
-    const action = decodeMemoryActionAnswerResult(budget.memoryActionAnswerResult) ?? undefined;
-    const materializedRequest = admission.memoryMaterializer?.(
-      preparingAttemptCarriesProviderContext(attempt) ? {
-        approxTokens: attempt.preparedContextTokenCount!, itemCount,
-        memoryGeneration: attempt.memoryGenerationSnapshot, memoryRevision: attempt.retrievalRevisionSnapshot,
-        mode: admission.normalizedRequest.memoryStandingVersion === 1
-          ? "standing-v1" : "prefetched", text: attempt.preparedContextText!
-      } : null, action
-    );
-    let cause = "memory_final_request_invalid";
-    let finalizeError: unknown;
-    if (materializedRequest) {
-      let finalized = false;
-      try {
-        finalized = await finalizePreparingRunWithClient(prismaClient, {
-          ...admission, ...materializedRequest, attemptId: attempt.id, runId: created.runId
-        }, memoryExecutionAuthority);
-      } catch (error) {
-        const decision = memoryPreparationFailOpen({
-          alreadyFallenBack: false,
-          error,
-          ...(admission.signal ? { signal: admission.signal } : {}),
-          stage: "finalize"
-        });
-        if (decision.kind === "fail") throw error;
-        finalizeError = error;
-        cause = decision.cause;
-      }
-      if (finalized) return { ...admitted.created, materializedRequest };
-      // Not applied: the run is no longer this owner's to finalize.
-      if (finalizeError === undefined) throw failure("unavailable");
-    }
-    // As in-process: an unplaceable or invalid read answers without Memory.
-    let skipped: Awaited<ReturnType<typeof finalizeDeferredFailedSafe>> = null;
-    try {
-      skipped = await finalizeDeferredFailedSafe(
-        attempt.id,
-        failedSafeActionFromBudget(budget),
-        budget,
-        memoryPreparationCauseCode(cause)
-      );
-    } catch (fallbackError) {
-      logEvent("run_preparation", { error: fallbackError, run_id: created.runId, stage: "preparing", outcome: "failed",
-        code: memoryPreparationFailureCode(fallbackError, "finalize") });
-    }
-    if (!skipped) throw finalizeError ?? failure("unavailable");
-    return skipped;
-  }
-  return continuePreparingRunWithClient(prismaClient, admission, admitted.created,
-    memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-    Date.now() + (admission.normalizedRequest.memoryStandingVersion === 1
-      ? MEMORY_STANDING_PREPARATION_TIMEOUT_MS : boundedMemoryAdmissionDeadlineMs(memoryAdmissionDeadlineMs)));
 }
 
 export const continuePdfPreparedRunWithClient = continueDeferredPreparedRunWithClient;
@@ -4496,14 +3567,9 @@ export async function activateWorkspaceFollowupWithClient(
 
 export async function continueWorkspacePreparedRunWithClient(
   prismaClient: PrismaClient,
-  input: Readonly<{ admission: PreparingRunAdmissionInput; claimToken: string; created: PreparingRunAdmissionResult }>,
-  memoryRetrieval: MemoryRunRetrievalService,
-  memoryExecutionAuthority: MemoryExecutionAuthorityDependencies,
-  memorySourceHooks?: MemorySourceMutationHooks,
-  memoryAdmissionDeadlineMs = MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
+  input: Readonly<{ admission: PreparingRunAdmissionInput; claimToken: string; created: PreparingRunAdmissionResult }>
 ): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
   const created = await activateWorkspaceFollowupWithClient(prismaClient, input);
   if (created.deferredPdf) return created;
-  return continueDeferredPreparedRunWithClient(prismaClient, { ...input, created }, memoryRetrieval,
-    memoryExecutionAuthority, memorySourceHooks, memoryAdmissionDeadlineMs, "workspace");
+  return continueDeferredPreparedRunWithClient(prismaClient, { ...input, created }, "workspace");
 }

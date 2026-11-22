@@ -85,14 +85,37 @@ describe("native tool registry", () => {
     expect(fetchPage).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps Memory search results within the run that searched", async () => {
-    const memorySearch = { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: 1, referenceChatHistory: true,
-      resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" } as const;
-    const registry = await buildToolRegistry(input({ request: request({ memorySearch }), services: {
-      memorySearch: { execute: vi.fn() }, repository: { createSearchRun: vi.fn() } as never, savedResults: { read: vi.fn(async () => null) }
-    } }));
-    expect(registry.resolve("memory_search")).toMatchObject({ effects: "none", runScopedResult: true });
+  it("offers past-chat search where admission froze it, keeps its results within the run, and counts one budget per run", async () => {
+    const memory = { changes: true, offers: true, pastChats: true, version: 1 } as const;
+    const search = vi.fn(async (call: { id: string; name: string }, context: { budget?: { take(tool: "search" | "read"): boolean } }) => ({
+      callId: call.id, content: [{ type: "json" as const, value: { took: context.budget?.take("search") } }], name: call.name, status: "complete" as const }));
+    const read = vi.fn(async (call: { id: string; name: string }) => ({ callId: call.id, content: [], name: call.name, status: "complete" as const }));
+    const services = { pastChats: { read, search } as never, repository: { createSearchRun: vi.fn() } as never,
+      savedResults: { read: vi.fn(async () => null) } };
+    const registry = await buildToolRegistry(input({ request: request({ memory }), services }));
+    expect(registry.resolve("search_past_chats")).toMatchObject({ effects: "none", runScopedResult: true });
+    expect(registry.resolve("read_past_chat")).toMatchObject({ effects: "none", runScopedResult: true });
+    expect(registry.resolve("memory_search")).toBeUndefined();
     expect(registry.resolve(READ_TOOL_RESULT_NAME)?.runScopedResult).toBeUndefined();
+    const execution = (id: string) => ({ call: { arguments: { after: null, before: null, limit: null, query: "rollback" }, id,
+      name: "search_past_chats" }, ordinal: 0, persistedToolCallId: `row-${id}`, round: 1, signal: new AbortController().signal });
+    const took: boolean[] = [];
+    for (const id of ["1", "2", "3", "4"]) {
+      const result = await registry.resolve("search_past_chats")!.execute(execution(id));
+      took.push((result.content[0] as unknown as { value: { took: boolean } }).value.took);
+    }
+    // Three searches per answer (`PAST_CHATS_CALL_LIMITS`), counted across the run's calls.
+    expect(took).toEqual([true, true, true, false]);
+    expect(search.mock.calls[0]![1]).toMatchObject({ chatId: "chat", runId: "run", userId: "user" });
+
+    for (const frozen of [{ ...memory, pastChats: false }, undefined]) {
+      const without = await buildToolRegistry(input({ request: request(frozen ? { memory: frozen } : {}), services }));
+      expect(without.resolve("search_past_chats")).toBeUndefined();
+      expect(without.resolve("read_past_chat")).toBeUndefined();
+    }
+    // A run admitted with `memory_search` before past-chat search offers neither.
+    const legacy = await buildToolRegistry(input({ request: request({ memorySearch: { version: "memory-search-v1" } }), services }));
+    expect(legacy.resolve("memory_search")).toBeUndefined();
   });
 
   it("reports a write refused before it was sent as not sent, and leaves a failure after dispatch unknown to the batch", async () => {

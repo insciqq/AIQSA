@@ -144,6 +144,11 @@ export function createPrismaEmbeddingRuntime(
   };
 
   return {
+    /** Bind a role admission already accepted (the past-chat role, `embeddingModelRole.ts`) without admitting it
+     * again; the exact credential version is still checked before every request. */
+    async bindAdmitted(admitted: EmbeddingProviderAdmissionRole): Promise<EmbeddingRuntimeBinding> {
+      return resolveAdmission(admitted);
+    },
     async resolveForInstallation(input: Readonly<{
       providerModelId: string;
     }>): Promise<EmbeddingRuntimeBinding> {

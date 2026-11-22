@@ -14,6 +14,8 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
     $queryRaw: vi.fn(async (query: { sql: string } | TemplateStringsArray) => {
       const sql = "sql" in query ? query.sql : query.join("");
       if (sql.includes('SELECT r."chatId", r."userId" FROM "ModelRun" r')) return [{ chatId, userId }];
+      // The terminal chat write locks only a chat of this owner; a legacy Project chat has none.
+      if (sql.includes('"memoryMode"::text AS "memoryMode"')) return [];
       if (/FROM "(?:User|Chat)"/.test(sql)) return [{ id: "locked-scope" }];
       if (sql.includes('FROM "ModelRun"')) {
         return mode === "cancel"

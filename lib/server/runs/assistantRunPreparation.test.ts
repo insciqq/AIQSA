@@ -1072,7 +1072,7 @@ describe("assistant prompt composition", () => {
     const request = materializePreparedRunData(result.prepared).providerRequest;
     const composed = providerInstructionsWithPersonalContext(request);
     expect(composed?.startsWith(
-      `${system}\n\nDeveloper instructions:\nAnswer in bullet points as of June 7, 2026.\n\n`
+      `${system}\n\nDeveloper instructions:\nAnswer in bullet points as of June 7, 2026.`
     )).toBe(true);
     expect(composed).not.toContain("Visible answer contract");
     expect(composed).not.toContain("helpful AI assistant");

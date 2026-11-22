@@ -41,7 +41,9 @@ describe("sub-agent tool definitions", () => {
 
   it("never offers a sub-agent nesting or a change of the user's resources, and keeps what it needs", () => {
     for (const name of [...SUBAGENT_TOOL_NAMES, "manage_proxy", "manage_instructions", "manage_secret", "manage_skill", "save_skill", "manage_assistant", "create_artifact",
-      "create_scheduled_task", "manage_scheduled_task", "report_monitoring_result", "checkpoint_outputs"]) {
+      "create_scheduled_task", "manage_scheduled_task", "report_monitoring_result", "checkpoint_outputs",
+      // A sub-agent reads no Memory: neither the note's tool nor the user's other chats (operator decision 2026-11-22).
+      "manage_memory", "search_past_chats", "read_past_chat"]) {
       expect(subagentMayUseTool(name), name).toBe(false);
     }
     for (const name of [LOAD_SKILL_TOOL_NAME, READ_SECRET_TOOL_NAME, BROWSER_HANDOFF_TOOL_NAME, "update_plan", "apply_patch",

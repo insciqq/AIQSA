@@ -329,9 +329,11 @@ export function createPrismaAdminMemoryStatusRepository(
           return rows[0];
         }),
         readAdminMemoryProcessing(client, now),
+        // The background worker's beat: the old Memory coordinator, whose beat this read, no longer starts, and the
+        // worker that replaced it runs in the same service (`scripts/background-worker.ts`).
         client.$queryRaw<HeartbeatRow[]>(Prisma.sql`
           SELECT "lastSeenAt", ready
-          FROM "MemoryWorkerHeartbeat"
+          FROM "BackgroundWorkerHeartbeat"
           WHERE "id" = 'installation'
           LIMIT 1
         `).then((rows) => rows[0] ?? null),

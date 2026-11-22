@@ -3,14 +3,7 @@ import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { Prisma, type ChatImportSource, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { prisma } from "../prisma";
-import {
-  applyMemorySourceMutations,
-  deleteMemorySourceJobsForMessages,
-  lockMemorySourceChat,
-  type LockedMemorySourceChat,
-  type MemorySourceMutationHooks
-} from "../memory/sourceState";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
 import { collapseChatAnswerReviews, loadAnswerReviewDeletionPlan } from "../chats/legacyAnswerReviews";
 import {
   ActiveMessageMutationConflictError,
@@ -51,12 +44,17 @@ export function deletedMessageRunScope(chatId: string, messageIds: readonly stri
     { subagentTurn: { is: { mode: "background", parentRun: { subagentTurn: { is: { parentRun: answers } } } } } }] };
 }
 
-type LockedOwnedChat = LockedMemorySourceChat & {
+type LockedOwnedChat = Readonly<{
+  activeLeafMessageId: string | null;
   defaultProviderModelId: string | null;
+  folderId: string | null;
+  id: string;
   importSource: ChatImportSource | null;
   importSourceModel: string | null;
+  memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
   title: string;
-};
+  userId: string;
+}>;
 
 async function lockOwnedChatForMessage(
   tx: Prisma.TransactionClient,
@@ -72,12 +70,7 @@ async function lockOwnedChatForMessage(
       chat."importSourceModel",
       chat."title",
       chat."userId",
-      chat."archived",
-      chat."memoryMode",
-      chat."memoryBranchGeneration",
-      chat."memorySourceRevision",
-      chat."temporaryRetentionPolicyVersion",
-      chat."temporaryRetentionDeadline"
+      chat."memoryMode"
     FROM "Chat" AS chat
     WHERE chat."archived" = FALSE
       AND chat."userId" = ${input.userId}
@@ -91,6 +84,19 @@ async function lockOwnedChatForMessage(
   `;
 
   return chats[0] ?? null;
+}
+
+/**
+ * A new active leaf of a chat this transaction locked or created, and its past-chat index mark beside it: the pass
+ * rebuilds the chat's passages from its active branch (`lib/server/chatSearch/index/dirty.ts`).
+ */
+async function moveActiveLeaf(
+  tx: Prisma.TransactionClient,
+  chat: Readonly<{ id: string; userId: string }>,
+  activeLeafMessageId: string | null
+): Promise<void> {
+  await tx.chat.update({ data: { activeLeafMessageId }, select: { id: true }, where: { id: chat.id } });
+  await markChatSearchDirty(tx, { chatId: chat.id, userId: chat.userId });
 }
 
 /**
@@ -215,10 +221,8 @@ function rewriteMessageAttachmentIds(
 }
 
 export function createPrismaMessageBranchRepository(
-  prismaClient = prisma,
-  options: Readonly<{ memorySourceHooks?: MemorySourceMutationHooks }> = {}
+  prismaClient = prisma
 ): MessageBranchRepository {
-  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   return {
     createChatBranchFromMessage: async ({ sourceMessageId, userId }) =>
       prismaClient.$transaction(async (tx) => {
@@ -494,19 +498,8 @@ export function createPrismaMessageBranchRepository(
           activeLeafMessageId = cloned.id;
         }
 
-        const newChat = await lockMemorySourceChat(tx, {
-          chatId: chat.id,
-          lock: "UPDATE",
-          userId
-        });
-        if (!newChat) throw new Error("branch_chat_disappeared");
-        await applyMemorySourceMutations(tx, {
-          branchSourceChatId: lockedChat.id,
-          chat: newChat,
-          hooks: memorySourceHooks,
-          mutations: ["NORMAL_APPEND"],
-          patch: { activeLeafMessageId }
-        });
+        // The copy is indexed as any chat of its mode is: a copy of an Excluded or imported chat stays out.
+        await moveActiveLeaf(tx, { id: chat.id, userId }, activeLeafMessageId);
         const updated = await tx.chat.findUniqueOrThrow({
           select: {
             activeLeafMessageId: true,
@@ -629,12 +622,7 @@ export function createPrismaMessageBranchRepository(
           });
         }
 
-        await applyMemorySourceMutations(tx, {
-          chat: lockedChat,
-          hooks: memorySourceHooks,
-          mutations: ["BRANCH_PATH_CHANGE"],
-          patch: { activeLeafMessageId: message.id }
-        });
+        await moveActiveLeaf(tx, lockedChat, message.id);
 
         return message;
       }),
@@ -774,18 +762,11 @@ export function createPrismaMessageBranchRepository(
             userId
           }
         });
-        await deleteMemorySourceJobsForMessages(tx, {
-          chatId: root.chatId,
-          messageIds: deletedMessageIds,
-          userId
-        });
         if (nextActiveLeafMessageId !== activeLeafMessageId) {
-          await applyMemorySourceMutations(tx, {
-            chat: lockedChat,
-            hooks: memorySourceHooks,
-            mutations: ["BRANCH_PATH_CHANGE"],
-            patch: { activeLeafMessageId: nextActiveLeafMessageId }
-          });
+          await moveActiveLeaf(tx, lockedChat, nextActiveLeafMessageId);
+        } else {
+          // The deleted messages' passages go with them (their keys cascade); the pass still reconciles the chat.
+          await markChatSearchDirty(tx, { chatId: lockedChat.id, userId: lockedChat.userId });
         }
 
         for (const id of deletedMessageIds.sort((a, b) => (deletedDepths.get(b) ?? 0) - (deletedDepths.get(a) ?? 0))) {

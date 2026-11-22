@@ -6,7 +6,12 @@ import {
   type EmbeddingAdapter,
   type EmbeddingUsage
 } from "../providers/embeddings";
-import { ProviderAdmissionError } from "../providerRuntime/admission";
+import type { EmbeddingProviderAdmissionRole } from "../providerRuntime/admission";
+import {
+  createEmbeddingModelRoleResolver,
+  type EmbeddingModelRolePrisma,
+  type EmbeddingModelRoleResolver
+} from "../providerRuntime/embeddingModelRole";
 import { createPrismaEmbeddingRuntime, type EmbeddingRuntimeStore } from "../providerRuntime/embeddingRuntime";
 import {
   ChatSearchEmbeddingError,
@@ -17,15 +22,16 @@ import {
 import { recordChatSearchUsage, type ChatSearchUsageDb, type ChatSearchUsageRecord } from "./usage";
 
 /**
- * The Prisma-backed `ChatSearchEmbedder`: the installation's past-chat embedding role
- * (`SystemModelPolicy.embeddingProviderModelId`) resolved on its installation credential, read again on every call,
- * so a role change applies to the next call and a call for another model is refused (no silent substitution,
- * `agent_docs/PROVIDERS.md`). "Not set" and "set but unusable" stay distinct, and neither ever falls back to another
- * model. Every call that reported usage, a rejected response included, is recorded after it through
- * `recordChatSearchUsage`, without delaying or failing the result.
+ * The Prisma-backed `ChatSearchEmbedder`: the installation's past-chat embedding role, resolved by
+ * `createEmbeddingModelRoleResolver` on its installation credential and read again on every call, so a role change
+ * applies to the next call and a call for another model is refused (no silent substitution,
+ * `agent_docs/PROVIDERS.md`). "Not set" and "set but unusable" (a model that lost its embedding evidence or its
+ * credential) stay distinct, the latter with its code, and neither ever falls back to another model. Every call that
+ * reported usage, a rejected response included, is recorded after it through `recordChatSearchUsage`, without
+ * delaying or failing the result.
  */
 
-const POLICY_ID = "installation";
+const UNAVAILABLE = "embedding_unavailable";
 const CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
 
 export type ChatSearchEmbeddingBinding = Readonly<{
@@ -35,13 +41,17 @@ export type ChatSearchEmbeddingBinding = Readonly<{
 }>;
 
 export type ChatSearchEmbeddingRuntime = Readonly<{
-  resolveForInstallation(input: Readonly<{ providerModelId: string }>): Promise<ChatSearchEmbeddingBinding>;
+  /** Binds the role the resolver admitted to an adapter, without admitting it again. */
+  bindAdmitted(role: EmbeddingProviderAdmissionRole): Promise<ChatSearchEmbeddingBinding>;
 }>;
 
-export type ChatSearchEmbedderDb = Pick<PrismaClient, "systemModelPolicy"> & ChatSearchUsageDb & EmbeddingRuntimeStore;
+export type ChatSearchEmbedderDb = Pick<PrismaClient, "systemModelPolicy"> & ChatSearchUsageDb & EmbeddingRuntimeStore &
+  EmbeddingModelRolePrisma;
 
 export type ChatSearchEmbedderOptions = Readonly<{
-  /** Resolves the role's binding; the installation embedding runtime by default. */
+  /** Resolves the past-chat embedding role; `createEmbeddingModelRoleResolver(db)` by default. */
+  role?: Pick<EmbeddingModelRoleResolver, "resolve">;
+  /** Binds the admitted role; the installation embedding runtime by default. */
   runtime?: ChatSearchEmbeddingRuntime;
   /** Records a call's reported usage; `recordChatSearchUsage` on `db` by default. Never awaited by the result. */
   recordUsage?: (record: ChatSearchUsageRecord) => Promise<unknown>;
@@ -49,10 +59,6 @@ export type ChatSearchEmbedderOptions = Readonly<{
 
 function contentFreeCode(value: unknown, fallback: string): string {
   return typeof value === "string" && CODE_PATTERN.test(value) ? value : fallback;
-}
-
-function resolutionCode(error: unknown): string {
-  return error instanceof ProviderAdmissionError ? contentFreeCode(error.code, "embedding_unavailable") : "embedding_unavailable";
 }
 
 function validRequest(request: ChatSearchEmbedRequest): boolean {
@@ -80,11 +86,16 @@ function acceptedVectors(vectors: unknown, count: number): Readonly<{ vectors: r
 
 export function createChatSearchEmbedder(db: ChatSearchEmbedderDb, options: ChatSearchEmbedderOptions = {}): ChatSearchEmbedder {
   const runtime = options.runtime ?? createPrismaEmbeddingRuntime(db);
+  const role = options.role ?? createEmbeddingModelRoleResolver(db);
   const recordUsage = options.recordUsage ?? ((record: ChatSearchUsageRecord) => recordChatSearchUsage(db, record));
 
-  const assignedModel = async (): Promise<string | null> => {
-    const policy = await db.systemModelPolicy.findUnique({ select: { embeddingProviderModelId: true }, where: { id: POLICY_ID } });
-    return policy?.embeddingProviderModelId ?? null;
+  /** The role now; a failure to read it (the database, not the model) is a content-free `embedding_unavailable`. */
+  const resolveRole = async () => {
+    try {
+      return await role.resolve();
+    } catch {
+      throw new ChatSearchEmbeddingError(UNAVAILABLE);
+    }
   };
 
   const record = (
@@ -110,25 +121,27 @@ export function createChatSearchEmbedder(db: ChatSearchEmbedderDb, options: Chat
 
   return {
     async currentModel(): Promise<ChatSearchEmbeddingModel> {
-      const providerModelId = await assignedModel();
-      if (providerModelId === null) return { kind: "unset" };
-      try {
-        await runtime.resolveForInstallation({ providerModelId });
-        return { kind: "model", providerModelId };
-      } catch (error) {
-        return { code: resolutionCode(error), kind: "unavailable", providerModelId };
+      const resolution = await resolveRole();
+      if (resolution.kind === "unset") return { kind: "unset" };
+      if (resolution.kind === "unavailable") {
+        return { code: contentFreeCode(resolution.code, UNAVAILABLE), kind: "unavailable", providerModelId: resolution.providerModelId };
       }
+      return { kind: "model", providerModelId: resolution.providerModelId };
     },
 
     async embed(request: ChatSearchEmbedRequest) {
       if (!validRequest(request)) throw new ChatSearchEmbeddingError("embedding_batch_invalid");
       if (request.signal?.aborted) throw new ChatSearchEmbeddingError("embedding_request_cancelled");
-      if (await assignedModel() !== request.providerModelId) throw new ChatSearchEmbeddingError("embedding_model_changed");
+      const resolution = await resolveRole();
+      if (resolution.kind === "unset" || resolution.providerModelId !== request.providerModelId) {
+        throw new ChatSearchEmbeddingError("embedding_model_changed");
+      }
+      if (resolution.kind === "unavailable") throw new ChatSearchEmbeddingError(contentFreeCode(resolution.code, UNAVAILABLE));
       let binding: ChatSearchEmbeddingBinding;
       try {
-        binding = await runtime.resolveForInstallation({ providerModelId: request.providerModelId });
-      } catch (error) {
-        throw new ChatSearchEmbeddingError(resolutionCode(error));
+        binding = await runtime.bindAdmitted(resolution.role);
+      } catch {
+        throw new ChatSearchEmbeddingError(UNAVAILABLE);
       }
       if (binding.providerModelId !== request.providerModelId) throw new ChatSearchEmbeddingError("embedding_model_changed");
       let result: Awaited<ReturnType<EmbeddingAdapter["embed"]>>;

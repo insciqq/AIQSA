@@ -7,7 +7,7 @@
  * - `read_aiqsa_guide` (no effects): the readable guide behind the system
  *   prompt's self-service section (`lib/server/engine/prompts/selfService.ts`).
  * - `manage_secret`, `manage_skill`, `manage_assistant`, `manage_proxy`,
- *   `manage_instructions` (`local` in the
+ *   `manage_instructions`, `manage_memory` (`local` in the
  *   registry's terms: the user's own AIQSA state, through its owner, which
  *   settles the call itself, so they are never retried): each change goes
  *   through its owner's Settings path and commits with the call and its card
@@ -24,6 +24,7 @@ import { createAgentAssistantService } from "../assistants/agentAssistants";
 import type { PrismaAssistantRepository } from "../assistants/prismaRepository";
 import type { AssistantDeletionConsequences } from "@/lib/contracts/assistantDeletion";
 import { createAgentInstructionsService } from "../instructions/agentInstructions";
+import { createAgentMemoryNoteService } from "../memoryNote/agentMemoryNote";
 import type { NormalizedRunRequest } from "../providers/types";
 import { createAgentProxyService } from "../proxies/agentProxies";
 import { createAgentSkillService, runSecretValues } from "../skills/agentSkills";
@@ -34,6 +35,7 @@ import { READ_AIQSA_GUIDE_TOOL_NAME, executeReadAiqsaGuide, readAiqsaGuideTool }
 import type { HarnessToolDescriptor } from "./harnessTool";
 import { MANAGE_ASSISTANT_TOOL_NAME, executeManageAssistant, manageAssistantTool } from "./manageAssistant";
 import { MANAGE_INSTRUCTIONS_TOOL_NAME, executeManageInstructions, manageInstructionsTool } from "./manageInstructions";
+import { MANAGE_MEMORY_TOOL_NAME, executeManageMemory, manageMemoryTool } from "./manageMemory";
 import { MANAGE_PROXY_TOOL_NAME, executeManageProxy, manageProxyTool } from "./manageProxy";
 import { MANAGE_SECRET_TOOL_NAME, executeManageSecret, manageSecretTool } from "./manageSecret";
 import { MANAGE_SKILL_TOOL_NAME, executeManageSkill, manageSkillTool } from "./manageSkill";
@@ -44,6 +46,7 @@ import type { ModelToolCall, ToolExecutionResult } from "./types";
 export { READ_AIQSA_GUIDE_TOOL_NAME, executeReadAiqsaGuide, readAiqsaGuideTool } from "./aiqsaGuide";
 export { MANAGE_ASSISTANT_TOOL_NAME, assistantChanges, executeManageAssistant, manageAssistantTool, type ManageAssistantContext } from "./manageAssistant";
 export { MANAGE_INSTRUCTIONS_TOOL_NAME, executeManageInstructions, instructionsChangeCard, manageInstructionsTool } from "./manageInstructions";
+export { MANAGE_MEMORY_TOOL_NAME, executeManageMemory, manageMemoryTool } from "./manageMemory";
 export { MANAGE_PROXY_TOOL_NAME, executeManageProxy, manageProxyTool, manageProxyValues, proxyChangeCard } from "./manageProxy";
 export { MANAGE_SECRET_LIMITS, MANAGE_SECRET_TOOL_NAME, executeManageSecret, manageSecretTool, secretChangeCard, secretChangedResult } from "./manageSecret";
 export { MANAGE_SKILL_LIMITS, MANAGE_SKILL_TOOL_NAME, executeManageSkill, manageSkillTool, type ManageSkillContext } from "./manageSkill";
@@ -75,9 +78,12 @@ export {
   type AgentSecretView
 } from "../workspace/secrets/agentSecrets";
 
-/** The registry's self-service descriptors, in the order the prompt names them. */
+/**
+ * The registry's self-service descriptors, in the order the prompt names them. `manage_memory` rides only on a run whose
+ * admission froze the user's Memory with changes (`selfServiceToolsFor`).
+ */
 export const SELF_SERVICE_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([readAiqsaGuideTool, manageSecretTool, manageSkillTool, manageAssistantTool,
-  manageProxyTool, manageInstructionsTool]);
+  manageProxyTool, manageInstructionsTool, manageMemoryTool]);
 
 export const SELF_SERVICE_TOOL_NAME_SET: ReadonlySet<string> = new Set(SELF_SERVICE_TOOLS.map((tool) => tool.name));
 
@@ -126,6 +132,8 @@ export function executeSelfServiceTool(deps: SelfServiceRunDeps, call: ModelTool
       return executeManageProxy(createAgentProxyService({ db: deps.db, scope, store: input.store }), call, options);
     case MANAGE_INSTRUCTIONS_TOOL_NAME:
       return executeManageInstructions(createAgentInstructionsService({ db: deps.db, scope, store: input.store }), call, options);
+    case MANAGE_MEMORY_TOOL_NAME:
+      return executeManageMemory(createAgentMemoryNoteService({ db: deps.db, scope, store: input.store }), call, options);
     default:
       return null;
   }

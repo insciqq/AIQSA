@@ -20,9 +20,14 @@ import {
 } from "../../../contracts/adminSystemModelPolicy";
 import {
   loadInstallationAnswerProviderRole,
+  loadInstallationEmbeddingProviderRole,
   loadInstallationRerankerProviderRole,
   ProviderAdmissionError
 } from "../../providerRuntime/admission";
+import { admitInstallationEmbeddingModel } from "../../providerRuntime/embeddingModelRole";
+import { scheduleChatSearchReembedding } from "../../chatSearch/index/dirty";
+import { logEvent } from "../../observability";
+import { databaseFailureCode } from "../../observability/databaseFailure";
 import { createSystemModelRoleResolver } from "../../providerRuntime/systemModelRole";
 import { createMemoryUtilityModelRoleResolver } from "../../providerRuntime/memoryUtilityModelRole";
 import { listMemoryModelRecommendations, memoryRecommendationMatches } from "../../memory/modelRecommendations";
@@ -315,6 +320,10 @@ export function createAdminSystemModelPolicyService(
   dependencies: Readonly<{
     loadRole?: RoleLoader;
     loadRerankerRole?: RerankerRoleLoader;
+    /** Admits a past-chat embedding model on its installation credential. */
+    loadEmbeddingRole?: typeof loadInstallationEmbeddingProviderRole;
+    /** Marks the past-chat index for re-embedding after the embedding role changed. */
+    scheduleReembedding?: (db: PrismaClient) => Promise<unknown>;
     loadDecisionRole?: typeof loadInstallationDecisionProviderRole;
     loadImageRole?: typeof loadInstallationImageProviderRole;
     refreshActive?: ActiveRefresh;
@@ -344,6 +353,8 @@ export function createAdminSystemModelPolicyService(
     createChatPdfModelRoleResolver(prisma, loadRole).resolve;
   const loadRerankerRole = dependencies.loadRerankerRole ??
     loadInstallationRerankerProviderRole;
+  const loadEmbeddingRole = dependencies.loadEmbeddingRole ?? loadInstallationEmbeddingProviderRole;
+  const scheduleReembedding = dependencies.scheduleReembedding ?? scheduleChatSearchReembedding;
   const loadDecisionRole = dependencies.loadDecisionRole ?? loadInstallationDecisionProviderRole;
   const resolveDecisionRole = createDecisionModelRoleResolver(prisma, { loadRole: loadDecisionRole }).resolve;
   const loadImageRole = dependencies.loadImageRole ?? loadInstallationImageProviderRole;
@@ -531,6 +542,9 @@ export function createAdminSystemModelPolicyService(
             rerankerProviderModel: {
               include: { connection: true }
             },
+            embeddingProviderModel: {
+              include: { connection: true }
+            },
             updatedBy: { select: { displayName: true, id: true } }
           },
           where: { id: "installation" }
@@ -660,6 +674,20 @@ export function createAdminSystemModelPolicyService(
           if (!(error instanceof ProviderAdmissionError)) throw error;
         }
       }
+      // The past-chat embedding role: only models installation admission accepts (embedding class and configuration,
+      // an available check with embedding evidence on the exact active tuple and default key) can be chosen.
+      const embeddingRows = await prisma.providerModel.findMany({ where: { modelClass: "embedding" },
+        include: { connection: true }, orderBy: [{ connection: { displayName: "asc" } }, { displayName: "asc" }, { id: "asc" }] });
+      const embeddingCandidates = [];
+      for (const row of embeddingRows) {
+        if ((await admitInstallationEmbeddingModel(prisma, row.id, loadEmbeddingRole)).ok) {
+          embeddingCandidates.push(serializeAdminAnswerModel(row as AdminAnswerModelRow));
+        }
+      }
+      const embeddingModel = policy.embeddingProviderModel ? {
+        ...serializeAdminAnswerModel(policy.embeddingProviderModel as AdminAnswerModelRow),
+        available: embeddingCandidates.some((candidate) => candidate.id === policy.embeddingProviderModelId)
+      } : null;
       const [memoryPolicy, memoryResolution] = await Promise.all([
         prisma.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" }, include: {
           providerModel: { include: {
@@ -693,9 +721,11 @@ export function createAdminSystemModelPolicyService(
         verificationCandidates: deployments,
         ineligible,
         rerankerCandidates,
+        embeddingCandidates,
         decisionCandidates,
         imageCandidates: imageCandidates.filter((model) => model.generation || model.editing),
         policy: {
+          embeddingModel,
           decisionModel: selectedDecision ? { ...serializeAdminAnswerModel(selectedDecision),
             available: decisionResolution.ok && decisionResolution.providerModelId === selectedDecision.id &&
               decisionResolution.policyVersion === policy.version } : null,
@@ -955,6 +985,9 @@ export function createAdminSystemModelPolicyService(
        * null) is an explicit administrator save/clear and permanently closes
        * fresh-install default adoption for this installation. */
       rerankerProviderModelId?: string | null;
+      /** Absent preserves the past-chat embedding role. Present (null clears it) is an explicit administrator choice
+       * and records `embeddingConfiguredAt`; a value that differs from the saved one re-embeds the past-chat index. */
+      embeddingProviderModelId?: string | null;
       decisionProviderModelId?: string | null;
       decisionFeatures?: DecisionFeatureOverrides;
       /** Internal adoption only; never accepted from HTTP. */
@@ -965,6 +998,8 @@ export function createAdminSystemModelPolicyService(
       const providerModelId = input.providerModelId;
       const reasoningEffort = input.reasoningEffort;
       const rerankerProviderModelId = input.rerankerProviderModelId;
+      const embeddingProviderModelId = input.embeddingProviderModelId;
+      let embeddingChanged = false;
       const hasDecisionUpdate = input.decisionProviderModelId !== undefined || input.decisionFeatures !== undefined;
       const decisionFeatures = input.decisionFeatures === undefined ? undefined : decodeDecisionFeatureOverrides(input.decisionFeatures);
       if (decisionFeatures === null) throw new Error("system_model_policy_update_invalid");
@@ -1014,7 +1049,7 @@ export function createAdminSystemModelPolicyService(
       const hasUtilityUpdate = providerModelId !== undefined;
       const hasReasoningUpdate = reasoningEffort !== undefined;
       if (hasUtilityUpdate !== hasReasoningUpdate ||
-        !hasUtilityUpdate && !hasTitleUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasResearchResearcherUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined) {
+        !hasUtilityUpdate && !hasTitleUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasResearchResearcherUpdate && !hasVisionUpdate && !hasPdfUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate && !hasDecisionUpdate && rerankerProviderModelId === undefined && embeddingProviderModelId === undefined) {
         throw new Error("system_model_policy_update_invalid");
       }
       try {
@@ -1022,8 +1057,10 @@ export function createAdminSystemModelPolicyService(
           const policies = await tx.$queryRaw<Array<{
             version: number; chatTitleConfiguredAt: Date | null; chatTitleProviderModelId: string | null;
             decisionConfiguredAt: Date | null; decisionProviderModelId: string | null;
+            embeddingProviderModelId: string | null;
           }>>(Prisma.sql`
-            SELECT "version", "chatTitleConfiguredAt", "chatTitleProviderModelId", "decisionConfiguredAt", "decisionProviderModelId"
+            SELECT "version", "chatTitleConfiguredAt", "chatTitleProviderModelId", "decisionConfiguredAt", "decisionProviderModelId",
+              "embeddingProviderModelId"
             FROM "SystemModelPolicy"
             WHERE "id" = 'installation'
             FOR UPDATE
@@ -1203,6 +1240,14 @@ export function createAdminSystemModelPolicyService(
             }
           }
 
+          if (embeddingProviderModelId !== undefined && embeddingProviderModelId !== null &&
+            !(await admitInstallationEmbeddingModel(tx, embeddingProviderModelId, loadEmbeddingRole)).ok) {
+            // Not an embedding model, no embedding evidence on its exact active tuple, or no usable default key.
+            throw new AdminSystemModelPolicyServiceError("system_model_policy_target_unavailable");
+          }
+          embeddingChanged = embeddingProviderModelId !== undefined &&
+            embeddingProviderModelId !== (policies[0].embeddingProviderModelId ?? null);
+
           if (input.decisionProviderModelId) {
             try {
               const role = await loadDecisionRole(tx, { providerModelId: input.decisionProviderModelId });
@@ -1314,6 +1359,12 @@ export function createAdminSystemModelPolicyService(
                 rerankerConfiguredAt: new Date(),
                 rerankerProviderModelId
               } : {}),
+              // An explicit save or clear, even of the saved value, records the administrator's choice: a cleared
+              // role stays distinct from one never set.
+              ...(embeddingProviderModelId !== undefined ? {
+                embeddingConfiguredAt: new Date(),
+                embeddingProviderModelId
+              } : {}),
               updatedByUserId: input.userId,
               version: { increment: 1 }
             },
@@ -1351,6 +1402,17 @@ export function createAdminSystemModelPolicyService(
           }
         }
         throw error;
+      }
+      if (embeddingChanged) {
+        // After the role commits, outside its serializable transaction, so marking every indexed chat never turns
+        // the administrator's save into a conflict with a running index pass. The save stands if this fails: the
+        // backfill sweep marks chats whose passages lack vectors of the current role (`chatSearch/index/backfill.ts`).
+        try {
+          await scheduleReembedding(prisma);
+        } catch (error) {
+          logEvent("service_operation", { subsystem: "admin", stage: "write", outcome: "failed",
+            code: "chat_search_reembedding_unscheduled", prisma_code: databaseFailureCode(error) });
+        }
       }
     }
   };

@@ -48,6 +48,7 @@ export type AdminRolePatch = Readonly<{
   providerModelId?: string | null;
   reasoningEffort?: string | null;
   rerankerProviderModelId?: string | null;
+  embeddingProviderModelId?: string | null;
   decisionProviderModelId?: string | null;
   decisionFeatures?: DecisionFeatureOverrides;
 }>;

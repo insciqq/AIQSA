@@ -176,7 +176,7 @@ describe("MemoryNoteSettingsV2: earlier automatic memories", () => {
     });
     render(<MemoryNoteSettingsV2 />);
     const section = await screen.findByTestId("memory-legacy-suggestions");
-    expect(within(section).getByRole("heading", { name: "Earlier automatic memories (2)" })).toBeInTheDocument();
+    expect(within(section).getByRole("heading", { name: "Earlier memories (2)" })).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Keep in note: Works on billing" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Memory note" })).toHaveValue("Answer briefly\nWorks on billing"));
     expect(within(section).getAllByTestId("memory-legacy-row")).toHaveLength(1);
@@ -203,7 +203,7 @@ describe("MemoryNoteSettingsV2: earlier automatic memories", () => {
     render(<MemoryNoteSettingsV2 />);
     const section = await screen.findByTestId("memory-legacy-suggestions");
     // More wait on the server: the count says so.
-    expect(within(section).getByRole("heading", { name: "Earlier automatic memories (1+)" })).toBeInTheDocument();
+    expect(within(section).getByRole("heading", { name: "Earlier memories (1+)" })).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Remove all" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove all earlier memories?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Confirm remove all" }));

@@ -4,7 +4,7 @@ import type { ProviderAdapter } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
 import { endRetiredEngineRunsFor, type RetiredEngineRunDeps } from "../runs/retiredEngineRuns";
-import { MANAGE_SKILL_TOOL_NAME, READ_AIQSA_GUIDE_TOOL_NAME, SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
+import { MANAGE_MEMORY_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, READ_AIQSA_GUIDE_TOOL_NAME, SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
@@ -51,15 +51,20 @@ export type NativeEngineHandlerDeps = Readonly<{
  * Undo, Confirm and Cancel buttons (`lib/server/telegram/changes/`).
  * Scheduled occurrences and Discord turns (a service account's runs, with no
  * one to confirm) take none, and every change fences its run again as it
- * commits (`selfServiceRunAllowedInTransaction`).
+ * commits (`selfServiceRunAllowedInTransaction`). `manage_memory` rides only
+ * where admission froze the user's Memory with changes (`memory.changes`: Memory
+ * on, an ordinary personal chat that is neither Temporary nor Excluded), so a
+ * temporary chat, a task and an Assistant chat never change the note.
  */
 export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
   options: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}): readonly string[] {
   const connectorWithoutChanges = options.connectorTurn !== undefined && options.connectorTurn !== "telegram";
   if (options.scheduled === true || connectorWithoutChanges || prepared.normalizedRequest.monitoringVerdictTool) return [];
   if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
+  const memoryChanges = prepared.normalizedRequest.memory?.changes === true;
   // Custom sub-agents change like the user's other resources, in the same chats (`managementTools.ts`).
-  return [...SELF_SERVICE_TOOLS.map((tool) => tool.name), ...subagentManagementToolNames({ assistant: false })];
+  return [...SELF_SERVICE_TOOLS.flatMap((tool) => tool.name !== MANAGE_MEMORY_TOOL_NAME || memoryChanges ? [tool.name] : []),
+    ...subagentManagementToolNames({ assistant: false })];
 }
 
 /**
@@ -135,14 +140,14 @@ export function engineAdmissionRefusal(prepared: MaterializedPreparedRunData):
  * dependencies, or the Workspace follow-up that starts a run admitted behind
  * the previous answer's hand-off.
  */
-export function nativeRunServices(deps: Readonly<Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" |
+export function nativeRunServices(deps: Readonly<Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "pastChats" |
   "skillTools" | "vision" | "mcpGuard">>): Omit<NativeRunServices, "searchRuntimes"> {
   return {
     ...(deps.artifacts ? { artifacts: deps.artifacts } : {}),
     ...(deps.images ? { images: deps.images } : {}),
     ...(deps.mcp ? { mcp: deps.mcp } : {}),
     ...(deps.mcpGuard ? { mcpGuard: deps.mcpGuard } : {}),
-    ...(deps.memorySearch ? { memorySearch: deps.memorySearch } : {}),
+    ...(deps.pastChats ? { pastChats: deps.pastChats } : {}),
     ...(deps.skillTools ? { skillTools: deps.skillTools } : {}),
     ...(deps.vision ? { vision: deps.vision } : {})
   };

@@ -111,9 +111,13 @@ export type AdminSystemModelPolicyCatalog = {
   /** Every answer deployment that is not ready for the role, with the reason. */
   ineligible: Record<AdminSystemModelEligibilityRole, AdminSystemModelIneligibleCandidate[]>;
   rerankerCandidates: AdminRerankerModelCandidate[];
+  /** Embedding models whose embedding check passed on their provider's default key: the past-chat role's choices. */
+  embeddingCandidates?: AdminModelDefaultCandidate[];
   decisionCandidates?: AdminModelDefaultCandidate[];
   imageCandidates?: AdminImageModelCandidate[];
   policy: {
+    /** The past-chat search embedding model. Null: not set or cleared, and search matches words only. */
+    embeddingModel?: (AdminModelDefaultCandidate & { available: boolean }) | null;
     decisionModel?: (AdminModelDefaultCandidate & { available: boolean }) | null;
     decisionFeatures?: DecisionFeatureOverrides;
     /** The administrator default; always one of `imageModels`. Null turns image
@@ -307,6 +311,9 @@ export function decodeAdminSystemModelPolicyResponse(
       (!record(policy.visionModel) || typeof policy.visionModel.available !== "boolean" || !candidate(policy.visionModel))) ||
     (policy.visionReasoningEffort !== undefined && policy.visionReasoningEffort !== null && !boundedText(policy.visionReasoningEffort, 32)) ||
     (!policy.visionModel && policy.visionReasoningEffort != null)) return null;
+  if (catalog.embeddingCandidates !== undefined && (!Array.isArray(catalog.embeddingCandidates) || !catalog.embeddingCandidates.every(baseCandidate)) ||
+    policy.embeddingModel !== undefined && policy.embeddingModel !== null && (!record(policy.embeddingModel) ||
+      !baseCandidate(policy.embeddingModel) || typeof policy.embeddingModel.available !== "boolean")) return null;
   if (catalog.decisionCandidates !== undefined && (!Array.isArray(catalog.decisionCandidates) || !catalog.decisionCandidates.every(baseCandidate)) ||
     policy.decisionModel !== undefined && policy.decisionModel !== null && (!record(policy.decisionModel) ||
       !baseCandidate(policy.decisionModel) || typeof policy.decisionModel.available !== "boolean") ||
@@ -380,9 +387,11 @@ export function decodeAdminSystemModelPolicyResponse(
       verificationCandidates: catalog.verificationCandidates,
       ineligible,
       rerankerCandidates: catalog.rerankerCandidates,
+      ...(catalog.embeddingCandidates === undefined ? {} : { embeddingCandidates: catalog.embeddingCandidates as AdminModelDefaultCandidate[] }),
       ...(catalog.decisionCandidates === undefined ? {} : { decisionCandidates: catalog.decisionCandidates as AdminModelDefaultCandidate[] }),
       imageCandidates: (catalog.imageCandidates ?? []) as AdminImageModelCandidate[],
       policy: {
+        ...(policy.embeddingModel === undefined ? {} : { embeddingModel: policy.embeddingModel as AdminSystemModelPolicyCatalog["policy"]["embeddingModel"] }),
         ...(policy.decisionModel === undefined ? {} : { decisionModel: policy.decisionModel as AdminSystemModelPolicyCatalog["policy"]["decisionModel"] }),
         ...(policy.decisionFeatures === undefined ? {} : { decisionFeatures: decodeDecisionFeatureOverrides(policy.decisionFeatures)! }),
         imageModel: imageModel as AdminPublishedImageModel | null,

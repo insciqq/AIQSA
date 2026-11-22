@@ -710,6 +710,18 @@ describe("sub-agent runner", () => {
       .toBe([workspaceContract.stable, WORKSPACE_CHECKPOINT_GUIDANCE, OTHER_GUIDANCE, computer].join("\n\n"));
   });
 
+  it("keeps the user's Memory out of a sub-agent's request: no note, no past-chat search, no note changes", () => {
+    const memory = { changes: true, offers: true, pastChats: true, version: 1 } as const;
+    const parent = { ...request, memory, prompt: { ...request.prompt, memoryNote: "# Memory note\nPRIVATE-NOTE", personalInstructions: "Be brief." } };
+    const route = { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities, modelId: "fake-qsa", params: {},
+      provider: "fake", reasoningEffort: null }, snapshot, timeoutMs: 1 };
+    const sub = subagentRequest(parent, route);
+    expect(sub).not.toHaveProperty("memory");
+    expect(sub.prompt).not.toHaveProperty("memoryNote");
+    expect(sub.prompt).not.toHaveProperty("personalInstructions");
+    expect(JSON.stringify(sub)).not.toContain("PRIVATE-NOTE");
+  });
+
   describe("image tools follow the sub-agent's own route", () => {
     const visionAnalysis = { available: true, version: 1 } as unknown as ProviderRunRequest["visionAnalysis"];
     const inWorkspace = { ...request, visionAnalysis, workspace: { enabled: true, outputDirectory: "/workspace/out/1" } } as unknown as ProviderRunRequest;

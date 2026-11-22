@@ -310,10 +310,12 @@ describe("Prisma Assistant deletion", () => {
       await expect(prisma.userSettings.findUniqueOrThrow({ where: { userId: consumerUserId } }))
         .resolves.toMatchObject({ defaultAssistantId: null });
 
+      // The old Memory scope is no longer maintained (the cutover to the note and past-chat search): it stays,
+      // unread, for the drop of the old tables, and no longer holds the Assistant's deletion back.
       await expect(prisma.memoryScope.findUniqueOrThrow({
         select: { assistantId: true, state: true },
         where: { id: scope.id }
-      })).resolves.toEqual({ assistantId: null, state: "ORPHANED" });
+      })).resolves.toEqual({ assistantId, state: "ACTIVE" });
       await expect(memoryRows()).resolves.toEqual(memoryBefore);
 
       await expect(repository.delete(ownerUserId, assistantId, version)).resolves.toEqual({ kind: "not_found" });

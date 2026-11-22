@@ -5,19 +5,36 @@ import { clipPastChatText } from "../../../contracts/pastChats";
  * search are merged by reciprocal rank fusion (k = 60, as the old Memory
  * ranker and the literature use): a passage's score is the sum over the lanes
  * of 1 / (60 + its rank there), so agreement between the lanes counts most and
- * neither lane's raw scores need calibrating against the other's. Passages an
- * exactly named identifier pinned (`query.ts`) come first; within each group
- * the fused order, then the newer turn. A turn appears once, by its best
- * window, and one chat gives at most `perChat` results so a long chat cannot
- * fill the list; `read_past_chat` reads the rest of it.
+ * neither lane's raw scores need calibrating against the other's.
+ *
+ * Ranks alone overrate a weak word match: the `simple` configuration keeps
+ * function words, so a query in one language matches many passages in the
+ * other by "for" or "после", and a mediocre rank in both lanes then beat the
+ * first place in one (without a reranker, four of the scenario suite's
+ * cross-language and edited-branch searches sank to ranks 2 to 8 or out of
+ * the results). So a word
+ * match counts by the share of the query's weight it covers
+ * (`pastChatQueryWeight`), and one covering less than a quarter of it counts
+ * not at all while meaning search found anything: it shares words with the
+ * query, not its subject. Without meaning search every word match stays, in
+ * its own order.
+ *
+ * Passages an exactly named identifier pinned (`query.ts`) come first; within
+ * each group the fused order, then the newer turn. A turn appears once, by its
+ * best window, and one chat gives at most `perChat` results so a long chat
+ * cannot fill the list; `read_past_chat` reads the rest of it.
  */
 
 export const PAST_CHAT_RANKING = Object.freeze({
   rrfK: 60,
   /** Candidates each lane returns. */
   laneCandidates: 50,
-  /** Turns the reranker scores, best fused first; the rest keep their fused order after them. */
-  rerankCandidates: 24,
+  /**
+   * Turns the reranker scores, best fused first; the rest keep their fused order after them. Every turn read, so a
+   * match the fusion ranked low still reaches the reranker; its documents are half as long as before (`retrieval.ts`),
+   * so a call sends about as much text as 24 did.
+   */
+  rerankCandidates: 48,
   /** Turns whose texts are read: enough for the reranker and for the per-chat cap to leave a full list. */
   detailCandidates: 48,
   perChat: 3
@@ -30,7 +47,15 @@ export type PastChatLaneHit = Readonly<{
   turnAt: Date;
 }>;
 
-export type PastChatWordHit = PastChatLaneHit & Readonly<{ pinned: boolean; terms: readonly string[] }>;
+export type PastChatWordHit = PastChatLaneHit & Readonly<{
+  pinned: boolean;
+  terms: readonly string[];
+  /** The sum of its terms' best weights (`query.ts`). */
+  score: number;
+}>;
+
+/** A word match covering less of the query's weight than this is left out of the fusion while meaning search found anything. */
+export const PAST_CHAT_MIN_WORD_COVERAGE = 0.25;
 
 export type PastChatFusedHit = PastChatLaneHit & Readonly<{ fused: number; pinned: boolean; terms: readonly string[] }>;
 
@@ -39,18 +64,27 @@ function byFusedOrder(left: PastChatFusedHit, right: PastChatFusedHit): number {
     right.turnAt.getTime() - left.turnAt.getTime() || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
 }
 
-/** Both lanes fused, each turn once by its best passage, best first. */
-export function fusePastChatLanes(words: readonly PastChatWordHit[], meanings: readonly PastChatLaneHit[]): PastChatFusedHit[] {
+/**
+ * Both lanes fused, each turn once by its best passage, best first. A word
+ * match weighs by the share of `queryWeight` it covers (all of it when the
+ * weight is unknown).
+ */
+export function fusePastChatLanes(words: readonly PastChatWordHit[], meanings: readonly PastChatLaneHit[], queryWeight: number): PastChatFusedHit[] {
   const fused = new Map<string, PastChatFusedHit>();
-  const add = (hit: PastChatLaneHit, rank: number, pinned: boolean, terms: readonly string[]) => {
-    const score = 1 / (PAST_CHAT_RANKING.rrfK + rank);
+  const add = (hit: PastChatLaneHit, rank: number, pinned: boolean, terms: readonly string[], share: number) => {
+    const score = share / (PAST_CHAT_RANKING.rrfK + rank);
     const known = fused.get(hit.id);
     fused.set(hit.id, known
       ? { ...known, fused: known.fused + score, pinned: known.pinned || pinned, terms: known.terms.length ? known.terms : terms }
       : { chatId: hit.chatId, fused: score, id: hit.id, pinned, terms, turnAt: hit.turnAt, userMessageId: hit.userMessageId });
   };
-  words.forEach((hit, index) => add(hit, index + 1, hit.pinned, hit.terms));
-  meanings.forEach((hit, index) => add(hit, index + 1, false, []));
+  words.forEach((hit, index) => {
+    const coverage = queryWeight > 0 ? Math.min(1, Math.max(0, hit.score) / queryWeight) : 1;
+    // A pinned identifier match always counts: the model named exactly that thing.
+    if (!hit.pinned && meanings.length > 0 && coverage < PAST_CHAT_MIN_WORD_COVERAGE) return;
+    add(hit, index + 1, hit.pinned, hit.terms, coverage);
+  });
+  meanings.forEach((hit, index) => add(hit, index + 1, false, [], 1));
   const turns = new Set<string>();
   return [...fused.values()].sort(byFusedOrder).filter((hit) => {
     const turn = `${hit.chatId}\u0000${hit.userMessageId}`;

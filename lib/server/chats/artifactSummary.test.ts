@@ -235,35 +235,16 @@ describe("summarizeMessageRunArtifacts", () => {
     expect(JSON.stringify(reloaded)).not.toMatch(/startIndex|endIndex|runSearch/);
   });
 
-  it("projects only the friendly Memory availability state", () => {
-    const summary = summarizeMessageRunArtifacts(
-      { events: [], searchRuns: [] },
-      null,
-      [],
-      "UNAVAILABLE"
-    );
-
-    expect(summary).toEqual({
+  it("shows the past chats its search used, as the chat load passes them", () => {
+    const source = { chatId: "chat-2", chatTitle: "Rollback plan", date: "2026-11-20T10:00:00.000Z", excerpt: "Keep the previous image tagged.",
+      messageId: "message-2" };
+    expect(summarizeMessageRunArtifacts({ events: [], searchRuns: [] }, [source])).toEqual({
       citations: [],
-      memoryStatus: "UNAVAILABLE",
+      pastChatSources: [source],
       reasoningText: [],
       sources: []
     });
-    expect(summary).not.toHaveProperty("degradationCode");
-    expect(summary).not.toHaveProperty("outcome");
-  });
-
-  it("projects limited Memory use without exposing its internal degradation reason", () => {
-    const summary = summarizeMessageRunArtifacts(
-      { events: [], searchRuns: [] },
-      null,
-      [],
-      "LIMITED"
-    );
-
-    expect(summary).toMatchObject({ memoryStatus: "LIMITED" });
-    expect(summary).not.toHaveProperty("degradationCode");
-    expect(summary).not.toHaveProperty("outcome");
+    expect(summarizeMessageRunArtifacts({ events: [], searchRuns: [] }, [])).toBeNull();
   });
 
   it("projects only direct citations, Sources, and Reasoning", () => {
@@ -376,26 +357,6 @@ describe("summarizeMessageRunArtifacts", () => {
     ]);
     expect(summary?.sources?.map((source) => source.rank)).toEqual(Array.from({ length: 18 }, (_, index) => index + 1));
     expect(JSON.stringify(summary?.sources)).not.toContain("citation");
-  });
-
-  it("keeps only a committed Memory action", () => {
-    const action = { operation: "UPDATE" as const, status: "COMMITTED" as const };
-    const withAction = summarizeMessageRunArtifacts(
-      { events: [], searchRuns: [] },
-      action
-    );
-    const withoutAction = summarizeMessageRunArtifacts(
-      { events: [], searchRuns: [] },
-      null
-    );
-
-    expect(withAction).toEqual({
-      citations: [],
-      memoryAction: action,
-      reasoningText: [],
-      sources: []
-    });
-    expect(withoutAction).toBeNull();
   });
 
   it("returns no artifact for execution-only records", () => {
@@ -1088,9 +1049,9 @@ describe("scheduled task cards", () => {
   it("reads the owner's current task over the created card, and a gone task as deleted", () => {
     const run = { events: [{ eventType: "artifact", payload: created.data }], searchRuns: [] };
     const edited = new Map([["task-1", { ...task, title: "Inbox", status: "paused" as const, nextRunAt: null, workspaceEnabled: true }]]);
-    expect(summarizeMessageRunArtifacts(run, null, [], undefined, edited)?.scheduledTasks)
+    expect(summarizeMessageRunArtifacts(run, [], edited)?.scheduledTasks)
       .toEqual([{ ...card, title: "Inbox", status: "paused", nextRunAt: null, workspaceEnabled: true, scheduleEnabled: true }]);
-    expect(summarizeMessageRunArtifacts(run, null, [], undefined, new Map())?.scheduledTasks)
+    expect(summarizeMessageRunArtifacts(run, [], new Map())?.scheduledTasks)
       .toEqual([{ ...card, deleted: true }]);
     // A run's own chat update has no current read: the task shows as created.
     expect(summarizeMessageRunArtifacts(run)?.scheduledTasks).toEqual([card]);

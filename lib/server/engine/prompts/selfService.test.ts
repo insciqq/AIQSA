@@ -4,7 +4,8 @@ import { CREATE_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { ARTIFACT_TOOL_NAME } from "../../tools/artifact";
 import { READ_AIQSA_GUIDE_TOOL_NAME } from "../../tools/aiqsaGuide";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../../tools/manageAssistant";
-import { MANAGE_INSTRUCTIONS_TOOL_NAME } from "../../tools/manageInstructions";
+import { MANAGE_INSTRUCTIONS_TOOL_NAME, manageInstructionsTool } from "../../tools/manageInstructions";
+import { MANAGE_MEMORY_TOOL_NAME, manageMemoryTool } from "../../tools/manageMemory";
 import { MANAGE_PROXY_TOOL_NAME } from "../../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME } from "../../tools/manageSecret";
 import { MANAGE_SKILL_TOOL_NAME } from "../../tools/manageSkill";
@@ -27,25 +28,44 @@ describe("self-service prompt section", () => {
     expect(bare).toContain("administrator settings are out of your reach");
     for (const name of allTools) expect(bare).not.toContain(name);
     // Without the tools (an automation) the agent names where the change is made.
-    expect(bare).toContain("- Changing the user's Skills, secrets, proxies, Assistants and personal Instructions is not available in this conversation; " +
-      "the user can make the change in Settings.");
+    expect(bare).toContain("- Changing the user's Skills, secrets, proxies, Assistants, personal Instructions and memory note is not available in " +
+      "this conversation; the user can make the change in Settings.");
     expect(selfServicePromptSection({ tools: allTools })).not.toContain("not available in this conversation");
     // An Assistant chat saves Skills but changes no secrets, Assistants or Instructions.
     const assistantChat = selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.skills] });
-    expect(assistantChat).toContain("- Changing the user's secrets, proxies, Assistants and personal Instructions is not available in this conversation;");
+    expect(assistantChat).toContain("- Changing the user's secrets, proxies, Assistants, personal Instructions and memory note is not available in " +
+      "this conversation;");
     expect(assistantChat).not.toContain(SELF_SERVICE_TOOL_NAMES.instructions);
   });
 
-  it("sends a standing request to personal Instructions and a fact to Memory, from the next message", () => {
-    const line = selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.instructions] });
-    for (const phrase of ["When the user asks you to always, or from now on, do something in their chats",
-      "add it to their personal Instructions with `manage_instructions` instead of only promising to; it applies from their next message.",
-      "A fact the user asks you to remember is Memory, which the server saves from their own message, not this tool."]) {
-      expect(line).toContain(phrase);
+  // Operator decision 2026-11-22: "remember" and "change my default instruction" are different things.
+  it("sends remember, always and from now on to the memory note, and only a request naming the Instructions to them", () => {
+    const both = selfServicePromptSection({ memoryOffers: true, tools: [SELF_SERVICE_TOOL_NAMES.instructions, SELF_SERVICE_TOOL_NAMES.memory] });
+    for (const phrase of [
+      "When the user asks you to remember, change or forget something, or tells you what to do always or from now on, change the note at once with `ask_first: false`",
+      "- Use `manage_instructions` only when the user names their Instructions or instruction preset: to show, edit, add to or rewrite them",
+      "\"Remember\", \"always\" and \"from now on\" without naming the Instructions are for the memory note, not this tool.",
+      "offer it with `ask_first: true`"]) {
+      expect(both).toContain(phrase);
     }
-    // Byte-stable: the line names no time, user or preset (the prompt stays cached for a day).
-    expect(selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.instructions] })).toBe(line);
+    expect(both).not.toContain("When the user asks you to always, or from now on, do something in their chats");
+    // Suggestions off: the note's line forbids offers, and explicit requests still change it.
+    const noOffers = selfServicePromptSection({ memoryOffers: false, tools: [SELF_SERVICE_TOOL_NAMES.memory] });
+    expect(noOffers).toContain("never offer to remember what they did not ask you to keep");
+    expect(noOffers).not.toContain("`ask_first: true`");
+    // Without the note's tool (a temporary chat, Memory off) the agent says the note cannot change here.
+    const instructionsOnly = selfServicePromptSection({ tools: [SELF_SERVICE_TOOL_NAMES.instructions] });
+    expect(instructionsOnly).toContain("memory note is not available in this conversation");
+    expect(instructionsOnly).not.toContain("`ask_first");
+    // Byte-stable: the lines name no time, user, preset or note text (the prompt stays cached for a day).
+    expect(selfServicePromptSection({ memoryOffers: true, tools: [SELF_SERVICE_TOOL_NAMES.instructions, SELF_SERVICE_TOOL_NAMES.memory] }))
+      .toBe(both);
     expect(aiqsaGuideText("studio")).toContain("the agent changes the active preset's text when the user asks (manage_instructions), with Undo");
+    expect(aiqsaGuideText("studio")).toContain("the agent changes the note when the user asks (manage_memory), with Undo");
+    // The two tools' own descriptions agree with the prompt: neither claims the other's requests.
+    expect(manageInstructionsTool.description).toContain("names their Instructions or instruction preset");
+    expect(manageInstructionsTool.description).not.toMatch(/asks you to always, or from now on/u);
+    expect(manageMemoryTool.description).toContain("or told you what to do always or from now on");
   });
 
   it("adds one line per offered tool", () => {
@@ -103,6 +123,7 @@ describe("self-service prompt section", () => {
       guide: READ_AIQSA_GUIDE_TOOL_NAME,
       instructions: MANAGE_INSTRUCTIONS_TOOL_NAME,
       manageScheduledTask: MANAGE_SCHEDULED_TASK_TOOL_NAME,
+      memory: MANAGE_MEMORY_TOOL_NAME,
       proxies: MANAGE_PROXY_TOOL_NAME,
       secrets: MANAGE_SECRET_TOOL_NAME,
       skills: MANAGE_SKILL_TOOL_NAME,
@@ -127,7 +148,11 @@ describe("AIQSA guide", () => {
     expect(aiqsaGuideText("overview")).toContain(removed);
     expect(guide.replaceAll(removed, "")).not.toMatch(/Projects?\b|Knowledge/u);
     expect(guide).toContain("the agent never changes administrator settings");
-    expect(guide).toContain("The agent cannot change Memory with tools.");
+    // Memory is the note the agent changes for the user's own request, and past-chat search (operator decision 2026-11-22).
+    expect(guide).not.toContain("The agent cannot change Memory with tools.");
+    expect(aiqsaGuideText("memory")).toContain("The agent changes the note with manage_memory, only for the user's own message");
+    expect(aiqsaGuideText("memory")).toContain("Nothing is learned in the background.");
+    expect(aiqsaGuideText("memory")).toContain("search_past_chats");
     expect(aiqsaGuideText("secrets")).toContain("32 secrets and 4 MiB in total, 128 KiB of environment variables, 512 KiB per file");
     expect(aiqsaGuideText("skills")).toContain("one save per answer and 20 per hour");
     expect(aiqsaGuideText("scheduled_tasks")).toContain("10 active automations (3 of them hourly) and 50 in total");

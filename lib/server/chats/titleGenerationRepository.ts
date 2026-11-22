@@ -5,6 +5,7 @@ import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import { estimateCostMicros, normalizeTokenUsage, sumEstimatedCostMicros, sumTokenUsage, type NormalizedTokenUsage } from "../../domain/usage";
 import { normalizeProviderExecutionSnapshot } from "../providers/runtimeFactory";
 import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
 import type { ChatTitleWork } from "./titleGeneration";
 
 /** Attempts of the title usage write: one, and two more after a deadlock or serialization failure. */
@@ -125,11 +126,13 @@ export function createChatTitleRepository(client: PrismaClient) {
             credentialId: work.providerSnapshot.credentialId,
             id: work.providerSnapshot.credentialVersionId, revokedAt: null
           } })) return;
-        await tx.chat.updateMany({ where: {
+        const renamed = await tx.chat.updateMany({ where: {
           archived: false, id: work.chatId, permanentDeletionAt: null,
           title: work.expectedTitle, titleRevision: work.titleRevision,
           userId: work.userId, user: { status: "active" }
         }, data: { title, titleRevision: { increment: 1 } } });
+        // Every past-chat search passage carries the title; the write above holds the chat row for the mark.
+        if (renamed.count === 1) await markChatSearchDirty(tx, { chatId: work.chatId, userId: work.userId });
       });
     }
   };

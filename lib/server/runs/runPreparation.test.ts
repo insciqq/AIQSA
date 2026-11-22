@@ -22,7 +22,9 @@ import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
-import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
+import type { MemoryNote, MemorySwitches } from "../../contracts/memoryNote";
+import { renderMemoryNoteForPrompt } from "../memoryNote/prompt";
+import { providerInstructionsWithPersonalContext } from "../providers/personalContext";
 import type { NormalizedRunRequest, ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
@@ -45,6 +47,25 @@ import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalys
 import { DEFAULT_TOOL_RUN_BUDGETS, toolRunBudgetsForRequest } from "./toolBudgets";
 import { admittedRunGuidance, splitTurnGuidance } from "../engine/systemPrompt";
 import { logEvent } from "../observability";
+
+/** A saved memory note, as admission reads it while Memory is on. */
+const NOTE: MemoryNote = { lastChangedBy: "user", revision: 3, text: "I work on the billing team.\nAnswer in short bullet points.",
+  updatedAt: "2026-11-20T10:00:00.000Z" };
+
+/** The user's Memory for admission (`RunPreparationDeps.memoryNote`): on with a note, unless the input says otherwise. */
+function memoryNoteDeps(input: Readonly<{ switches?: Partial<MemorySwitches>; note?: MemoryNote; searchAllowed?: boolean; fail?: true }> = {}) {
+  const switches: MemorySwitches = { memoryEnabled: true, memorySuggestionsEnabled: true, pastChatSearchEnabled: true, ...input.switches };
+  const load = vi.fn(async () => {
+    if (input.fail) throw new Error("PRIVATE_NOTE_FAILURE");
+    return { note: switches.memoryEnabled ? input.note ?? NOTE : null, searchAllowed: input.searchAllowed ?? true, switches };
+  });
+  return { memoryNote: { load } } as const;
+}
+
+const pastChatToolsOffered = (prepared: PreparedRun) => ["search_past_chats", "read_past_chat"]
+  .every((name) => prepared.providerRequest.tools?.some((tool) => tool.name === name) ?? false);
+const anyPastChatTool = (prepared: PreparedRun) =>
+  prepared.providerRequest.tools?.some((tool) => tool.name === "search_past_chats" || tool.name === "read_past_chat") ?? false;
 
 // Passthrough spy: content-free degradation events are asserted directly.
 vi.mock("../observability", async (importOriginal) => {
@@ -797,97 +818,137 @@ function contractWorkspace(): NonNullable<RunPreparationDeps["workspace"]> {
   } })) };
 }
 
-describe("standing Memory and optional search admission", () => {
-  const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const,
-    resultTokens: 6000 as const, comparisonResultTokens: 12000 as const, timeoutSeconds: 30,
-    memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
-  it("admits native recall without Workspace or MCP under the one conversation policy", async () => {
+describe("memory note and past-chat search admission", () => {
+  it("freezes the note after the Instructions and offers search and the note's tool in an ordinary personal chat", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => snapshot);
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } }, sendInput()));
-    expect(admit).toHaveBeenCalledWith("user-1", null);
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
-    expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search")).toBe(true);
-    // Memory search no longer disables notes: the one policy applies.
+    const memory = memoryNoteDeps();
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memory }, sendInput()));
+    expect(memory.memoryNote.load).toHaveBeenCalledWith({ assistantId: null, userId: "user-1" });
+    expect(prepared.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: true, version: 1 });
+    // Frozen with the run like the Instructions: retries and recovery read this text, a later edit applies from the next message.
+    expect(prepared.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(prepared.providerRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(pastChatToolsOffered(prepared)).toBe(true);
+    // Personal Memory's standing read, `memory_search` and the `/memory` answer contract are gone.
+    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
+    expect(prepared.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false).toBe(false);
+    // The adapters render it after the trusted prompt and the personal Instructions, and never in a stored preview.
+    // The prepared request's frozen snapshots are deeply readonly; the renderer reads it as the adapters do.
+    const providerRequest = prepared.providerRequest as unknown as ProviderRunRequest;
+    const instructions = providerInstructionsWithPersonalContext({ ...providerRequest,
+      prompt: { ...providerRequest.prompt, personalInstructions: "Answer like a pirate." } })!;
+    expect(instructions.indexOf("Answer like a pirate.")).toBeLessThan(instructions.indexOf("I work on the billing team."));
+    expect(instructions.endsWith(renderMemoryNoteForPrompt(NOTE))).toBe(true);
+    expect(providerInstructionsWithPersonalContext(providerRequest, true)).not.toContain("billing team");
   });
-  it.each(["none", "no_capability"])("retains standing preparation when search is unavailable (%s)", async mode => {
+
+  it("reads a later note only in the next run: each admission freezes the note it read", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const first = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps() }, sendInput()));
+    const edited = { ...NOTE, revision: 4, text: "I moved to the payments team." };
+    const second = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps({ note: edited }) }, sendInput()));
+    expect(first.normalizedRequest.prompt.memoryNote).toContain("billing team");
+    expect(second.normalizedRequest.prompt.memoryNote).toContain("payments team");
+    // The rest of the prompt stays byte-identical across the two turns (provider caches).
+    expect(second.normalizedRequest.prompt.system).toBe(first.normalizedRequest.prompt.system);
+  });
+
+  it("follows the switches: Memory off reads nothing, search and suggestions narrow what is offered", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const off = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps({ switches: { memoryEnabled: false } }) }, sendInput()));
+    expect(off.normalizedRequest.memory).toBeUndefined();
+    expect(off.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    expect(anyPastChatTool(off)).toBe(false);
+    const noSearch = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps({ switches: { pastChatSearchEnabled: false } }) },
+      sendInput()));
+    expect(noSearch.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: false, version: 1 });
+    expect(noSearch.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(anyPastChatTool(noSearch)).toBe(false);
+    const noOffers = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps({ switches: { memorySuggestionsEnabled: false } }) },
+      sendInput()));
+    expect(noOffers.normalizedRequest.memory).toEqual({ changes: true, offers: false, pastChats: true, version: 1 });
+    // An empty note still tells the model there is one to write to.
+    const empty = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps({ note: { lastChangedBy: null, revision: 0, text: "",
+      updatedAt: null } }) }, sendInput()));
+    expect(empty.normalizedRequest.prompt.memoryNote).toBe("# Memory note\nThe user's memory note is empty.");
+  });
+
+  it.each(["none", "no_capability"])("reads the note without offering a tool when the run calls none (%s)", async mode => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: mode === "none" } });
-    const admit = vi.fn(async () => snapshot);
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps() },
       sendInput(successBody(mode === "none" ? { tools: "none" } : {}))));
-    expect(admit).not.toHaveBeenCalled();
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
-    // A model without tools (or tools off) still compacts by notes.
+    expect(prepared.normalizedRequest.memory).toEqual({ changes: false, offers: true, pastChats: false, version: 1 });
+    expect(prepared.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(anyPastChatTool(prepared)).toBe(false);
   });
-  it("keeps excluded chats outside both Memory contracts", async () => {
+
+  it.each(["EXCLUDED", "TEMPORARY"] as const)("keeps a %s chat outside Memory: no note, no search, no changes", async memoryMode => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => snapshot);
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
-      sendInput(successBody(), { memoryMode: "EXCLUDED" })));
-    expect(admit).not.toHaveBeenCalled();
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    const memory = memoryNoteDeps();
+    const input = memoryMode === "TEMPORARY"
+      ? sendInput(successBody({ chatMode: "TEMPORARY", temporaryRetentionPolicyVersion: "temporary-24h-v1" }),
+        { activeLeafMessageId: null, memoryMode: "NORMAL", messageCount: 0 })
+      : sendInput(successBody(), { memoryMode });
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memory }, input));
+    expect(memory.memoryNote.load).not.toHaveBeenCalled();
+    expect(prepared.normalizedRequest.memory).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    expect(anyPastChatTool(prepared)).toBe(false);
   });
-  it("accepts the run without memory_search when its admission throws", async () => {
+
+  it("answers without Memory when the note cannot be read, and logs no content", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => { throw new Error("PRIVATE_ADMISSION_FAILURE"); });
+    const memory = memoryNoteDeps({ fail: true });
     vi.mocked(logEvent).mockClear();
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } }, sendInput()));
-    expect(admit).toHaveBeenCalledOnce();
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
-    expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
-    // The leaf projects the caught error to class, site and fingerprint only.
-    expect(vi.mocked(logEvent)).toHaveBeenCalledWith("service_operation", { subsystem: "memory_search",
-      stage: "preflight", outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped", error: expect.any(Error) });
-    expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toContain("PRIVATE_ADMISSION_FAILURE");
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memory }, sendInput()));
+    expect(memory.memoryNote.load).toHaveBeenCalledOnce();
+    expect(prepared.normalizedRequest.memory).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    expect(anyPastChatTool(prepared)).toBe(false);
+    expect(vi.mocked(logEvent)).toHaveBeenCalledWith("service_operation", { action: "degrade", code: "memory_note_unavailable",
+      error: expect.any(Error), outcome: "degraded", stage: "preflight", subsystem: "memory" });
+    expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toContain("PRIVATE_NOTE_FAILURE");
   });
-  it("keeps explicit /memory management on its existing synchronous path", async () => {
+
+  it("treats a message that starts with /memory as an ordinary message", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => snapshot);
-    const prepared = preparedFrom(await prepareRun({ ...harness.deps, memorySearchAdmission: { admit } },
+    const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps() },
       sendInput(successBody({ content: textMessageContent("/memory list") }))));
-    expect(admit).not.toHaveBeenCalled();
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
+    expect(prepared.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: true, version: 1 });
+    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
   });
+
   it("admits a regeneration of a scheduled task's prompt only while its task has Memory on, whatever the chat's mode", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => snapshot);
-    const deps = { ...harness.deps, memorySearchAdmission: { admit } };
+    const memory = memoryNoteDeps();
+    const deps = { ...harness.deps, ...memory };
     const regenerate = (text: string, memoryMode: "NORMAL" | "EXCLUDED",
       prompt: Readonly<{ scheduledTaskMemory?: true; scheduledTaskPrompt: boolean }>) => regenerateInput(successBody(), {
       chat: { defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", memoryMode, projectMemory: null },
       userMessage: { content: textMessageContent(text), id: "stored-user-message", ...prompt }
     });
-    // A task with Memory off, a deleted task or a branch copy: the prompt, possibly written by
-    // the model and an explicit Memory command included, reads nothing even in an ordinary chat.
-    for (const text of ["Summarize the news.", "/memory forget everything"]) {
-      for (const memoryMode of ["NORMAL", "EXCLUDED"] as const) {
-        const prepared = preparedFrom(await prepareRun(deps, regenerate(text, memoryMode, { scheduledTaskPrompt: true })));
-        expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
-        expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
-        expect(prepared.providerRequest.tools?.some(tool => tool.name === "memory_search") ?? false).toBe(false);
-      }
+    // A task with Memory off, a deleted task or a branch copy: the prompt reads nothing even in an ordinary chat.
+    for (const memoryMode of ["NORMAL", "EXCLUDED"] as const) {
+      const prepared = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", memoryMode, { scheduledTaskPrompt: true })));
+      expect(prepared.normalizedRequest.memory).toBeUndefined();
+      expect(prepared.normalizedRequest.prompt.memoryNote).toBeUndefined();
+      expect(anyPastChatTool(prepared)).toBe(false);
     }
-    expect(admit).not.toHaveBeenCalled();
-    // Its task still has Memory on: standing context and search, in the excluded task chat too. An
-    // explicit command in the prompt takes the same standing read, so it is answered as text.
-    for (const text of ["Summarize the news.", "/memory forget everything"]) {
-      const prepared = preparedFrom(await prepareRun(deps, regenerate(text, "EXCLUDED",
-        { scheduledTaskMemory: true, scheduledTaskPrompt: true })));
-      expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
-      expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
-    }
-    // The owner's own message regenerated keeps both in an ordinary chat and neither in an excluded one.
+    expect(memory.memoryNote.load).not.toHaveBeenCalled();
+    // Its task still has Memory on: the note and search, in the excluded task chat too, and never the note's tool.
+    const task = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", "EXCLUDED",
+      { scheduledTaskMemory: true, scheduledTaskPrompt: true })));
+    expect(task.normalizedRequest.memory).toEqual({ changes: false, offers: true, pastChats: true, version: 1 });
+    expect(task.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(pastChatToolsOffered(task)).toBe(true);
+    // The owner's own message regenerated keeps the note in an ordinary chat and nothing in an excluded one.
     const own = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", "NORMAL", { scheduledTaskPrompt: false })));
-    expect(own.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(own.normalizedRequest.memorySearch).toEqual(snapshot);
+    expect(own.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: true, version: 1 });
     const excluded = preparedFrom(await prepareRun(deps, regenerate("Summarize the news.", "EXCLUDED",
       { scheduledTaskPrompt: false })));
-    expect(excluded.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(excluded.normalizedRequest.memorySearch).toBeUndefined();
+    expect(excluded.normalizedRequest.memory).toBeUndefined();
   });
 });
 
@@ -2058,9 +2119,7 @@ describe("run preparation", () => {
     });
     expect(prepared.normalizedRequest.prompt.system).not.toContain("Project memory:");
     expect(prepared.normalizedRequest.prompt.system).not.toContain("Server project memory");
-    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toEqual(
-      MEMORY_ACTION_NO_COMMIT_RESULT
-    );
+    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
   });
 
   it("rejects stale policy acknowledgement and late Temporary conversion", async () => {
@@ -2163,7 +2222,6 @@ describe("run preparation", () => {
         timeZoneSource: "client"
       },
       developer: expect.stringContaining("Visible answer contract:"),
-      memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
       responseReminder: "",
       system: expectedBaseline.renderedSystemPrompt
     });
@@ -2230,7 +2288,6 @@ describe("run preparation", () => {
           timeZoneSource: "utc_fallback"
         },
         developer: expect.stringContaining("Visible answer contract:"),
-        memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT,
         responseReminder: "",
         system: expectedBaseline.renderedSystemPrompt
       });
@@ -4304,49 +4361,39 @@ describe("scheduled task sends", () => {
     expect(plain.normalizedRequest.content).toEqual(textMessageContent("Shared question"));
   });
 
-  it("admits no standing Memory or Memory search without the task's Memory, even in a chat the owner switched to Memory", async () => {
+  it("reads no note and offers no search without the task's Memory, even in a chat the owner switched to Memory", async () => {
     const f = scheduledDeps();
-    const admit = vi.fn(async () => null);
-    const prepared = preparedFrom(await prepareRun({ ...f.deps, memorySearchAdmission: { admit } },
-      scheduledInput(null, { memoryMode: "NORMAL" })));
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
-    expect(admit).not.toHaveBeenCalled();
+    const memory = memoryNoteDeps();
+    const prepared = preparedFrom(await prepareRun({ ...f.deps, ...memory }, scheduledInput(null, { memoryMode: "NORMAL" })));
+    expect(prepared.normalizedRequest.memory).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    expect(memory.memoryNote.load).not.toHaveBeenCalled();
   });
 
-  it("reads Memory like an ordinary turn while the task has it on, in its excluded chat too, never as a command", async () => {
+  it("reads the note and may search while the task has Memory on, in its excluded chat too, and never changes the note", async () => {
     const f = scheduledDeps();
-    const snapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
-      comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: false, destinations: [] };
-    const admit = vi.fn(async () => snapshot);
-    const deps = { ...f.deps, memorySearchAdmission: { admit } };
+    const memory = memoryNoteDeps();
+    const deps = { ...f.deps, ...memory };
     const withMemory = (input: RunPreparationInput): RunPreparationInput => {
       if (input.source.kind !== "send" || !input.source.scheduledOccurrence) throw new Error("invalid scheduled fixture");
       return { ...input, source: { ...input.source, scheduledOccurrence: { ...input.source.scheduledOccurrence, memory: true } } };
     };
-    const searchOffered = (prepared: PreparedRun) => prepared.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false;
-    // A tool-calling model gets standing context and Memory search, whatever the task chat's own mode.
+    // A tool-calling model gets the note and past-chat search, whatever the task chat's own mode; `manage_memory` never.
     for (const memoryMode of ["EXCLUDED", "NORMAL"] as const) {
       const prepared = preparedFrom(await prepareRun(deps, withMemory(scheduledInput(null, { memoryMode }))));
-      expect(prepared.normalizedRequest.memoryStandingVersion).toBe(1);
-      expect(prepared.normalizedRequest.memorySearch).toEqual(snapshot);
-      expect(searchOffered(prepared)).toBe(true);
+      expect(prepared.normalizedRequest.memory).toEqual({ changes: false, offers: true, pastChats: true, version: 1 });
+      expect(prepared.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+      expect(pastChatToolsOffered(prepared)).toBe(true);
+      expect(prepared.providerRequest.tools?.some((tool) => tool.name === "manage_memory") ?? false).toBe(false);
       // A task turn never creates another task.
       expect(prepared.normalizedRequest.scheduledTaskTool).toBeUndefined();
     }
-    expect(admit).toHaveBeenCalledWith("user-1", null);
-    // A model the run asks for no tools keeps standing context only.
+    expect(memory.memoryNote.load).toHaveBeenCalledWith({ assistantId: null, userId: "user-1" });
+    // A run asked for no tools keeps the note only.
     const plain = preparedFrom(await prepareRun(deps, withMemory(scheduledInput(null, { memoryMode: "EXCLUDED" }, null,
       { ...toolBody, tools: "none" }))));
-    expect(plain.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(plain.normalizedRequest.memorySearch).toBeUndefined();
-    expect(searchOffered(plain)).toBe(false);
-    // A prompt that reads as an explicit Memory command takes the same read: it is answered as text.
-    const command = preparedFrom(await prepareRun(deps, withMemory(scheduledInput(null, { memoryMode: "EXCLUDED" }, null,
-      { ...toolBody, content: textMessageContent("/memory remember that I prefer tea") }))));
-    expect(command.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(command.normalizedRequest.memorySearch).toEqual(snapshot);
-    expect(command.normalizedRequest.prompt.memoryActionAnswerResult).toEqual(MEMORY_ACTION_NO_COMMIT_RESULT);
+    expect(plain.normalizedRequest.memory).toEqual({ changes: false, offers: true, pastChats: false, version: 1 });
+    expect(anyPastChatTool(plain)).toBe(false);
   });
 
   describe("source health of the Auto catalog", () => {
@@ -4492,12 +4539,10 @@ describe("monitoring check admission", () => {
 
 describe("scheduled task creation admission", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
-  // The owner's Memory is on: search admission returns its snapshot.
-  const memorySearch = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
-    comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
+  // The owner's Memory is on.
   function tooling(input: Readonly<{ creator?: boolean; toolCalling?: boolean }> = {}): RunPreparationDeps {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: input.toolCalling ?? true } });
-    return { ...harness.deps, memorySearchAdmission: { admit: vi.fn(async () => memorySearch) },
+    return { ...harness.deps, ...memoryNoteDeps(),
       repository: { ...harness.deps.repository, ...(input.creator === false ? {} : { createScheduledTaskForCall: vi.fn() }) } };
   }
   const creationTool = (prepared: PreparedRun) =>
@@ -4521,13 +4566,12 @@ describe("scheduled task creation admission", () => {
     const memoryOf = async (input: RunPreparationInput) =>
       preparedFrom(await prepareRun(tooling(), input)).normalizedRequest.scheduledTaskTool?.memoryEnabled;
     expect(await memoryOf(sendInput(toolBody))).toBe(true);
-    // An excluded chat reads no Memory, nor does an explicit Memory command.
+    // An excluded chat reads no Memory.
     expect(await memoryOf(sendInput(toolBody, { memoryMode: "EXCLUDED" }))).toBe(false);
-    expect(await memoryOf(sendInput({ ...toolBody, content: textMessageContent("/memory list") }))).toBe(false);
-    // Nor does a run of an owner whose Memory is off or paused, nor one whose admission failed.
-    for (const admit of [vi.fn(async () => null), vi.fn(async () => { throw new Error("memory_unavailable"); })]) {
-      const prepared = preparedFrom(await prepareRun({ ...tooling(), memorySearchAdmission: { admit } }, sendInput(toolBody)));
-      expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
+    // Nor does a run of an owner whose Memory is off, nor one whose note could not be read.
+    for (const memory of [memoryNoteDeps({ switches: { memoryEnabled: false } }), memoryNoteDeps({ fail: true })]) {
+      const prepared = preparedFrom(await prepareRun({ ...tooling(), ...memory }, sendInput(toolBody)));
+      expect(prepared.normalizedRequest.memory).toBeUndefined();
       expect(prepared.normalizedRequest.scheduledTaskTool?.memoryEnabled).toBe(false);
     }
   });
@@ -5092,8 +5136,6 @@ it("freezes a concrete current message reference in both accepted request shapes
 });
 
 describe("a Discord turn under its connector rules", () => {
-  const memorySnapshot = { version: "memory-search-v1" as const, maxCalls: 3 as const, resultTokens: 6000 as const,
-    comparisonResultTokens: 12000 as const, timeoutSeconds: 30, memoryGeneration: 1, referenceChatHistory: true, destinations: [] };
   const excluded = { memoryMode: "EXCLUDED" as const };
   const as = (origin: "discord" | "telegram", input: RunPreparationInput): RunPreparationInput => ({ ...input, origin });
 
@@ -5116,22 +5158,24 @@ describe("a Discord turn under its connector rules", () => {
 
   it("keeps Memory off whatever the user's settings say, and refuses a chat that is not excluded from Memory", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const admit = vi.fn(async () => memorySnapshot);
-    const deps = { ...harness.deps, memorySearchAdmission: { admit } };
+    const memory = memoryNoteDeps();
+    const admit = memory.memoryNote.load;
+    const deps = { ...harness.deps, ...memory };
     const discord = preparedFrom(await prepareRun(deps, as("discord", sendInput(successBody(), excluded))));
     expect(admit).not.toHaveBeenCalled();
-    expect(discord.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(discord.normalizedRequest.memorySearch).toBeUndefined();
-    expect(discord.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false).toBe(false);
+    expect(discord.normalizedRequest.memory).toBeUndefined();
+    expect(discord.normalizedRequest.prompt.memoryNote).toBeUndefined();
+    expect(anyPastChatTool(discord)).toBe(false);
     // An ordinary chat, a Temporary one and a regeneration in an ordinary chat are refused before anything is accepted.
     for (const input of [sendInput(), sendInput(successBody(), { memoryMode: "TEMPORARY" }), regenerateInput()]) {
       await expect(prepareRun(deps, as("discord", input))).resolves.toMatchObject({ code: DISCORD_RUN_REFUSALS.chatMemory, ok: false, status: 409 });
     }
     expect(admit).not.toHaveBeenCalled();
-    // A Telegram turn of an ordinary chat reads Memory as the web does.
+    // A Telegram turn of an ordinary chat reads Memory as the web does, the note's tool included.
     const telegram = preparedFrom(await prepareRun(deps, as("telegram", sendInput())));
-    expect(telegram.normalizedRequest.memoryStandingVersion).toBe(1);
-    expect(telegram.normalizedRequest.memorySearch).toEqual(memorySnapshot);
+    expect(telegram.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: true, version: 1 });
+    expect(telegram.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    expect(pastChatToolsOffered(telegram)).toBe(true);
   });
 
   it("admits the Workspace as a web chat does, asked for by the message or stored on the chat (operator decision 2026-11-16)", async () => {

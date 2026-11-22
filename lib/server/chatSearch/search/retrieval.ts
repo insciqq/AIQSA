@@ -14,7 +14,7 @@ import { redactSearchQuery } from "../../redaction/searchQuery";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder } from "../embedder";
 import { chatSearchPassageBody } from "../index/passages";
 import { pastChatTimestamp, pastChatTurnRange } from "./dates";
-import { pastChatPhraseChunks, pastChatQueryChunks, pastChatWordUnits, type PastChatWordUnit } from "./query";
+import { pastChatPhraseChunks, pastChatQueryChunks, pastChatQueryWeight, pastChatWordUnits, type PastChatWordUnit } from "./query";
 import {
   capPastChatHits,
   fusePastChatLanes,
@@ -60,8 +60,11 @@ const RECENT_EXCERPT_CHARS = 400;
 /** The JSON of a result stays within the engine's inline tool result with its note beside it. */
 export const PAST_CHAT_RESULT_JSON_CHARS = 20_000;
 const MIN_EXCERPT_CHARS = 200;
-/** The document text one rerank call sends per turn: the window around the match. */
-const RERANK_DOCUMENT_CHARS = 4_000;
+/**
+ * The document text one rerank call sends per turn: the window around the match. With `rerankCandidates` turns a call
+ * stays near 100 000 characters, as 24 of 4 000 were, and within the adapter's request bytes in any script.
+ */
+const RERANK_DOCUMENT_CHARS = 2_000;
 /** The markers `lib/server/redaction/` puts in place of a secret (`[REDACTED:TOKEN]`, `[REDACTED_SECRET]`, `[REDACTED:SAVED_SECRET]`). */
 const REDACTION_MARKER = /\[REDACTED[:_][A-Z0-9_:]*\]/gu;
 
@@ -220,8 +223,9 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
         const phrases = pastChatPhraseChunks(pastChatQueryChunks(query));
 
         const words = (async () => {
-          const units = pastChatWordUnits(await store.wordStatistics(request.ownerId, query, phrases));
-          return { hits: await store.wordHits(scope, units, PAST_CHAT_RANKING.laneCandidates), units };
+          const statistics = await store.wordStatistics(request.ownerId, query, phrases);
+          const units = pastChatWordUnits(statistics);
+          return { hits: await store.wordHits(scope, units, PAST_CHAT_RANKING.laneCandidates), units, weight: pastChatQueryWeight(statistics) };
         })();
         const meanings = (async (): Promise<Readonly<{ hits: PastChatLaneHit[] }> | Readonly<{ degraded: PastChatMeaningDegradation }>> => {
           let embedSignal: AbortSignal | undefined;
@@ -255,7 +259,7 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
         void meanings.catch(() => undefined);
         const [wordLane, meaningLane] = await Promise.all([raced(words, signal), meanings]);
         const degraded = "degraded" in meaningLane ? meaningLane.degraded : null;
-        const fused = fusePastChatLanes(wordLane.hits, "hits" in meaningLane ? meaningLane.hits : []);
+        const fused = fusePastChatLanes(wordLane.hits, "hits" in meaningLane ? meaningLane.hits : [], wordLane.weight);
         if (fused.length === 0) return { degraded, kind: "searched", rerank: "not_needed", result: { mode, results: [] } };
 
         const candidates = fused.slice(0, PAST_CHAT_RANKING.detailCandidates);
