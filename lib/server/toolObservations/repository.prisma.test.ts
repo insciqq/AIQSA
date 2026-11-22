@@ -415,8 +415,9 @@ describe("durable tool observation ownership", () => {
     const identity = measureObservationJson(original, 4096, 0);
     await f.repository.reserve(producer, "skill", 4096);
     await f.repository.recordOutcome(producer, "complete");
+    // A Skill's source is never maskable (`ToolObservation_shape`).
     const value = { byteSize: identity.byteSize, checksum: identity.checksum, inlineText: null, storageMode: "SOURCE" as const,
-      projection: null, sourceTruncated: false, maskable: true };
+      projection: null, sourceTruncated: false, maskable: false };
     await expect(f.repository.beginWrite(producer, { ...value, checksum: "b".repeat(64) })).rejects.toThrow("tool_observation_conflict");
     const saved = await f.repository.beginWrite(producer, value);
     await prisma.modelRunToolCall.update({ where: { id: producer.toolCallId }, data: { state: "complete" } });
