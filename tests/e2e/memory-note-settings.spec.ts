@@ -152,7 +152,7 @@ test("an earlier automatic memory is kept into the note or removed, and the sect
   ];
   const server = await prepare(page, { note: { text: "Answer briefly.", revision: 1, lastChangedBy: "user", updatedAt }, legacy });
   const section = page.getByTestId("memory-legacy-suggestions");
-  await expect(section.getByRole("heading", { name: "Earlier automatic memories (3)" })).toBeVisible();
+  await expect(section.getByRole("heading", { name: "Earlier memories (3)" })).toBeVisible();
   await captureState(page, info, "memory-legacy", { anchor: section, sizes, atEachSize: async () => {
     await expectWithinViewport(page, section.getByRole("button", { name: "Keep in note: Works on the billing team." }));
     await expectNoHorizontalOverflow(page);
