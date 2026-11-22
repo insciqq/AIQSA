@@ -135,7 +135,7 @@ test.describe("inbound MCP consent under the production CSP", () => {
         code_challenge: pkceChallenge(),
         code_challenge_method: "S256",
         redirect_uri: redirectUri,
-        resource: `${appOrigin}/mcp`,
+        resource: `${appOrigin}/mcp/skills`,
         response_type: "code",
         state: "cancel-state"
       }).toString();
