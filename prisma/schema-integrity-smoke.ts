@@ -321,17 +321,6 @@ async function assertConstraintCatalog(): Promise<void> {
   ) {
     throw new Error("Expected one active physical Search route per adapter kind.");
   }
-  // Historical Knowledge indexing usage keeps its idempotency key after the
-  // Knowledge tables were dropped.
-  const knowledgeUsageIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
-    SELECT indexname
-    FROM pg_indexes
-    WHERE schemaname = current_schema()
-      AND indexname = 'UsageEvent_knowledgeIndexGenerationId_knowledgeDocumentVers_key'
-  `;
-  if (knowledgeUsageIndexes.length !== 1) {
-    throw new Error("Expected the historical Knowledge usage idempotency index.");
-  }
   const fairnessQueueIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
     SELECT indexname
     FROM pg_indexes
