@@ -105,15 +105,17 @@ describe("memory note offer card", () => {
     expect(sent(fetchMock, "POST")).toEqual([[offerPath(card.offerId), { decision: "accept" }]]);
   });
 
-  it("No thanks settles it as not remembered", async () => {
+  it("asks a removal as forgetting, and No thanks settles it as not changed", async () => {
     const card = offer({ operation: "remove", before: "Old rule.", after: null });
     const fetchMock = respond({ [`GET ${offerPath(card.offerId)}`]: refusal("internal", 500),
       [`POST ${offerPath(card.offerId)}`]: { offer: { offerId: card.offerId, state: "dismissed", decidedAt: "2026-11-22T10:01:00.000Z" }, change: null } });
     render(<ResourceChangeCardsV2 cards={[card]} />);
     const item = screen.getByTestId("resource-change-card");
-    expect(within(item).getByLabelText("Remember this for future chats?", { selector: "dl" })).toHaveTextContent("ForgetOld rule.");
+    expect(item).toHaveAccessibleName("Forget this in future chats?");
+    expect(within(item).getByLabelText("Forget this in future chats?", { selector: "dl" })).toHaveTextContent("ForgetOld rule.");
+    expect(within(item).getByRole("button", { name: "Forget" })).toBeInTheDocument();
     fireEvent.click(within(item).getByRole("button", { name: "No thanks" }));
-    await waitFor(() => expect(item).toHaveAccessibleName("Not remembered"));
+    await waitFor(() => expect(item).toHaveAccessibleName("Not changed"));
     expect(within(item).queryByRole("button")).toBeNull();
     expect(sent(fetchMock, "POST")).toEqual([[offerPath(card.offerId), { decision: "dismiss" }]]);
   });
@@ -123,9 +125,10 @@ describe("memory note offer card", () => {
     respond({ [`POST ${offerPath(card.offerId)}`]: refusal("memory_note_offer_stale", 409) });
     render(<ResourceChangeCardsV2 cards={[card]} live />);
     const item = screen.getByTestId("resource-change-card");
-    expect(within(item).getByLabelText("Remember this for future chats?", { selector: "dl" }))
+    expect(item).toHaveAccessibleName("Update your memory?");
+    expect(within(item).getByLabelText("Update your memory?", { selector: "dl" }))
       .toHaveTextContent("ReplaceAnswer in English.WithAnswer in Russian.");
-    fireEvent.click(within(item).getByRole("button", { name: "Remember" }));
+    fireEvent.click(within(item).getByRole("button", { name: "Update" }));
     await waitFor(() => expect(item).toHaveAccessibleName("No longer fits"));
     expect(within(item).getByRole("status")).toHaveTextContent("Your note changed since this was offered");
     expect(within(item).getByRole("link", { name: "Open Memory" })).toHaveAttribute("href", "/?library=memory");

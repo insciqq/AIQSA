@@ -812,7 +812,7 @@ function MemoryNoteChangeCardV2({ card, live, remembered = false }: Readonly<{ c
 
   const changed = remote === "changed";
   return (
-    <CardV2 error={state.error} heading={outcome?.heading ?? (remembered ? noteCopy.offerRemembered : CHANGE_HEADINGS[card.action])}
+    <CardV2 error={state.error} heading={outcome?.heading ?? (remembered ? noteCopy.offerAccepted[CHANGE_OPERATIONS[card.action]] : CHANGE_HEADINGS[card.action])}
       headingRef={state.headingRef} icon="memory" meta={outcome ? null : noteCopy.cardMeta} name={noteCopy.cardName} resource="memory_note"
       state={outcome ? "done" : remote} status={outcome?.message ?? (changed ? noteCopy.cardUndoRefused : null)}
       actions={<>
@@ -838,7 +838,8 @@ function offerSettlement(status: MemoryNoteOfferStatus, change: MemoryNoteChange
 }
 
 /**
- * An offer the agent made: "Remember this for future chats?" with the proposed text, Remember and No thanks. Nothing is
+ * An offer the agent made, asked in the words of its operation ("Remember this for future chats?" / Remember, "Update your
+ * memory?" / Update, "Forget this in future chats?" / Forget), with the proposed text and No thanks. Nothing is
  * written until the user accepts; acceptance shows the change it made, with Undo. The payload never changes, so a
  * settled answer reads the offer's state from the server; an offer that no longer fits the note says so.
  */
@@ -883,8 +884,8 @@ function MemoryNoteOfferCardV2({ card, live }: Readonly<{ card: MemoryNoteOfferC
   if (settled?.kind === "accepted" && settled.change) return <MemoryNoteChangeCardV2 card={settled.change} live={false} remembered />;
   const link = <CardLinkV2 href={MEMORY_LIBRARY_PATH} icon="memory" label={noteCopy.cardOpen} />;
   if (settled) {
-    const heading = settled.kind === "accepted" ? noteCopy.offerRemembered : settled.kind === "dismissed" ? noteCopy.offerDismissed
-      : noteCopy.offerStale;
+    const heading = settled.kind === "accepted" ? noteCopy.offerAccepted[card.operation]
+      : settled.kind === "dismissed" ? noteCopy.offerDismissed[card.operation] : noteCopy.offerStale;
     return (
       <CardV2 actions={settled.kind === "dismissed" ? null : link} error={null} heading={heading} headingRef={headingRef} icon="memory"
         meta={settled.kind === "accepted" ? noteCopy.cardMeta : null} name={noteCopy.cardName} resource="memory_note"
@@ -892,13 +893,15 @@ function MemoryNoteOfferCardV2({ card, live }: Readonly<{ card: MemoryNoteOfferC
     );
   }
   return (
-    <CardV2 actions={link} error={error} heading={noteCopy.offerHeading} headingRef={headingRef} icon="memory" name={noteCopy.cardName}
+    <CardV2 actions={link} error={error} heading={noteCopy.offerHeading[card.operation]} headingRef={headingRef} icon="memory" name={noteCopy.cardName}
       resource="memory_note" state="asking" status={null}
       confirm={(
-        <ConfirmV2 busy={busy} confirmLabel={noteCopy.offerRemember} keepLabel={noteCopy.offerDismiss} label={noteCopy.offerHeading}
-          text={noteCopy.offerExplanation} tone="primary" onConfirm={() => decide("accept")} onKeep={() => decide("dismiss")} />
+        <ConfirmV2 busy={busy} confirmLabel={noteCopy.offerConfirm[card.operation]} keepLabel={noteCopy.offerDismiss}
+          label={noteCopy.offerHeading[card.operation]} text={noteCopy.offerExplanation[card.operation]} tone="primary"
+          onConfirm={() => decide("accept")} onKeep={() => decide("dismiss")} />
       )}>
-      <MemoryNotePassagesV2 label={noteCopy.offerHeading} rows={notePassages(card.operation, card.before, card.after, OFFER_PASSAGE_LABELS)} />
+      <MemoryNotePassagesV2 label={noteCopy.offerHeading[card.operation]}
+        rows={notePassages(card.operation, card.before, card.after, OFFER_PASSAGE_LABELS)} />
     </CardV2>
   );
 }

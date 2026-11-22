@@ -134,8 +134,8 @@ test("offer cards are accepted, dismissed or no longer fit, at every size in bot
   const remembered = page.getByRole("listitem", { name: "Remembered" });
   await expect(remembered.getByRole("button", { name: "Undo this change to your memory" })).toBeVisible();
   await dismiss.getByRole("button", { name: "No thanks" }).click();
-  await expect(page.getByRole("listitem", { name: "Not remembered" })).toBeVisible();
-  await stale.getByRole("button", { name: "Remember" }).click();
+  await expect(page.getByRole("listitem", { name: "Not changed" })).toBeVisible();
+  await stale.getByRole("button", { name: "Forget" }).click();
   const noLonger = page.getByRole("listitem", { name: "No longer fits" });
   await expect(noLonger.getByRole("link", { name: "Open Memory" })).toHaveAttribute("href", "/?library=memory");
   await captureState(page, info, "memory-note-offers-settled", { anchor: noLonger, sizes, atEachSize: async () => {
