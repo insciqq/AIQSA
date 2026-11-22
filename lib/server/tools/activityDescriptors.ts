@@ -1,5 +1,6 @@
 import { COMPUTER_TOOL_NAMES } from "../../contracts/computer";
 import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from "../../contracts/memorySearchActivity";
+import { READ_PAST_CHAT_TOOL_NAME, SEARCH_PAST_CHATS_TOOL_NAME } from "../../contracts/pastChats";
 import {
   CHANGE_RESEARCH_FRAME_TOOL_NAME,
   PROPOSE_RESEARCH_PLAN_TOOL_NAME,
@@ -182,6 +183,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
     "update_memory"
   ]) {
     descriptors.set(name, { origin: "memory", serverName: "Memory", toolName: name });
+  }
+  // Past-chat search (`pastChats.ts`), set for every run like the harness tools, so a stored call reads as its live step did.
+  for (const name of [SEARCH_PAST_CHATS_TOOL_NAME, READ_PAST_CHAT_TOOL_NAME]) {
+    descriptors.set(name, { origin: "memory", serverName: "Past chats", toolName: name });
   }
   return descriptors;
 }
