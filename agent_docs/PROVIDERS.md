@@ -18,7 +18,7 @@ Model providers, roles, capability evidence, transports, Search, embeddings, rer
 - Personal credentials resolve as: the user's direct grant, then an identical group grant, then an explicitly configured installation default.
 - Answer, embedding, rerank, Vision, Decisions and other internal roles are independent. Internal roles run on installation credentials, grant users nothing, and never borrow another role's assignment. Research roles follow the operator decisions in the Research section of `agent_docs/RUN_CONTRACTS.md`; the checks role keeps the existing verifier columns so both installations retain their assignment.
 - Image generation is a published resource: administrators publish verified models and keep one default, without which image generation is off for everyone. Users may pick a published model. An unusable published model is marked, never substituted.
-- Optional Decisions need their own disclosure, qualification and verified availability; adopting them preserves explicit choices, and a failed adoption needs explicit repair, never an automatic replay or a startup block.
+- Optional Decisions need their own disclosure, qualification and verified availability; OpenRouter setup assigns the Decisions model only while none is set, never replaces an explicit choice, and a failed assignment leaves setup partial, never blocked (`lib/server/admin/providers/bootstrapService.ts`).
 - Speech to text binds a connection and an upstream model id; only a passing Test with the bundled synthetic sample saves it, bound to the tested key version. Dictation audio and transcripts exist only within the request.
 
 ## Capability evidence

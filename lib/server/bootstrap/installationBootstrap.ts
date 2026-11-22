@@ -11,7 +11,6 @@ import {
   synchronizeCodeOwnedCatalog,
   type CodeOwnedCatalogSynchronization
 } from "@/lib/server/bootstrap/codeOwnedCatalog";
-import { applyLocalMcpRemovalGate } from "@/lib/server/bootstrap/localMcpRemoval";
 
 const BOOTSTRAP_LOCK_KEY = "aiqsa:installation-bootstrap:v1";
 const MAX_DISPLAY_NAME_LENGTH = 200;
@@ -19,8 +18,6 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const BOOTSTRAP_TRANSACTION_ATTEMPTS = 3;
 
 export type InstallationBootstrapInput = {
-  /** Operator consent to delete leftover local MCP rows (`AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1`). */
-  acceptLocalMcpRemoval?: boolean;
   displayName: string;
   email: string;
   password?: string;
@@ -30,8 +27,6 @@ export type InstallationBootstrapInput = {
 export type InstallationBootstrapResult = {
   catalogModelCount: number;
   catalogSearchOptionCount: number;
-  /** Present only when acknowledged leftover local MCP rows were deleted. */
-  localMcpRemovedCount?: number;
   status: "already_adopted" | "created";
 };
 
@@ -39,7 +34,6 @@ export type InstallationBootstrapErrorCode =
   | "display_name_invalid"
   | "email_invalid"
   | "fresh_database_password_required"
-  | "local_mcp_removal_acknowledgement_required"
   | "password_too_long"
   | "password_too_short"
   | "preflight_failed"
@@ -49,13 +43,10 @@ export type InstallationBootstrapErrorCode =
 
 export class InstallationBootstrapError extends Error {
   readonly code: InstallationBootstrapErrorCode;
-  /** A content-free row count the bootstrap log may carry. */
-  readonly count?: number;
 
-  constructor(code: InstallationBootstrapErrorCode, message: string, count?: number) {
+  constructor(code: InstallationBootstrapErrorCode, message: string) {
     super(message);
     this.code = code;
-    if (count !== undefined) this.count = count;
     this.name = "InstallationBootstrapError";
   }
 }
@@ -67,7 +58,6 @@ type InstallationBootstrapDependencies = {
 };
 
 type ValidatedInstallationBootstrapInput = {
-  acceptLocalMcpRemoval?: boolean;
   displayName: string;
   email: string;
   password?: string;
@@ -114,10 +104,8 @@ export function installationBootstrapInputFromEnv(
 ): InstallationBootstrapInput {
   const password = env.AIQSA_INITIAL_ADMIN_PASSWORD;
   const userId = env.AIQSA_INITIAL_ADMIN_USER_ID?.trim();
-  const acceptLocalMcpRemoval = env.AIQSA_ACCEPT_LOCAL_MCP_REMOVAL?.trim() === "1";
 
   return {
-    ...(acceptLocalMcpRemoval ? { acceptLocalMcpRemoval } : {}),
     displayName: env.AIQSA_INITIAL_ADMIN_DISPLAY_NAME?.trim() || "Administrator",
     email: requiredEnvironmentValue(env, "AIQSA_INITIAL_ADMIN_EMAIL"),
     ...(password ? { password } : {}),
@@ -168,7 +156,6 @@ export function validateInstallationBootstrapInput(
   }
 
   return {
-    ...(input.acceptLocalMcpRemoval === true ? { acceptLocalMcpRemoval: true } : {}),
     displayName,
     email,
     ...(input.password !== undefined ? { password: input.password } : {}),
@@ -464,22 +451,12 @@ export async function bootstrapInstallationDatabase(
       }
 
       if (state.adoptedUserId) {
-        // Leftover local MCP rows break the admin catalog; refusal rolls back.
-        const localMcp = await applyLocalMcpRemovalGate(tx, {
-          acknowledged: input.acceptLocalMcpRemoval === true,
-          refuse: (count) => new InstallationBootstrapError(
-            "local_mcp_removal_acknowledgement_required",
-            "Refusing installation bootstrap: removed local MCP sources remain; set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 to delete them.",
-            count
-          )
-        });
         const catalog = await synchronizeInstallationFoundation(tx, now());
         await ensureFullAccessGroup(tx, state.adoptedUserId);
 
         return {
           catalogModelCount: catalog.modelCount,
           catalogSearchOptionCount: catalog.searchOptionCount,
-          ...(localMcp.removedCount > 0 ? { localMcpRemovedCount: localMcp.removedCount } : {}),
           status: "already_adopted"
         };
       }

@@ -7,7 +7,7 @@ vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError:
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
   recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(),
-  activation: vi.fn(), mcp: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
+  activation: vi.fn(), mcp: vi.fn(),
   scheduledTasks: vi.fn(), push: vi.fn(), usageAlerts: vi.fn(), objectDeletion: vi.fn(),
   telemetry: vi.fn(), telegram: vi.fn(), discord: vi.fn(), background: vi.fn()
 }));
@@ -25,11 +25,7 @@ vi.mock("../lib/server/retention/defaultObjectDeletion", () => ({ startDefaultOb
 vi.mock("../lib/server/telemetry/defaultRecorder", () => ({ startDefaultTelemetryRecorder: startup.telemetry }));
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
-vi.mock("../lib/server/bootstrap/nativeRoutingAdoption", () => ({ startNativeRoutingAdoption: startup.nativeRouting }));
-vi.mock("../lib/server/bootstrap/decisionModelAdoption", () => ({ startDecisionModelAdoption: startup.decisionModel }));
 vi.mock("../lib/server/background/defaultPasses", () => ({ startBackgroundWorkerLocally: startup.background }));
-
-vi.mock("../lib/server/bootstrap/catalogCostBackfill", () => ({ startCatalogCostBackfill: startup.costs }));
 
 import { onRequestError, register } from "../instrumentation";
 
@@ -56,9 +52,6 @@ describe("optional subsystem startup", () => {
     startup.objectDeletion.mockImplementationOnce(() => { throw new Error("private-object-deletion-canary"); });
     await expect(register()).resolves.toBeUndefined();
     expect(startup.uploads).toHaveBeenCalledOnce();
-    expect(startup.nativeRouting).toHaveBeenCalledOnce();
-    expect(startup.decisionModel).toHaveBeenCalledOnce();
-    expect(startup.costs).toHaveBeenCalledOnce();
     expect(startup.hooks).toHaveBeenCalledOnce();
     // Outside production the background worker runs in-process.
     expect(startup.background).toHaveBeenCalledOnce();
