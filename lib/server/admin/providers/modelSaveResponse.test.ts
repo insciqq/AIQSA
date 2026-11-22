@@ -106,8 +106,8 @@ describe("bounded model save producer and browser reader", () => {
       roles: [{ role: "memory", missingParameters: ["response_format", "structured_outputs"] }] },
     receipt: { publication: "draft", checks: "not_requested" } });
     expect(adminProviderErrorMessage((result as { error: AdminProviderClientError }).error))
-      .toBe("Memory uses this model and needs structured output, which the selected providers do not support. " +
-        "Choose Automatic or providers that support it, or assign Memory to another model first.");
+      // A stored legacy "memory" role (the old Memory utility model) reads as a system role: no Memory wording is left.
+      .toBe("A system role uses this model and the selected providers cannot serve it. Choose Automatic or other providers.");
   });
 
   it("names the roles paused by a failed check of the live model", async () => {
