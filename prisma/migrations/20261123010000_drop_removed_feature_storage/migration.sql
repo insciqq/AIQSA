@@ -167,11 +167,23 @@ ALTER TABLE "ModelRun" ENABLE TRIGGER "ModelRun_followup_completion_guard";
 ALTER TABLE "ChatPdfAttachmentPreparation" ENABLE TRIGGER "ChatPdfAttachmentPreparation_guard";
 
 -- Enum values: PostgreSQL drops none in place, so each type is replaced by one without them and its column converted.
+-- The state check compares "source" with an enum constant, so it is dropped around the conversion and restored unchanged.
+ALTER TABLE "McpToolApproval" DROP CONSTRAINT "McpToolApproval_state_check";
 ALTER TYPE "McpToolApprovalSource" RENAME TO "McpToolApprovalSource_retired";
 CREATE TYPE "McpToolApprovalSource" AS ENUM ('model', 'code');
 ALTER TABLE "McpToolApproval"
   ALTER COLUMN "source" TYPE "McpToolApprovalSource" USING "source"::text::"McpToolApprovalSource";
 DROP TYPE "McpToolApprovalSource_retired";
+ALTER TABLE "McpToolApproval" ADD CONSTRAINT "McpToolApproval_state_check" CHECK (
+  ("decision" IS NULL) = ("decidedAt" IS NULL)
+  AND ("decisionNonce" IS NULL OR "decision" IS NOT NULL)
+  AND (("expiresAt" IS NOT NULL) = ("decision" IS NOT NULL AND "decision" = 'allow_once'))
+  AND (("consumedAt" IS NULL) = ("consumedByRunId" IS NULL))
+  AND ("consumedAt" IS NULL OR "decision" = 'allow_once')
+  AND (("source" = 'code') = ("toolCallId" IS NULL))
+  AND "definitionHash" ~ '^[0-9a-f]{64}$'
+  AND "argumentsDigest" ~ '^[0-9a-f]{64}$'
+);
 
 ALTER TYPE "TelegramCallbackKind" RENAME TO "TelegramCallbackKind_retired";
 CREATE TYPE "TelegramCallbackKind" AS ENUM ('approval_allow_once', 'approval_allow_server', 'approval_deny',
