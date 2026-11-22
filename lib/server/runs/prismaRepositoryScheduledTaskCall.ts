@@ -10,6 +10,7 @@ import { runOutputArtifactEvents } from "./runOutputEvents";
 import type { RunRepository, ScheduledTaskCallCreation, ScheduledTaskCallRefusal } from "./runRepositoryContract";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "./toolLoopPersistence";
+import { storedUserRequest } from "./turnProvenance";
 
 type CreationInput = Parameters<NonNullable<RunRepository["createScheduledTaskForCall"]>>[0];
 type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
@@ -86,9 +87,12 @@ export async function createScheduledTaskForToolCall(
       if (call.state !== "running") return refused("scheduled_task_call_unavailable");
       // Nor does any other answer to a scheduled task's prompt, which the model
       // may have written: a regeneration in its chat or an answer in a branch
-      // copy. The mark is on the message; a missing message fails closed.
-      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true }, where: { id: run.userMessageId } });
-      if (prompt?.scheduledTaskPrompt !== false) return refused("scheduled_task_call_unavailable");
+      // copy, nor a turn the server wrote (a wake-up, a sign-in request), which
+      // authorizes nothing. The marks are on the message (`storedUserRequest`); a
+      // missing message fails closed.
+      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
+        where: { id: run.userMessageId } });
+      if (!prompt || !storedUserRequest(prompt)) return refused("scheduled_task_call_unavailable");
       // Only a creation settles complete: another one means this answer has its task.
       const created = await tx.modelRunToolCall.count({ where: {
         id: { not: input.callId }, modelRunId: input.runId, state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME

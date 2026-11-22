@@ -4725,6 +4725,43 @@ describe("Skill save admission", () => {
   });
 });
 
+describe("automation and Skill save admission by turn kind", () => {
+  const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai", workspace: { enabled: true } });
+  function tooling(): RunPreparationDeps {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    return { ...harness.deps, ...memoryNoteDeps(), workspace: contractWorkspace(), repository: { ...harness.deps.repository,
+      createScheduledTaskForCall: vi.fn(), saveSkillForCall: vi.fn() } };
+  }
+  const stored = (systemTurnKind?: "browser_sign_in_request" | "mcp_approval_continuation" | "subagent_callback") =>
+    regenerateInput(toolBody, { userMessage: { content: textMessageContent("Remind me daily"), id: "stored-user-message",
+      scheduledTaskPrompt: false, ...(systemTurnKind ? { systemTurnKind } : {}) } });
+  const CASES: ReadonlyArray<readonly [string, RunPreparationInput, boolean]> = [
+    ["the user's own send", sendInput(toolBody), true],
+    ["the continuation after the user's MCP Allow", { ...sendInput(toolBody), serverAuthoredInput: true,
+      systemTurnKind: "mcp_approval_continuation" }, true],
+    ["a sub-agent wake-up", { ...sendInput(toolBody), origin: "wake_up", serverAuthoredInput: true,
+      systemTurnKind: "subagent_callback" }, false],
+    ["a browser sign-in request", { ...sendInput(toolBody), serverAuthoredInput: true, systemTurnKind: "browser_sign_in_request" }, false],
+    ["the user's own message regenerated", stored(), true],
+    ["an Allow continuation regenerated", stored("mcp_approval_continuation"), true],
+    ["a wake-up regenerated", stored("subagent_callback"), false],
+    ["a sign-in request regenerated", stored("browser_sign_in_request"), false]
+  ];
+
+  it.each(CASES)("%s", async (_label, input, userRequest) => {
+    const result = await prepareRun(tooling(), input);
+    if (!result.ok) throw new Error(result.code);
+    // Only the user's own request creates or manages a task or saves a Skill: a turn the server wrote authorizes nothing.
+    expect(result.prepared.normalizedRequest.scheduledTaskTool !== undefined).toBe(userRequest);
+    expect(result.prepared.normalizedRequest.skillSaveTool === true).toBe(userRequest);
+    const names = (result.prepared.providerRequest.tools ?? []).map((tool) => tool.name);
+    for (const name of ["create_scheduled_task", "save_skill"]) expect(names.includes(name), name).toBe(userRequest);
+    // The provenance rides beside the prepared run for execution's own decision, never in the stored request.
+    expect(result.provenance.userRequest).toBe(userRequest);
+    expect(JSON.stringify(result.prepared)).not.toContain("userRequest");
+  });
+});
+
 describe("page reader admission", () => {
   const toolBody = successBody({ modelId: "openai-tool-model", provider: "openai" });
   const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>

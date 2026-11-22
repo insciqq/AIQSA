@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { logEvent } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { dispatchableModelRunStatuses } from "../runs/prismaRepositoryShared";
+import { storedUserRequest } from "../runs/turnProvenance";
 import type { ToolExecutionResult } from "./types";
 
 /**
@@ -74,17 +75,23 @@ export async function commitSelfServiceChange<Done, Refusal>(
 
 /**
  * The run-level fence a claim applies: the caller is active and owns the
- * run and its chat, and the run is still running; the run is neither a
- * scheduled occurrence nor an answer to a scheduled task's prompt, which the
- * model may have written. Locks the run row.
+ * run and its chat, and the run is still running; the run is no scheduled
+ * occurrence, and its turn is the user's own request as its stored message
+ * shows (`storedUserRequest`, as the memory note's service checks it): never
+ * an answer to a scheduled task's prompt, which the model may have written,
+ * nor a turn the server wrote (a sub-agent wake-up, a browser sign-in
+ * request), which authorizes nothing, while the continuation after the user's
+ * MCP Allow still is the user's turn. So a change a stale tool list still
+ * offers never commits. Locks the run row.
  */
 export async function selfServiceRunAllowedInTransaction(
   tx: Pick<Prisma.TransactionClient, "$queryRaw">,
   scope: Pick<SelfServiceScope, "runId" | "userId">
 ): Promise<boolean> {
   const rows = await tx.$queryRaw<Array<{ status: string; scheduledTaskId: string | null;
-    scheduledTaskPrompt: boolean | null; userStatus: string }>>`
-    SELECT r."status", r."scheduledTaskId", m."scheduledTaskPrompt", u."status" AS "userStatus"
+    scheduledTaskPrompt: boolean | null; systemTurnKind: string | null; userStatus: string }>>`
+    SELECT r."status", r."scheduledTaskId", m."scheduledTaskPrompt", m."systemTurnKind"::text AS "systemTurnKind",
+      u."status" AS "userStatus"
     FROM "ModelRun" r
     JOIN "Chat" c ON c."id" = r."chatId"
     JOIN "User" u ON u."id" = r."userId"
@@ -93,7 +100,8 @@ export async function selfServiceRunAllowedInTransaction(
     FOR UPDATE OF r`;
   const run = rows[0];
   return Boolean(run && (dispatchableModelRunStatuses as readonly string[]).includes(run.status) && run.userStatus === "active" &&
-    run.scheduledTaskId === null && run.scheduledTaskPrompt === false);
+    run.scheduledTaskId === null && run.scheduledTaskPrompt === false &&
+    storedUserRequest({ scheduledTaskPrompt: run.scheduledTaskPrompt, systemTurnKind: run.systemTurnKind }));
 }
 
 /** Content-free record of an unexpected failure; the tool answers with its own stable code. */

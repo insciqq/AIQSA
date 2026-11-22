@@ -193,6 +193,17 @@ describe("accepted PDF answer continuation", () => {
     expect(started().connectorTurn).toBe("discord");
   });
 
+  it("keeps that a turn the server wrote is no request of the user's, so its answer takes no self-service tools", async () => {
+    const wakeUp = fixture();
+    (wakeUp.loaded as { snapshot: unknown }).snapshot = { ...chatPdfRunSnapshot(wakeUp.prepared), native: { userRequest: false } };
+    await wakeUp.run();
+    expect(started().userRequest).toBe(false);
+    vi.clearAllMocks();
+    // The user's own send, and a snapshot stored before the entry facts named it, keep the tools they were admitted with.
+    await fixture().run();
+    expect(started().userRequest).toBe(true);
+  });
+
   it("stops before any answer side effect when the final document context does not fit", async () => {
     const h = fixture();
     h.prepared.providerRequest.prompt.system = "x".repeat(1000);

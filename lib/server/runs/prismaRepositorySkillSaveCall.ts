@@ -7,6 +7,7 @@ import { runOutputArtifactEvents } from "./runOutputEvents";
 import type { RunRepository } from "./runRepositoryContract";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "./toolLoopPersistence";
+import { storedUserRequest } from "./turnProvenance";
 
 type SaveInput = Parameters<NonNullable<RunRepository["saveSkillForCall"]>>[0];
 type StoredResult = Parameters<typeof parsePersistedToolExecutionResult>[1];
@@ -41,9 +42,11 @@ export async function saveSkillForToolCall(prisma: PrismaClient, input: SaveInpu
         call.result as StoredResult) };
     }
     if (call.state !== "running") return { kind: "unavailable" };
-    // An answer to a scheduled task's prompt, which the model may have written, never saves.
-    const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true }, where: { id: run.userMessageId } });
-    if (prompt?.scheduledTaskPrompt !== false) return { kind: "unavailable" };
+    // Nor does an answer to a scheduled task's prompt, which the model may have written, or a turn the server wrote (a
+    // wake-up, a sign-in request), which authorizes nothing (`storedUserRequest`).
+    const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
+      where: { id: run.userMessageId } });
+    if (!prompt || !storedUserRequest(prompt)) return { kind: "unavailable" };
     const outcome = await commitSkillSaveInTransaction(tx, { userId: input.userId, runId: input.runId, operationKey: input.callId,
       target: input.target, bundle: input.bundle, changeNote: input.changeNote });
     if (outcome.kind !== "saved") return { kind: "not_saved", outcome };

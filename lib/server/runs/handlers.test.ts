@@ -4890,6 +4890,20 @@ describe("interactive sends on the agent engine", () => {
     expect(toolNames(provider.requests[0])).toEqual(expect.arrayContaining(["read_secret", "manage_assistant", "manage_secret"]));
   });
 
+  it("gives a sub-agent wake-up turn, which the server wrote, no self-service tool", async () => {
+    const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+    const native = nativeEngineFake({ tools: true });
+    const provider = recordingProvider();
+    const response = await send({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter }, repository,
+      subagentWakeUp: { text: "[Sub-agent callback, written by the server, not by the user] researcher ended",
+        turns: [{ kind: "callback" as const, turnId: "turn-1" }] } });
+    await response.text();
+    const tools = toolNames(provider.requests[0]);
+    expect(tools).toContain("read_secret");
+    for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant", "manage_instructions",
+      "create_subagent"]) expect(tools, name).not.toContain(name);
+  });
+
   // Operator decision 2026-11-16: a Telegram turn takes what the same chat takes on the web, its cards shown as messages with buttons.
   it("gives Telegram turn the self-service tools of a personal chat, with read_secret", async () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);

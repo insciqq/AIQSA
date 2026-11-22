@@ -570,11 +570,11 @@ describe("the tools a native run is offered by kind", () => {
   });
 
   async function offered(data: Partial<MaterializedPreparedRunData>, extra: Partial<ProviderRunRequest> = {},
-    entry: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}) {
+    entry: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean; userRequest?: boolean }> = {}) {
     const { adapter, requests } = scriptedNativeAdapter([{ text: "Hi." }]);
     const memory = memoryNativeEngine();
     await nativeSseEvents(nativeRunResponse(native(memory), { adapter, created, prepared: nativePrepared(extra, data),
-      repository: asRepository(nativeRunRepository()), ...entry, services: {}, userId: "user" }));
+      repository: asRepository(nativeRunRepository()), userRequest: true, ...entry, services: {}, userId: "user" }));
     return { request: requests[0]!, tools: toolNames(requests[0]) };
   }
 
@@ -592,7 +592,9 @@ describe("the tools a native run is offered by kind", () => {
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");
     }
-    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { connectorTurn: "discord" })]) {
+    // A turn the server wrote (a wake-up, a sign-in request) is no request of the user's, on the web or in Telegram.
+    for (const run of [await offered({}, {}, { scheduled: true }), await offered({}, {}, { connectorTurn: "discord" }),
+      await offered({}, {}, { userRequest: false }), await offered({}, {}, { connectorTurn: "telegram", userRequest: false })]) {
       expect(run.tools).toContain("read_secret");
       expect(run.tools).not.toContain("manage_secret");
       expect(run.tools).not.toContain("manage_assistant");

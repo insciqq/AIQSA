@@ -47,16 +47,22 @@ export type NativeEngineHandlerDeps = Readonly<{
  * (operator decision 2026-11-16): the bot shows each change as a message with
  * Undo, Confirm and Cancel buttons (`lib/server/telegram/changes/`).
  * Scheduled occurrences and Discord turns (a service account's runs, with no
- * one to confirm) take none, and every change fences its run again as it
+ * one to confirm) take none, and neither does a turn that is not the user's
+ * own request (`TurnProvenance.userRequest`): a turn the server wrote (a
+ * sub-agent wake-up, a browser sign-in request, a regenerate of either),
+ * which authorizes nothing, or a regenerate of a scheduled task's prompt,
+ * which the model may have written; the continuation after the user's MCP
+ * Allow still is the user's turn. Every change fences its run again as it
  * commits (`selfServiceRunAllowedInTransaction`). `manage_memory` rides only
  * where admission froze the user's Memory with changes (`memory.changes`: Memory
  * on, an ordinary personal chat that is neither Temporary nor Excluded), so a
  * temporary chat, a task and an Assistant chat never change the note.
  */
 export function selfServiceToolsFor(prepared: MaterializedPreparedRunData,
-  options: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean }> = {}): readonly string[] {
+  options: Readonly<{ connectorTurn?: ConnectorTurn; scheduled?: boolean; userRequest: boolean }>): readonly string[] {
   const connectorWithoutChanges = options.connectorTurn !== undefined && options.connectorTurn !== "telegram";
-  if (options.scheduled === true || connectorWithoutChanges || prepared.normalizedRequest.monitoringVerdictTool) return [];
+  if (!options.userRequest || options.scheduled === true || connectorWithoutChanges ||
+    prepared.normalizedRequest.monitoringVerdictTool) return [];
   if (prepared.assistant || prepared.chatAssistant) return [READ_AIQSA_GUIDE_TOOL_NAME, MANAGE_SKILL_TOOL_NAME];
   const memoryChanges = prepared.normalizedRequest.memory?.changes === true;
   // Custom sub-agents change like the user's other resources, in the same chats (`managementTools.ts`).
@@ -160,12 +166,15 @@ export function nativeRunResponse(native: NativeEngineHandlerDeps, input: Readon
   /** The run is a connector's turn (Telegram, Discord). */
   connectorTurn?: ConnectorTurn;
   userId: string;
+  /** The turn is the user's own request (`TurnProvenance.userRequest`): only then may it take self-service tools. */
+  userRequest: boolean;
   workspace?: WorkspaceCoordinator;
 }>): Response {
   const tools = native.tools;
   const scheduled = input.scheduled === true;
   const connectorTurn = input.connectorTurn;
-  const selfServiceTools = selfServiceToolsFor(input.prepared, { ...(connectorTurn ? { connectorTurn } : {}), scheduled });
+  const selfServiceTools = selfServiceToolsFor(input.prepared, { ...(connectorTurn ? { connectorTurn } : {}), scheduled,
+    userRequest: input.userRequest });
   return createNativeRunExecutionResponse({
     adapter: input.adapter,
     ...(input.approvalId ? { approvalContinuation: { approvalId: input.approvalId } } : {}),

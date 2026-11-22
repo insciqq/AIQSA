@@ -52,8 +52,8 @@ type FakeState = {
   /** Editor saves that land between a plan's read and its transaction, one per plan. */
   editorSaves: number;
   owner: boolean;
-  /** The answered user message's scheduled task prompt mark; null when the message is gone. */
-  prompt: { scheduledTaskPrompt: boolean } | null;
+  /** The answered user message's scheduled task prompt mark and server turn kind; null when the message is gone. */
+  prompt: { scheduledTaskPrompt: boolean; systemTurnKind?: string | null } | null;
   rows: ScheduledTaskRow[];
   run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
 };
@@ -316,6 +316,9 @@ describe("a chat answer's scheduled task change", () => {
       { run: { errorPayload: null, scheduledTaskId: null, status: "complete", userMessageId: "message-1" } },
       { run: null },
       { prompt: { scheduledTaskPrompt: true } },
+      // A turn the server wrote authorizes nothing.
+      { prompt: { scheduledTaskPrompt: false, systemTurnKind: "subagent_callback" } },
+      { prompt: { scheduledTaskPrompt: false, systemTurnKind: "browser_sign_in_request" } },
       { prompt: null },
       { calls: [{ arguments: {}, id: "persisted-1", modelRunId: "run-1", providerCallId: "provider-call-1", result: null,
         state: "pending", toolName: MANAGE_SCHEDULED_TASK_TOOL_NAME }] },

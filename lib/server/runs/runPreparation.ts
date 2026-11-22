@@ -117,7 +117,7 @@ import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./requestContextBudget";
-import { turnProvenance } from "./turnProvenance";
+import { turnProvenance, type TurnProvenance } from "./turnProvenance";
 import {
   followupAdmissionBudgetTokens, followupTokenCost, requestWithRunFollowups, type RunFollowupAdmission, type RegenerationFollowups
 } from "./runFollowups";
@@ -456,6 +456,11 @@ export type RunPreparationResult =
       adapter: ProviderAdapter;
       ok: true;
       prepared: PreparedRun;
+      /**
+       * The turn's provenance (`turnProvenance.ts`), beside the prepared run and never stored with it: what execution
+       * still decides from it (the self-service tools, `selfServiceToolsFor`).
+       */
+      provenance: TurnProvenance;
       toolBridge: ProviderToolBridge | undefined;
     }>;
 
@@ -733,6 +738,8 @@ export async function preparePdfRetry(
   input: Readonly<{
     adapter: ProviderAdapter;
     prepared: PreparedRun;
+    /** The provenance of the message the retry answers again (`turnProvenance`), returned beside the retried run. */
+    provenance: TurnProvenance;
     signal?: AbortSignal;
     toolBridge?: ProviderToolBridge;
     userId: string;
@@ -803,7 +810,7 @@ export async function preparePdfRetry(
     prepared.providerRequestPreview = input.adapter.buildRequestPreview(budget.request);
   }
   return Object.freeze({ ok: true, adapter: input.adapter, toolBridge: input.toolBridge,
-    prepared: immutablePreparedData(prepared) });
+    prepared: immutablePreparedData(prepared), provenance: input.provenance });
 }
 
 function contentFromStored(value: unknown): NormalizedRunRequest["content"] {
@@ -1893,13 +1900,15 @@ export async function prepareRun(
   }) : undefined;
   if (memory && memoryNote) prompt = { ...prompt, memoryNote: renderMemoryNoteForPrompt(memoryNote) };
   // The owner's own message in an ordinary personal chat may create one
-  // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
-  // or Assistant run, nor one without tool calling.
+  // scheduled task: only the user's own request (`TurnProvenance.userRequest`),
+  // never an answer to a scheduled task's prompt or a turn the server wrote (a
+  // wake-up, a sign-in request), nor a temporary or Assistant run, nor one
+  // without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
   // state read later, and only in the shape recovery decodes. The task reads
   // Memory only when this run itself was admitted to read it: an eligible
   // chat, and the owner's Memory on (`memory` above).
-  const scheduledTaskSettings = !scheduledPromptAnswer && !assistantRun && connector?.automations !== false &&
+  const scheduledTaskSettings = provenance.userRequest && !assistantRun && connector?.automations !== false &&
     resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true
@@ -1915,9 +1924,10 @@ export async function prepareRun(
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
   // The owner's own interactive personal chat with Workspace on may save one
   // Workspace folder per answer as a personal Skill (operator exception,
-  // 2026-10-07). Never an answer to a scheduled task's prompt, a temporary or
-  // Assistant run: there the tool is absent, not refused late.
-  const skillSaveTool = !scheduledPromptAnswer && !assistantRun &&
+  // 2026-10-07), on the user's own request: never an answer to a scheduled
+  // task's prompt, a turn the server wrote, a temporary or Assistant run:
+  // there the tool is absent, not refused late.
+  const skillSaveTool = provenance.userRequest && !assistantRun &&
     resolvedChatMode.mode !== "TEMPORARY" && workspaceAdmissionPlan !== undefined &&
     typeof deps.repository.saveSkillForCall === "function" && modelCapabilities.toolCalling === true &&
       toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
@@ -2168,6 +2178,7 @@ export async function prepareRun(
     adapter,
     ok: true,
     prepared,
+    provenance,
     toolBridge
   });
 }

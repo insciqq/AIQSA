@@ -32,6 +32,7 @@ import type {
 } from "./runRepositoryContract";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "./toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "./toolLoopPersistence";
+import { storedUserRequest } from "./turnProvenance";
 
 type ManagementInput = Parameters<NonNullable<RunRepository["manageScheduledTaskForCall"]>>[0];
 type ManagementDeps = ScheduledTaskDraftAdmissionDeps & Readonly<{ kick?: () => void; now?: () => Date }>;
@@ -203,9 +204,10 @@ async function manageOnce(
           call.result as StoredResult) };
       }
       if (call.state !== "running") return refused("scheduled_task_call_unavailable");
-      // Nor does any other answer to a scheduled task's prompt, by the mark on its message.
-      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true }, where: { id: run.userMessageId } });
-      if (prompt?.scheduledTaskPrompt !== false) return refused("scheduled_task_call_unavailable");
+      // Nor does any other answer to a scheduled task's prompt, nor a turn the server wrote, by the marks on its message.
+      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
+        where: { id: run.userMessageId } });
+      if (!prompt || !storedUserRequest(prompt)) return refused("scheduled_task_call_unavailable");
 
       const settle = async (result: ToolExecutionResult): Promise<ScheduledTaskCallManagement> => {
         const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);

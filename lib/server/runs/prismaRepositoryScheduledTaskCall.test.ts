@@ -39,8 +39,8 @@ type FakeState = {
   /** The owner's current task ids. */
   existingTaskIds: string[];
   owner: boolean;
-  /** The answered user message's scheduled task prompt mark; null when the message is gone. */
-  prompt: { scheduledTaskPrompt: boolean } | null;
+  /** The answered user message's scheduled task prompt mark and server turn kind; null when the message is gone. */
+  prompt: { scheduledTaskPrompt: boolean; systemTurnKind?: string | null } | null;
   run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
   /** Other runs answering the same user message. */
   siblingRuns: Array<{ id: string }>;
@@ -188,9 +188,15 @@ describe("scheduled task creation for a run's tool call", () => {
     // ordinary run whose user message is marked as the task's prompt.
     const scheduledTurn = harness({ prompt: { scheduledTaskPrompt: true }, siblingRuns: [{ id: "run-0" }] });
     expect(await scheduledTurn.create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
-    expect(scheduledTurn.findPrompt).toHaveBeenCalledWith({ select: { scheduledTaskPrompt: true }, where: { id: "message-1" } });
+    expect(scheduledTurn.findPrompt).toHaveBeenCalledWith({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
+      where: { id: "message-1" } });
     // A message that cannot be read fails closed.
     expect(await harness({ prompt: null }).create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+    // Nor does a turn the server wrote, which authorizes nothing.
+    for (const systemTurnKind of ["subagent_callback", "browser_sign_in_request"]) {
+      expect(await harness({ prompt: { scheduledTaskPrompt: false, systemTurnKind } }).create(), systemTurnKind)
+        .toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+    }
     expect(insertScheduledTask).not.toHaveBeenCalled();
     // The call stays the loop's to settle.
     expect(scheduledTurn.state.calls[0]?.state).toBe("running");

@@ -1,5 +1,5 @@
 import { Prisma } from "@prisma/client";
-import { MCP_APPROVAL_CONTINUATION_KIND } from "@/lib/contracts/mcpApprovals";
+import { storedUserRequest } from "../runs/turnProvenance";
 import {
   EMPTY_MEMORY_NOTE,
   MEMORY_SWITCH_DEFAULTS,
@@ -172,9 +172,8 @@ export function createPrismaMemoryNoteRepository(tx: Prisma.TransactionClient): 
         where: { chatId, id: runId, userId }
       });
       if (!run || run.chat.userId !== userId) return null;
-      const turnKind = run.userMessage.systemTurnKind;
       return { assistantMessageId: run.assistantMessageId, memoryMode: run.chat.memoryMode,
-        userTurn: !run.userMessage.scheduledTaskPrompt && (turnKind === null || turnKind === MCP_APPROVAL_CONTINUATION_KIND) };
+        userTurn: storedUserRequest(run.userMessage) };
     },
 
     async createOffer(input) {
