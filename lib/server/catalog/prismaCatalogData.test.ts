@@ -134,8 +134,6 @@ function providerModel(options: ProviderModelFixtureOptions = {}): CatalogProvid
     cachedInputTokenPriceUsdPerMillion: null,
     cacheWriteInputTokenPriceUsdPerMillion: null,
     priceSource: "catalog",
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     modelClass: "answer",
     nativeRoutingAdoptionVersion: 1,
     nativeRoutingAdoptionReason: null,

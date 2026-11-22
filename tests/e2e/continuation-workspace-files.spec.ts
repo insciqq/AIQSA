@@ -219,8 +219,7 @@ test("continues a Workspace chat with its project files and runs in the new chat
     const ownedConnectionId = connectionId;
     await prisma.$transaction(async (tx) => {
       await tx.systemModelPolicy.update({ where: { id: "installation" }, data: { ...priorRoles,
-        decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue,
-        imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue } });
+        decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue } });
       await tx.modelPolicy.update({ where: { id: "installation" }, data: priorPolicy });
       if (!ownedConnectionId) return;
       const connectionId = ownedConnectionId;

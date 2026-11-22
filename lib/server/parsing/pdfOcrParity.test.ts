@@ -52,7 +52,7 @@ describe("attachment PDF OCR", () => {
       images: [{ bytes: image, width: 200, height: 200, sourceWidth: 200, sourceHeight: 200,
         page: 1, mimeType: "image/png" as const }] });
     const input = { bytes: Buffer.from("%PDF-neutral-request-bound"),
-      local: { geometry: null, docling: null, plan: null }, maxPages: 1, page: 1, snapshot: binding };
+      local: { geometry: null, plan: null }, maxPages: 1, page: 1, snapshot: binding };
     const page = await preparePdfOcrPage(input, prepare);
     const serializedBytes = Buffer.byteLength(JSON.stringify(page.request));
     expect(serializedBytes).toBeGreaterThan(image.length);

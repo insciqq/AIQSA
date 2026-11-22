@@ -3,7 +3,6 @@ import { logEvent } from "../observability";
 import type { ProviderAdapter } from "../providers/types";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
-import { endRetiredEngineRunsFor, type RetiredEngineRunDeps } from "../runs/retiredEngineRuns";
 import { MANAGE_MEMORY_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, READ_AIQSA_GUIDE_TOOL_NAME, SELF_SERVICE_TOOLS } from "../tools/selfServiceTools";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
 import type { RunRepository } from "../runs/runRepositoryContract";
@@ -26,8 +25,6 @@ import { subagentManagementToolNames } from "../subagents/managementTools";
 export type NativeEngineHandlerDeps = Readonly<{
   engine: NativeEngineDeps;
   findOrphans: NativeRecoveryDeps["findOrphans"];
-  /** The old core's runs still active (`retiredEngineRuns.ts`), which admission ends like orphans. */
-  findRetiredRuns: RetiredEngineRunDeps["findRuns"];
   mcpRuntime?: ToolRegistryServices["mcpRuntime"];
   /** Background sub-agent runs' own recovery pass (`lib/server/runs/subagentBackground/recovery.ts`). */
   subagentRecovery?: NativeRecoveryDeps["subagents"];
@@ -88,16 +85,11 @@ export function subagentRunPorts(native: NativeEngineHandlerDeps, input: Readonl
   };
 }
 
-/**
- * Before a user's admission: their runs no execution owns end interrupted,
- * and so do the old core's runs still active, so the chat is free.
- */
+/** Before a user's admission: their runs no execution owns end interrupted, so the chat is free. */
 export async function recoverUserNativeRuns(native: NativeEngineHandlerDeps, deps: Readonly<{
   repository: Pick<RunRepository, "failRun">;
   workspaceCoordinator?: WorkspaceCoordinator;
 }>, userId: string): Promise<void> {
-  await endRetiredEngineRunsFor({ findRuns: native.findRetiredRuns, repository: deps.repository,
-    ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {}) }, { userId });
   await reconcileNativeRuns({ bootedAt: processBootedAt(), findOrphans: native.findOrphans,
     liveRunIds: () => activeRunControllerRegistry.ids(), repository: deps.repository, runs: native.engine.runs,
     ...(native.subagentRecovery ? { subagents: native.subagentRecovery } : {}),

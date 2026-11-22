@@ -6,8 +6,6 @@ const mocks = vi.hoisted(() => {
     chatPdfKick: vi.fn(() => { order.push("pdf"); }),
     order,
     reconcileNative: vi.fn(async (_deps: Record<string, unknown>) => { order.push("native"); return 0; }),
-    retiredSweep: vi.fn(async () => { order.push("retired"); }),
-    retiredSweepInput: [] as Record<string, unknown>[],
     schedulerInput: [] as Array<{ reconcile(signal: AbortSignal): Promise<void> }>,
     started: vi.fn(),
     storage: { kind: "storage" },
@@ -23,10 +21,6 @@ vi.mock("./defaultWorkspaceFollowup", () => ({ getDefaultWorkspaceFollowup: () =
 vi.mock("../chats/titleGenerationWorker", () => ({ createPrismaChatTitleWorker: () => ({ reconcile: vi.fn() }) }));
 vi.mock("./prismaRepository", () => ({ createPrismaRunRepository: () => ({ kind: "repository" }) }));
 vi.mock("../prisma", () => ({ prisma: { kind: "prisma" } }));
-vi.mock("./retiredEngineRuns", () => ({
-  createRetiredEngineRunFinder: (client: unknown) => ({ client, kind: "finder" }),
-  createRetiredEngineRunSweep: (input: Record<string, unknown>) => { mocks.retiredSweepInput.push(input); return mocks.retiredSweep; }
-}));
 vi.mock("../engine/defaultEngine", () => ({ defaultNativeRecoveryDeps: (input: Record<string, unknown>) => ({ kind: "nativeRecovery", ...input }) }));
 vi.mock("../engine/recovery", () => ({ reconcileNativeRuns: mocks.reconcileNative }));
 vi.mock("./recoveryScheduler", () => ({
@@ -42,26 +36,15 @@ afterEach(() => {
   delete (globalThis as { __aiqsaRunRecoveryScheduler?: unknown }).__aiqsaRunRecoveryScheduler;
   mocks.order.splice(0);
   mocks.schedulerInput.splice(0);
-  mocks.retiredSweepInput.splice(0);
 });
 
 describe("default run recovery scheduler", () => {
-  it("ends the old core's runs first, then wakes the document and Workspace jobs and settles the engine's orphans", async () => {
+  it("wakes the document and Workspace jobs, then settles the engine's orphans", async () => {
     getDefaultRunRecoveryScheduler();
     await mocks.schedulerInput[0]!.reconcile(new AbortController().signal);
-    expect(mocks.order).toEqual(["retired", "pdf", "workspace", "native"]);
-    expect(mocks.retiredSweepInput[0]).toMatchObject({ findRuns: { client: { kind: "prisma" }, kind: "finder" },
-      repository: { kind: "repository" },
-      workspace: { kind: "workspace", storage: mocks.storage } });
-    expect(mocks.reconcileNative.mock.calls[0]![0]).toMatchObject({ kind: "nativeRecovery", repository: { kind: "repository" },
-      workspace: { kind: "workspace" } });
-  });
-
-  it("still settles the engine's orphans when the old core's sweep fails, and reports the failure", async () => {
-    getDefaultRunRecoveryScheduler();
-    mocks.retiredSweep.mockRejectedValueOnce(new Error("synthetic_database_failure"));
-    await expect(mocks.schedulerInput[0]!.reconcile(new AbortController().signal)).rejects.toThrow("synthetic_database_failure");
     expect(mocks.order).toEqual(["pdf", "workspace", "native"]);
+    expect(mocks.reconcileNative.mock.calls[0]![0]).toMatchObject({ kind: "nativeRecovery", repository: { kind: "repository" },
+      workspace: { kind: "workspace", storage: mocks.storage } });
   });
 
   it("starts the scheduler once", () => {

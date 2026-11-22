@@ -58,7 +58,6 @@ export function digestPreparedPdfBatch(input: Readonly<{
       hash.update(JSON.stringify({
         height: crop.height,
         index: crop.index,
-        ...(crop.kind === "figure" ? { kind: crop.kind } : {}),
         mimeType: crop.mimeType,
         nativeText: crop.nativeText,
         page: crop.page,

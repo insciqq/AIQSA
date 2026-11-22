@@ -226,31 +226,11 @@ function correctedTables(
   }));
 }
 
-function doclingGeometry(
-  blocks: readonly ParsedDocumentBlock[],
-  docling: ParsedDocument | null
-): readonly ParsedDocumentBlock[] {
-  if (!docling) return blocks;
-  return Object.freeze(blocks.map((block) => {
-    if (block.boundingBoxes.length > 0) return block;
-    const key = normalizedText(block.text);
-    if (!key) return block;
-    const matches = docling.blocks.filter((candidate) =>
-      candidate.page === block.page && candidate.pageEnd === block.pageEnd &&
-      candidate.isTable === block.isTable && normalizedText(candidate.text) === key &&
-      candidate.boundingBoxes.length > 0);
-    return matches.length === 1
-      ? Object.freeze({ ...block, boundingBoxes: matches[0]!.boundingBoxes })
-      : block;
-  }));
-}
-
 function reindex(block: ParsedDocumentBlock, index: number): ParsedDocumentBlock {
   return Object.freeze({ ...block, index, readingOrder: index });
 }
 
 function attempts(input: Readonly<{
-  docling: ParsedDocument | null;
   vision: ParsedDocument | null;
 }>): readonly ParsedDocumentParserAttempt[] {
   const values: ParsedDocumentParserAttempt[] = [Object.freeze({
@@ -258,11 +238,6 @@ function attempts(input: Readonly<{
     errorCode: null,
     outcome: "complete"
   })];
-  if (input.docling) values.push(Object.freeze({
-    engine: "docling",
-    errorCode: null,
-    outcome: input.docling.status === "complete" ? "complete" : "partial"
-  }));
   if (input.vision) values.push(...input.vision.attempts);
   return Object.freeze([...new Map(values.map((attempt) => [attempt.engine, attempt])).values()]);
 }
@@ -271,7 +246,6 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
   deduplicateNativeProseRows?: boolean;
   deduplicateNativeText?: boolean;
   deduplicateNativeFragments?: boolean;
-  docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   maxBlocks: number;
   maxCharacters: number;
@@ -284,13 +258,13 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
     throw new DocumentParserError("parser_invalid_output", "system_model_vision");
   }
   const visionBlocks = input.vision
-    ? doclingGeometry(correctedTables(
+    ? correctedTables(
         correctedParagraphs(input.vision, input.geometry, visionPages, input.deduplicateNativeText,
           input.deduplicateNativeFragments),
         input.geometry,
         visionPages,
         input.deduplicateNativeText
-      ), input.docling)
+      )
     : Object.freeze([]);
   const blocks = input.plan.pages.flatMap((page) => {
     if (page.route === "native_only") {
@@ -336,12 +310,10 @@ export function mergeAdaptivePdfDocument(input: Readonly<{
       visionPages.size > 0 ? "system_model_vision" : "native_pdf"
     );
   }
-  const assets = input.docling?.assets.filter((asset) => visionPages.has(asset.page)) ?? [];
   const retainedVisionWarnings = input.vision?.warnings.filter((warning) =>
     !INTERMEDIATE_SUBSET_QUALITY_WARNINGS.has(warning)) ?? [];
   return finalizeParsedDocument({
-    assets,
-    attempts: attempts({ docling: input.docling, vision: input.vision }),
+    attempts: attempts({ vision: input.vision }),
     blocks: deduplicated,
     engine: visionPages.size > 0 ? "system_model_vision" : "native_pdf",
     mediaType: "application/pdf",

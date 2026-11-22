@@ -186,7 +186,6 @@ async function startPdfReaderFixture(browser: Browser): Promise<Readonly<{
   });
   const roles = {
     ...priorRoles, id: undefined, createdAt: undefined, updatedAt: undefined,
-    imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue,
     decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue
   };
   const restoreInstallation = (pdfReaderModelId?: string) => prisma.$transaction([

@@ -49,9 +49,6 @@ export function pdfOcrImageLimits(
 }
 
 export type PdfOcrLocal = Readonly<{
-  /** A docling layout that a preparation planned before the sidecar's removal
-   * stored with its local artifact; new plans have none. */
-  docling: ParsedDocument | null;
   geometry: NativePdfGeometry | null;
   plan: AdaptivePdfPlan | null;
 }>;
@@ -78,16 +75,16 @@ export async function planPdfOcrSource(input: Readonly<{
     if (geometry.pageCount !== input.pageCount) geometry = null;
   } catch { input.signal?.throwIfAborted(); }
   input.signal?.throwIfAborted();
-  if (!geometry) return { geometry, docling: null, plan: null };
+  if (!geometry) return { geometry, plan: null };
   // Without an independent layout every page is read by vision (`docling_unavailable`).
-  const baseline = planAdaptivePdfPages({ geometry, docling: null });
+  const baseline = planAdaptivePdfPages({ geometry });
   const needsStructure = new Set(geometry.blocks.filter(block => block.isTable ||
     /\p{L}/u.test(block.text) && !nativeTextIsProse(block.text)).map(block => block.page));
   const pages = baseline.pages.map(page => page.route === "native_only" && needsStructure.has(page.page)
     ? { ...page, route: "vision_required" as const, reasons: [...page.reasons, "native_math_structure" as const] }
     : page);
   const nativeOnlyPageCount = pages.filter(page => page.route === "native_only").length;
-  return { geometry, docling: null, plan: { pages, nativeOnlyPageCount,
+  return { geometry, plan: { pages, nativeOnlyPageCount,
     visionRequiredPageCount: pages.length - nativeOnlyPageCount } };
 }
 
@@ -110,7 +107,7 @@ export async function preparePdfOcrPage(input: Readonly<{
   });
   input.signal?.throwIfAborted();
   const supplement = input.local.geometry ? await prepareAdaptivePdfVisionSupplement({
-    batch, docling: input.local.docling, geometry: input.local.geometry, includeFigures: false
+    batch, geometry: input.local.geometry
   }) : null;
   input.signal?.throwIfAborted();
   const base = modelPdfTranscriptionPrompt({ mode: "system_model_vision", pageStart: input.page,
@@ -149,9 +146,9 @@ export function assemblePdfOcrDocument(input: Readonly<{
     throw new DocumentParserError("parser_invalid_output", "system_model_vision");
   }
   const layoutText = parserVersion >= MODEL_PDF_LAYOUT_TEXT_PROFILE_VERSION;
-  const { geometry, docling, plan } = input.local;
+  const { geometry, plan } = input.local;
   return plan && geometry
-    ? assembleAdaptivePdfPages({ docling, geometry, plan, pages: input.pages,
+    ? assembleAdaptivePdfPages({ geometry, plan, pages: input.pages,
       maxBlocks: input.maxBlocks, maxCharacters: input.maxCharacters,
       deduplicateNativeText: true, deduplicateNativeProseRows: true,
       deduplicateNativeFragments: layoutText, legacyTableInference: false })

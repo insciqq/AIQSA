@@ -7,7 +7,6 @@ import { prisma } from "../prisma";
 import { createChatPdfRepository } from "../uploads/chatPdfPersistence";
 import { createNativeOrphanFinder } from "../engine/recovery";
 import { createPrismaRunRepository } from "./prismaRepository";
-import { createRetiredEngineRunFinder, endRetiredEngineRuns } from "./retiredEngineRuns";
 import { ActiveRunConflictError, type RunRepository } from "./runRepositoryContract";
 import { createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 
@@ -90,12 +89,6 @@ function activeRunInsert(id: string, input: OutsideWriter): Prisma.Sql {
       'streaming', '{}'::jsonb, CURRENT_TIMESTAMP${engineValue})`;
 }
 
-async function insertActiveRun(input: OutsideWriter): Promise<string> {
-  const id = randomUUID();
-  await prisma.$executeRaw(activeRunInsert(id, input));
-  return id;
-}
-
 /** Whether ModelRun_one_active_per_chat_idx refuses the writer's run. The
  * conflict target and predicate infer that index as the only arbiter, so a
  * refusal skips the row; a conflict with any other constraint still raises,
@@ -108,32 +101,8 @@ async function activeRunIndexRefuses(input: OutsideWriter): Promise<boolean> {
   return inserted.length === 0;
 }
 
-/** An answer the previous release started: it reaches this release as an active row without the column. */
-async function previousReleaseRun(userId: string): Promise<AcceptedRun> {
-  const { id: chatId } = await chat(userId, "Previous-release chat");
-  const answer = await turn(chatId);
-  await prisma.chat.update({ data: { activeLeafMessageId: answer.answerId }, where: { id: chatId } });
-  const runId = await insertActiveRun({ chatId, turn: answer, userId });
-  return { assistantMessageId: answer.answerId, chatId, runId, userMessageId: answer.questionId };
-}
-
 async function backdate(runIds: readonly string[]): Promise<void> {
   await prisma.modelRun.updateMany({ data: { createdAt: BACKDATED, updatedAt: BACKDATED }, where: { id: { in: [...runIds] } } });
-}
-
-function errorCode(payload: Prisma.JsonValue | null): Prisma.JsonValue | null {
-  return payload !== null && typeof payload === "object" && !Array.isArray(payload) ? payload.code ?? null : null;
-}
-
-async function runStates(runIds: readonly string[]) {
-  const rows = await prisma.modelRun.findMany({
-    select: { engine: true, errorPayload: true, id: true, status: true }, where: { id: { in: [...runIds] } }
-  });
-  return Object.fromEntries(rows.map((row) => [row.id, { code: errorCode(row.errorPayload), engine: row.engine, status: row.status }]));
-}
-
-async function messageStatus(id: string) {
-  return (await prisma.message.findUniqueOrThrow({ select: { status: true }, where: { id } })).status;
 }
 
 /** A successor whose Workspace follow-up a crashed worker left mid-activation: claimable again. */
@@ -193,26 +162,6 @@ afterEach(async () => {
 afterAll(() => prisma.$disconnect());
 
 describe("the old run core's rows beside the agent engine on one database", () => {
-  it("ends the old core's runs left active at upgrade, interrupted with Continue, and leaves the engine's own runs alone", async () => {
-    const userId = await owner();
-    const oldCore = await oldCoreRun(userId);
-    const native = await nativeRun(userId);
-    const previous = await previousReleaseRun(userId);
-    const runIds = [oldCore.runId, native.runId, previous.runId];
-    const nativeAnswer = await messageStatus(native.assistantMessageId);
-
-    // Only this test's owner: other files' old-core rows stay theirs.
-    await endRetiredEngineRuns({ findRuns: createRetiredEngineRunFinder(prisma), repository }, { userId });
-
-    await expect(runStates(runIds)).resolves.toEqual({
-      [oldCore.runId]: { code: "run_interrupted", engine: "v1", status: "error" },
-      [native.runId]: { code: null, engine: "native", status: "streaming" },
-      [previous.runId]: { code: "run_interrupted", engine: "v1", status: "error" }
-    });
-    await expect(messageStatus(native.assistantMessageId)).resolves.toBe(nativeAnswer);
-    await expect(messageStatus(previous.assistantMessageId)).resolves.toBe("error");
-  });
-
   it("gives the engine's recovery only its own cut-off runs, never one whose document is still being read", async () => {
     const userId = await owner();
     const oldCore = await oldCoreRun(userId);
@@ -257,22 +206,18 @@ describe("the old run core's rows beside the agent engine on one database", () =
     await expect(prisma.modelRun.count({ where: { chatId: oldCore.chatId } })).resolves.toBe(1);
   });
 
-  it("hands the Workspace follow-up worker successors of either engine; it starts only the engine's own", async () => {
+  it("hands the Workspace follow-up worker a successor a crashed worker left mid-activation", async () => {
     const userId = await owner();
     const followups = createWorkspaceFollowupRepository(prisma);
     const native = await interruptedFollowup(userId, "native");
     await expect(followups.hasPending()).resolves.toBe(true);
     await expect(followups.claim(new Date(), [])).resolves.toMatchObject({ runId: native, userId });
-
-    const oldCore = await interruptedFollowup(userId, "v1");
-    await expect(followups.claim(new Date(), [])).resolves.toMatchObject({ runId: oldCore, userId });
   });
 
-  it("hands the chat PDF worker only the engine's runs", async () => {
+  it("hands the chat PDF worker a run waiting for its document, once", async () => {
     const userId = await owner();
     const pdf = createChatPdfRepository(prisma);
     const native = await pendingPdfPreparation(userId, "native");
-    await pendingPdfPreparation(userId, "v1");
 
     await expect(pdf.claim()).resolves.toMatchObject({ runId: native, userId });
     await expect(pdf.claim()).resolves.toBeNull();

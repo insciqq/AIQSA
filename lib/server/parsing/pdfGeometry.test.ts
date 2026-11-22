@@ -490,7 +490,7 @@ describe("model PDF geometry enrichment", () => {
     const base = document([block("Anchor sentence", 0)]);
     const model: ParsedDocument = {
       ...base,
-      attempts: ["docling", "tika", "inline", "system_model_vision"].map((engine) => ({
+      attempts: ["spreadsheet", "tika", "inline", "system_model_vision"].map((engine) => ({
         engine: engine as ParsedDocument["engine"],
         errorCode: null,
         outcome: "complete" as const

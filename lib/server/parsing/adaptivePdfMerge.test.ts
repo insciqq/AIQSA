@@ -112,7 +112,7 @@ describe("adaptive PDF deterministic merge", () => {
     const corrected = "The northern station recorded 19 samples.";
     const second = "Maintenance begins after the operator confirms every recorded measurement.";
     const native = geometry([block(corrected), block(second, 1)]);
-    const common = { docling: null, geometry: native, maxBlocks: 20, maxCharacters: 2_000,
+    const common = { geometry: native, maxBlocks: 20, maxCharacters: 2_000,
       plan, deduplicateNativeText: true };
     const previous = mergeAdaptivePdfDocument({ ...common, vision: vision([block(first), block(second, 1)]) });
     expect(previous.text).toContain(corrected);
@@ -127,7 +127,7 @@ describe("adaptive PDF deterministic merge", () => {
     const duplicate = "The limit is β i ≤ 11 s i.";
     const omitted = "Calibration completed on 2042-03-06.";
     const input = {
-      docling: null, geometry: geometry([block(duplicate), block(omitted, 1)]),
+      geometry: geometry([block(duplicate), block(omitted, 1)]),
       maxBlocks: 20, maxCharacters: 2_000, plan, vision: vision([block(formula)])
     };
     expect(mergeAdaptivePdfDocument(input).text).toContain(duplicate);
@@ -146,7 +146,6 @@ describe("adaptive PDF deterministic merge", () => {
       `${right} Broken wheels are replaced locally.`
     ];
     const input = {
-      docling: null,
       geometry: geometry([native]),
       maxBlocks: 20,
       maxCharacters: 2_000,
@@ -170,7 +169,6 @@ describe("adaptive PDF deterministic merge", () => {
     const native = nativeColumns([left, right]);
     const result = mergeAdaptivePdfDocument({
       deduplicateNativeProseRows: true,
-      docling: null,
       geometry: geometry([native]),
       maxBlocks: 20,
       maxCharacters: 2_000,
@@ -187,7 +185,6 @@ describe("adaptive PDF deterministic merge", () => {
     const second = { ...nativeColumns(["Southern workshop", "Bicycles"], 1), text: "Southern workshop\tBicycles" };
     const result = mergeAdaptivePdfDocument({
       deduplicateNativeProseRows: true,
-      docling: null,
       geometry: geometry([native]),
       maxBlocks: 20,
       maxCharacters: 2_000,
@@ -202,7 +199,6 @@ describe("adaptive PDF deterministic merge", () => {
     const native = nativeColumns(["international", "unremarkable"]);
     const result = mergeAdaptivePdfDocument({
       deduplicateNativeProseRows: true,
-      docling: null,
       geometry: geometry([native]),
       maxBlocks: 20,
       maxCharacters: 2_000,
@@ -217,7 +213,6 @@ describe("adaptive PDF deterministic merge", () => {
     const native = "Native exact identifier ZX-2048";
     const model = "Completely unrelated visual statement";
     const document = mergeAdaptivePdfDocument({
-      docling: null,
       geometry: geometry([block(native)]),
       maxBlocks: 20,
       maxCharacters: 2_000,
@@ -239,7 +234,6 @@ describe("adaptive PDF deterministic merge", () => {
     ]));
 
     const document = mergeAdaptivePdfDocument({
-      docling: null,
       geometry: geometry([nativePage, nativeVisualLabel]),
       maxBlocks: 20,
       maxCharacters: 2_000,

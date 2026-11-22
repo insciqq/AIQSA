@@ -21,13 +21,10 @@ import { createPrismaChatRepository } from "./prismaRepository";
 
 afterAll(() => prisma.$disconnect());
 
-/** The automatic review choice the previous release stored; nothing reads it any more. */
-const storedAutoReview = { enabled: true, maxRounds: 2, reviewers: [{ modelId: "fixture-reviewer", provider: "fake" }] };
-
 async function withUser<T>(run: (userId: string) => Promise<T>): Promise<T> {
   const userId = `legacy-review-test-${randomUUID()}`;
   await prisma.user.create({ data: { displayName: "Legacy review test", id: userId, status: "active", settings: { create: {
-    defaultAnswerReview: storedAutoReview, defaultControlValues: {}, defaultProviderModelId: providerTemplateIds.fakeModel,
+    defaultControlValues: {}, defaultProviderModelId: providerTemplateIds.fakeModel,
     defaultSearchStrategyId: "search-disabled"
   } } } });
   try {
@@ -42,7 +39,7 @@ type Say = (role: "assistant" | "user", text: string, parentMessageId: string | 
 
 /** A personal chat with a question, its answer and that answer's session, as the previous release wrote them. */
 async function sessionChat(userId: string) {
-  const chat = await prisma.chat.create({ data: { answerReviewConfig: storedAutoReview,
+  const chat = await prisma.chat.create({ data: {
     defaultProviderModelId: providerTemplateIds.fakeModel, title: "Reviewed", userId } });
   const say: Say = async (role, text, parentMessageId, extra = {}) => (await prisma.message.create({ data: {
     chatId: chat.id, content: textMessageContent(text), parentMessageId, role, status: "complete", ...extra

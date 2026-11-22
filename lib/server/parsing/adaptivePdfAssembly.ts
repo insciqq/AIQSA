@@ -9,7 +9,6 @@ export function assembleAdaptivePdfPages(input: Readonly<{
   deduplicateNativeProseRows?: boolean;
   deduplicateNativeText?: boolean;
   deduplicateNativeFragments?: boolean;
-  docling: ParsedDocument | null;
   geometry: NativePdfGeometry;
   legacyTableInference?: boolean;
   maxBlocks: number;

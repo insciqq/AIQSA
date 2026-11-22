@@ -86,9 +86,6 @@ export class ChatPdfPreparationError extends Error {
 }
 
 export type ChatPdfLocalExtraction = Readonly<{
-  /** A docling layout that a preparation planned before the sidecar's removal
-   * stored here; it keeps that preparation's crops. New plans have none. */
-  docling: ParsedDocument | null;
   geometry: NativePdfGeometry | null;
   pageCount: number;
 }>;
@@ -226,7 +223,7 @@ export function createChatPdfCore(options: Readonly<{
         if (geometry.pageCount !== pageCount) geometry = null;
         } catch { aborted(input.signal); }
         adaptive = input.admission.route !== "local_text" && geometry
-          ? planAdaptivePdfPages({ geometry, docling: null }) : null;
+          ? planAdaptivePdfPages({ geometry }) : null;
       }
       const compatibilityKey = chatPdfCompatibilityKey(input.admission, versions);
       const units = Array.from({ length: pageCount }, (_, index) => {
@@ -236,10 +233,10 @@ export function createChatPdfCore(options: Readonly<{
           : adaptive?.pages[index]?.route ?? "vision_required" as const;
         const metrics = geometry?.quality.pages[index];
         const crops = route === "vision_required" && geometry && metrics
-          ? adaptivePdfTableRegions({ geometry, docling: null, page: metrics }) : [];
+          ? adaptivePdfTableRegions({ geometry, page: metrics }) : [];
         return { crops, key: chatPdfFingerprint({ compatibilityKey, crops, page, route }), page, route };
       });
-      return { local: { docling: null, geometry, pageCount }, plan: {
+      return { local: { geometry, pageCount }, plan: {
         adaptive, compatibilityKey, limits: chatPdfImageLimits(input.admission, versions.parserVersion), maxBlocks, maxCharacters,
         pageCount, ...versions, units, version: 1
       } };
@@ -310,7 +307,7 @@ export function createChatPdfCore(options: Readonly<{
       });
       aborted(input.signal);
       const supplement = input.local.geometry ? await prepareAdaptivePdfVisionSupplement({
-        batch, docling: input.local.docling, geometry: input.local.geometry
+        batch, geometry: input.local.geometry
       }) : null;
       aborted(input.signal);
       if ((supplement?.crops.length ?? 0) !== unit.crops.length) {
@@ -376,7 +373,7 @@ export function createChatPdfCore(options: Readonly<{
         maxCharacters: input.plan.maxCharacters, pageCount: input.plan.pageCount, pages
       });
       return input.plan.adaptive && input.local.geometry
-        ? assembleAdaptivePdfPages({ docling: input.local.docling, geometry: input.local.geometry,
+        ? assembleAdaptivePdfPages({ geometry: input.local.geometry,
             maxBlocks: input.plan.maxBlocks, maxCharacters: input.plan.maxCharacters,
             pages, plan: input.plan.adaptive })
         : modelPdfPagesToDocument({ maxBlocks: input.plan.maxBlocks,

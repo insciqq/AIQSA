@@ -132,7 +132,7 @@ describe("native transcript repository", () => {
     // Another tool's completed call settles nothing here.
     await call(run.id, 2, "complete", "read", "mcp_jira_get_issue");
     await call(run.id, 3, "cancelled", "never sent");
-    // The upgrade retires the run (`endRetiredEngineRuns`' own settlement, here only for this test's runs): its running
+    // An upgrade retired the run as the recovery terminal path ends one (here only for this test's runs): its running
     // call keeps an unknown outcome. A chat holds one active run at a time, so the sibling below starts after it.
     const runs = createPrismaRunRepository(prisma);
     await runs.failRun(run.id, answer.id, RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
