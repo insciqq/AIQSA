@@ -158,14 +158,15 @@ async function drain(embedder: ChatSearchEmbedder, ownerIds: readonly string[], 
     totals.models[summary.model] = (totals.models[summary.model] ?? 0) + 1;
     if (summary.more) continue;
     const due = await prisma.chatSearchState.count({ where: { dirtyAt: { not: null }, nextAttemptAt: null, userId: { in: [...ownerIds] } } });
-    const backingOff = await prisma.chatSearchState.count({ where: { dirtyAt: { not: null }, nextAttemptAt: { not: null }, userId: { in: [...ownerIds] } } });
-    if (backingOff > 0) {
+    // A failed attempt backs off with its code; a claim without one is a lease another worker holds, waited for below.
+    const backingOff = await prisma.chatSearchState.findMany({ distinct: ["lastErrorCode"], select: { lastErrorCode: true },
+      where: { dirtyAt: { not: null }, lastErrorCode: { not: null }, nextAttemptAt: { not: null }, userId: { in: [...ownerIds] } } });
+    if (backingOff.length > 0) {
       // The recorded codes are content-free (`ChatSearchState_error_code_check`), so the refusal names them.
-      const codes = await prisma.chatSearchState.findMany({ distinct: ["lastErrorCode"], select: { lastErrorCode: true },
-        where: { dirtyAt: { not: null }, nextAttemptAt: { not: null }, userId: { in: [...ownerIds] } } });
-      throw new Refusal(`index_embedding_failed:${codes.map((row) => row.lastErrorCode ?? "none").sort().join(",")}`);
+      throw new Refusal(`index_embedding_failed:${backingOff.map((row) => row.lastErrorCode).sort().join(",")}`);
     }
-    if (due === 0) return Math.round(performance.now() - started);
+    const leased = await prisma.chatSearchState.count({ where: { dirtyAt: { not: null }, nextAttemptAt: { not: null }, userId: { in: [...ownerIds] } } });
+    if (due === 0 && leased === 0) return Math.round(performance.now() - started);
     if (performance.now() - started > timeoutMs) throw new Refusal("index_drain_timed_out");
     // Another worker (the stand's own) may hold a claim: wait for its lease.
     await sleep(1_000);
