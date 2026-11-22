@@ -750,6 +750,37 @@ describe("provider runtime factory", () => {
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
+  it("accepts a streamed compatible Responses create on a no-auth endpoint as on an authenticated one", async () => {
+    const response = { id: "response-streamed-1", model: "upstream/model", status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: '{"answer":"ok"}', annotations: [] }] }],
+      usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+    const streamed = () => new Response([
+      { type: "response.created", response: { id: response.id, status: "in_progress" } },
+      { type: "response.completed", response }
+    ].map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+    { headers: { "content-type": "text/event-stream" } });
+    const base = snapshot("openai_responses_compatible");
+    const noAuth: ProviderExecutionSnapshot = { ...base, connection: { ...base.connection, allowPrivateNetwork: true,
+      apiRoot: "http://127.0.0.1:11434/v1", authenticationMode: "none" } };
+    const sent: Array<{ authorization: string | null; body: unknown; url: string }> = [];
+    const fetchFn = vi.fn<typeof fetch>(async (request, init) => {
+      sent.push({ authorization: new Headers(init?.headers).get("authorization"),
+        body: JSON.parse(String(init?.body)), url: String(request) });
+      return streamed();
+    });
+    const schema = { type: "object", additionalProperties: false, required: ["answer"], properties: { answer: { type: "string" } } };
+    for (const [value, secret] of [[base, "secret"], [noAuth, null]] as const) {
+      const runtime = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn }, secret, snapshot: value });
+      await expect(runtime.structuredOutputAdapter!.execute({ name: "synthetic_answer", schema,
+        systemPrompt: "Answer.", userPrompt: "Answer." })).resolves.toEqual({ answer: "ok" });
+    }
+    expect(sent.map((call) => [call.url, call.authorization])).toEqual([
+      ["https://provider.example.test/v1/responses", "Bearer secret"],
+      ["http://127.0.0.1:11434/v1/responses", null]
+    ]);
+    expect(sent[1]!.body).toEqual(sent[0]!.body);
+  });
+
   it("keeps bearer snapshots fail-closed without a credential", () => {
     const fetchFn = vi.fn<typeof fetch>();
     expect(() => createProviderRuntimeBinding({

@@ -148,6 +148,52 @@ function compatibleResponsesStreamIdle(snapshot: ProviderExecutionSnapshot): Pro
   return codexLbConnection(snapshot.connection) ? "keepalive" : "response_timeout";
 }
 
+/** One compatible Responses runtime, with a key or, on a no-auth connection, without one. */
+function compatibleResponsesComponents(input: Readonly<{
+  apiKey: string | null;
+  fetchFn: typeof fetch;
+  /** The snapshot's model, narrowed by the caller's adapter check. */
+  model: ProviderModelConfiguration;
+  options: ProviderRuntimeFactoryOptions;
+  responseTimeoutMs: number;
+  snapshot: ProviderExecutionSnapshot;
+}>): ProviderRuntimeComponents {
+  const { model, snapshot } = input;
+  const client = createFetchOpenAIResponsesClient({
+    apiKey: input.apiKey,
+    baseUrl: snapshot.connection.apiRoot,
+    defaultTimeoutMs: input.responseTimeoutMs,
+    fetchFn: input.fetchFn,
+    acceptStreamedCreate: true,
+    initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
+    requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection),
+    // A create (Vision, chat PDF, structured output) arrives as a stream on Codex LB: it goes silent no longer than an answer's.
+    streamIdle: compatibleResponsesStreamIdle(snapshot)
+  });
+  return {
+    adapter: createCompatibleResponsesAdapter({
+      client,
+      reasoningRequestMapping: model.reasoningRequestMapping,
+      streamIdle: compatibleResponsesStreamIdle(snapshot)
+    }),
+    ...droppedRoundRetry(snapshot, input.options),
+    structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
+      client,
+      model
+    }),
+    ...(model.capabilities.nativeSearch
+      ? {
+          searchAdapter: createOpenAIResponsesSearchAdapter({
+            client,
+            provider: "openai_compatible",
+            reasoningRequestMapping: model.reasoningRequestMapping
+          })
+        }
+      : {}),
+    toolBridge: openAICompatibleResponsesToolBridge
+  };
+}
+
 export type ProviderRuntimeBinding = ProviderRuntimeComponents & Readonly<{
   responseTimeoutMs: number;
 }>;
@@ -358,36 +404,9 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
     }
     const fetchFn = observeProviderFetch(requiredFetch(input.options));
     if (snapshot.model.adapterKind === "openai_responses_compatible") {
-      const client = createFetchOpenAIResponsesClient({
-        apiKey: null,
-        baseUrl: snapshot.connection.apiRoot,
-        defaultTimeoutMs: responseTimeoutMs,
-        fetchFn,
-        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
-        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection)
+      return compatibleResponsesComponents({
+        apiKey: null, fetchFn, model: snapshot.model, options: input.options, responseTimeoutMs, snapshot
       });
-      return {
-        adapter: createCompatibleResponsesAdapter({
-          client,
-          reasoningRequestMapping: snapshot.model.reasoningRequestMapping,
-          streamIdle: compatibleResponsesStreamIdle(snapshot)
-        }),
-        ...droppedRoundRetry(snapshot, input.options),
-        structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
-          client,
-          model: snapshot.model
-        }),
-        ...(snapshot.model.capabilities.nativeSearch
-          ? {
-              searchAdapter: createOpenAIResponsesSearchAdapter({
-                client,
-                provider: "openai_compatible",
-                reasoningRequestMapping: snapshot.model.reasoningRequestMapping
-              })
-            }
-          : {}),
-        toolBridge: openAICompatibleResponsesToolBridge
-      };
     }
     return {
       adapter: createOpenAICompatibleChatAdapter({
@@ -500,41 +519,10 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         toolBridge: openAIResponsesToolBridge
       };
     }
-    case "openai_responses_compatible": {
-      const client = createFetchOpenAIResponsesClient({
-        apiKey: clientSecret,
-        baseUrl,
-        defaultTimeoutMs: responseTimeoutMs,
-        fetchFn,
-        acceptStreamedCreate: true,
-        initialRequestRetry: { maxAttempts: input.options.disableRequestRetries ? 1 : 3 },
-        requestIsolation: providerResponsesRequestIsolationEnabled(snapshot.connection),
-        // A create (Vision, chat PDF, structured output) arrives as a stream on Codex LB: it goes silent no longer than an answer's.
-        streamIdle: compatibleResponsesStreamIdle(snapshot)
+    case "openai_responses_compatible":
+      return compatibleResponsesComponents({
+        apiKey: clientSecret, fetchFn, model: snapshot.model, options: input.options, responseTimeoutMs, snapshot
       });
-      return {
-        adapter: createCompatibleResponsesAdapter({
-          client,
-          reasoningRequestMapping: snapshot.model.reasoningRequestMapping,
-          streamIdle: compatibleResponsesStreamIdle(snapshot)
-        }),
-        ...droppedRoundRetry(snapshot, input.options),
-        structuredOutputAdapter: createOpenAIResponsesStructuredOutputAdapter({
-          client,
-          model: snapshot.model
-        }),
-        ...(snapshot.model.capabilities.nativeSearch
-          ? {
-              searchAdapter: createOpenAIResponsesSearchAdapter({
-                client,
-                provider: "openai_compatible",
-                reasoningRequestMapping: snapshot.model.reasoningRequestMapping
-              })
-            }
-          : {}),
-        toolBridge: openAICompatibleResponsesToolBridge
-      };
-    }
     case "openai_chat_completions_compatible":
       return {
         adapter: createOpenAICompatibleChatAdapter({
