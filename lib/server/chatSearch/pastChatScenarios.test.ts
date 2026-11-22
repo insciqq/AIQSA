@@ -183,6 +183,7 @@ const indexStore: ChatSearchIndexStore = {
     return { activeLeafMessageId: path.at(-1)?.id ?? null, chatId, eligibility: chat.eligibility, fileNames, path, title: chat.seed.title };
   },
   loadSavedSecretValues: async () => [],
+  ownerAllowsEmbedding: async () => true,
   async reconcile(claim, target) {
     for (let index = passages.length - 1; index >= 0; index -= 1) if (passages[index]!.chatId === claim.chatId) passages.splice(index, 1);
     if (target.kind === "clear") {

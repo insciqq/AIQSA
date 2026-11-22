@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { ChatExportDocument } from "../../contracts/chatExport";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "../../contracts/memoryClient";
 import { createPrismaMessageBranchRepository } from "../messages/prismaRepository";
 import { prisma } from "../prisma";
 import { createChatContinuationRepository } from "./continuationRepository";
@@ -136,7 +136,7 @@ describe("chat import against PostgreSQL", () => {
     const chat = await importedChat(userId);
     const chats = createPrismaChatRepository(prisma);
     const resume = (chatId: string) => chats.setMemoryMode({
-      chatId, mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, userId
+      chatId, mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION, userId
     });
     expect(await resume(chat.id)).toEqual({ kind: "imported" });
     expect(await chats.getChatMemoryState({ chatId: chat.id, userId })).toMatchObject({ importSource: "CLAUDE", mode: "EXCLUDED" });

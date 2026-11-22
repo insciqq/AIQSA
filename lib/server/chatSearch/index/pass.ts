@@ -2,6 +2,7 @@ import type { PrismaClient } from "@prisma/client";
 import { logEvent } from "../../observability";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder, type ChatSearchEmbeddingModel } from "../embedder";
 import { chatSearchEligible } from "../eligibility";
+import { CHAT_SEARCH_OWNER_OFF_NOTE } from "./ownerEmbedding";
 import { buildChatSearchPassages } from "./passages";
 import { createPrismaChatSearchIndexStore } from "./prismaStore";
 import type { ChatSearchClaim, ChatSearchIndexStore, ChatSearchPassageToEmbed, ChatSearchSettlement } from "./store";
@@ -10,7 +11,9 @@ import type { ChatSearchClaim, ChatSearchIndexStore, ChatSearchPassageToEmbed, C
  * The background index pass: claims due dirty chats, rewrites each one's passages from its current active branch
  * (words are searchable as soon as that commits), then embeds the passages that lack a vector of the current role, in
  * batches, newest turns first. A provider failure backs the chat off with a content-free code and never touches its
- * words. Nothing here waits on the user's answer: chats are marked dirty after it settles (`./dirty.ts`).
+ * words. Nothing here waits on the user's answer: chats are marked dirty after it settles (`./dirty.ts`). Vectors are
+ * written only for an owner who allows them right before the calls (`./ownerEmbedding.ts`); any other owner's chat
+ * settles with its words alone.
  *
  * Freshness: the worker runs a pass every `CHAT_SEARCH_INDEX_PASS_INTERVAL_MS` while idle and the next one at once
  * while a pass reports `more`. A new turn's mark carries the current time and claims go newest mark first, so it is
@@ -231,6 +234,12 @@ export async function runChatSearchIndexPassOn(
       continue;
     }
     try {
+      // An inactive account, or Memory or past-chat search off: nothing goes to the provider, and no retry follows,
+      // since the backfill marks the chat again once vectors are allowed.
+      if (!await store.ownerAllowsEmbedding(claim.userId)) {
+        await settle(claim, { kind: "clean", note: CHAT_SEARCH_OWNER_OFF_NOTE });
+        continue;
+      }
       const rows = await store.passagesToEmbed({
         chatId: claim.chatId, limit: limits.passagesPerChat + 1, providerModelId: model.providerModelId
       });

@@ -4,6 +4,7 @@ import { projectMessageFollowups } from "../runs/runFollowups";
 import { Prisma, type ChatImportSource, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { markChatSearchDirty } from "../chatSearch/index/dirty";
+import { copyChatSearchExclusions } from "../chatSearch/index/exclusions";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -425,8 +426,8 @@ export function createPrismaMessageBranchRepository(
                 sourceMessage.content,
                 clonedAttachmentIds
               ),
-              // Memory barriers, pauses and Resume cutoffs fence by message
-              // creation time; a copy must not re-admit a fenced period.
+              // A copy keeps its source's time, so its turns read and are
+              // searched with the dates they were written.
               createdAt: sourceMessage.createdAt,
               errorMessage: sourceMessage.errorMessage,
               id: clonedMessageId,
@@ -483,6 +484,8 @@ export function createPrismaMessageBranchRepository(
           activeLeafMessageId = cloned.id;
         }
 
+        // A copied message stays out of past-chat search where its source did (the old Memory's exclusions).
+        await copyChatSearchExclusions(tx, { copies: [...idMap], copyChatId: chat.id, sourceChatId: lockedChat.id, userId });
         // The copy is indexed as any chat of its mode is: a copy of an Excluded or imported chat stays out.
         await moveActiveLeaf(tx, { id: chat.id, userId }, activeLeafMessageId);
         const updated = await tx.chat.findUniqueOrThrow({

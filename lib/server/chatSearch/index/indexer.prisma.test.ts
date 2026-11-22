@@ -248,6 +248,62 @@ describe("the past-chat index in PostgreSQL", () => {
     expect(fake.embedded.size).toBe(0);
   });
 
+  it("embeds nothing for a deactivated owner or one with search off, and the sweep embeds once the switch is on", async () => {
+    const searchOff = await owner();
+    const memoryOff = await owner();
+    const inactive = await owner();
+    await prisma.userSettings.create({ data: { pastChatSearchEnabled: false, userId: searchOff } });
+    await prisma.userSettings.create({ data: { memoryEnabled: false, userId: memoryOff } });
+    await prisma.user.update({ data: { status: "disabled" }, where: { id: inactive } });
+    const chats = [await chat(searchOff, [["Hotel?", "The river one."]]), await chat(memoryOff, [["Train?", "The 9:10."]]),
+      await chat(inactive, [["Pack?", "An umbrella."]])];
+    const all = [searchOff, memoryOff, inactive];
+    const fake = fakeEmbedder();
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ added: 3 });
+    await drain(fake.embedder, all);
+    expect(fake.embedded.size).toBe(0);
+    for (const { chatId } of chats) {
+      // Words stay searchable in the installation; the chat waits without a retry.
+      expect(await passages(chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: null })]);
+      expect(await prisma.chatSearchState.findUniqueOrThrow({ where: { chatId } }))
+        .toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+    }
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ vectors: 0 });
+
+    await prisma.userSettings.update({ data: { pastChatSearchEnabled: true }, where: { userId: searchOff } });
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ vectors: 1 });
+    await drain(fake.embedder, all);
+    expect(fake.embedded.size).toBe(1);
+    expect(await passages(chats[0]!.chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: "fake-embed-a" })]);
+    for (const { chatId } of chats.slice(1)) {
+      expect(await passages(chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: null })]);
+    }
+  });
+
+  it("builds no passage for a turn with a message the old Memory kept out, and follows the rest of the branch", async () => {
+    const userId = await owner();
+    const { chatId, ids } = await chat(userId, [["Before the reset", "Old answer"], ["Kept question", "Paused answer"],
+      ["After it", "New answer"]]);
+    // The first question (a history reset) and the second answer (a pause) stay out, as the migration carried them.
+    for (const messageId of [ids[0]!, ids[3]!]) {
+      await prisma.$executeRaw`
+        INSERT INTO "ChatSearchExcludedMessage" ("chatId", "messageId", "userId") VALUES (${chatId}, ${messageId}, ${userId})`;
+    }
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+    const fake = fakeEmbedder();
+    await drain(fake.embedder, [userId]);
+    const rows = await passages(chatId);
+    expect(rows.map((row) => [row.userMessageId, row.assistantMessageId])).toEqual([[ids[4], ids[5]]]);
+    expect([...fake.embedded.keys()].join("\n")).not.toMatch(/Before the reset|Old answer|Kept question|Paused answer/u);
+    // The rows go with their messages.
+    await prisma.chat.delete({ where: { id: chatId } });
+    expect(await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT count(*)::integer AS "count" FROM "ChatSearchExcludedMessage" WHERE "chatId" = ${chatId}`).toEqual([{ count: 0 }]);
+  });
+
   it("records past-chat search usage without a Memory binding, as the usage checks allow", async () => {
     const userId = await owner();
     const model = await prisma.providerModel.findFirst({ select: { id: true } });

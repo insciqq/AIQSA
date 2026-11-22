@@ -102,6 +102,8 @@ describe("read_past_chat windows", () => {
 type SeedMessage = Readonly<{ id: string; parentMessageId: string | null; role: string; text?: string; systemTurnKind?: string;
   blocks?: readonly unknown[]; minute: number }>;
 
+type ExcludedRow = Readonly<{ chatId: string; messageId: string; userId: string }>;
+
 /** Enough of Prisma for the read store: rows filtered by the fields its queries name. */
 function fakeDb(input: Readonly<{
   chats: readonly (ChatSearchEligibilityFields & { id: string; title: string; activeLeafMessageId: string | null })[];
@@ -109,12 +111,15 @@ function fakeDb(input: Readonly<{
   attachments?: readonly { id: string; chatId: string; fileName: string; origin: string; producerModelRunId: string | null }[];
   runs?: readonly { id: string; chatId: string; assistantMessageId: string | null }[];
   calls?: readonly { modelRunId: string; toolName: string }[];
+  excluded?: readonly ExcludedRow[];
 }>) {
   const inList = (filter: unknown, value: unknown) => !filter || (filter as { in: unknown[] }).in.includes(value);
   return {
     attachment: { findMany: async ({ where }: { where: Record<string, unknown> }) => (input.attachments ?? []).filter((row) =>
       (where.chatId === undefined || row.chatId === where.chatId) && inList(where.id, row.id) &&
       inList(where.producerModelRunId, row.producerModelRunId) && (!where.origin || row.origin !== "USER_UPLOAD")) },
+    chatSearchExcludedMessage: { findMany: async ({ where }: { where: { chatId: string; userId: string } }) => (input.excluded ?? [])
+      .filter((row) => row.chatId === where.chatId && row.userId === where.userId).map(({ messageId }) => ({ messageId })) },
     chat: { findFirst: async ({ where }: { where: { id: string; userId: string } }) => {
       const found = input.chats.find((row) => row.id === where.id);
       return found && chatSearchEligible(found, where.userId)
@@ -148,7 +153,8 @@ describe("read_past_chat over the stored chat", () => {
     { id: "wake", minute: 6, parentMessageId: "a2e", role: "user", systemTurnKind: "subagent_callback", text: "Callback from a sub-agent" },
     { id: "a3", minute: 7, parentMessageId: "wake", role: "assistant", text: "Follow-up after the sub-agent" }
   ].map((message) => ({ ...message, chatId: "chat-1" }));
-  const db = () => fakeDb({
+  const db = (excluded: readonly ExcludedRow[] = []) => fakeDb({
+    excluded,
     attachments: [{ chatId: "chat-1", fileName: "brief.pdf", id: "att-1", origin: "USER_UPLOAD", producerModelRunId: null },
       { chatId: "chat-1", fileName: "checklist.xlsx", id: "out-1", origin: "WORKSPACE_EXPORT", producerModelRunId: "run-1" }],
     calls: [{ modelRunId: "run-1", toolName: "web_search" }, { modelRunId: "run-1", toolName: "fetch_url" }, { modelRunId: "run-1", toolName: "web_search" }],
@@ -157,8 +163,8 @@ describe("read_past_chat over the stored chat", () => {
       ...messages.map((message) => ({ ...message, chatId: "chat-foreign" }))],
     runs: [{ assistantMessageId: "a1", chatId: "chat-1", id: "run-1" }]
   });
-  const reader = () => createPastChatReader({ savedSecretValues: async () => [],
-    store: createPrismaPastChatReadStore(db() as unknown as Parameters<typeof createPrismaPastChatReadStore>[0]) });
+  const reader = (excluded: readonly ExcludedRow[] = []) => createPastChatReader({ savedSecretValues: async () => [],
+    store: createPrismaPastChatReadStore(db(excluded) as unknown as Parameters<typeof createPrismaPastChatReadStore>[0]) });
 
   it("follows the active branch, leaves server-written turns out and names files and tools", async () => {
     const result = readOk(await reader().read({ input: { chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" }));
@@ -177,5 +183,22 @@ describe("read_past_chat over the stored chat", () => {
     expect(await reader().read({ input: { chat_id: "chat-x" }, ownerId: OWNER, timeZone: "UTC" })).toEqual(missing);
     expect(await reader().read({ input: { chat_id: "chat-foreign" }, ownerId: OWNER, timeZone: "UTC" })).toEqual(missing);
     expect(await reader().read({ input: { chat_id: "chat-1" }, ownerId: "owner-2", timeZone: "UTC" })).toEqual(missing);
+  });
+
+  it("never shows a message the old Memory kept out, and still follows the branch through it", async () => {
+    // The first turn was written before the chat's old Resume, so both its messages stay out; another owner's row for
+    // this chat (which the keys refuse anyway) hides nothing.
+    const kept = reader([{ chatId: "chat-1", messageId: "u1", userId: OWNER }, { chatId: "chat-1", messageId: "a1", userId: OWNER },
+      { chatId: "chat-1", messageId: "u2e", userId: "owner-2" }]);
+    const result = readOk(await kept.read({ input: { chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" }));
+    expect(ids(result.messages)).toEqual(["u2e", "a2e", "a3"]);
+    expect(result).toMatchObject({ hasEarlier: false, hasLater: false });
+    expect(JSON.stringify(result)).not.toMatch(/close checklist|brief\.pdf|checklist\.xlsx/u);
+    // Named by id, it answers as a message of another branch does.
+    expect(await kept.read({ input: { around_message_id: "u1", chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" }))
+      .toEqual({ kind: "message_not_found" });
+    const before = readOk(await kept.read({ input: { before_message_id: "a2e", chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" }));
+    expect(ids(before.messages)).toEqual(["u2e"]);
+    expect(before.hasEarlier).toBe(false);
   });
 });

@@ -5,7 +5,7 @@ import {
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH
 } from "../../contracts/chats";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "../../contracts/memoryClient";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";
@@ -1166,7 +1166,7 @@ describe("Prisma-backed chat repository", () => {
         .resolves.toEqual({ kind: "source_stale" });
 
       await expect(repository.setMemoryMode({
-        chatId: chat.id, mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, userId
+        chatId: chat.id, mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION, userId
       })).resolves.toEqual({ kind: "ok" });
       await expect(index()).resolves.toEqual({ passages: 0, state: { dirtyAt: expect.any(Date) } });
     });

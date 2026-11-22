@@ -2089,6 +2089,7 @@ model Chat {
   /// At most one: `ChatSearchState.chatId` is its key.
   searchStates                    ChatSearchState[]
   searchPassages                  ChatSearchPassage[]
+  searchExcludedMessages          ChatSearchExcludedMessage[]
   memoryNoteOffers                MemoryNoteOffer[]
 
   @@unique([userId, id])
@@ -2158,6 +2159,21 @@ model ChatSearchPassage {
   @@unique([chatId, userMessageId, ordinal])
   @@index([chatId, assistantMessageId])
   @@index([userId, turnAt])
+}
+
+/// A message past-chat search never indexes or reads: one the old Memory kept out of history search for good (a
+/// history reset, a pause, a Resume cutoff, a forgotten source), carried once by
+/// `20261122142000_chat_search_carried_exclusions`, and its copy in a branch. A turn with such a message has no
+/// passage. Resuming the chat with the disclosure that its whole history becomes searchable removes its rows; nothing
+/// else writes them. Goes with its message, its chat and the account.
+model ChatSearchExcludedMessage {
+  chatId    String
+  messageId String
+  userId    String
+  chat      Chat    @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  message   Message @relation(fields: [chatId, messageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@id([chatId, messageId])
 }
 
 /// Installation usage limits: a pooled monthly cap for everyone plus per-user
@@ -2349,6 +2365,7 @@ model Message {
   telegramMessageRefs      TelegramMessageRef[]
   searchPassagesAsQuestion ChatSearchPassage[]   @relation("ChatSearchPassageUserMessage")
   searchPassagesAsAnswer   ChatSearchPassage[]   @relation("ChatSearchPassageAssistantMessage")
+  searchExclusion          ChatSearchExcludedMessage?
   memoryNoteOffers         MemoryNoteOffer[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")

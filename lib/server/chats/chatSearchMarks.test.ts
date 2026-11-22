@@ -1,7 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import { chatTitleWork } from "@/tests/support/chatTitles";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
+import {
+  MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
+  MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION
+} from "../../contracts/memoryClient";
 import { recordingTransaction, type RecordedCall } from "../chatSearch/index/markRecorder.testFixtures";
 import type { WorkspaceAvailabilityService } from "../workspace/availability";
 import { createPrismaPermanentChatDeletionRepository } from "./permanentDeletion/repository";
@@ -67,9 +70,32 @@ describe("chat writers mark past-chat search in their own transaction", () => {
     });
 
     await expect(repository.setMemoryMode({ chatId: CHAT_ID, mode: "NORMAL", userId: OWNER,
-      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION })).resolves.toMatchObject({ kind: "ok" });
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION })).resolves.toMatchObject({ kind: "ok" });
 
     expect(recorder.marks()).toEqual([{ kind: "dirty", values: expect.arrayContaining([CHAT_ID, OWNER]) }]);
+    // Its disclosure says the whole chat becomes searchable: what the old Memory kept out is no longer kept out.
+    const widened = recorder.indexOf((call) => call.text?.startsWith("DELETE FROM \"ChatSearchExcludedMessage\"") ?? false);
+    expect(widened).toBeGreaterThan(recorder.indexOf((call) => call.name === "chat.update"));
+    expect(widened).toBeLessThan(recorder.indexOf((call) => call.text?.startsWith("INSERT INTO \"ChatSearchState\"") ?? false));
+    expect(recorder.calls[widened]!.values).toEqual([CHAT_ID]);
+  });
+
+  it("refuses a Resume confirmed under the retired disclosure before reading or changing anything", async () => {
+    const { recorder, repository } = chats({
+      $queryRaw: (call) => isChatLock(call as RecordedCall) ? [{ ...LOCKED, importSource: null, memoryMode: "EXCLUDED" }] : []
+    });
+
+    await expect(repository.setMemoryMode({ chatId: CHAT_ID, mode: "NORMAL", userId: OWNER,
+      resumeDisclosureCopyVersion: MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION })).resolves.toEqual({ kind: "reload_required" });
+    expect(recorder.calls).toEqual([]);
+  });
+
+  it("excluding a chat keeps the old Memory's exclusions for a later Resume to lift", async () => {
+    const { recorder, repository } = chats();
+
+    await repository.setMemoryMode({ chatId: CHAT_ID, mode: "EXCLUDED", userId: OWNER });
+
+    expect(recorder.calls.some((call) => call.text?.includes("\"ChatSearchExcludedMessage\"") ?? false)).toBe(false);
   });
 
   it("an imported chat cannot resume, so nothing is marked", async () => {
@@ -79,7 +105,7 @@ describe("chat writers mark past-chat search in their own transaction", () => {
     });
 
     await expect(repository.setMemoryMode({ chatId: CHAT_ID, mode: "NORMAL", userId: OWNER,
-      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION })).resolves.toEqual({ kind: "imported" });
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION })).resolves.toEqual({ kind: "imported" });
     expect(recorder.marks()).toEqual([]);
     expect(recorder.calls.some((call) => call.name === "chat.update")).toBe(false);
   });
