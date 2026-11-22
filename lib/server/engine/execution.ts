@@ -11,11 +11,10 @@ import { logEvent, runWithContext } from "../observability";
 import { gatewayRoutingLane } from "../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../providers/history";
 import { isProviderEmptyAnswer } from "../providers/emptyAnswer";
-import { isProviderDeadlineExceededError } from "../providers/network";
 import { codexLbConnection, effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import { providerFailureMessage, type ProviderFailureNames } from "../providers/providerFailureMessage";
 import { observedFailure } from "../providers/providerObservability";
-import { isProviderResponseFailure, PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import { PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllers, runSettlements } from "../runs/activeRunControllerRegistry";
 import { contextCompactionArtifact } from "../runs/contextCompactionEvents";
@@ -54,9 +53,10 @@ import { buildRunConversation, subagentCatalogItem, turnContextIndex, turnContex
 import { detachedCompactions } from "./detachedCompactions";
 import { createRunEventSink } from "./events";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "./faults";
-import { ANSWER_NOW_INSTRUCTION, runAgentLoop, toolsClosedInstruction, type LoopToolChoice, type ToolsClosedBy } from "./loop";
+import { runAgentLoop, type LoopToolChoice, type ToolsClosedBy } from "./loop";
 import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_UNATTENDED_RETRY } from "./modelCall";
 import { contextStatusArtifact, nativeContextStatus } from "./contextStatus";
+import { providerFailureCode, roundInstruction, withRoundInstruction } from "./roundFailure";
 import { createRunContext, windowOutputParams, type RunContext } from "./runContext";
 import { SUBAGENT_RUN_NO_ANSWER, type NativeRunStore } from "./runStore";
 import { withNativeSystemPrompt } from "./systemPrompt";
@@ -312,9 +312,7 @@ export function failurePayload(error: unknown, workspaceRun: boolean, answerPubl
   const failure = observedFailure(error);
   if (failure.code === PROVIDER_CONTEXT_LENGTH_EXCEEDED) return { code: "context_too_large", message: CONTEXT_TOO_LARGE_MESSAGE };
   const kept = workspaceRun ? "Its Workspace files and the answer so far are kept." : "The answer so far is kept.";
-  const code = isProviderDeadlineExceededError(error) ? "provider_request_timed_out"
-    : failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
-      : failure.stream_drop !== undefined ? "provider_stream_failed" : "run_execution_failed";
+  const code = providerFailureCode(error, "run_execution_failed");
   const provider = providerFailureMessage(error, names);
   return { code, message: provider ? `${provider} ${kept}` : `The answer could not be completed. ${kept}` };
 }
@@ -1080,11 +1078,8 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
               ? reserved.afterAnswerInstruction : reserved?.instruction;
             const instruction = reservedRound && reservedInstruction ? reservedInstruction
               : textOwed && reserved && "textInstruction" in reserved ? reserved.textInstruction
-                : answerNow ? ANSWER_NOW_INSTRUCTION
-                  : toolsClosedBy ? toolsClosedInstruction(toolsClosedReader, toolsClosedBy) : null;
-            return instruction
-              ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
-              : prepared;
+                : roundInstruction({ answerNow, reader: toolsClosedReader, toolsClosedBy });
+            return withRoundInstruction(prepared, instruction);
           },
           ...(reserved ? { reservedCall: { name: reserved.name, outstanding: () => runResearch ? runResearch.outstanding() : toolState.reservedCalled !== true,
             textOwed: () => reportNeedsText } } : {}),
