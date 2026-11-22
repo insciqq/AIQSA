@@ -55,6 +55,8 @@ type FactSpec = Readonly<{
   pending?: boolean;
   /** Expires right after the fixture commits, so the upgrade finds it expired. */
   expiring?: boolean;
+  /** Learned automatically at `at`; this later time is when the current version (of `mode`) replaced it. */
+  editedAt?: string;
 }>;
 
 const at = (minute: number, day = "2026-10-01"): string => `${day} 09:${String(minute).padStart(2, "0")}:00`;
@@ -85,6 +87,9 @@ const facts: readonly FactSpec[] = [
   { at: at(15), id: "mna-s15", mode: "EXPLICIT", owner: "mna-saver", sensitivity: "HIGHLY_SENSITIVE",
     text: quote("Synthetic highly sensitive fact.") },
   { at: at(16), id: "mna-s16", mode: "EXPLICIT", owner: "mna-saver", sensitivity: "SENSITIVE", text: quote("Synthetic sensitive fact.") },
+  // Learned before every save above, edited into a saved fact after them: its line comes last.
+  { at: "2026-10-01 08:59:00", editedAt: at(20), id: "mna-s17", mode: "EXPLICIT", owner: "mna-saver",
+    text: quote("Synthetic fact saved by an edit.") },
   // Saved facts over the limit: the first two fill exactly 6 000 characters.
   { at: at(1), id: "mna-o1", mode: "EXPLICIT", owner: "mna-overflow", text: "repeat('a', 3000)" },
   { at: at(2), id: "mna-o2", mode: "EXPLICIT", owner: "mna-overflow", text: "repeat('b', 2999)" },
@@ -107,10 +112,17 @@ const facts: readonly FactSpec[] = [
     text: quote("Synthetic fact from the forgotten chat.") },
   { at: at(3), id: "mna-d3", mode: "EXPLICIT", owner: "mna-deleter", sourceChat: "mna-deleter-keep-chat",
     text: quote("Synthetic kept-chat fact.") },
-  { at: at(4), evidence: ["mna-deleter-forget-m1", "mna-deleter-live-m1"], id: "mna-d4", mode: "AUTOMATIC", owner: "mna-deleter",
-    text: quote("Synthetic fact with a live source.") },
+  // Remembered on request in the forgotten chat: forgotten too, although another chat supports it.
+  { at: at(4), evidence: ["mna-deleter-forget-m1", "mna-deleter-live-m1"], frame: "EXPLICIT_REMEMBER", id: "mna-d4",
+    mode: "AUTOMATIC", owner: "mna-deleter", sourceChat: "mna-deleter-forget-chat",
+    text: quote("Synthetic remembered fact from the forgotten chat.") },
   { at: at(5), evidence: ["mna-deleter-keep-m1"], id: "mna-d5", mode: "AUTOMATIC", owner: "mna-deleter",
-    text: quote("Synthetic fact from the kept chat.") }
+    text: quote("Synthetic fact from the kept chat.") },
+  // Learned in the forgotten chat, but another chat still supports it: an ordinary automatic fact stays.
+  { at: at(6), evidence: ["mna-deleter-forget-m1", "mna-deleter-live-m1"], id: "mna-d6", mode: "AUTOMATIC",
+    owner: "mna-deleter", sourceChat: "mna-deleter-forget-chat", text: quote("Synthetic fact with a live source.") },
+  // A saved secret whose Memory cleanup has not run yet: none of the owner's saved facts goes into the note.
+  { at: at(1), id: "mna-x1", mode: "EXPLICIT", owner: "mna-scrub", text: quote("Synthetic deploy token sk-synthetic-0001.") }
 ];
 
 function factSql(fact: FactSpec): string {
@@ -118,6 +130,17 @@ function factSql(fact: FactSpec): string {
   const event = `${fact.id}-event`;
   const explicit = fact.mode === "EXPLICIT";
   const state = fact.state ?? "ACTIVE";
+  const versionAt = fact.editedAt ?? fact.at;
+  const learned = fact.editedAt === undefined ? "" : `
+INSERT INTO "MemoryEvent" (id, "userId", operation, "actorType", "factId", "factVersionId", "createdAt")
+VALUES ('${fact.id}-event-learned', '${fact.owner}', 'AUTO_PROPOSE', 'JOB', '${fact.id}', '${fact.id}-version-learned', '${fact.at}');
+INSERT INTO "MemoryFactVersion" (id, "userId", "factId", "displayText", "normalizedSearchText", "languageCode", "structuredValue",
+  category, modality, "sourceMode", state, confidence, importance, directness, "sensitivityClass", "safetyClassificationState",
+  "safetyClassifierPolicyVersion", "safetyClassificationReasonCode", "safetyClassifiedAt", "createdByEventId", "pipelineVersion",
+  "systemFrom", "systemTo", "createdAt")
+VALUES ('${fact.id}-version-learned', '${fact.owner}', '${fact.id}', 'Synthetic text before the edit', 'synthetic', 'en', '{}'::jsonb,
+  'other', 'STATE', 'AUTOMATIC', 'SUPERSEDED', 0.8, 0.5, 'DIRECT', 'NORMAL', 'CLASSIFIED', 'memory-safety-lite-v1',
+  'lite_non_secret_default', '${fact.at}', '${fact.id}-event-learned', 'mna-legacy-v1', '${fact.at}', '${versionAt}', '${fact.at}');`;
   const evidence = (fact.evidence ?? []).map((message, index) => `
 INSERT INTO "MemoryEvidence" (id, "userId", "factVersionId", stance, "sourceType", "chatId", "messageId", "branchGeneration",
   "sourceRole", "safeExcerpt", "safeSourceHash", "sourceProjectionVersion", "safetyClass", "observedAt", "createdAt")
@@ -130,21 +153,22 @@ VALUES ('${fact.id}', '${fact.owner}', '${fact.scope ?? `${fact.owner}-scope`}',
   ${state === "ACTIVE" ? `'${version}'` : "NULL"}, ${state === "FORGOTTEN" ? `'${fact.at}'` : "NULL"}, '${fact.at}', '${fact.at}');
 INSERT INTO "MemoryEvent" (id, "userId", operation, "actorType", "actorUserId", "factId", "factVersionId", "sourceChatId", "createdAt")
 VALUES ('${event}', '${fact.owner}', '${explicit ? "EXPLICIT_SAVE" : "AUTO_PROPOSE"}', '${explicit ? "USER" : "JOB"}',
-  ${explicit ? `'${fact.owner}'` : "NULL"}, '${fact.id}', '${version}', ${fact.sourceChat ? `'${fact.sourceChat}'` : "NULL"}, '${fact.at}');
+  ${explicit ? `'${fact.owner}'` : "NULL"}, '${fact.id}', '${version}', ${fact.sourceChat ? `'${fact.sourceChat}'` : "NULL"},
+  '${versionAt}');${learned}
 INSERT INTO "MemoryFactVersion" (id, "userId", "factId", "displayText", "normalizedSearchText", "languageCode", "structuredValue",
   category, modality, "sourceMode", state, confidence, importance, directness, "sensitivityClass", "safetyClassificationState",
   "safetyClassifierPolicyVersion", "safetyClassificationReasonCode", "safetyClassifiedAt", "semanticFrame", "expiresAt",
   "createdByEventId", "pipelineVersion", "systemFrom", "createdAt")
 VALUES ('${version}', '${fact.owner}', '${fact.id}', ${fact.text}, 'synthetic', 'en', '{}'::jsonb,
   'other', 'STATE', '${fact.mode}', '${state}', 1, 0.5, 'DIRECT', '${fact.sensitivity ?? "NORMAL"}',
-  ${fact.pending ? "'PENDING', NULL, NULL, NULL" : `'CLASSIFIED', 'memory-safety-lite-v1', 'lite_non_secret_default', '${fact.at}'`},
+  ${fact.pending ? "'PENDING', NULL, NULL, NULL" : `'CLASSIFIED', 'memory-safety-lite-v1', 'lite_non_secret_default', '${versionAt}'`},
   ${fact.frame ? `'{"memoryDirective":"${fact.frame}"}'::jsonb` : "NULL"},
   ${fact.expiring ? "CURRENT_TIMESTAMP + INTERVAL '1 millisecond'" : "NULL"},
-  '${event}', 'mna-legacy-v1', '${fact.at}', '${fact.at}');${evidence}`;
+  '${event}', 'mna-legacy-v1', '${versionAt}', '${versionAt}');${evidence}`;
 }
 
 const owners = ["mna-saver", "mna-overflow", "mna-master-off", "mna-history-off", "mna-learning-off", "mna-paused",
-  "mna-deleter", "mna-mcp", "mna-empty"] as const;
+  "mna-deleter", "mna-mcp", "mna-empty", "mna-scrub"] as const;
 
 /** One digest of a table's rows, so a proof can show they did not change. */
 const rowsDigest = (table: string, where = "TRUE"): string =>
@@ -227,6 +251,14 @@ INSERT INTO "MemoryDeletionOutbox" (id, "userId", operation, "targetType", "targ
 VALUES ('mna-forget-recent', 'mna-deleter', 'FORGET_PURGE', 'MEMORY_FACT@memory-purge-v1', 'mna-gone-fact', 0, 'SUCCEEDED',
   1, CURRENT_TIMESTAMP - INTERVAL '1 day', CURRENT_TIMESTAMP - INTERVAL '1 day', CURRENT_TIMESTAMP - INTERVAL '1 day',
   CURRENT_TIMESTAMP - INTERVAL '1 day');
+-- Saved-secret cleanups the previous release queued: one still pending, one finished.
+INSERT INTO "MemoryDeletionOutbox" (id, "userId", operation, "targetType", "targetId", "memoryGeneration", state,
+  "attemptCount", "completedAt", "lastAuditAt", "createdAt", "updatedAt") VALUES
+  ('mna-scrub-pending', 'mna-scrub', 'SOURCE_PURGE', 'SAVED_SECRET@memory-saved-secret-scrub-v1', 'mna-secret-revision', 0,
+    'PENDING', 0, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('mna-scrub-done', 'mna-saver', 'SOURCE_PURGE', 'SAVED_SECRET@memory-saved-secret-scrub-v1', 'mna-saver-secret-revision', 0,
+    'SUCCEEDED', 1, CURRENT_TIMESTAMP - INTERVAL '1 day', CURRENT_TIMESTAMP - INTERVAL '1 day', CURRENT_TIMESTAMP - INTERVAL '1 day',
+    CURRENT_TIMESTAMP - INTERVAL '1 day');
 UPDATE "Chat" SET archived = true, "permanentDeletionAt" = CURRENT_TIMESTAMP, "permanentDeletionOperationId" = 'mna-purge-forget'
 WHERE id = 'mna-deleter-forget-chat';
 UPDATE "Chat" SET archived = true, "permanentDeletionAt" = CURRENT_TIMESTAMP, "permanentDeletionOperationId" = 'mna-purge-keep'
@@ -270,7 +302,8 @@ CREATE TABLE "_MemoryNoteAdoptionFixture" AS SELECT ${oldMemoryDigest} AS "oldMe
 
 const expectedNotes: readonly (readonly [string, string])[] = [
   ["mna-saver", [quote("Answer in short bullet points."), quote("I work on the billing team."), quote("My manager is Dana."),
-    quote("Use metric units."), quote("Synthetic sensitive fact.")].join(` || ${NEWLINE} || `)],
+    quote("Use metric units."), quote("Synthetic sensitive fact."), quote("Synthetic fact saved by an edit.")
+  ].join(` || ${NEWLINE} || `)],
   ["mna-overflow", `repeat('a', 3000) || ${NEWLINE} || repeat('b', 2999)`],
   ["mna-master-off", quote("Synthetic paused-owner fact.")],
   ["mna-deleter", quote("Synthetic kept-chat fact.")]
@@ -284,7 +317,8 @@ const expectedSuggestions: readonly (readonly [string, "AUTOMATIC" | "SAVED_OVER
   ["mna-overflow", "AUTOMATIC", "repeat('d', 6000)", at(5)],
   ["mna-overflow", "SAVED_OVERFLOW", quote("Synthetic secret-class fact."), at(6)],
   ["mna-paused", "AUTOMATIC", quote("Synthetic fact before the pause."), at(1, "2026-10-10")],
-  ["mna-deleter", "AUTOMATIC", quote("Synthetic fact with a live source."), at(4)]
+  ["mna-deleter", "AUTOMATIC", quote("Synthetic fact with a live source."), at(6)],
+  ["mna-scrub", "SAVED_OVERFLOW", quote("Synthetic deploy token sk-synthetic-0001."), at(1)]
 ];
 
 const notesValues = `(VALUES ${expectedNotes.map(([owner, text]) => `('${owner}', ${text})`).join(", ")})`;
@@ -324,14 +358,16 @@ DO $$ BEGIN
       AND "embeddingProviderModelId" = 'mna-embed-a' AND "embeddingConfiguredAt" IS NULL)
     THEN RAISE EXCEPTION 'memory_note_adoption_embedding_model'; END IF;
 
-  -- Notes: saved facts in saved order, once each, trimmed; the second owner's note is exactly at the limit.
+  -- Notes: saved facts in the order they became saved, once each, trimmed; the second owner's note is exactly at the
+  -- limit; an owner whose saved-secret cleanup is pending gets none.
   IF (SELECT count(*) FROM "UserMemoryNote") <> ${expectedNotes.length}
     OR EXISTS (${actualNotes} EXCEPT ${notesValues}) OR EXISTS (${notesValues} EXCEPT ${actualNotes})
     THEN RAISE EXCEPTION 'memory_note_adoption_notes'; END IF;
   IF (SELECT char_length("text") FROM "UserMemoryNote" WHERE "userId" = 'mna-overflow') <> 6000
     THEN RAISE EXCEPTION 'memory_note_adoption_note_limit'; END IF;
 
-  -- Suggestions: overflow, highly sensitive and secret-class saved facts, and automatic facts with a live source, clipped.
+  -- Suggestions: overflow, highly sensitive, secret-class and cleanup-pending saved facts, and automatic facts with a live
+  -- source, clipped.
   IF (SELECT count(*) FROM "MemoryLegacySuggestion") <> ${expectedSuggestions.length}
     OR EXISTS (${actualSuggestions} EXCEPT ${suggestionsValues}) OR EXISTS (${suggestionsValues} EXCEPT ${actualSuggestions})
     THEN RAISE EXCEPTION 'memory_note_adoption_suggestions'; END IF;

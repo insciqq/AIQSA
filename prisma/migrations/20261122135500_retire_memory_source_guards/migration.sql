@@ -14,6 +14,28 @@
 --
 -- Both go here. The rows stay, unread, for the data migration and the drop; the guard functions stay for the drop to
 -- remove with the rest. Every statement tolerates a repeated deploy.
+--
+-- Dropping a trigger, or a foreign key together with its triggers on the referenced table, takes an exclusive lock on
+-- each table involved, while the previous release's writers, which keep running while Compose replaces containers,
+-- take the same tables in their own orders (the command worker reads MemoryJob and then locks the source chat). Taken
+-- one statement at a time those locks deadlock with them and fail the upgrade, so every lock is taken up front in one
+-- statement, referenced tables first, and a deadlock retries instead.
+DO $migration$
+BEGIN
+  LOOP
+    BEGIN
+      LOCK TABLE "Folder", "AssistantDefinition", "Chat", "Message",
+        "ChatMemoryCheckpoint", "ChatMemoryCheckpointMessage", "MemoryCandidateMessage", "MemoryEvidence", "MemoryJob",
+        "MemoryMutationAuthorization", "MemoryRecallChunk", "MemoryRecallChunkMessage", "MemoryRecallRound",
+        "MemoryRecallRoundMessage", "MemoryRetrievalAttempt", "MemoryScope", "MemorySuppression", "MemoryToolEvent"
+        IN ACCESS EXCLUSIVE MODE;
+      EXIT;
+    EXCEPTION WHEN deadlock_detected THEN
+      NULL;
+    END;
+  END LOOP;
+END;
+$migration$;
 
 DROP TRIGGER IF EXISTS "Chat_memory_history_source_guard" ON "Chat";
 DROP TRIGGER IF EXISTS "Chat_recall_round_source_guard" ON "Chat";
