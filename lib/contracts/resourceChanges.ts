@@ -1,14 +1,16 @@
 import {
   INSTRUCTION_PRESET_NAME_MAX_LENGTH, SYSTEM_INSTRUCTIONS_MAX_LENGTH, type InstructionPreset, type InstructionPresetMutation
 } from "./instructionPresets";
+import { decodeMemoryNoteCard, memoryNoteCardKey, type MemoryNoteCard } from "./memoryNote";
 import { PROXY_LIMITS, isProxyCountry, isProxyProtocol, type ProxyProtocol } from "./proxies";
 import { WORKSPACE_SECRET_KINDS, isWorkspaceEnvName, isWorkspaceSecretId, type WorkspaceSecretKind } from "./workspaceSecrets";
 
 /**
  * Client-safe contract of the answer cards for changes the agent made, or
  * proposed, to the user's own secrets, Skills, Assistants, custom sub-agents,
- * proxies and personal Instructions (`manage_secret`, `manage_skill`, `manage_assistant`,
- * `create_subagent`, `edit_subagent`, `delete_subagent`, `manage_proxy`, `manage_instructions`). A Skill save keeps
+ * proxies, personal Instructions and the Memory note (`manage_secret`, `manage_skill`, `manage_assistant`,
+ * `create_subagent`, `edit_subagent`, `delete_subagent`, `manage_proxy`, `manage_instructions`, `manage_memory`;
+ * the note's change and offer cards live in `memoryNote.ts`). A Skill save keeps
  * its own card (`skillSaves.ts`). A change already happened when its card
  * shows. A proposal (`delete_proposed`, `publish_proposed`) changed nothing:
  * only the user's click in the card performs it, through the same owner
@@ -216,7 +218,7 @@ export type InstructionsChangeCard = Readonly<{
 }>;
 
 export type ResourceChangeCard = SecretChangeCard | SkillDeleteProposalCard | AssistantChangeCard | SubagentChangeCard | ProxyChangeCard |
-  InstructionsChangeCard;
+  InstructionsChangeCard | MemoryNoteCard;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -401,6 +403,7 @@ export function decodeResourceChangeCard(value: unknown): ResourceChangeCard | n
   if (value.resource === "subagent") return decodeSubagentCard(value);
   if (value.resource === "proxy") return decodeProxyCard(value);
   if (value.resource === "instructions") return decodeInstructionsCard(value);
+  if (value.resource === "memory_note") return decodeMemoryNoteCard(value);
   return null;
 }
 
@@ -419,6 +422,7 @@ export function resourceChangeCardKey(card: ResourceChangeCard): string {
       : `subagent:${card.definitionId}:${card.action}:${card.definitionVersion}${card.defaultChange ? `:default:${card.defaultChange.changeId}` : ""}`;
     case "proxy": return card.proposalId ? `proxy:${card.proxyId}:proposal:${card.proposalId}` : `proxy:${card.proxyId}:${card.action}:${card.proxyVersion}`;
     case "instructions": return `instructions:${card.presetId}:${card.action}:${card.revision}`;
+    case "memory_note": return memoryNoteCardKey(card);
   }
 }
 

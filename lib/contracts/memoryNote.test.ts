@@ -115,12 +115,13 @@ describe("memory note cards", () => {
     expect(decodeMemoryNoteCard({ ...offer, offerId: "not an id" })).toBeNull();
   });
 
-  it("keeps its cards apart from the resource change cards", () => {
+  it("travels with the answer's resource change cards and decodes only as itself", () => {
     const instructions = { version: 1, resource: "instructions", action: "created", presetId: "p1", revision: 1, name: "Mine", diff: null,
       previousText: null };
     expect(decodeResourceChangeCard(instructions)).not.toBeNull();
     expect(decodeMemoryNoteCard(instructions)).toBeNull();
-    expect(decodeResourceChangeCard(added)).toBeNull();
+    expect(decodeResourceChangeCard(added)).toEqual(added);
+    expect(decodeResourceChangeCard({ ...added, resource: "instructions" })).toBeNull();
   });
 
   it("keys a change by the revision it left and an offer by its id", () => {
