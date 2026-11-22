@@ -11,6 +11,7 @@ import { invalidateChatSubagents, resetSubagentStoreForTest, setOpenSubagentThre
 import { SubagentThreadViewV2 } from "./SubagentThreadViewV2";
 import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { runWaitingPhraseV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import type { SubagentTurnView } from "@/lib/contracts/subagentViews";
 
 const target = { chatId: "chat-a", threadId: "thread-researcher" };
 const threadPath = "/api/chats/chat-a/subagents/thread-researcher";
@@ -185,12 +186,13 @@ describe("sub-agent thread view", () => {
     const own = { origin: "mcp" as const, round: 1, serverName: "Logs", status: "running" as const, toolName: "tail" };
     const finished = { entries: [{ command: { exitCode: 0, preview: "npm test" }, id: "test", kind: "command" as const, phase: "succeeded" as const }] };
     const liveLine = () => document.querySelector("[data-live='true'] .v2-answer-process-label")?.textContent ?? null;
-    for (const [work, expected] of [
+    const states: [Partial<SubagentTurnView>, string][] = [
       [{ toolActivity: { calls: [child, childStep] } }, "Waiting for sub-agents…"],
       [{ toolActivity: { calls: [own, child, childStep] } }, "Using Logs: tail…"],
       [{ toolActivity: { calls: [own] }, workspaceActivity: finished }, "Working in Workspace…"],
       [{}, runWaitingPhraseV2("turn-live")]
-    ] as const) {
+    ];
+    for (const [work, expected] of states) {
       const turn = subagentTurn("turn-live", "running", work);
       vi.stubGlobal("fetch", subagentFetch([{ path: threadPath,
         respond: () => jsonResponse(subagentView("chat-a", subagentThread("thread-researcher"), [turn])) }]).fetch);
