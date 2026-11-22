@@ -12,6 +12,7 @@ import {
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { ChatPdfRouteAvailability } from "@/lib/contracts/chatPdfPreparation";
 import type { WorkspaceNotRequestedReason } from "@/lib/contracts/workspace";
+import { workspaceAvailabilityV2, workspaceNotRequestedReasonV2 } from "@/components/app-shell/workspaceAvailability";
 import { attachmentRetryAvailable } from "@/components/app-shell/attachmentLifecycle";
 import { latestChatPdfRouteAvailability } from "@/components/app-shell/useChatPdfRoutePreview";
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
@@ -413,9 +414,7 @@ export function useMessageRunActions({
     // without it: an unknown availability asks, and the server decides.
     const workspaceNotRequestedReason: WorkspaceNotRequestedReason | null =
       options.withoutWorkspace === true ? "user_declined"
-        : resolveWorkspaceInstallation?.() === "off" ? "installation_disabled"
-          : selectedModel?.capabilities.toolCalling !== true ? "model_no_tools"
-            : null;
+        : workspaceNotRequestedReasonV2(workspaceAvailabilityV2(resolveWorkspaceInstallation?.(), selectedModel?.capabilities.toolCalling === true));
     const workspaceEnabled = workspaceNotRequestedReason === null;
     const model = selectedModel
       ? {
