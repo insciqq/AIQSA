@@ -1,10 +1,9 @@
 import { mcpRuntimeErrorMessage, type McpRuntimeErrorCode } from "@/lib/contracts/mcp";
 
-export type McpDispatchFailureCode = McpRuntimeErrorCode | "memory_egress_destination_revoked";
+export type McpDispatchFailureCode = McpRuntimeErrorCode;
 
 export function mcpDispatchError(code: McpDispatchFailureCode): Error {
-  return Object.assign(new Error(code === "memory_egress_destination_revoked"
-    ? code : mcpRuntimeErrorMessage(code)), { code });
+  return Object.assign(new Error(mcpRuntimeErrorMessage(code)), { code });
 }
 
 /** A refusal built by `mcpDispatchError`, recognized by its own code rather than its message. */
