@@ -271,10 +271,7 @@ function assertBoundedOpenAIRetainedOutput(
   }
 }
 
-function extractArtifacts(
-  response: OpenAIResponseRecord,
-  provider = "openai"
-): ModelRunSseEvent[] {
+function extractArtifacts(response: OpenAIResponseRecord): ModelRunSseEvent[] {
   const output = Array.isArray(response.output) ? response.output : [];
   const artifacts: ModelRunSseEvent[] = [];
 
@@ -290,9 +287,6 @@ function extractArtifacts(
           payload: {
             ...(item.action !== undefined ? { action: item.action } : {}),
             id: item.id,
-            ...(provider === "deepseek"
-              ? { provider, sourceAttribution: "provider_unavailable" }
-              : {}),
             status: item.status,
             type: item.type
           }
@@ -415,7 +409,7 @@ function normalizeOpenAIResponseResult(
   const history = responsesHistoryFromOutput(response.output);
 
   return {
-    artifacts: extractArtifacts(response, provider),
+    artifacts: extractArtifacts(response),
     result: {
       finalProviderResponsePreview: buildResponsePreview(
         response,
@@ -565,9 +559,6 @@ function webSearchLifecycleArtifact(input: Readonly<{
         eventType: input.eventType,
         id: stringValue(item?.id) ?? stringValue(input.payload.item_id) ?? stringValue(input.payload.id),
         outputIndex: input.payload.output_index,
-        ...(input.provider === "deepseek"
-          ? { provider: input.provider, sourceAttribution: "provider_unavailable" }
-          : {}),
         responseId: input.providerResponseId,
         status,
         type: "web_search_call"

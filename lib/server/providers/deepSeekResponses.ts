@@ -19,7 +19,7 @@ import { providerResponseFailure } from "./responseFailure";
 import { guardDeepSeekSynthesis } from "./deepSeekSynthesis";
 import type { ProviderAdapter, ProviderRunResult } from "./types";
 
-export function deepSeekNotCompletedCode(status: string): string {
+function deepSeekNotCompletedCode(status: string): string {
   return status === "failed" || status === "incomplete" || status === "cancelled"
     ? `deepseek_response_${status}`
     : "deepseek_response_not_completed";
@@ -27,7 +27,7 @@ export function deepSeekNotCompletedCode(status: string): string {
 
 /** An incomplete response whose reported output reached the requested cap
  * exhausted its output budget even when DeepSeek names no incomplete reason. */
-export function deepSeekTerminalResponse(
+function deepSeekTerminalResponse(
   response: Readonly<Record<string, unknown>>,
   body: Readonly<{ max_output_tokens: number }>
 ): Readonly<Record<string, unknown>> {

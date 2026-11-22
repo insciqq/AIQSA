@@ -328,46 +328,6 @@ describe("DeepSeek Responses provider", () => {
     expect(result.finalText).toBe("done");
     expect(result.providerResponseId).toBe("response-stream");
   });
-
-  it("marks hosted Search artifacts as source-unavailable in ordinary answers", async () => {
-    const client: DeepSeekResponsesClient = {
-      create: async () => ({
-        id: "response-hosted-search",
-        output: [
-          { id: "search-1", status: "completed", type: "web_search_call" },
-          { content: [{ text: "Current finding", type: "output_text" }], type: "message" }
-        ],
-        status: "completed",
-        usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 }
-      }),
-      stream: async () => { throw new Error("unexpected stream"); }
-    };
-    const stream = createDeepSeekResponsesAdapter({ client }).stream(request());
-    const events = [];
-    let next = await stream.next();
-    while (!next.done) {
-      events.push(next.value);
-      next = await stream.next();
-    }
-
-    expect(events).toContainEqual({
-      data: {
-        artifactType: "search",
-        payload: {
-          id: "search-1",
-          provider: "deepseek",
-          sourceAttribution: "provider_unavailable",
-          status: "completed",
-          type: "web_search_call"
-        }
-      },
-      type: "artifact"
-    });
-    // The answer's own usage carries its hosted search calls for the answer row's fee.
-    expect(events).toContainEqual({ data: expect.objectContaining({ inputTokens: 5, webSearchCount: 1 }), type: "usage" });
-    if (!next.done) throw new Error("expected the answer to finish");
-    expect(next.value.usage).toMatchObject({ inputTokens: 5, webSearchCount: 1 });
-  });
 });
 
 describe("DeepSeek non-completed responses", () => {
