@@ -19,8 +19,8 @@
  *    percentiles, outcomes, failures by scenario id with reason codes, provider-reported usage totals and the
  *    threshold verdict; then deletes everything it created (usage rows of its users included).
  *
- * Exit 0 when every never rule held and no recorded threshold was missed (`CHAT_SEARCH_SCENARIO_THRESHOLDS` in
- * `./chat-search-scenarios-support.ts`, null until the first real run sets them); 1 otherwise; 2 when it refused.
+ * Exit 0 when every never rule held and, with the embedding model and the reranker, no recorded threshold was
+ * missed (`CHAT_SEARCH_SCENARIO_THRESHOLDS` in `./chat-search-scenarios-support.ts`); 1 otherwise; 2 when it refused.
  * Paid calls: the corpus's passages are embedded once (about 50 texts in two or three requests), and each of the
  * 42 scenarios with a query makes one query embedding and at most one rerank call.
  *
@@ -52,6 +52,7 @@ import type { ChatSearchUsageRecord } from "../../lib/server/chatSearch/usage";
 import { prisma } from "../../lib/server/prisma";
 import { assertDisposableStatefulTestTarget } from "../stateful-test-target";
 import {
+  CHAT_SEARCH_NO_THRESHOLDS,
   CHAT_SEARCH_SCENARIO_THRESHOLDS,
   chatSearchScenarioReport,
   chatSearchThresholdBreaches,
@@ -292,7 +293,10 @@ export async function runChatSearchScenariosOnStand(environment: NodeJS.ProcessE
     }
 
     const report = chatSearchScenarioReport(scores);
-    const breaches = chatSearchThresholdBreaches(report);
+    // The recorded thresholds hold the full setup; without the reranker or the model only the never rules count.
+    const fullSetup = !wordsOnly && embeddingRole.kind === "model" && rerankRole === "ready";
+    const thresholds = fullSetup ? CHAT_SEARCH_SCENARIO_THRESHOLDS : CHAT_SEARCH_NO_THRESHOLDS;
+    const breaches = chatSearchThresholdBreaches(report, thresholds);
     // Usage is recorded after each call and never awaited: give the last ones a moment.
     await sleep(500);
     cleaned = await cleanup(created);
@@ -305,8 +309,7 @@ export async function runChatSearchScenariosOnStand(environment: NodeJS.ProcessE
       index: { ...index, drainMs, freshIndexMs },
       report,
       readLatencyMs: { p50: percentile(readLatencies, 0.5), p95: percentile(readLatencies, 0.95) },
-      thresholds: { recorded: CHAT_SEARCH_SCENARIO_THRESHOLDS.latencyP95Ms !== null ||
-        Object.keys(CHAT_SEARCH_SCENARIO_THRESHOLDS.hitAt3).length + Object.keys(CHAT_SEARCH_SCENARIO_THRESHOLDS.hitAt5).length > 0, breaches },
+      thresholds: { applied: thresholds === CHAT_SEARCH_SCENARIO_THRESHOLDS, breaches },
       usage,
       cleanup: cleaned
     });
