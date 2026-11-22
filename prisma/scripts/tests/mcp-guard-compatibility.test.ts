@@ -14,7 +14,7 @@ function projectedPolicy(sql: string, row: Readonly<Record<string, unknown>>) {
 const predecessor = { id: "installation", providerModelId: "existing-model", reasoningEffort: "low", version: 13 };
 const laterFields = { visionProviderModelId: null, visionReasoningEffort: null, speechToTextConnectionId: null,
   speechToTextModelId: null, speechToTextCredentialVersionId: null, speechToTextConfiguredAt: null,
-  mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null };
+  mcpGuardProviderModelId: null, mcpGuardReasoningEffort: null, embeddingProviderModelId: null, embeddingConfiguredAt: null };
 
 describe("MCP guard forward-adoption compatibility", () => {
   it.each([
