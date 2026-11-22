@@ -261,7 +261,7 @@ DECLARE
 BEGIN
   -- Nothing of the retired storage is left in the catalog; the replaced types, checks and guards are in place.
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-      AND (table_name, column_name) IN (VALUES ${droppedColumnPairs}))
+      AND (table_name::text, column_name::text) IN (VALUES ${droppedColumnPairs}))
     OR EXISTS (SELECT 1 FROM pg_class AS relation JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
       WHERE namespace.nspname = current_schema() AND (relation.relname IN (${list(RETIRED_TYPES_AND_RELATIONS)})
         OR relation.relname ~* '^UsageEvent_(knowledge|mcpHub)'))
