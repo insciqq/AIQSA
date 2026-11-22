@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
+  MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
+  MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+  decodeMemoryConsumerChatModePatch,
   decodeMemoryConsumerChatModeResponse,
   decodeMemoryInitialChatMode,
   decodeMemoryConsumerPermanentChatDeleteInput,
@@ -49,6 +52,24 @@ describe("chat Memory-mode client contracts", () => {
       expect(decodeMemoryConsumerPermanentChatDeleteResponse(internal))
         .toMatchObject({ ok: false });
     }
+  });
+
+  it("decodes a Resume under the current or the retired disclosure, so the retired one can be refused visibly", () => {
+    expect(decodeMemoryConsumerChatModePatch({ mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION }))
+      .toEqual({ ok: true, value: { mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION } });
+    // What a v0.4.43 page sends: it promised only new messages, and the server refuses it before changing the chat.
+    expect(decodeMemoryConsumerChatModePatch({ mode: "NORMAL", resumeDisclosureCopyVersion: "memory-confirmation-v1" }))
+      .toEqual({ ok: true, value: { mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION } });
+    expect(MEMORY_RESUME_DISCLOSURE_COPY_VERSION).not.toBe(MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION);
+    for (const invalid of [
+      { mode: "NORMAL" },
+      { mode: "NORMAL", resumeDisclosureCopyVersion: "memory-resume-later" },
+      { mode: "EXCLUDED", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION },
+      { mode: "TEMPORARY" }
+    ]) {
+      expect(decodeMemoryConsumerChatModePatch(invalid)).toMatchObject({ ok: false });
+    }
+    expect(decodeMemoryConsumerChatModePatch({ mode: "EXCLUDED" })).toEqual({ ok: true, value: { mode: "EXCLUDED" } });
   });
 
   it("accepts a new chat's Temporary mode only under the current retention policy", () => {

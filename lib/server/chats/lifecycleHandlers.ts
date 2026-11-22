@@ -85,6 +85,8 @@ export type ChatMemoryModeMutationResult = Readonly<{
     | "imported"
     | "not_found"
     | "ok"
+    /** The Resume named the retired disclosure: nothing changed, and the page must reload. */
+    | "reload_required"
     | "resume_blocked"
     | "source_stale"
     | "temporary";
@@ -366,6 +368,12 @@ export function createResolveChatSourceHandler(deps: ChatLifecycleHandlerDeps) {
   };
 }
 
+/**
+ * What a page from before v0.5.0 reads of a Resume it confirmed under the retired disclosure, which promised that
+ * only new messages would be used; the chat stays Excluded.
+ */
+const RESUME_RELOAD_MESSAGE = "This page is out of date. Reload it, then resume Memory for the chat again.";
+
 export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps) {
   return async function PATCH(request: Request, context: ChatRouteContext): Promise<Response> {
     const resolved = await authenticated(request, deps);
@@ -403,6 +411,8 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
         return json({ error: "memory_imported_chat_forbidden" }, 409);
       case "source_stale":
         return json({ error: "memory_changed" }, 409);
+      case "reload_required":
+        return json({ error: "memory_reload_required", message: RESUME_RELOAD_MESSAGE }, 409);
       case "resume_blocked":
         return json({ error: "memory_action_failed" }, 503);
     }

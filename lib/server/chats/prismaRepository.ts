@@ -81,7 +81,8 @@ import {
   type ChatContextStats
 } from "../../contracts/chats";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
+  MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
+  MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
 } from "../../contracts/memoryClient";
 import type { PastChatSource } from "../../contracts/pastChats";
@@ -137,6 +138,7 @@ import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadDeepResearchMarks } from "./deepResearchProjection";
 import { clearChatSearch, markChatSearchDirty } from "../chatSearch/index/dirty";
+import { clearChatSearchExclusions } from "../chatSearch/index/exclusions";
 
 /**
  * A chat row its lifecycle writers lock `FOR UPDATE` before they change it. Their fences are the row's own state
@@ -2437,9 +2439,14 @@ export function createPrismaChatRepository(
       resumeDisclosureCopyVersion,
       userId
     }) => {
+      // A page from before v0.5.0 promised that only new messages would be used; Resume now makes the whole chat
+      // searchable, so its confirmation is refused before anything is read or changed.
+      if (mode === "NORMAL" && resumeDisclosureCopyVersion === MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION) {
+        return { kind: "reload_required" as const };
+      }
       if (
         (mode === "NORMAL" &&
-          resumeDisclosureCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION) ||
+          resumeDisclosureCopyVersion !== MEMORY_RESUME_DISCLOSURE_COPY_VERSION) ||
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
       ) return { kind: "contract_invalid" as const };
       return prismaClient.$transaction(async (tx) => {
@@ -2463,9 +2470,13 @@ export function createPrismaChatRepository(
         if (chat.memoryMode === mode) return { kind: "source_stale" as const };
 
         await tx.chat.update({ data: { memoryMode: mode }, select: { id: true }, where: { id: chat.id } });
-        // An Excluded chat leaves past-chat search at once; a resumed one is indexed again by the pass.
+        // An Excluded chat leaves past-chat search at once. A resumed one is indexed again by the pass, its whole
+        // history as the disclosure said: the messages the old Memory kept out are kept out no longer.
         if (mode === "EXCLUDED") await clearChatSearch(tx, { chatId: chat.id });
-        else await markChatSearchDirty(tx, { chatId: chat.id, userId });
+        else {
+          await clearChatSearchExclusions(tx, { chatId: chat.id });
+          await markChatSearchDirty(tx, { chatId: chat.id, userId });
+        }
         return { kind: "ok" as const };
       });
     },

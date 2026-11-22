@@ -14,6 +14,7 @@ const CHAT_MEMORY_MODE_COPY = Object.freeze({
   "restore.action": "Restore",
   "resume.action": "Resume Memory for this chat",
   "resume.explanation": "Past-chat search can find this chat again, its earlier messages included.",
+  "resume.reload": "This page is out of date. Reload it, then resume Memory for the chat again.",
   "temporary.explanation": "Temporary Chat neither reads nor changes your Memory, is never found by past-chat search, cannot be converted to a retained chat, and cannot be shared.",
   "temporary.externalRetention": "External providers and tools may retain data under their disclosed policies; operator backups are a separate domain.",
   "temporary.label": "Temporary Chat",

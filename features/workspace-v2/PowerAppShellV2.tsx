@@ -146,6 +146,7 @@ import {
   openPermanentChatDeletion
 } from "@/components/app-shell/permanentChatDeletionStore";
 import {
+  ChatLifecycleApiError,
   loadChatMemoryState,
   patchChatMemoryMode
 } from "@/components/app-shell/chatLifecycleApi";
@@ -163,7 +164,7 @@ import type {
   WorkspaceChatSummary,
   Notice
 } from "@/components/app-shell/types";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1424,7 +1425,7 @@ export function PowerAppShellV2({
     chat: WorkspaceChatSummary,
     patch: Readonly<{ mode: "EXCLUDED" }> | Readonly<{
       mode: "NORMAL";
-      resumeDisclosureCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
+      resumeDisclosureCopyVersion: typeof MEMORY_RESUME_DISCLOSURE_COPY_VERSION;
     }>
   ): Promise<void> {
     if (memorySourceMutationIdsRef.current.has(chat.id)) return;
@@ -1458,8 +1459,12 @@ export function PowerAppShellV2({
           response.mode === "EXCLUDED" ? "exclude.action" : "resume.action"
         )
       });
-    } catch {
-      // Memory failures stay silent: the switch keeps its committed state.
+    } catch (error) {
+      // Memory failures stay silent: the switch keeps its committed state. A page whose Resume disclosure the server
+      // no longer accepts says so, since only a reload shows the current one.
+      if (error instanceof ChatLifecycleApiError && error.code === "memory_reload_required") {
+        setNotice({ kind: "error", text: chatMemoryModeCopy("resume.reload") });
+      }
     } finally {
       memorySourceMutationIdsRef.current.delete(chat.id);
     }
@@ -2114,7 +2119,7 @@ export function PowerAppShellV2({
         if (target) {
           void commitChatMemoryMode(target, {
             mode: "NORMAL",
-            resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+            resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
           });
         }
       },

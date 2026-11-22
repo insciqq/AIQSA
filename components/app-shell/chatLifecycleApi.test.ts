@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "@/lib/contracts/memoryClient";
 import {
   ChatLifecycleApiError,
   loadChatMemoryState,
@@ -25,14 +25,14 @@ describe("chat lifecycle client", () => {
     await patchChatMemoryMode({
       chatId: "chat-1",
       mode: "NORMAL",
-      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
     });
 
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("/api/me/chats/chat-1/memory-mode");
     expect(JSON.parse(String(init?.body))).toEqual({
       mode: "NORMAL",
-      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
     });
   });
 

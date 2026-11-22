@@ -1,5 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../lib/contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "../../lib/contracts/memoryClient";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { leaveSettings, runAccountMenuAction } from "./shell/page";
 import { signInWithLocalToken } from "./support/localAuth";
@@ -289,7 +289,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   await expect.poll(() => modePatches.length).toBe(2);
   expect(modePatches.at(-1)).toMatchObject({
     mode: "NORMAL",
-    resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+    resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
   });
 
   await headerMenuTrigger.click();

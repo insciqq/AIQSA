@@ -27,7 +27,9 @@ import { readPastChatSwitches, type PastChatSwitches } from "./store";
  * and the tools the answer called, by name only: never arguments, results or
  * file contents. Only the owner's own eligible chats are read
  * (`lib/server/chatSearch/eligibility.ts`); a chat the caller cannot see and
- * a missing one answer the same.
+ * a missing one answer the same. A message search never holds
+ * (`ChatSearchExcludedMessage`, the old Memory's exclusions) is left out like
+ * a message of another branch.
  */
 
 /** The JSON of a window stays within the engine's inline tool result with its note beside it. */
@@ -202,7 +204,8 @@ export function createPastChatReader(dependencies: Readonly<{ store: PastChatRea
   });
 }
 
-type ReadDb = Pick<Prisma.TransactionClient, "attachment" | "chat" | "message" | "modelRun" | "modelRunToolCall" | "userSettings">;
+type ReadDb = Pick<Prisma.TransactionClient,
+  "attachment" | "chat" | "chatSearchExcludedMessage" | "message" | "modelRun" | "modelRunToolCall" | "userSettings">;
 
 const branchSelect = {
   branchSourceModelRunId: true, id: true, parentMessageId: true, role: true, scheduledTaskPrompt: true, systemTurnKind: true
@@ -220,7 +223,12 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
       const chat = await db.chat.findFirst({ select: { activeLeafMessageId: true, id: true, title: true },
         where: { ...chatSearchEligibleWhere(ownerId), id: chatId } });
       if (!chat) return null;
-      const rows = await db.message.findMany({ select: branchSelect, where: { chatId: chat.id } });
+      const [rows, excluded] = await Promise.all([
+        db.message.findMany({ select: branchSelect, where: { chatId: chat.id } }),
+        db.chatSearchExcludedMessage.findMany({ select: { messageId: true }, where: { chatId: chat.id, userId: ownerId } })
+      ]);
+      // A message search never holds is walked through, so the branch stays whole, but never shown.
+      const hidden = new Set(excluded.map((row) => row.messageId));
       const quiet = await quietCheckOmission(db, chat.id, rows);
       const shown = rows.filter((row) => !quiet.removed.has(row.id))
         .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
@@ -234,7 +242,7 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         const row = kept.get(cursor);
         if (!row || seen.has(cursor)) break;
         seen.add(cursor);
-        if (row.role === "user" || row.role === "assistant") path.push({ id: row.id, role: row.role });
+        if ((row.role === "user" || row.role === "assistant") && !hidden.has(row.id)) path.push({ id: row.id, role: row.role });
         cursor = row.parentMessageId;
       }
       return { chatId: chat.id, messages: path.reverse(), title: chat.title };

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memoryClient";
 import { createPrismaChatRepository } from "../../chats/prismaRepository";
 import { TEMPORARY_CHAT_RETENTION_MS } from "../../chats/temporaryRetention";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
@@ -9,6 +9,8 @@ import { prisma } from "../../prisma";
 import { settleTerminalChatSource } from "../../runs/prismaRepositoryPreparation";
 import { createWorkspaceSecretStore } from "../../workspace/secrets/store";
 import type { ChatSearchEmbedder } from "../embedder";
+import { createPastChatReader, createPrismaPastChatReadStore } from "../search/read";
+import { markChatSearchDirty } from "./dirty";
 import { runChatSearchIndexPass } from "./pass";
 
 /**
@@ -107,5 +109,62 @@ describe("past-chat search call sites", () => {
     });
 
     expect((await state(chat.id))?.dirtyAt).toBeInstanceOf(Date);
+  });
+
+  it("a branch copy keeps out what the old Memory kept out, reads skip it, and Resume brings the whole chat back", async () => {
+    const userId = await owner();
+    const { answer, chat, question } = await chatWithTurn(userId);
+    const later = await prisma.message.create({ data: { chatId: chat.id, content: text("And the train?"),
+      createdAt: new Date(Date.now() - 30_000), parentMessageId: answer.id, role: "user", status: "complete" } });
+    const laterAnswer = await prisma.message.create({ data: { chatId: chat.id, content: text("The 9:10 to Sintra."),
+      createdAt: new Date(Date.now() - 20_000), parentMessageId: later.id, role: "assistant", status: "complete" } });
+    await prisma.chat.update({ data: { activeLeafMessageId: laterAnswer.id }, where: { id: chat.id } });
+    // The first question was written before the chat's old Resume.
+    await prisma.$executeRaw`
+      INSERT INTO "ChatSearchExcludedMessage" ("chatId", "messageId", "userId") VALUES (${chat.id}, ${question.id}, ${userId})`;
+    const excludedIn = (chatId: string) => prisma.$queryRaw<Array<{ messageId: string }>>`
+      SELECT "messageId" FROM "ChatSearchExcludedMessage" WHERE "chatId" = ${chatId}`;
+    const drain = async () => {
+      for (let pass = 0; pass < 10; pass += 1) {
+        if (!(await runChatSearchIndexPass({ db: prisma, embedder: wordsOnly, limits: { ownerIds: [userId] } })).more) return;
+      }
+    };
+    const questionsIn = async (chatId: string) => (await prisma.chatSearchPassage.findMany({ orderBy: { turnAt: "asc" },
+      select: { userMessageId: true }, where: { chatId } })).map((row) => row.userMessageId);
+    const reader = createPastChatReader({ savedSecretValues: async () => [], store: createPrismaPastChatReadStore(prisma) });
+    const readTexts = async (chatId: string) => {
+      const outcome = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
+      return outcome.kind === "read" ? outcome.result.messages.map((message) => message.text) : outcome.kind;
+    };
+
+    const copy = await createPrismaMessageBranchRepository(prisma).createChatBranchFromMessage({
+      sourceMessageId: laterAnswer.id, userId
+    });
+    const copiedQuestion = await prisma.message.findFirstOrThrow({ where: { chatId: copy!.id, parentMessageId: null } });
+    expect(await excludedIn(copy!.id)).toEqual([{ messageId: copiedQuestion.id }]);
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId: chat.id, userId }));
+    await drain();
+    for (const chatId of [chat.id, copy!.id]) {
+      expect(await questionsIn(chatId)).toHaveLength(1);
+      expect(await readTexts(chatId)).toEqual(["And the train?", "The 9:10 to Sintra."]);
+    }
+
+    // A Resume under the retired disclosure changes nothing; the current one makes the whole chat searchable.
+    const chats = createPrismaChatRepository(prisma);
+    await expect(chats.setMemoryMode({ chatId: chat.id, mode: "EXCLUDED", userId })).resolves.toEqual({ kind: "ok" });
+    await expect(chats.setMemoryMode({ chatId: chat.id, mode: "NORMAL", resumeDisclosureCopyVersion: "memory-confirmation-v1",
+      userId })).resolves.toEqual({ kind: "reload_required" });
+    await expect(prisma.chat.findUniqueOrThrow({ select: { memoryMode: true }, where: { id: chat.id } }))
+      .resolves.toEqual({ memoryMode: "EXCLUDED" });
+    expect(await excludedIn(chat.id)).toHaveLength(1);
+    await expect(chats.setMemoryMode({ chatId: chat.id, mode: "NORMAL",
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION, userId })).resolves.toEqual({ kind: "ok" });
+    expect(await excludedIn(chat.id)).toEqual([]);
+    await drain();
+    expect(await questionsIn(chat.id)).toEqual([question.id, later.id]);
+    expect(await readTexts(chat.id)).toEqual(["Where should we stay?", "Alfama, near the river.", "And the train?",
+      "The 9:10 to Sintra."]);
+    // The copy is a chat of its own: its rows stay until it is resumed itself.
+    expect(await excludedIn(copy!.id)).toHaveLength(1);
   });
 });

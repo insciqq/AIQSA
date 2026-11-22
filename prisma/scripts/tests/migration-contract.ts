@@ -13,6 +13,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
 import {
+  CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION, chatSearchCarriedExclusionsFixtureSql, chatSearchCarriedExclusionsProofSql
+} from "./chat-search-carried-exclusions-adoption";
+import {
   DROP_ANSWER_REVIEW_STORAGE_MIGRATION, dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql
 } from "./drop-answer-review-storage-adoption";
 import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
@@ -587,6 +590,11 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
   runForwardAdoptionProof(database, migrations, MEMORY_NOTE_ADOPTION_MIGRATION,
     memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql, memoryNoteAdoptionBareRepeatProofSql,
     DROP_OLD_MEMORY_MIGRATION);
+  // Past-chat search keeps out what the old Memory kept out of history search: messages up to a Resume, a history
+  // reset or a deletion of all Memory, inside a Memory or search pause, and forgotten sources, in the chats that may be
+  // searched again. Its proof reads only tables that stay, so it runs over the whole history.
+  runForwardAdoptionProof(database, migrations, CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION,
+    chatSearchCarriedExclusionsFixtureSql, chatSearchCarriedExclusionsProofSql, chatSearchCarriedExclusionsProofSql);
   // The old subsystem goes with its data: runs it left preparing end interrupted, runs at a PDF or Workspace gate keep
   // waiting, and the note, the past-chat index, the worker's tables, settings, roles, inbound OAuth, other chats, runs
   // and usage stay as they were. Nothing named after it is left in the catalog. Its proof reads usage and settings
@@ -621,7 +629,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

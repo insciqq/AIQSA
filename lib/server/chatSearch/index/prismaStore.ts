@@ -141,6 +141,9 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
           where: { id: chatId }
         });
         if (!chat) return null;
+        // The walk follows every message of the branch; a message search never holds (`ChatSearchExcludedMessage`)
+        // leaves the path afterwards, and its turn with it: its question and answer are then no longer parent and
+        // child side by side, so `chatSearchTurns` makes no turn of them.
         const path: ChatSearchSourceMessage[] = chat.activeLeafMessageId === null ? [] : (await tx.$queryRaw<PathRow[]>`
           WITH RECURSIVE path AS (
             SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
@@ -158,7 +161,12 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
           )
           SELECT "id", "parentMessageId", "role", "status", "content", "createdAt", "systemTurnKind",
             "scheduledTaskPrompt"
-          FROM path ORDER BY "depth" DESC`);
+          FROM path
+          WHERE NOT EXISTS (
+            SELECT 1 FROM "ChatSearchExcludedMessage" AS excluded
+            WHERE excluded."chatId" = ${chatId} AND excluded."messageId" = path."id"
+          )
+          ORDER BY "depth" DESC`);
         const files = path.length === 0 ? [] : await tx.attachment.findMany({
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           select: { fileName: true, messageId: true },

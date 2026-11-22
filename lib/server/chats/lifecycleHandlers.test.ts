@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
+import { MEMORY_RESUME_DISCLOSURE_COPY_VERSION } from "../../contracts/memoryClient";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import { ActiveRunConflictError, SubagentsRunningConflictError } from "../runs/runRepositoryContract";
@@ -276,7 +276,7 @@ describe("chat lifecycle handlers", () => {
     const resumed = await handler(request("/api/me/chats/chat-1/memory-mode", {
       body: JSON.stringify({
         mode: "NORMAL",
-        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+        resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
       }),
       method: "PATCH"
     }), { params: { chatId: "chat-1" } });
@@ -290,7 +290,7 @@ describe("chat lifecycle handlers", () => {
     expect(setMemoryMode).toHaveBeenCalledWith({
       chatId: "chat-1",
       mode: "NORMAL",
-      resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
       userId: config.bootstrapUserId
     });
     expectPrivate(resumed);
@@ -301,13 +301,35 @@ describe("chat lifecycle handlers", () => {
     })(request("/api/me/chats/chat-1/memory-mode", {
       body: JSON.stringify({
         mode: "NORMAL",
-        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
+        resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION
       }),
       method: "PATCH"
     }), { params: { chatId: "chat-1" } });
     expect(blocked.status).toBe(503);
     await expect(blocked.json()).resolves.toEqual({ error: "memory_action_failed" });
     expectPrivate(blocked);
+  });
+
+  it("tells a page from before v0.5.0 to reload when it resumes under the retired disclosure", async () => {
+    const setMemoryMode = vi.fn<ChatLifecycleRepository["setMemoryMode"]>(async () => ({ kind: "reload_required" }));
+    const getChatMemoryState = vi.fn<ChatLifecycleRepository["getChatMemoryState"]>();
+    const refused = await createPatchChatMemoryModeHandler({
+      repository: repository({ getChatMemoryState, setMemoryMode }),
+      resolveAuth: auth.resolveAuth
+    })(request("/api/me/chats/chat-1/memory-mode", {
+      body: JSON.stringify({ mode: "NORMAL", resumeDisclosureCopyVersion: "memory-confirmation-v1" }),
+      method: "PATCH"
+    }), { params: { chatId: "chat-1" } });
+
+    expect(refused.status).toBe(409);
+    await expect(refused.json()).resolves.toEqual({
+      error: "memory_reload_required",
+      message: "This page is out of date. Reload it, then resume Memory for the chat again."
+    });
+    expect(setMemoryMode).toHaveBeenCalledWith({ chatId: "chat-1", mode: "NORMAL",
+      resumeDisclosureCopyVersion: "memory-confirmation-v1", userId: config.bootstrapUserId });
+    expect(getChatMemoryState).not.toHaveBeenCalled();
+    expectPrivate(refused);
   });
 
   it("reads Temporary mode without reading reusable Memory state", async () => {
@@ -366,7 +388,7 @@ describe("chat lifecycle handlers", () => {
       repository: repository({ getChatMemoryState, setMemoryMode: async () => ({ kind: "imported" }) }),
       resolveAuth: auth.resolveAuth
     })(request("/api/me/chats/chat-imported/memory-mode", {
-      body: JSON.stringify({ mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION }),
+      body: JSON.stringify({ mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_RESUME_DISCLOSURE_COPY_VERSION }),
       method: "PATCH"
     }), { params: { chatId: "chat-imported" } });
     expect(refused.status).toBe(409);

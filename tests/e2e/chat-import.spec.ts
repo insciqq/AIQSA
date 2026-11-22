@@ -280,7 +280,7 @@ test("an imported chat continues with the current model, edits and regenerates, 
   const memory = await page.request.get(`/api/me/chats/${chatId}/memory-mode`);
   expect(await memory.json()).toEqual({ allowedActions: [], archived: false, lockedReason: "IMPORTED", mode: "EXCLUDED", temporaryRetentionDeadline: null });
   const resume = await page.request.patch(`/api/me/chats/${chatId}/memory-mode`, {
-    data: { mode: "NORMAL", resumeDisclosureCopyVersion: "memory-confirmation-v1" }
+    data: { mode: "NORMAL", resumeDisclosureCopyVersion: "memory-resume-whole-chat-v2" }
   });
   expect(resume.status()).toBe(409);
   expect(await resume.json()).toEqual({ error: "memory_imported_chat_forbidden" });

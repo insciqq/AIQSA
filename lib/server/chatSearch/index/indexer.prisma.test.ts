@@ -283,6 +283,27 @@ describe("the past-chat index in PostgreSQL", () => {
     }
   });
 
+  it("builds no passage for a turn with a message the old Memory kept out, and follows the rest of the branch", async () => {
+    const userId = await owner();
+    const { chatId, ids } = await chat(userId, [["Before the reset", "Old answer"], ["Kept question", "Paused answer"],
+      ["After it", "New answer"]]);
+    // The first question (a history reset) and the second answer (a pause) stay out, as the migration carried them.
+    for (const messageId of [ids[0]!, ids[3]!]) {
+      await prisma.$executeRaw`
+        INSERT INTO "ChatSearchExcludedMessage" ("chatId", "messageId", "userId") VALUES (${chatId}, ${messageId}, ${userId})`;
+    }
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+    const fake = fakeEmbedder();
+    await drain(fake.embedder, [userId]);
+    const rows = await passages(chatId);
+    expect(rows.map((row) => [row.userMessageId, row.assistantMessageId])).toEqual([[ids[4], ids[5]]]);
+    expect([...fake.embedded.keys()].join("\n")).not.toMatch(/Before the reset|Old answer|Kept question|Paused answer/u);
+    // The rows go with their messages.
+    await prisma.chat.delete({ where: { id: chatId } });
+    expect(await prisma.$queryRaw<Array<{ count: number }>>`
+      SELECT count(*)::integer AS "count" FROM "ChatSearchExcludedMessage" WHERE "chatId" = ${chatId}`).toEqual([{ count: 0 }]);
+  });
+
   it("records past-chat search usage without a Memory binding, as the usage checks allow", async () => {
     const userId = await owner();
     const model = await prisma.providerModel.findFirst({ select: { id: true } });

@@ -47,7 +47,10 @@ export type ChatSearchIndexStore = Readonly<{
   /** Claims due dirty chats, newest mark first, without waiting on chats another worker holds, under a lease. */
   claimDue(input: Readonly<{ now: Date; leaseUntil: Date; limit: number; ownerIds?: readonly string[] }>):
     Promise<readonly ChatSearchClaim[]>;
-  /** The chat as one consistent snapshot; null when it no longer exists. */
+  /**
+   * The chat as one consistent snapshot, its path without the messages search never holds
+   * (`ChatSearchExcludedMessage`); null when it no longer exists.
+   */
   loadSnapshot(chatId: string): Promise<ChatSearchChatSnapshot | null>;
   loadSavedSecretValues(userId: string): Promise<readonly string[]>;
   /** Whether the owner's passages may go to the embedding model now (`./ownerEmbedding.ts`). */

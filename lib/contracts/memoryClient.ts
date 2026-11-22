@@ -3,7 +3,15 @@ import { z } from "zod";
 /** Client-safe chat Memory-mode primitives (Excluded and Temporary chats, permanent chat deletion) shared by browser
  * projections and the server routes that produce and check them. The names keep their Memory prefix from the retired
  * Personal Memory contracts so the wire values and their importers stay as they are. */
+/** The permanent deletion confirmation's copy. */
 export const MEMORY_CONFIRMATION_COPY_VERSION = "memory-confirmation-v1" as const;
+/** The Resume disclosure the server accepts: past-chat search finds the whole chat again, earlier messages included. */
+export const MEMORY_RESUME_DISCLOSURE_COPY_VERSION = "memory-resume-whole-chat-v2" as const;
+/**
+ * The Resume disclosure of releases before v0.5.0, which promised that only new messages would be used. A page that
+ * still shows it is refused before the chat changes and asked to reload (`memory_reload_required`).
+ */
+export const MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION = "memory-confirmation-v1" as const;
 /** The database pins this value on every Temporary chat (`temporaryRetentionPolicyVersion`). */
 export const MEMORY_TEMPORARY_RETENTION_POLICY_VERSION = "temporary-24h-v1" as const;
 
@@ -70,13 +78,16 @@ export function decodeMemoryConsumerChatModeResponse(
   return decode(memoryConsumerChatModeResponseSchema, value);
 }
 
+/** A Resume names the disclosure the user confirmed; the retired one decodes only so that it can be refused visibly. */
 const memoryConsumerChatModePatchSchema = z.strictObject({
   mode: z.enum(["NORMAL", "EXCLUDED"]),
-  resumeDisclosureCopyVersion: z.literal(MEMORY_CONFIRMATION_COPY_VERSION).optional()
+  resumeDisclosureCopyVersion: z.enum([
+    MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
+    MEMORY_RETIRED_RESUME_DISCLOSURE_COPY_VERSION
+  ]).optional()
 }).superRefine((value, context) => {
-  if ((value.mode === "NORMAL") !==
-    (value.resumeDisclosureCopyVersion === MEMORY_CONFIRMATION_COPY_VERSION)) {
-    context.addIssue({ code: "custom", message: "Resume requires current disclosure" });
+  if ((value.mode === "NORMAL") !== (value.resumeDisclosureCopyVersion !== undefined)) {
+    context.addIssue({ code: "custom", message: "Resume requires a disclosure" });
   }
 });
 

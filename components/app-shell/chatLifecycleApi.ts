@@ -12,7 +12,7 @@ import {
   type ChatSourceResolutionResponseWire
 } from "@/lib/contracts/chats";
 import {
-  MEMORY_CONFIRMATION_COPY_VERSION,
+  MEMORY_RESUME_DISCLOSURE_COPY_VERSION,
   decodeMemoryConsumerChatModeResponse,
   type MemoryConsumerChatModeResponse
 } from "@/lib/contracts/memoryClient";
@@ -151,7 +151,7 @@ export function patchChatMemoryMode(input: Readonly<{
 }> | Readonly<{
   chatId: string;
   mode: "NORMAL";
-  resumeDisclosureCopyVersion: typeof MEMORY_CONFIRMATION_COPY_VERSION;
+  resumeDisclosureCopyVersion: typeof MEMORY_RESUME_DISCLOSURE_COPY_VERSION;
 }>): Promise<MemoryConsumerChatModeResponse> {
   return request(
     `/api/me/chats/${encodeURIComponent(input.chatId)}/memory-mode`,

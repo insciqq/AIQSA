@@ -102,5 +102,11 @@ describe("message writers mark past-chat search in their own transaction", () =>
     const marks = recorder.marks();
     expect(marks).toEqual([{ kind: "dirty", values: expect.arrayContaining(["copy-1", OWNER]) }]);
     expect(marks[0]!.values).not.toContain(CHAT.id);
+    // Each copied message stays out of past-chat search where its source did, before the copy is marked.
+    const carried = recorder.indexOf((call) => call.text?.startsWith("INSERT INTO \"ChatSearchExcludedMessage\"") ?? false);
+    expect(carried).toBeGreaterThan(recorder.indexOf((call) => call.name === "message.create"));
+    expect(carried).toBeLessThan(recorder.indexOf(isDirtyMark));
+    expect(recorder.calls[carried]!.values).toEqual(["copy-1", OWNER, ["question-1", "answer-1"], ["copied-0", "copied-1"],
+      CHAT.id, OWNER]);
   });
 });
