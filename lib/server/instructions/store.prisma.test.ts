@@ -91,7 +91,7 @@ describe("persisted owner instructions", () => {
     expect((await store.list(userId)).presets).toHaveLength(20);
   });
 
-  it("fences initial run acceptance after an edit and preserves the exact preparing snapshot", async () => {
+  it("fences initial run acceptance after an edit and preserves the exact accepted request", async () => {
     const userId = await owner(), row = await preset(userId);
     await store.mutate(userId, { action: "select", id: row.id, selectionVersion: 0 });
     const stale = await plan(userId);
@@ -100,12 +100,14 @@ describe("persisted owner instructions", () => {
     expect(await prisma.message.count({ where: { chatId: stale.chatId } })).toBe(0);
     const current = await plan(userId);
     const admitted = await admitPreparingRunWithClient(prisma, current);
-    const before = await prisma.memoryRetrievalAttempt.findUniqueOrThrow({ where: { id: admitted.attemptId } });
+    // The run is dispatchable at admission (no Memory preparation since 2026-11-22): its own request keeps the text.
+    const accepted = () => prisma.modelRun.findUniqueOrThrow({ select: { normalizedRequest: true }, where: { id: admitted.runId } });
+    const before = await accepted();
     await store.mutate(userId, { action: "delete", id: row.id, revision: 2 });
-    const after = await prisma.memoryRetrievalAttempt.findUniqueOrThrow({ where: { id: admitted.attemptId } });
-    expect(after.boundedPrivateBaseRequestSnapshot).toEqual(before.boundedPrivateBaseRequestSnapshot);
-    expect(JSON.stringify(after.boundedPrivateBaseRequestSnapshot)).toContain("Current accepted text");
-    expect(JSON.stringify(after.boundedPrivateBaseRequestSnapshot)).toContain(draft.responseReminder);
+    const after = await accepted();
+    expect(after.normalizedRequest).toEqual(before.normalizedRequest);
+    expect(JSON.stringify(after.normalizedRequest)).toContain("Current accepted text");
+    expect(JSON.stringify(after.normalizedRequest)).toContain(draft.responseReminder);
   });
 
   it("rejects a repeatable-read snapshot that waited behind a preset mutation", async () => {
