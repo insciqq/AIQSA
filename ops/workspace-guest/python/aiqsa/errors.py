@@ -43,12 +43,6 @@ class GatewayUnavailable(McpUnavailable):
     code = "gateway_unavailable"
 
 
-class AgentModeUnsupported(McpUnavailable):
-    """Raised by no run since the Codex Agent was removed; kept so scripts that catch it still load."""
-
-    code = "agent_mode_unsupported"
-
-
 class TokenRevoked(AiqsaMcpError):
     """The run ended, was stopped, or its access was replaced: start a new request."""
 
