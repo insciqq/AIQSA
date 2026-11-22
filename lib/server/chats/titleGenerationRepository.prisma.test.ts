@@ -5,7 +5,6 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
 import { createPrismaAdminProviderRepository } from "../admin/providers/prismaRepository";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { createPrismaPermanentChatDeletionRepository } from "./permanentDeletion/repository";
 import { createPermanentChatDeletionService } from "./permanentDeletion/service";
 import { createChatTitleRepository } from "./titleGenerationRepository";
@@ -64,17 +63,12 @@ const job = (runId: string) => prisma.chatTitleGeneration.findUniqueOrThrow({ wh
 
 async function fenceDeletion(work: ReturnType<typeof chatTitleWork>) {
   const service = createPermanentChatDeletionService({
-    authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma),
-    capability: { enabled: true }, kick: () => undefined,
+    capability: { enabled: true },
     repository: createPrismaPermanentChatDeletionRepository(prisma)
   });
-  const before = await chat(work.chatId);
-  const request = { alsoForgetOriginMemories: false, expectedActiveLeafMessageId: before.activeLeafMessageId,
-    expectedChatRevision: before.memorySourceRevision };
-  const authorization = await service.mintAuthorization(work.userId, work.chatId, {
-    ...request, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestNonce: randomUUID()
+  await service.confirm(work.userId, work.chatId, {
+    alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
   });
-  await service.admit(work.userId, work.chatId, { ...request, mutationAuthorizationId: authorization.mutationAuthorizationId });
 }
 
 describe("durable optional title work", () => {

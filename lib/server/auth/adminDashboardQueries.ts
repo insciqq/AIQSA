@@ -3,7 +3,6 @@ import {
   adminUserDeletionInfo,
   adminUserOwnedDataCountWithMemory
 } from "./adminDeletionMetadata";
-import { loadAccountMemoryOwnedCounts } from "../memory/accountDeletion/inventory";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
 import type { AdminDashboard, AdminDashboardNavigation } from "./adminRepositoryContract";
@@ -163,7 +162,6 @@ export async function listAdminDashboard(
     grants,
     mcpServer,
     smtpConfiguration,
-    memoryOwnedCounts,
     personalModelRunCounts
   ] = await Promise.all([
     prisma.user.findMany({
@@ -258,7 +256,6 @@ export async function listAdminDashboard(
         ]
       }
     }),
-    loadAccountMemoryOwnedCounts(prisma),
     // Personal chats only: a chat a missed Project retirement left behind has no owner.
     prisma.modelRun.groupBy({
       _count: { _all: true },
@@ -294,7 +291,7 @@ export async function listAdminDashboard(
       (membership) => !membership.group.archivedAt
     );
     const activeGroupIds = activeMemberships.map((membership) => membership.groupId);
-    const memoryOwnedCount = memoryOwnedCounts.get(user.id) ?? 0;
+    // Old Memory rows no longer count: account deletion removes them with the account.
     const totalCount = adminUserOwnedDataCountWithMemory(
       {
         ...user,
@@ -303,13 +300,13 @@ export async function listAdminDashboard(
           modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
         }
       },
-      memoryOwnedCount
+      0
     );
 
     return {
       deletion: adminUserDeletionInfo({
-        ownedDataCount: Math.max(0, totalCount - memoryOwnedCount),
-        purgeableOwnedDataCount: memoryOwnedCount + user._count.mcpOwnedServers,
+        ownedDataCount: totalCount,
+        purgeableOwnedDataCount: user._count.mcpOwnedServers,
         status: user.status
       }),
       directGrants: grants.filter((grant) => grant.userId === user.id && grant.groupId === null).map(visibleGrant),

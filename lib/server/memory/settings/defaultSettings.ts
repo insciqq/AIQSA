@@ -2,10 +2,7 @@ import { prisma } from "../../prisma";
 import { resolveCurrentMemoryUtilityPolicy } from "../execution/policy";
 import { kickDefaultMemoryCoordinator } from "../coordinator/defaultCoordinator";
 import { readMemoryHistoryIndexingProgress } from "../history/backfill";
-import {
-  defaultPermanentChatDeletionCapability,
-  tryEnsureDefaultMemoryDeletionComposition
-} from "../deletionComposition";
+import { defaultPermanentChatDeletionCapability } from "../deletionComposition";
 import { createPrismaMemorySettingsRepository } from "../persistence/settings";
 import {
   createMemorySettingsService,
@@ -18,8 +15,6 @@ import {
 
 export const defaultMemorySettingsRepository =
   createPrismaMemorySettingsRepository(prisma);
-
-tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
 
 export const defaultMemorySettingsService = createMemorySettingsService({
   kick: kickDefaultMemoryCoordinator,

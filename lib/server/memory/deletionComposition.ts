@@ -1,55 +1,76 @@
 import type { MemoryDeletionHandler } from "./coordinator/types";
+import { MemoryCoordinatorError } from "./coordinator/errors";
 import type { MemoryCoordinatorRegistry } from "./coordinator/registry";
 import { defaultMemoryCoordinatorRegistry } from "./coordinator/registry";
-import {
-  createAccountMemoryDeletionHook,
-  type AccountMemoryDeletionHook
-} from "./accountDeletion/integration";
-import {
-  createPrismaAccountMemoryDeletionHandler
-} from "./accountDeletion/handler";
-import { MEMORY_DELETION_ADMISSION_POLICY } from "./capabilityPolicy";
+import { createPrismaAccountMemoryDeletionHandler } from "./accountDeletion/handler";
 import { memoryHistorySourceDeletionHandler } from "./history/purge";
 import { memorySavedSecretScrubDeletionHandler } from "./savedSecretScrub";
+import { MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE } from "./savedSecretScrubRequest";
+import { PERMANENT_CHAT_DELETION_TARGET_TYPE } from "../chats/permanentDeletion/contract";
 import {
-  createPrismaPermanentChatDeletionHandler
-} from "../chats/permanentDeletion/cleanup";
-import {
-  createSourcePurgeDeletionHandler
-} from "../chats/permanentDeletion/sourcePurge";
-import type {
-  PermanentChatDeletionCapability
+  permanentChatDeletionCapability,
+  type PermanentChatDeletionCapability
 } from "../chats/permanentDeletion/service";
-import { logEvent } from "../observability";
 import { prisma } from "../prisma";
-import { createS3StorageAdapter } from "../uploads/storage";
-import { workspaceRuntime } from "../workspace/defaultServices";
 
-export type MemoryDeletionAdmissionPolicy = Readonly<{
-  accountMemoryDeletion: Readonly<{ enabled: boolean }>;
-  permanentChatDeletion: Readonly<{ enabled: boolean }>;
-}>;
+/**
+ * Chat purge and Temporary expiry moved to the background worker (`lib/server/background/`, 2026-11-22): it
+ * finds fenced and expired chats by their own rows. An outbox row still written for either (by the previous
+ * release, or by the Temporary scheduling the Memory removal deletes) completes here as a no-op, so the old
+ * coordinator never processes a chat the worker owns.
+ */
+export const legacyPermanentChatDeletionHandler: MemoryDeletionHandler = Object.freeze({
+  async execute() {
+    return {};
+  },
+  operation: "SOURCE_PURGE"
+});
+
+export const legacyTemporaryChatDeletionHandler: MemoryDeletionHandler = Object.freeze({
+  async execute() {
+    return {};
+  },
+  operation: "TEMPORARY_DELETE"
+});
+
+/** One SOURCE_PURGE owner routes exact typed obligations without fallback. */
+export function createMemorySourcePurgeDeletionHandler(input: Readonly<{
+  history: MemoryDeletionHandler;
+  savedSecretScrub: MemoryDeletionHandler;
+}>): MemoryDeletionHandler {
+  if (input.history.operation !== "SOURCE_PURGE" || input.savedSecretScrub.operation !== "SOURCE_PURGE") {
+    throw new Error("memory_source_purge_handler_operation_invalid");
+  }
+  return Object.freeze({
+    async execute(claim, context) {
+      if (claim.operation !== "SOURCE_PURGE") {
+        throw new MemoryCoordinatorError("memory_deletion_target_invalid", false);
+      }
+      if (claim.targetType === PERMANENT_CHAT_DELETION_TARGET_TYPE) {
+        return legacyPermanentChatDeletionHandler.execute(claim, context);
+      }
+      return claim.targetType === MEMORY_SAVED_SECRET_SCRUB_TARGET_TYPE
+        ? input.savedSecretScrub.execute(claim, context)
+        : input.history.execute(claim, context);
+    },
+    operation: "SOURCE_PURGE"
+  });
+}
 
 export type MemoryDeletionCompositionStatus = Readonly<{
-  accountAdmissionEnabled: boolean;
   accountHandlerReachable: boolean;
-  accountHookReachable: boolean;
   composed: boolean;
-  permanentChatAdmissionEnabled: boolean;
   sourcePurgeHandlerReachable: boolean;
 }>;
 
-type AccountHookFactory = (input: Readonly<{
-  admissionEnabled: () => boolean;
-  kick: () => void;
-}>) => AccountMemoryDeletionHook;
-
+/**
+ * Registers the Memory coordinator's SOURCE_PURGE router and its account purge, which still drain the Memory
+ * obligations the previous release admitted. Account deletion itself no longer waits for them
+ * (`lib/server/auth/adminUserSessionCommands.ts`).
+ */
 export function createMemoryDeletionComposition(input: Readonly<{
   accountDeletionHandler: MemoryDeletionHandler;
   coordinatorRegistry: MemoryCoordinatorRegistry;
-  createAccountHook?: AccountHookFactory;
-  kick: () => void;
-  policy: MemoryDeletionAdmissionPolicy;
   sourcePurgeHandler: MemoryDeletionHandler;
 }>) {
   if (input.accountDeletionHandler.operation !== "ACCOUNT_MEMORY_DELETE") {
@@ -58,135 +79,48 @@ export function createMemoryDeletionComposition(input: Readonly<{
   if (input.sourcePurgeHandler.operation !== "SOURCE_PURGE") {
     throw new Error("memory_deletion_composition_source_handler_operation_invalid");
   }
-
-  let accountHookReachable = false;
-  let accountHook!: AccountMemoryDeletionHook;
   const status = (): MemoryDeletionCompositionStatus => {
     const accountHandlerReachable = input.coordinatorRegistry
       .deletionHandler("ACCOUNT_MEMORY_DELETE") === input.accountDeletionHandler;
     const sourcePurgeHandlerReachable = input.coordinatorRegistry
       .deletionHandler("SOURCE_PURGE") === input.sourcePurgeHandler;
-    const composed = accountHandlerReachable && sourcePurgeHandlerReachable &&
-      accountHookReachable;
     return Object.freeze({
-      accountAdmissionEnabled: composed && input.policy.accountMemoryDeletion.enabled,
       accountHandlerReachable,
-      accountHookReachable,
-      composed,
-      permanentChatAdmissionEnabled: composed &&
-        input.policy.permanentChatDeletion.enabled,
+      composed: accountHandlerReachable && sourcePurgeHandlerReachable,
       sourcePurgeHandlerReachable
     });
   };
-  const createAccountHook = input.createAccountHook ?? createAccountMemoryDeletionHook;
-  accountHook = createAccountHook({
-    admissionEnabled: () => status().accountAdmissionEnabled,
-    kick: input.kick
-  });
-  const permanentChatDeletionCapability: PermanentChatDeletionCapability =
-    Object.freeze({
-      get enabled() {
-        return status().permanentChatAdmissionEnabled;
-      }
-    });
-
   const ensure = (): MemoryDeletionCompositionStatus => {
     const existingSource = input.coordinatorRegistry.deletionHandler("SOURCE_PURGE");
-    const existingAccount = input.coordinatorRegistry
-      .deletionHandler("ACCOUNT_MEMORY_DELETE");
+    const existingAccount = input.coordinatorRegistry.deletionHandler("ACCOUNT_MEMORY_DELETE");
     if (existingSource && existingSource !== input.sourcePurgeHandler) {
       throw new Error("memory_deletion_composition_source_handler_conflict");
     }
     if (existingAccount && existingAccount !== input.accountDeletionHandler) {
       throw new Error("memory_deletion_composition_account_handler_conflict");
     }
-
-    const rollback: Array<() => void> = [];
-    try {
-      if (!existingSource) {
-        rollback.push(input.coordinatorRegistry.registerDeletion(
-          input.sourcePurgeHandler
-        ));
-      }
-      if (!existingAccount) {
-        rollback.push(input.coordinatorRegistry.registerDeletion(
-          input.accountDeletionHandler
-        ));
-      }
-      accountHookReachable = true;
-      const current = status();
-      if (!current.composed) {
-        throw new Error("memory_deletion_composition_unreachable");
-      }
-      return current;
-    } catch (error) {
-      accountHookReachable = false;
-      for (const unregister of rollback.reverse()) unregister();
-      throw error;
-    }
+    if (!existingSource) input.coordinatorRegistry.registerDeletion(input.sourcePurgeHandler);
+    if (!existingAccount) input.coordinatorRegistry.registerDeletion(input.accountDeletionHandler);
+    const current = status();
+    if (!current.composed) throw new Error("memory_deletion_composition_unreachable");
+    return current;
   };
-
-  return Object.freeze({
-    accountDeletionHook: () => status().composed ? accountHook : null,
-    ensure,
-    permanentChatDeletionCapability,
-    status
-  });
+  return Object.freeze({ ensure, status });
 }
-
-const defaultPermanentChatDeletionHandler =
-  createPrismaPermanentChatDeletionHandler(
-    createS3StorageAdapter(),
-    prisma,
-    workspaceRuntime
-  );
-const defaultSourcePurgeHandler = createSourcePurgeDeletionHandler({
-  history: memoryHistorySourceDeletionHandler,
-  permanentChat: defaultPermanentChatDeletionHandler,
-  savedSecretScrub: memorySavedSecretScrubDeletionHandler
-});
-const defaultAccountDeletionHandler = createPrismaAccountMemoryDeletionHandler(prisma);
-let defaultKick: (() => void) | null = null;
-let defaultCompositionFailureLogged = false;
 
 const defaultComposition = createMemoryDeletionComposition({
-  accountDeletionHandler: defaultAccountDeletionHandler,
+  accountDeletionHandler: createPrismaAccountMemoryDeletionHandler(prisma),
   coordinatorRegistry: defaultMemoryCoordinatorRegistry,
-  kick: () => {
-    if (!defaultKick) {
-      throw new Error("memory_deletion_composition_coordinator_kick_unavailable");
-    }
-    defaultKick();
-  },
-  policy: MEMORY_DELETION_ADMISSION_POLICY,
-  sourcePurgeHandler: defaultSourcePurgeHandler
+  sourcePurgeHandler: createMemorySourcePurgeDeletionHandler({
+    history: memoryHistorySourceDeletionHandler,
+    savedSecretScrub: memorySavedSecretScrubDeletionHandler
+  })
 });
 
-export const defaultPermanentChatDeletionCapability =
-  defaultComposition.permanentChatDeletionCapability;
+/** Permanent chat deletion is always available: it no longer depends on this composition. */
+export const defaultPermanentChatDeletionCapability: PermanentChatDeletionCapability =
+  permanentChatDeletionCapability;
 
-export function getDefaultAccountMemoryDeletionHook(): AccountMemoryDeletionHook | null {
-  return defaultComposition.accountDeletionHook();
-}
-
-export function ensureDefaultMemoryDeletionComposition(
-  kick: () => void
-): MemoryDeletionCompositionStatus {
-  defaultKick ??= kick;
+export function ensureDefaultMemoryDeletionComposition(): MemoryDeletionCompositionStatus {
   return defaultComposition.ensure();
-}
-
-export function tryEnsureDefaultMemoryDeletionComposition(
-  kick: () => void
-): boolean {
-  try {
-    ensureDefaultMemoryDeletionComposition(kick);
-    return true;
-  } catch (error) {
-    if (!defaultCompositionFailureLogged) {
-      defaultCompositionFailureLogged = true;
-      logEvent("runtime_lifecycle", { error, subsystem: "memory", stage: "initialize", outcome: "failed", code: "memory_deletion_composition_failed" });
-    }
-    return false;
-  }
 }

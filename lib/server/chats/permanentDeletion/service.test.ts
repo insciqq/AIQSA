@@ -1,236 +1,105 @@
 import { describe, expect, it, vi } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../../contracts/memoryClient";
 import {
   createPermanentChatDeletionService,
-  type PermanentChatDeletionStatus
+  PermanentChatDeletionError,
+  type PermanentChatDeletionRepository,
+  type PermanentChatDeletionSnapshot
 } from "./service";
 
-const NOW = new Date("2026-08-12T12:00:00.000Z");
-
-function dependencies(enabled = true) {
-  const authorizationRepository = {
-    mint: vi.fn(async () => ({
-      expiresAt: new Date("2026-08-12T12:05:00.000Z"),
-      id: "authorization-1"
-    })),
-    resolveForUse: vi.fn(async () => ({ confirmedAt: NOW, requestId: "request-1" }))
-  };
-  const repository = {
-    admit: vi.fn(async () => ({
-      admission: { deletionId: "deletion-1", fencedAt: NOW, state: "PENDING" as const },
-      kind: "ok" as const
-    })),
-    latestStatus: vi.fn(async (): Promise<PermanentChatDeletionStatus | null> => ({
-      attemptCount: 1,
-      deletionId: "deletion-1",
-      errorCode: null,
-      fencedAt: NOW,
-      lastAuditAt: NOW,
-      state: "PENDING" as const,
-      updatedAt: NOW
-    })),
-    readSnapshot: vi.fn(async () => ({
-      activeLeafMessageId: "message-1",
-      activeRunCount: 0,
-      memoryMode: "NORMAL" as const,
-      sourceRevision: 4
-    })),
-    status: vi.fn(async () => ({
-      attemptCount: 1,
-      deletionId: "deletion-1",
-      errorCode: null,
-      fencedAt: NOW,
-      lastAuditAt: NOW,
-      state: "SUCCEEDED" as const,
-      updatedAt: NOW
-    }))
-  };
-  const kick = vi.fn();
-  return {
-    authorizationRepository,
-    kick,
-    repository,
-    service: createPermanentChatDeletionService({
-      authorizationRepository,
-      capability: { enabled },
-      kick,
-      now: () => NOW,
-      repository
-    })
-  };
-}
-
-const authorizationRequest = {
+const NOW = new Date("2026-11-22T12:00:00.000Z");
+const request = {
   alsoForgetOriginMemories: false,
   confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-  expectedActiveLeafMessageId: "message-1",
-  expectedChatRevision: 4,
-  requestNonce: "nonce-1"
+  requestId: "request-1"
 } as const;
 
+function snapshot(overrides: Partial<PermanentChatDeletionSnapshot> = {}): PermanentChatDeletionSnapshot {
+  return { activeLeafMessageId: "leaf-1", activeRunCount: 0, memoryMode: "NORMAL", sourceRevision: 4, ...overrides };
+}
+
+function fixture(overrides: Partial<PermanentChatDeletionRepository> = {}) {
+  const order: string[] = [];
+  const repository: PermanentChatDeletionRepository = {
+    admit: vi.fn(async () => { order.push("admit"); return { deletionId: "deletion-1", kind: "ok" as const }; }),
+    progress: vi.fn(async () => "in_progress" as const),
+    readSnapshot: vi.fn(async () => snapshot()),
+    ...overrides
+  };
+  const stopSubagents = vi.fn(async () => { order.push("stopSubagents"); });
+  const service = createPermanentChatDeletionService({
+    capability: { enabled: true }, now: () => NOW, repository, stopSubagents
+  });
+  return { order, repository, service, stopSubagents };
+}
+
 describe("permanent chat deletion service", () => {
-  it("authorizes and admits a safe confirmation from an authoritative snapshot", async () => {
-    const deps = dependencies();
-    await expect(deps.service.confirm("user-1", "chat-1", {
-      alsoForgetOriginMemories: true,
-      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-      requestId: "consumer-request-1"
-    })).resolves.toEqual({ status: "IN_PROGRESS" });
-    expect(deps.repository.readSnapshot).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      userId: "user-1"
+  it("fences the snapshot the owner confirmed and answers in progress", async () => {
+    const { order, repository, service } = fixture();
+    const condition = vi.fn(async () => true);
+    await expect(service.confirm("user-1", "chat-1", request, { condition })).resolves.toEqual({ status: "IN_PROGRESS" });
+    expect(repository.admit).toHaveBeenCalledWith({
+      chatId: "chat-1", condition, expectedActiveLeafMessageId: "leaf-1", expectedChatRevision: 4, now: NOW, userId: "user-1"
     });
-    expect(deps.authorizationRepository.mint).toHaveBeenCalledWith(
-      "user-1",
-      expect.objectContaining({
-        action: "BULK_DELETE",
-        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION
-      }),
-      NOW
-    );
-    expect(deps.repository.admit).toHaveBeenCalledWith(expect.objectContaining({
-      alsoForgetOriginMemories: true,
-      chatId: "chat-1",
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
-      userId: "user-1"
-    }));
+    // Background sub-agents stop once the fence holds; the worker purges after that.
+    expect(order).toEqual(["admit", "stopSubagents"]);
   });
 
-  it("projects worker state to a friendly chat-keyed status", async () => {
-    const deps = dependencies();
-    await expect(deps.service.consumerStatus("user-1", "chat-1"))
-      .resolves.toEqual({ status: "IN_PROGRESS" });
-    expect(deps.repository.latestStatus).toHaveBeenCalledWith({
-      chatId: "chat-1",
-      userId: "user-1"
-    });
-    deps.repository.latestStatus.mockResolvedValueOnce({
-      attemptCount: 2,
-      deletionId: "deletion-private",
-      errorCode: "worker-private",
-      fencedAt: NOW,
-      lastAuditAt: NOW,
-      state: "BLOCKED_REQUIRES_ADMIN",
-      updatedAt: NOW
-    });
-    await expect(deps.service.consumerStatus("user-1", "chat-1"))
-      .resolves.toEqual({ status: "NEEDS_ATTENTION" });
+  it("refuses a missing, Temporary or busy chat before any change", async () => {
+    for (const [value, code] of [
+      [null, "chat_not_found"],
+      [snapshot({ memoryMode: "TEMPORARY" }), "chat_permanent_delete_temporary_forbidden"],
+      [snapshot({ activeRunCount: 1 }), "active_run_in_progress"]
+    ] as const) {
+      const { repository, service } = fixture({ readSnapshot: vi.fn(async () => value) });
+      await expect(service.confirm("user-1", "chat-1", request)).rejects.toEqual(new PermanentChatDeletionError(code));
+      expect(repository.admit).not.toHaveBeenCalled();
+    }
   });
 
-  it("mints a short single-use authorization bound to chat, leaf, revision, and choice", async () => {
-    const deps = dependencies();
-    await expect(deps.service.mintAuthorization(
-      "user-1",
-      "chat-1",
-      authorizationRequest
-    )).resolves.toEqual({
-      expiresAt: "2026-08-12T12:05:00.000Z",
-      mutationAuthorizationId: "authorization-1"
+  it("maps a refused admission to its stable code and never stops sub-agents then", async () => {
+    for (const [kind, code] of [
+      ["not_found", "chat_not_found"],
+      ["stale", "chat_permanent_delete_stale"],
+      ["temporary", "chat_permanent_delete_temporary_forbidden"],
+      ["active_run", "active_run_in_progress"]
+    ] as const) {
+      const { service, stopSubagents } = fixture({ admit: vi.fn(async () => ({ kind })) });
+      await expect(service.confirm("user-1", "chat-1", request)).rejects.toEqual(new PermanentChatDeletionError(code));
+      expect(stopSubagents).not.toHaveBeenCalled();
+    }
+    const { service } = fixture({ admit: vi.fn(async () => { throw new Error("synthetic_database_down"); }) });
+    await expect(service.confirm("user-1", "chat-1", request))
+      .rejects.toEqual(new PermanentChatDeletionError("chat_permanent_delete_failed"));
+  });
+
+  it("keeps the answer when stopping sub-agents fails", async () => {
+    const { service } = fixture();
+    const failing = createPermanentChatDeletionService({
+      capability: { enabled: true },
+      repository: fixture().repository,
+      stopSubagents: async () => { throw new Error("synthetic_stop_failed"); }
     });
-    expect(deps.authorizationRepository.mint).toHaveBeenCalledWith(
-      "user-1",
-      expect.objectContaining({
-        action: "BULK_DELETE",
-        confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        expiresAt: new Date("2026-08-12T12:05:00.000Z")
-      }),
-      NOW
-    );
+    await expect(failing.confirm("user-1", "chat-1", request)).resolves.toEqual({ status: "IN_PROGRESS" });
+    await expect(service.confirm("user-1", "chat-1", request)).resolves.toEqual({ status: "IN_PROGRESS" });
   });
 
-  it("admits exactly the authorized choice, kicks cleanup, and exposes no text", async () => {
-    const deps = dependencies();
-    const request = {
-      alsoForgetOriginMemories: false,
-      expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4,
-      mutationAuthorizationId: "authorization-1"
-    } as const;
-    await expect(deps.service.admit("user-1", "chat-1", request)).resolves.toEqual({
-      deletionId: "deletion-1",
-      fencedAt: NOW.toISOString(),
-      state: "PENDING"
-    });
-    expect(deps.repository.admit).toHaveBeenCalledWith(expect.objectContaining({
-      alsoForgetOriginMemories: false,
-      authorization: expect.objectContaining({ requestId: "request-1" }),
-      chatId: "chat-1",
-      userId: "user-1"
-    }));
-    expect(deps.kick).toHaveBeenCalledOnce();
-    await expect(deps.service.status("user-1", "chat-1", "deletion-1"))
-      .resolves.toEqual({
-        attemptCount: 1,
-        cleanupComplete: true,
-        deletionId: "deletion-1",
-        errorCode: null,
-        fencedAt: NOW.toISOString(),
-        lastAuditAt: NOW.toISOString(),
-        state: "SUCCEEDED",
-        updatedAt: NOW.toISOString()
-      });
+  it("reads progress for the owner only, a finished deletion as complete", async () => {
+    const progress = vi.fn<PermanentChatDeletionRepository["progress"]>(async ({ userId }) =>
+      userId === "user-1" ? "complete" : null);
+    const { service } = fixture({ progress });
+    await expect(service.consumerStatus("user-1", "chat-1")).resolves.toEqual({ status: "COMPLETE" });
+    await expect(service.consumerStatus("user-2", "chat-1"))
+      .rejects.toEqual(new PermanentChatDeletionError("chat_not_found"));
+    progress.mockResolvedValueOnce("in_progress");
+    await expect(service.consumerStatus("user-1", "chat-1")).resolves.toEqual({ status: "IN_PROGRESS" });
   });
 
-  it("stops the chat's background sub-agents once its fence holds, before cleanup is kicked", async () => {
-    const deps = dependencies();
-    const order: string[] = [];
-    deps.kick.mockImplementation(() => { order.push("kick"); });
-    const stopSubagents = vi.fn(async () => { order.push("stop"); });
-    const service = createPermanentChatDeletionService({ authorizationRepository: deps.authorizationRepository,
-      capability: { enabled: true }, kick: deps.kick, now: () => NOW, repository: deps.repository, stopSubagents });
-    await service.admit("user-1", "chat-1", { alsoForgetOriginMemories: false, expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4, mutationAuthorizationId: "authorization-1" });
-    expect(stopSubagents).toHaveBeenCalledWith({ chatId: "chat-1", userId: "user-1" });
-    expect(order).toEqual(["stop", "kick"]);
-    deps.repository.admit.mockResolvedValueOnce({ kind: "active_run" } as never);
-    await expect(service.admit("user-1", "chat-1", { alsoForgetOriginMemories: false, expectedActiveLeafMessageId: "message-1",
-      expectedChatRevision: 4, mutationAuthorizationId: "authorization-1" })).rejects.toMatchObject({ code: "active_run_in_progress" });
-    expect(stopSubagents).toHaveBeenCalledOnce();
-  });
-
-  it("is feature-dark without touching repositories", async () => {
-    const deps = dependencies(false);
-    await expect(deps.service.mintAuthorization(
-      "user-1",
-      "chat-1",
-      authorizationRequest
-    )).rejects.toMatchObject({ code: "chat_permanent_delete_unavailable" });
-    expect(deps.repository.readSnapshot).not.toHaveBeenCalled();
-    expect(deps.authorizationRepository.mint).not.toHaveBeenCalled();
-  });
-
-  it("keeps accepted cleanup status inspectable after admission rollback", async () => {
-    const deps = dependencies(false);
-    await expect(deps.service.status("user-1", "chat-1", "deletion-1"))
-      .resolves.toMatchObject({ cleanupComplete: true, state: "SUCCEEDED" });
-    expect(deps.repository.status).toHaveBeenCalledOnce();
-  });
-
-  it("rejects stale snapshots and active runs before minting", async () => {
-    const deps = dependencies();
-    deps.repository.readSnapshot.mockResolvedValueOnce({
-      activeLeafMessageId: "message-2",
-      activeRunCount: 0,
-      memoryMode: "NORMAL",
-      sourceRevision: 4
-    });
-    await expect(deps.service.mintAuthorization(
-      "user-1",
-      "chat-1",
-      authorizationRequest
-    )).rejects.toMatchObject({ code: "chat_permanent_delete_stale" });
-    deps.repository.readSnapshot.mockResolvedValueOnce({
-      activeLeafMessageId: "message-1",
-      activeRunCount: 1,
-      memoryMode: "NORMAL",
-      sourceRevision: 4
-    });
-    await expect(deps.service.mintAuthorization(
-      "user-1",
-      "chat-1",
-      authorizationRequest
-    )).rejects.toMatchObject({ code: "active_run_in_progress" });
-    expect(deps.authorizationRepository.mint).not.toHaveBeenCalled();
+  it("refuses everything while the capability is off", async () => {
+    const repository = fixture().repository;
+    const service = createPermanentChatDeletionService({ capability: { enabled: false }, repository });
+    await expect(service.confirm("user-1", "chat-1", request))
+      .rejects.toEqual(new PermanentChatDeletionError("chat_permanent_delete_unavailable"));
+    expect(repository.readSnapshot).not.toHaveBeenCalled();
   });
 });

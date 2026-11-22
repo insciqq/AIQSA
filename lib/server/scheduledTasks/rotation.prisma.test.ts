@@ -6,7 +6,6 @@ import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaPermanentChatDeletionRepository } from "../chats/permanentDeletion/repository";
 import { createPermanentChatDeletionService } from "../chats/permanentDeletion/service";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -23,8 +22,7 @@ const users: string[] = [];
 const runner = createPrismaScheduledTaskRunnerStore(prisma);
 const runs = createPrismaRunRepository(prisma);
 const deletion = createPermanentChatDeletionService({
-  authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma), capability: { enabled: true },
-  kick: () => undefined, repository: createPrismaPermanentChatDeletionRepository(prisma)
+  capability: { enabled: true }, repository: createPrismaPermanentChatDeletionRepository(prisma)
 });
 let instants = 0;
 

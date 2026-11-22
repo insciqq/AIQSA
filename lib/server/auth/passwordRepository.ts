@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import { revokeConnectDevicesForUser } from "../connect/revocation";
-import { revokeInboundMcpGrantsForUser } from "../memoryMcp/oauth/repository";
+import { revokeInboundMcpGrantsForUser } from "../mcp/inboundGrantRevocation";
 import { revokeTelegramLinksForUser } from "../telegram/linking/revocation";
 import type { SecondFactorChallengeSubject } from "./secondFactorChallenge";
 import { isServiceAccount } from "./serviceAccounts";

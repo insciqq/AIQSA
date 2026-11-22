@@ -4,15 +4,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "@/lib/contracts/memory";
 import { workspaceSandboxName } from "@/lib/domain/workspace";
 import { prisma } from "@/lib/server/prisma";
-import { createPrismaPermanentChatDeletionHandler } from "@/lib/server/chats/permanentDeletion/cleanup";
+import { createPermanentChatDeletionPass, createTemporaryChatDeletionPass } from "@/lib/server/background/chatDeletionPasses";
 import { createPrismaPermanentChatDeletionRepository } from "@/lib/server/chats/permanentDeletion/repository";
 import { createPermanentChatDeletionService } from "@/lib/server/chats/permanentDeletion/service";
-import { createPrismaMemoryMutationAuthorizationRepository } from "@/lib/server/memory/persistence/authorizations";
-import { MemoryCoordinator } from "@/lib/server/memory/coordinator/coordinator";
-import { MemoryCoordinatorRegistry } from "@/lib/server/memory/coordinator/registry";
-import { createPrismaMemoryCoordinatorRepository } from "@/lib/server/memory/coordinator/prismaRepository";
-import { createPrismaTemporaryChatDeletionHandler } from "@/lib/server/memory/temporaryDeletion";
-import { scheduleTemporaryChatDeletion } from "@/lib/server/memory/temporaryRetention";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
 import { getWorkspaceConfig } from "./config";
 import { DeterministicWorkspaceRuntime } from "./deterministicRuntime";
@@ -93,9 +87,6 @@ describe("Workspace aggregate deletion protocol", () => {
           temporaryRetentionDeadline: new Date(Date.now() - 1_000) } : {}),
         title: "Workspace deletion", workspaceEnabled: true
         } });
-        if (kind === "temporary") await scheduleTemporaryChatDeletion(tx, {
-          chatId: created.id, deadline: created.temporaryRetentionDeadline!, now: new Date(), userId
-        });
         return created;
       });
       chatId = chat.id;
@@ -103,30 +94,19 @@ describe("Workspace aggregate deletion protocol", () => {
         internetEnabled: false, memoryMiB: 1024, runtimeSandboxId: null, sandboxName, sessionId })).runtimeSandboxId;
       await prisma.workspaceSession.create({ data: { id: sessionId, chatId, expiresAt: new Date(Date.now() + 3_600_000),
         imageRef: config.imageRef, internetEnabled: false, policyRevision: 1, runtimeSandboxId, sandboxName, state: "READY" } });
+      const dependencies = { client: prisma, storage: createMemoryStorageAdapter(), workspaceRuntime: runtime };
+      const passContext = { now: () => new Date(), signal: new AbortController().signal };
       if (kind === "temporary") {
-        const registry = new MemoryCoordinatorRegistry();
-        registry.registerDeletion(createPrismaTemporaryChatDeletionHandler(createMemoryStorageAdapter(), prisma, runtime));
-        const coordinator = new MemoryCoordinator({ registry, repository: createPrismaMemoryCoordinatorRepository(prisma) });
-        await coordinator.reconcileNow();
-        await expect(prisma.memoryDeletionOutbox.findFirstOrThrow({ where: { targetId: chat.id, userId } })).resolves.toMatchObject({ state: "SUCCEEDED" });
+        await createTemporaryChatDeletionPass(dependencies).run(passContext);
       } else {
         const service = createPermanentChatDeletionService({
-          authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma), capability: { enabled: true }, kick() {},
-          repository: createPrismaPermanentChatDeletionRepository(prisma)
+          capability: { enabled: true }, repository: createPrismaPermanentChatDeletionRepository(prisma)
         });
-        const authorization = await service.mintAuthorization(userId, chatId, {
-          alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-          expectedActiveLeafMessageId: null, expectedChatRevision: chat.memorySourceRevision, requestNonce: randomUUID()
+        await service.confirm(userId, chat.id, {
+          alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
         });
-        const admission = await service.admit(userId, chatId, {
-          alsoForgetOriginMemories: false, expectedActiveLeafMessageId: null, expectedChatRevision: chat.memorySourceRevision,
-          mutationAuthorizationId: authorization.mutationAuthorizationId
-        });
-        const registry = new MemoryCoordinatorRegistry();
-        registry.registerDeletion(createPrismaPermanentChatDeletionHandler(createMemoryStorageAdapter(), prisma, runtime));
-        const coordinator = new MemoryCoordinator({ registry, repository: createPrismaMemoryCoordinatorRepository(prisma) });
-        await coordinator.reconcileNow();
-        await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({ where: { id: admission.deletionId } })).resolves.toMatchObject({ state: "SUCCEEDED" });
+        await createPermanentChatDeletionPass(dependencies).run(passContext);
+        await expect(service.consumerStatus(userId, chat.id)).resolves.toEqual({ status: "COMPLETE" });
       }
       expect(await prisma.workspaceSession.count({ where: { id: sessionId } })).toBe(0);
       expect(await prisma.workspaceCleanupJob.count({ where: { workspaceSessionId: sessionId } })).toBe(0);
@@ -136,16 +116,8 @@ describe("Workspace aggregate deletion protocol", () => {
       await local.removeSession({ runtimeSandboxId, sessionId });
       await prisma.workspaceCleanupJob.deleteMany({ where: { workspaceSessionId: sessionId } });
       await prisma.workspaceSession.deleteMany({ where: { id: sessionId } });
-      await prisma.$transaction(async (tx) => {
-        if (kind === "temporary" && await tx.chat.count({ where: { userId } })) {
-          await tx.memoryDeletionOutbox.updateMany({ data: {
-            completedAt: null, leaseExpiresAt: new Date(Date.now() + 60_000), leaseToken: "workspace-removal-fixture-cleanup",
-            nextAttemptAt: null, state: "RUNNING"
-          }, where: { operation: "TEMPORARY_DELETE", userId } });
-        }
-        if (chatId) await tx.chat.deleteMany({ where: { id: chatId } });
-        await tx.memoryDeletionOutbox.deleteMany({ where: { userId } });
-      });
+      // A Temporary chat is past its deadline, so the deletion guard lets the fixture go too.
+      if (chatId) await prisma.chat.deleteMany({ where: { id: chatId } });
       await prisma.user.deleteMany({ where: { id: userId } });
     }
   });
