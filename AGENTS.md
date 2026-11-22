@@ -2,7 +2,7 @@
 
 AIQSA is a self-hosted, multi-user, model-agnostic agent workspace under the AGPL, built for the operator's colleagues on two production installations; there is no work for a hypothetical outside audience (operator decision 2026-10-22). A chat is an agent with web search, MCP tools, the sandboxed Workspace, image generation, artifacts, a memory note and past-chat search, Skills, Assistants, scheduled tasks and saved secrets; administration makes providers, models and tools available and trustworthy. Coding agents write all of the code; the operator sets scope and makes product decisions.
 
-Scope (operator decisions 2026-10-22 and 2026-10-23): Projects and Knowledge (document retrieval) are removed with their data; the Codex Agent mode and OpenSearch are removed. Answer Review is removed (operator decision 2026-10-25). Native Anthropic stays. Personal Memory was replaced in v0.5.0 (operator decision 2026-11-22): automatic fact learning, the fact store, the remember-command classifier, Memory maintenance and inbound Memory MCP were removed with their data. What stays is one short note per user, which the user edits and the agent changes only with a visible card, and search over the user's past chats, which must work well ([Memory](agent_docs/MEMORY.md)). Assistants, Telegram and Skills stay. The native agent engine replaced the old run core ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
+Scope (operator decisions 2026-10-22 and 2026-10-23 unless dated): removed features stay removed. They are Projects and Knowledge (document retrieval), the Codex Agent mode, OpenSearch, Answer Review (2026-10-25), and Personal Memory's automatic fact learning, fact store, remember-command classifier, maintenance and inbound Memory MCP (replaced in v0.5.0, 2026-11-22). Native Anthropic, Assistants, Telegram and Skills stay. Memory is one short note per user, which the user edits and the agent changes only with a visible card, and search over the user's past chats, which must work well ([Memory](agent_docs/MEMORY.md)). The native agent engine runs every turn ([Run contracts](agent_docs/RUN_CONTRACTS.md)).
 
 Stack: Next.js 16 (App Router), React 19, TypeScript, Prisma 6 on PostgreSQL with pgvector (also the search store), S3-compatible private object storage, a Tika parser sidecar, a KVM Microsandbox Workspace runner, and single-host Docker Compose. `connect/` is a separate Go client.
 
@@ -22,9 +22,9 @@ Browser code never imports server modules, Prisma, secrets, Node-only APIs or pr
 npm ci && npm run db:generate && npx next typegen   # fresh checkout
 npx vitest run <files>                              # focused tests
 node node_modules/eslint/bin/eslint.js --max-warnings=0 --no-cache <files>   # lint changed files
-npx tsc --noEmit
+npx tsc --noEmit         # type check (check:hermetic runs it too)
 npm run check:hermetic   # full deterministic gate: prisma generate, typegen, docs, lint, types, vitest
-npm run docs:check       # agent docs: links, rule globs and symlinks, cited paths, budgets
+npm run docs:check       # agent docs: links, rule globs and symlinks, cited paths
 npm run task:check       # after any task ledger change
 ```
 
@@ -46,6 +46,7 @@ npm run task:check       # after any task ledger change
 | Provider adapters, model roles, capability checks, Search, embeddings, reranking, prices | [Providers](agent_docs/PROVIDERS.md) |
 | The memory note, past-chat search | [Memory](agent_docs/MEMORY.md) |
 | The agent and its runs: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery, outputs | [Run contracts](agent_docs/RUN_CONTRACTS.md) |
+| Deep research: its plan window, researchers, evidence records, checks and report | [Research](agent_docs/RESEARCH.md) |
 | UI behavior and visual design | [Frontend](agent_docs/FRONTEND.md) |
 | Sessions, secrets, untrusted content, MCP trust, the Workspace sandbox, artifacts, dependencies | [Security](agent_docs/SECURITY.md) |
 | External sign-in, SCIM, two-factor sign-in | [Sign-in](agent_docs/SIGN_IN.md) |
@@ -81,13 +82,13 @@ These are the invariants most likely to be broken by an otherwise reasonable cha
 
 ## Git and publication
 
-`origin` is public. `DEV_SERVER.md`, `AGENTS.override.md`, `CLAUDE.local.md`, `.claude/agents/`, `.aiqsa/`, `agent_docs/PRD/` and task files under `agent_docs/tasks/` are private: never stage, force-add, commit or ship them in Docker contexts or images. Pushes, ref rewrites and release tags need an explicit request and a fresh `npm run release:privacy:check`. To export code, `git archive` an inspected commit into a fresh directory; never copy the working directory, and attach local tasks separately only after reviewing them. Under `.aiqsa/`, use only the workspaces that exist (`handoff/` when explicitly requested, `local-dev-profile/`, `kb-microbench/` and the others the operator approved), each under its own instructions, and never create sibling variants.
+`origin` is public. `DEV_SERVER.md`, `AGENTS.override.md`, `CLAUDE.local.md`, `.claude/agents/`, `.aiqsa/`, `agent_docs/PRD/` and task files under `agent_docs/tasks/` are private: never stage, force-add, commit or ship them in Docker contexts or images. Pushes, ref rewrites and release tags need an explicit request and a fresh `npm run release:privacy:check`. To export code, `git archive` an inspected commit into a fresh directory; never copy the working directory, and attach local tasks separately only after reviewing them. Under `.aiqsa/`, use only the workspaces that exist (`handoff/` when explicitly requested, `local-dev-profile/` and the others the operator approved), each under its own instructions, and never create sibling variants.
 
 ## Writing agent docs
 
-Code, schema, migrations and tests define behavior. The documents in `agent_docs/` record only what an agent cannot recover from the code and would otherwise get wrong: operator decisions (with their date), accepted risks, invariants with their reasons, and boundaries between subsystems. Do not mirror code (constants, limits, field lists, step-by-step flows); point to the file instead. Keep each rule in one place and link to it. When a document grows past its budget, delete what the code already says rather than compressing the prose; never cut a rule the code cannot show to fit a number, raise the budget instead (operator decision 2026-11-01). If code contradicts a documented rule, fix the code unless the operator changes the rule.
+Code, schema, migrations and tests define behavior. The documents in `agent_docs/` record only what an agent cannot recover from the code and would otherwise get wrong: operator decisions (with their date), accepted risks, invariants with their reasons, and boundaries between subsystems. Do not mirror code (constants, limits, field lists, step-by-step flows); point to the file instead. Keep each rule in one place and link to it. Documents have no size limit (operator decision 2026-11-22, replacing the word budgets of 2026-11-01): when one grows, delete what the code already says rather than compressing the prose, and never cut a rule the code cannot show. If code contradicts a documented rule, fix the code unless the operator changes the rule.
 
-Write plain sentences and cite code by repository path in backticks. A new area document needs `paths:` frontmatter, a symlink in `.claude/rules/` and an entry in `scripts/docs-manifest.mjs`; `npm run docs:check` verifies the globs, the symlinks, cited paths and size budgets. Add to an existing document before creating a new one.
+Write plain sentences and cite code by repository path in backticks. A new area document needs `paths:` frontmatter, a symlink in `.claude/rules/` and an entry in `scripts/docs-manifest.mjs`; `npm run docs:check` verifies the globs, the symlinks and cited paths. Add to an existing document before creating a new one.
 
 ## Before you report
 
