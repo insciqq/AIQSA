@@ -76,7 +76,6 @@ afterEach(async () => {
     await prisma.chat.updateMany({ data: { activeLeafMessageId: null }, where: { id: { in: chatIds } } });
     await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
     await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: { in: chatIds }, userId: { in: userIds } } });
     await prisma.attachmentDeletionJob.deleteMany({
       where: { storageKey: { in: observations.flatMap((row) => row.storageKey ? [row.storageKey] : []) } }
     });

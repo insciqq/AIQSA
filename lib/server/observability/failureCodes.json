@@ -1158,6 +1158,7 @@
   "telemetry_retention_failed",
   "telemetry_startup_failed",
   "telemetry_write_failed",
+  "temporary_chat_retention_clock_invalid",
   "test_runtime",
   "timeout",
   "tool_call_cancelled",

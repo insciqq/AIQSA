@@ -34,7 +34,6 @@ async function fixture() {
     await prisma.chat.updateMany({ where: { id: chat.id }, data: { activeLeafMessageId: null } });
     await prisma.message.deleteMany({ where: { chatId: chat.id } });
     await prisma.chat.deleteMany({ where: { id: chat.id } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: user.id, targetId: chat.id } });
     await prisma.mcpRuntimeGeneration.deleteMany({ where: { id: generation.id } });
     await prisma.mcpUserServer.deleteMany({ where: { serverId: server.id } });
     await prisma.mcpGrant.deleteMany({ where: { serverId: server.id } });

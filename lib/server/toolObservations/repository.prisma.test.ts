@@ -33,7 +33,6 @@ async function fixture() {
     await prisma.chat.updateMany({ where: { id: chat.id }, data: { activeLeafMessageId: null } });
     await prisma.message.deleteMany({ where: { chatId: chat.id } });
     await prisma.chat.deleteMany({ where: { id: chat.id } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: user.id, targetId: chat.id } });
     await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: observations.flatMap(row => row.storageKey ? [row.storageKey] : []) } } });
     await prisma.user.deleteMany({ where: { id: user.id } });
   });
@@ -302,13 +301,8 @@ describe("durable tool observation ownership", () => {
     const f = await fixture();
     const saved = await f.write();
     if (boundary === "archive") await prisma.chat.update({ where: { id: f.chat.id }, data: { archived: true } });
-    if (boundary === "purge") await prisma.$transaction(async tx => {
-      const deletion = await tx.memoryDeletionOutbox.create({ data: { userId: f.user.id, operation: "SOURCE_PURGE",
-        targetType: "CHAT@memory-chat-delete-v1", targetId: f.chat.id, memoryGeneration: 0,
-        admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: f.chat.memorySourceRevision, alsoForgetOriginMemories: false } });
-      await tx.chat.update({ where: { id: f.chat.id }, data: { archived: true, memoryMode: "EXCLUDED",
-        permanentDeletionAt: new Date(), permanentDeletionOperationId: deletion.id } });
-    });
+    if (boundary === "purge") await prisma.chat.update({ where: { id: f.chat.id }, data: { archived: true, memoryMode: "EXCLUDED",
+      permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() } });
     if (boundary === "user") await prisma.user.update({ where: { id: f.user.id }, data: { status: "disabled" } });
     if (boundary === "stop") await prisma.modelRun.update({ where: { id: f.run.id }, data: { status: "cancelled" } });
     await expect(f.repository.read(f.run.actor, saved.id)).rejects.toThrow("tool_observation_unavailable");

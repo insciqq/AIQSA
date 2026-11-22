@@ -17,7 +17,6 @@ async function owner() {
   const id = `instructions-test-${randomUUID()}`;
   await prisma.user.create({ data: { id, displayName: "Synthetic instructions", status: "active" } }); users.push(id);
   await prisma.userSettings.upsert({ where: { userId: id }, create: { userId: id }, update: {} });
-  await prisma.userMemorySettings.update({ where: { userId: id }, data: { useMemoryFacts: false, learnAutomatically: false, referenceChatHistory: false } });
   return id;
 }
 async function preset(userId: string) {

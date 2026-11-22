@@ -56,13 +56,6 @@ describe("admission without Memory preparation", () => {
   });
 });
 
-/** Model tables of the old Memory an admission or settlement must never touch any more (the chat mode enum stays). */
-const OLD_MEMORY_MODELS = /^(memory\w*|userMemorySettings|modelRunMemoryBinding)\./u;
-const OLD_MEMORY_SQL = /"(Memory(?!ChatMode")\w*|UserMemorySettings|ModelRunMemoryBinding)"|"memorySourceRevision"|"memoryBranchGeneration"/u;
-
-function touchesOldMemory(call: RecordedCall): boolean {
-  return OLD_MEMORY_MODELS.test(call.name) || Boolean(call.text && OLD_MEMORY_SQL.test(call.text));
-}
 
 type LockedChat = Readonly<{
   activeLeafMessageId: string | null;
@@ -126,7 +119,6 @@ describe("a send's admission writes its chat without the old Memory", () => {
     expect(recorder.calls.filter((call) => call.name === "chat.update").map((call) => call.args)).toContainEqual({
       data: { activeLeafMessageId: "assistant-message-1" }, select: { id: true }, where: { id: "chat-1" }
     });
-    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
     // The settlement marks the chat for past-chat search, not the admission.
     expect(recorder.marks()).toEqual([]);
   });
@@ -148,7 +140,6 @@ describe("a send's admission writes its chat without the old Memory", () => {
     // The clear runs after the chat row is locked and switched, in the admission's own transaction.
     expect(recorder.indexOf((call) => call.text?.startsWith("DELETE FROM \"ChatSearchState\"") === true))
       .toBeGreaterThan(recorder.indexOf((call) => call === conversion));
-    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
   });
 
   it("moves a Temporary chat's deadline on and refuses one whose deadline passed", async () => {
@@ -185,7 +176,6 @@ describe("a send's admission writes its chat without the old Memory", () => {
     expect(recorder.calls.filter((call) => call.name === "chat.update").map((call) => call.args)).toContainEqual({
       data: { activeLeafMessageId: "assistant-message-1" }, select: { id: true }, where: { id: "chat-1" }
     });
-    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
     expect(recorder.marks()).toEqual([]);
   });
 
@@ -242,7 +232,6 @@ describe("settling a run still at its gate", () => {
       data: { errorPayload: { code: "pdf_preparation_failed" }, normalizedRequest: {}, status: "error" }, where: { id: "run-1" }
     });
     expect(recorder.marks()).toEqual([{ kind: "dirty", values: expect.arrayContaining(["chat-1", "user-1"]) }]);
-    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
   });
 
   it("leaves a run without a gate alone", async () => {

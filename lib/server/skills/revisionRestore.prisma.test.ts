@@ -86,7 +86,6 @@ afterEach(async () => {
   const skillIds = (await prisma.skillDefinition.findMany({ where: { ownerUserId: { in: ids } }, select: { id: true } })).map((entry) => entry.id);
   await prisma.skillStoreOperation.deleteMany({ where: { ownerUserId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.skillDefinition.updateMany({ where: { id: { in: skillIds } }, data: { currentRevisionId: null, sharedRevisionId: null } });
   await prisma.skillPublication.deleteMany({ where: { skillId: { in: skillIds } } });
   await prisma.skillRevisionFile.deleteMany({ where: { skillId: { in: skillIds } } });

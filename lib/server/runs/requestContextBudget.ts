@@ -320,4 +320,3 @@ export function requestHeadroomTokens(request: ProviderRunRequest, bridge?: Prov
     .reduce((total, candidate) => total + candidate.labelTokens + candidate.sourceTokens, 0);
   return Math.max(0, limits.budgetTokens - irreducibleTokens(request, attachments, bridge) - text);
 }
-

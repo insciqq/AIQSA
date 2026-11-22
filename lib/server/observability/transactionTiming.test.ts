@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DbTransactionJobKind, DbTransactionOperation } from "./events";
+import type { DbTransactionOperation } from "./events";
 import { serializeEvent } from "./runtime.cjs";
 import {
   DB_TRANSACTION_FOREGROUND_BUDGET_MS,
@@ -75,20 +75,20 @@ describe("transaction timing", () => {
     const chat = "chat_1";
     expect(isLockStatement(Prisma.sql`SELECT "id" FROM "Chat" WHERE "id" = ${chat} FOR UPDATE`.strings.join("?"))).toBe(true);
     expect(isLockStatement(Prisma.sql`SELECT 1 FROM "Chat" WHERE "id" = ${chat} ${Prisma.sql`FOR SHARE`}`.strings.join("?"))).toBe(true);
-    expect(isLockStatement("SELECT 1 FROM \"MemoryJob\" FOR UPDATE OF job SKIP LOCKED")).toBe(true);
+    expect(isLockStatement("SELECT 1 FROM \"ChatSearchState\" FOR UPDATE OF state SKIP LOCKED")).toBe(true);
     expect(isLockStatement("SELECT 1 FROM t FOR NO KEY UPDATE")).toBe(true);
     expect(isLockStatement("SELECT 1 FROM t FOR KEY SHARE")).toBe(true);
     expect(isLockStatement("LOCK TABLE \"Chat\" IN SHARE MODE")).toBe(true);
     expect(isLockStatement("SELECT pg_advisory_xact_lock($1)")).toBe(true);
     expect(isLockStatement("SELECT set_config('lock_timeout', $1, true)")).toBe(false);
-    expect(isLockStatement("UPDATE \"MemoryJob\" SET \"state\" = 'SUCCEEDED' WHERE \"id\" = $1")).toBe(false);
+    expect(isLockStatement("UPDATE \"WorkspaceFollowup\" SET \"state\" = 'dispatched' WHERE \"id\" = $1")).toBe(false);
     expect(isLockStatement("SELECT \"formatted\" FROM \"Message\"")).toBe(false);
   });
 
-  it("reports a commit that held rows past the foreground budget as an error with its operation, job kind, hold and lock wait", async () => {
+  it("reports a commit that held rows past the foreground budget as an error with its operation, hold and lock wait", async () => {
     const { tx } = fakeTx(1_500);
     const transaction = begin(tx);
-    const pending = measureTransaction({ subsystem: "memory", operation: "job_commit", job_kind: "INDEX_HISTORY" }, async (client: FakeTx) => {
+    const pending = measureTransaction({ subsystem: "runs", operation: "run_complete" }, async (client: FakeTx) => {
       await client.$queryRaw(Prisma.sql`SELECT set_config('lock_timeout', ${"1000ms"}, true)`);
       await client.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${"PRIVATE_CHAT_ID"} FOR SHARE`;
       await client.chat.findFirst({ where: { id: "PRIVATE_CHAT_ID" } });
@@ -99,8 +99,8 @@ describe("transaction timing", () => {
     await expect(pending).resolves.toBe("applied");
     expect(transaction.starts).toEqual([1]);
     const [record] = records();
-    expect(record).toMatchObject({ level: "error", event: "db_transaction", subsystem: "memory", operation: "job_commit",
-      job_kind: "INDEX_HISTORY", duration_ms: 6_100, lock_wait_ms: 1_500, outcome: "committed" });
+    expect(record).toMatchObject({ level: "error", event: "db_transaction", subsystem: "runs", operation: "run_complete",
+      duration_ms: 6_100, lock_wait_ms: 1_500, outcome: "committed" });
     expect(records()).toHaveLength(1);
     // Content-free: no statement, value or row identity.
     expect(JSON.stringify(record)).not.toMatch(/PRIVATE_|SELECT|Chat"|lock_timeout|db_failure/u);
@@ -155,7 +155,7 @@ describe("transaction timing", () => {
     const failure = new Prisma.PrismaClientKnownRequestError("start", { clientVersion: "test", code: "P2028" });
     const observed: DbTransactionTiming[] = [];
     const work = vi.fn(async () => true);
-    await expect(observeTransactionTimings(() => measureTransaction({ subsystem: "memory", operation: "deletion_commit" }, work,
+    await expect(observeTransactionTimings(() => measureTransaction({ subsystem: "runs", operation: "run_cancel" }, work,
       async () => { await Promise.resolve(); throw failure; }), (timing) => observed.push(timing))).rejects.toBe(failure);
     expect(work).not.toHaveBeenCalled();
     expect(observed).toEqual([]);
@@ -180,26 +180,17 @@ describe("transaction timing", () => {
 
 describe("db_transaction record", () => {
   const operations = {
-    job_commit: true, deletion_commit: true, export_claim: true, export_recovery_claim: true, export_reserve: true,
+    export_claim: true, export_recovery_claim: true, export_reserve: true,
     export_seal: true, export_pending: true, export_complete: true, export_failed: true, export_renew: true,
     export_prepare_output: true, export_settle_output: true, run_complete: true, run_fail: true, run_cancel: true,
     usage_settlement: true
   } satisfies Record<DbTransactionOperation, true>;
-  const jobKinds = {
-    MEMORY_COMMAND: true, INDEX_HISTORY: true, EXTRACT_FACTS: true, CONSOLIDATE_CANDIDATE: true, VERIFY_CANDIDATE: true,
-    EMBED_ITEMS: true, RECONCILE_BRANCH: true, RECONCILE_SOURCE: true, REBUILD_INDEX: true, RECLASSIFY_FACTS: true,
-    RESOLVE_FACT_RELATIONS: true, SYNTHESIZE_MEMORIES: true
-  } satisfies Record<DbTransactionJobKind, true>;
   const record = (fields: Record<string, unknown>) =>
-    JSON.parse(serializeEvent("db_transaction", { subsystem: "memory", operation: "job_commit", duration_ms: 2_500,
+    JSON.parse(serializeEvent("db_transaction", { subsystem: "runs", operation: "run_complete", duration_ms: 2_500,
       lock_wait_ms: 0, outcome: "committed", ...fields } as never)!) as Record<string, unknown>;
 
   it.each(Object.keys(operations))("keeps the operation %s", (operation) => {
     expect(record({ operation })).toMatchObject({ operation, level: "warn" });
-  });
-
-  it.each(Object.keys(jobKinds))("keeps the job kind %s", (job_kind) => {
-    expect(record({ job_kind })).toMatchObject({ job_kind });
   });
 
   it("drops anything outside its closed fields", () => {

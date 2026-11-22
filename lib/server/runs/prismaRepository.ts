@@ -538,14 +538,12 @@ export function createPrismaRunRepository(
     continuePdfPreparedRun: async (input) => {
       const created = await continuePdfPreparedRunWithClient(prismaClient, input).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
-        userMessageId: created.userMessageId,
-        ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
+        userMessageId: created.userMessageId };
     },
     continueWorkspacePreparedRun: async (input) => {
       const created = await continueWorkspacePreparedRunWithClient(prismaClient, input).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
-        userMessageId: created.userMessageId, ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
-        ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
+        userMessageId: created.userMessageId, ...(created.deferredPdf ? { deferredPdf: true as const } : {}) };
     },
     createRun: async (input) => {
       const created = await createDormantPreparingRun(prismaClient, {
@@ -557,9 +555,6 @@ export function createPrismaRunRepository(
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.deferredWorkspace ? { deferredWorkspace: true as const } : {}),
-        ...(created.materializedRequest
-          ? { materializedRequest: created.materializedRequest }
-          : {}),
         runId: created.runId,
         userMessageId: created.userMessageId
       };
@@ -573,9 +568,6 @@ export function createPrismaRunRepository(
         acceptedAt: created.acceptedAt,
         assistantMessageId: created.assistantMessageId,
         ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
-        ...(created.materializedRequest
-          ? { materializedRequest: created.materializedRequest }
-          : {}),
         runId: created.runId,
         userMessageId: created.userMessageId
       };

@@ -134,27 +134,15 @@ describe("Prisma message content search", () => {
       const foreign = await chat("Foreign match", 61, foreignId);
       await message(foreign.id, { minute: 11, text: `foreign ${needle}` });
       // The Temporary fence is proven with the real lifecycle in
-      // temporaryRetention.prisma.test.ts.
+      // lib/server/background/chatDeletion.prisma.test.ts.
       const deleting = await chat("Deleting match", 63);
       await message(deleting.id, { minute: 12, text: `deleting ${needle}` });
-      const deletion = await prisma.memoryDeletionOutbox.create({
-        data: {
-          admissionAuthorizationId: randomUUID(),
-          admittedChatSourceRevision: 0,
-          alsoForgetOriginMemories: false,
-          memoryGeneration: 0,
-          operation: "SOURCE_PURGE",
-          targetId: deleting.id,
-          targetType: "CHAT@memory-chat-delete-v1",
-          userId: ownerId
-        }
-      });
       await prisma.chat.update({
         data: {
           archived: true,
           memoryMode: "EXCLUDED",
           permanentDeletionAt: new Date(),
-          permanentDeletionOperationId: deletion.id,
+          permanentDeletionOperationId: randomUUID(),
           updatedAt: at(63)
         },
         where: { id: deleting.id }
@@ -228,10 +216,8 @@ describe("Prisma message content search", () => {
       }
       await expect(matchedChats("just a picture")).resolves.toEqual([picture.id]);
     } finally {
-      // A chat pending permanent deletion goes before its deletion obligation,
-      // and the obligation before its owner.
+      // A chat pending permanent deletion goes before its owner.
       await prisma.chat.deleteMany({ where: { userId: { in: [ownerId, foreignId] } } });
-      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: [ownerId, foreignId] } } });
       await prisma.user.deleteMany({ where: { id: { in: [ownerId, foreignId] } } });
     }
   });

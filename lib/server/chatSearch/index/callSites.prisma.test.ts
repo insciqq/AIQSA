@@ -26,8 +26,6 @@ const wordsOnly: ChatSearchEmbedder = {
 
 afterEach(async () => {
   for (const id of owners.splice(0)) {
-    await prisma.chatMemoryCheckpoint.deleteMany({ where: { userId: id } });
-    await prisma.memoryScope.deleteMany({ where: { userId: id } });
     // A Temporary chat goes once its deadline has passed.
     await prisma.chat.updateMany({
       data: { temporaryRetentionDeadline: new Date(Date.now() - 60_000) },

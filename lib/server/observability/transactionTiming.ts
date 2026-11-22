@@ -1,14 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Prisma } from "@prisma/client";
 import { databaseFailureKind } from "./databaseFailure";
-import type { DbTransactionJobKind, DbTransactionOperation, DbTransactionSubsystem } from "./events";
+import type { DbTransactionOperation, DbTransactionSubsystem } from "./events";
 import { DB_TRANSACTION_FOREGROUND_BUDGET_MS, DB_TRANSACTION_SLOW_MS, logEvent } from "./runtime.cjs";
 
 export { DB_TRANSACTION_FOREGROUND_BUDGET_MS, DB_TRANSACTION_SLOW_MS };
 
 /**
- * Timing of the interactive transactions on the hot paths: Memory commits,
- * Workspace export steps, run terminal writes. Without PostgreSQL logs, the
+ * Timing of the interactive transactions on the hot paths: Workspace export
+ * steps, run terminal writes. Without PostgreSQL logs, the
  * holder of a contended row reports how long it held its rows and a waiter how
  * long it waited for them.
  *
@@ -23,7 +23,6 @@ export { DB_TRANSACTION_FOREGROUND_BUDGET_MS, DB_TRANSACTION_SLOW_MS };
 export type DbTransactionDescriptor = Readonly<{
   subsystem: DbTransactionSubsystem;
   operation: DbTransactionOperation;
-  job_kind?: DbTransactionJobKind;
 }>;
 
 export type DbTransactionTiming = Readonly<{
@@ -82,7 +81,7 @@ function report(descriptor: DbTransactionDescriptor, timing: DbTransactionTiming
   } catch { /* An observer never changes the transaction's result. */ }
   if (timing.duration_ms <= DB_TRANSACTION_SLOW_MS) return;
   logEvent("db_transaction", {
-    subsystem: descriptor.subsystem, operation: descriptor.operation, job_kind: descriptor.job_kind,
+    subsystem: descriptor.subsystem, operation: descriptor.operation,
     duration_ms: timing.duration_ms, lock_wait_ms: timing.lock_wait_ms, outcome: timing.outcome,
     db_failure: timing.outcome === "rolled_back" ? databaseFailureKind(error) : undefined
   });

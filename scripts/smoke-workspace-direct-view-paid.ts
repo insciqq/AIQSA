@@ -385,8 +385,7 @@ async function main() {
       ? workspace.workspace.version ?? (record(workspace.workspace.policy) ? workspace.workspace.policy.version : undefined) : undefined;
     await json(api, "workspace", "/api/admin/workspace", { body: { enabled: true, expectedVersion: workspaceVersion, internetEnabled: false },
       method: "PATCH" });
-    await json(api, "workspace", "/api/me/memory/settings", { body: { decayEnabled: false, learnAutomatically: false,
-      referenceChatHistory: false, useMemoryFacts: false }, method: "PATCH" });
+    await json(api, "workspace", "/api/me/memory/preferences", { body: { memoryEnabled: false }, method: "PATCH" });
 
     const vision = await setUp(api, { apiRoot: settings.codex.apiRoot, contextWindow: 272_000, label: "vision", model: settings.codex.model,
       protocol: "responses", privateNetwork: true, secret: settings.codex.apiKey, vision: true });

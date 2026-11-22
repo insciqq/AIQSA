@@ -138,7 +138,6 @@ describe("chat deletion on the background worker", () => {
     await expect(prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).resolves.toMatchObject({
       archived: true, memoryMode: "NORMAL"
     });
-    await expect(prisma.memoryDeletionOutbox.count({ where: { userId } })).resolves.toBe(0);
 
     let failures = 1;
     const deletes: string[] = [];

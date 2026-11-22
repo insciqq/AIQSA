@@ -272,7 +272,6 @@ describe("chat PDF database lifecycle", () => {
 
   it("commits a durable PDF gate without a Memory attempt and refuses premature answer dispatch", async () => {
     const h = await fixture();
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);
     await expect(prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } }))
       .rejects.toThrow(/chat_pdf_answer_not_ready/);
     expect(await repository.claim()).toBeNull();
@@ -388,7 +387,6 @@ describe("chat PDF database lifecycle", () => {
     expect(receipts.filter(({ chatPdfPreparation }) => chatPdfPreparation)).toHaveLength(2);
     expect(receipts.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0)).toBe(40);
     expect(await prisma.usageEvent.count({ where: runAttributionUsageWhere(h.runId) })).toBe(1);
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);
   });
 
   it("reuses only an exact settled page in a new sibling generation without a second receipt", async () => {

@@ -59,9 +59,6 @@ describe("chat writers mark past-chat search in their own transaction", () => {
     ]);
     expect(recorder.indexOf((call) => call.text?.startsWith("DELETE FROM \"ChatSearchState\"") ?? false))
       .toBeGreaterThan(write);
-    // The old Memory settings and counters are neither read nor written by a mode change.
-    expect(recorder.calls.some((call) => call.name.startsWith("userMemorySettings."))).toBe(false);
-    expect(recorder.calls.some((call) => call.text?.includes("memorySourceRevision") ?? false)).toBe(false);
   });
 
   it("resuming a chat marks it to be indexed again", async () => {

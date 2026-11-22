@@ -58,14 +58,13 @@ export function projectActivationAccounting(value: ActivationAccounting): Activa
 
 type BackgroundProfile = {
   system: { providerModelId: string | null; chatTitleProviderModelId: string | null;
-    decisionProviderModelId: string | null; rerankerProviderModelId: string | null } | null;
-  memory: { providerModelId: string | null } | null;
-  memoryEmbeddingDefault: string | null;
+    decisionProviderModelId: string | null; rerankerProviderModelId: string | null; embeddingProviderModelId: string | null } | null;
 };
+/** No background destination may be assigned: no System model, title, decision, reranker or past-chat embedding model. */
 export function requireActivationBackgroundProfile(profile: BackgroundProfile): void {
-  if (!profile.system || !profile.memory || profile.memory.providerModelId !== null || profile.memoryEmbeddingDefault !== null ||
-    [profile.system.providerModelId, profile.system.chatTitleProviderModelId,
-      profile.system.decisionProviderModelId, profile.system.rerankerProviderModelId].some(value => value !== null)) {
+  if (!profile.system || [profile.system.providerModelId, profile.system.chatTitleProviderModelId,
+    profile.system.decisionProviderModelId, profile.system.rerankerProviderModelId,
+    profile.system.embeddingProviderModelId].some(value => value !== null)) {
     throw new Error("background_provider_profile_required");
   }
 }
@@ -76,27 +75,20 @@ export function activationEvidenceHash(value: unknown): string {
     item !== null && typeof item === "object" ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => [key, canonical(child)])) : item;
   return createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
 }
-export type ActivationOwnedReceipt = ActivationUsageReceipt & { id: string; memoryExecutionBindingId: string | null };
+export type ActivationOwnedReceipt = ActivationUsageReceipt & { id: string };
 export function activationReceiptHash(receipt: ActivationOwnedReceipt): string {
   return activationEvidenceHash({ usageCompleteness: receipt.usageCompleteness,
     inputTokens: receipt.inputTokens, outputTokens: receipt.outputTokens, totalTokens: receipt.totalTokens,
-    estimatedCostMicros: receipt.estimatedCostMicros, operationCount: receipt.operationCount,
-    memoryExecutionBindingId: receipt.memoryExecutionBindingId });
+    estimatedCostMicros: receipt.estimatedCostMicros, operationCount: receipt.operationCount });
 }
-export type ActivationBindingFact = { id: string; state: string; startedAt: Date | null };
 export function requireActivationSettledWork(input: { activeToolCalls: number; dispatchedVisionAttempts: number }): void {
   if (input.activeToolCalls !== 0 || input.dispatchedVisionAttempts !== 0) throw new Error("provider_accounting_pending");
 }
 export function requireActivationAccountingBoundary(input: {
-  receipts: readonly ActivationOwnedReceipt[]; bindings: readonly ActivationBindingFact[];
-  recordedReceipts: Readonly<Record<string, string>>; recordedMemoryBindings: readonly string[];
+  receipts: readonly ActivationOwnedReceipt[]; recordedReceipts: Readonly<Record<string, string>>;
 }): void {
-  if (input.bindings.some(binding => ["PENDING", "RUNNING"].includes(binding.state))) throw new Error("provider_accounting_pending");
   for (const receipt of input.receipts) {
     if (!Object.hasOwn(input.recordedReceipts, receipt.id)) throw new Error("unattributed_provider_accounting");
     if (input.recordedReceipts[receipt.id] !== activationReceiptHash(receipt)) throw new Error("provider_accounting_changed");
-  }
-  if (input.bindings.some(binding => binding.startedAt !== null && !input.recordedMemoryBindings.includes(binding.id))) {
-    throw new Error("provider_accounting_receipt_missing");
   }
 }

@@ -33,7 +33,6 @@ async function owner() {
   const id = `workspace-secret-test-${randomUUID()}`;
   await prisma.user.create({ data: { id, displayName: "Synthetic Workspace secrets", status: "active" } });
   users.push(id);
-  await prisma.userMemorySettings.update({ where: { userId: id }, data: { useMemoryFacts: false, learnAutomatically: false, referenceChatHistory: false } });
   return id;
 }
 
@@ -340,7 +339,6 @@ describe("persisted personal Workspace secrets", () => {
     expect(await saveBrowser({ ...handoff, handoffToken: "incorrect" })).toBeNull();
     expect(await saveBrowser({ ...handoff, handoffToken: claim.token })).toMatchObject({ saved: 1 });
     await prisma.$transaction(async (tx) => {
-      await tx.memoryRetrievalAttempt.updateMany({ where: { modelRunId: input.runId }, data: { state: "CANCELLED", errorCode: "fixture_preparation_cancelled" } });
       const run = await tx.modelRun.findUniqueOrThrow({ where: { id: input.runId }, select: { assistantMessageId: true } });
       await tx.message.update({ where: { id: run.assistantMessageId! }, data: { status: "complete", content: textMessageContent("Synthetic task complete") } });
       await tx.modelRun.update({ where: { id: input.runId }, data: { status: "complete", normalizedRequest: {} } });

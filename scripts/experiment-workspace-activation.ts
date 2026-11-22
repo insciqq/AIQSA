@@ -37,7 +37,7 @@ const terminal = (run: ModelRun | null) => !!run && ["complete", "error", "cance
 type Pending = { row: ActivationRow; chatId: string; submitted: boolean; sample?: number };
 type Journal = { version: 1; variant: string; corpusHash: string; sourceHash: string; configurationHash: string;
   executionConfigurationHash?: string; oracleHash?: string; treatmentHash?: string;
-  environmentHash?: string; accountedReceipts?: Record<string, string>; accountedMemoryBindings?: string[];
+  environmentHash?: string; accountedReceipts?: Record<string, string>;
   catalogHash?: string; projectHash: string; userId: string; rows: ActivationRow[]; pending: Pending | null; cleanup: boolean;
   lookupRows?: LookupRow[]; officeMetrics?: OfficeGuideMetric[] };
 
@@ -130,7 +130,7 @@ async function main() {
   };
   const fixtures = oracle({ case: "fixtures" }) as Record<string, string>;
   const db = new PrismaClient({ datasources: { db: { url: target.databaseUrl } } });
-  const receiptSelect = { id: true, memoryExecutionBindingId: true, usageCompleteness: true, operationCount: true,
+  const receiptSelect = { id: true, usageCompleteness: true, operationCount: true,
     inputTokens: true, outputTokens: true, totalTokens: true, estimatedCostMicros: true } as const;
   async function environmentFingerprint(client: Prisma.TransactionClient) {
     const system = await client.systemModelPolicy.findUnique({ where: { id: "installation" }, select: {
@@ -138,19 +138,12 @@ async function main() {
       chatTitleProviderModelId: true, chatTitleReasoningEffort: true, decisionProviderModelId: true, decisionFeaturesJson: true,
       visionProviderModelId: true, visionReasoningEffort: true, imageProviderModelId: true, imageParamsJson: true,
       chatPdfProviderModelId: true, chatPdfReasoningEffort: true, chatPdfNativeProviderModelId: true,
-      chatPdfNativeReasoningEffort: true, chatPdfProcessingMode: true, chatPdfFallbackMethod: true
+      chatPdfNativeReasoningEffort: true, chatPdfProcessingMode: true, chatPdfFallbackMethod: true,
+      embeddingProviderModelId: true
     } });
-    const memory = await client.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" }, select: {
-      version: true, providerModelId: true, reasoningEffort: true, assignmentSource: true,
-      recommendationAdoptionVersion: true, recommendationAdoptionReason: true
-    } });
-    // Fresh Memory owners can inherit the ready installation embedding default
-    // asynchronously even while the Memory utility model is unassigned.
-    const embeddingDefault = await client.memoryUtilityModelPolicy.findUnique({ where: { id: "installation" }, select: {
-      embeddingDefaultProviderModelId: true
-    } });
-    requireActivationBackgroundProfile({ system, memory,
-      memoryEmbeddingDefault: embeddingDefault?.embeddingDefaultProviderModelId ?? null });
+    // The past-chat index embeds each settled turn in the background, so the
+    // embedding role stays unassigned like the other background destinations.
+    requireActivationBackgroundProfile({ system });
     // Active execution configurations contain no credential envelopes. IDs and
     // endpoints remain private: only their combined hash enters the report.
     const connectionSelect = { id: true, family: true, enabled: true, activeVersion: true, activeConfig: true,
@@ -177,7 +170,7 @@ async function main() {
     } });
     // Operational price edits deliberately keep activation versions unchanged.
     // Freeze their exact decimals too, so a comparison cannot mix tariffs.
-    return activationEvidenceHash({ system, memory, embeddingDefault, searches, models: models.map(model => ({ ...model,
+    return activationEvidenceHash({ system, searches, models: models.map(model => ({ ...model,
       inputTokenPriceUsdPerMillion: model.inputTokenPriceUsdPerMillion?.toString() ?? null,
       cachedInputTokenPriceUsdPerMillion: model.cachedInputTokenPriceUsdPerMillion?.toString() ?? null,
       cacheWriteInputTokenPriceUsdPerMillion: model.cacheWriteInputTokenPriceUsdPerMillion?.toString() ?? null,
@@ -255,14 +248,8 @@ async function main() {
     check(await client.providerUserCredentialAssignment.count({ where: { userId: journal.userId } }) === 0 &&
       await client.userGroup.count({ where: { userId: journal.userId, NOT: { group: { systemRole: "full_access" } } } }) === 0,
     "fixture_credential_override_forbidden");
-    check(await client.userMemorySettings.count({ where: { userId: journal.userId, embeddingProviderModelId: { not: null } } }) === 0,
-      "background_provider_profile_required");
-    const [receipts, bindings] = await Promise.all([
-      client.usageEvent.findMany({ where: { userId: journal.userId }, select: receiptSelect }),
-      client.memoryExecutionBinding.findMany({ where: { userId: journal.userId }, select: { id: true, state: true, startedAt: true } })
-    ]);
-    requireActivationAccountingBoundary({ receipts, bindings, recordedReceipts: journal.accountedReceipts ?? {},
-      recordedMemoryBindings: journal.accountedMemoryBindings ?? [] });
+    const receipts = await client.usageEvent.findMany({ where: { userId: journal.userId }, select: receiptSelect });
+    requireActivationAccountingBoundary({ receipts, recordedReceipts: journal.accountedReceipts ?? {} });
   }
   async function cleanupChat(chatId: string) {
     check(api && journal, "cleanup_context_missing");
@@ -279,16 +266,8 @@ async function main() {
     check(journal, "cleanup_account_missing");
     const userId = journal.userId;
     await db.$transaction(tx => assertAccountingBoundary(tx));
-    // Permanent chat deletion leaves an audit receipt with a restrictive user
-    // FK. Only completed fixture-owned obligations may be removed; pending,
-    // cancelled or blocked deletion work remains recoverable.
-    await poll(() => db.memoryDeletionOutbox.count({ where: { userId, OR: [
-      { state: { not: "SUCCEEDED" } }, { completedAt: null }
-    ] } }), count => count === 0);
     await db.$transaction(async tx => {
       await assertAccountingBoundary(tx);
-      await tx.memoryDeletionOutbox.deleteMany({ where: { userId, state: "SUCCEEDED", completedAt: { not: null } } });
-      check(await tx.memoryDeletionOutbox.count({ where: { userId } }) === 0, "cleanup_deletion_obligations_pending");
       await tx.user.deleteMany({ where: { id: userId, role: "user", displayName: "Workspace activation fixture" } });
     });
   }
@@ -325,7 +304,7 @@ async function main() {
       // Journal ownership before creating resources; recovery never guesses.
       journal = { version: 1, variant: target.variant, corpusHash, sourceHash, configurationHash,
         executionConfigurationHash, oracleHash: digest(oracleCode),
-        environmentHash: acceptedEnvironmentHash, accountedReceipts: {}, accountedMemoryBindings: [],
+        environmentHash: acceptedEnvironmentHash, accountedReceipts: {},
         projectHash: digest(target.project), userId, rows: [], lookupRows: [], officeMetrics: [], pending: null, cleanup: false };
       ownedJournal = true;
       save();
@@ -410,7 +389,6 @@ async function main() {
       const skills = await db.modelRunSkillBinding.count({ where: { modelRunId: run.id } });
       const measured = activationMeasurement(calls, skills);
       const searchUsed = measured.searchUsed || await db.searchRun.count({ where: { modelRunId: run.id } }) > 0;
-      check(await db.memoryRetrievalAttempt.count({ where: { userId: journal.userId, outcome: "DEGRADED" } }) === 0, "unexplained_memory_degradation");
       const outputs = await db.workspaceRunOutput.findMany({ where: { workspaceRunBindingId: run.id }, select: { attachmentId: true, relativePath: true, byteSize: true, checksum: true } });
       let oraclePassed: boolean | null = prompt.oracle ? false : null;
       let officeValid: boolean | null = prompt.office ? false : null;
@@ -434,13 +412,8 @@ async function main() {
       const checkpoint = object(run.toolLoopState);
       const roundUsage = checkpoint.answerRoundUsage;
       const answerRequests = Array.isArray(roundUsage) ? roundUsage.length : null;
-      const memoryBindings = await db.memoryExecutionBinding.findMany({ where: { userId: journal.userId, modelRunId: run.id },
-        select: { id: true, state: true, startedAt: true } });
-      check(memoryBindings.every(binding => binding.state !== "RUNNING" && binding.state !== "PENDING"), "provider_accounting_pending");
-      const events = await db.usageEvent.findMany({ where: { userId: journal.userId, OR: [
-        { modelRunId: run.id }, { memoryExecutionBindingId: { in: memoryBindings.map(binding => binding.id) } }
-      ] }, select: {
-        id: true, memoryExecutionBindingId: true, usageCompleteness: true,
+      const events = await db.usageEvent.findMany({ where: { userId: journal.userId, modelRunId: run.id }, select: {
+        id: true, usageCompleteness: true,
         operationCount: true, inputTokens: true, outputTokens: true, totalTokens: true, estimatedCostMicros: true,
         visionAnalysis: true, imageGeneration: true, chatTitleGeneration: true, chatPdfPreparation: true, knowledgeRelevance: true, optionalDecision: true
       } });
@@ -449,14 +422,11 @@ async function main() {
       // exact answer attribution is unavailable; never pretend they cost zero.
       check(await db.usageEvent.count({ where: { userId: journal.userId, id: { notIn: events.map(event => event.id) } } }) === 0,
         "unattributed_provider_accounting");
-      check(await db.memoryExecutionBinding.count({ where: { userId: journal.userId, state: { in: ["PENDING", "RUNNING"] } } }) === 0,
-        "provider_accounting_pending");
       const auxiliary = events.filter(event => event.visionAnalysis || event.imageGeneration || event.chatTitleGeneration || event.chatPdfPreparation || event.knowledgeRelevance || event.optionalDecision);
-      const auxiliaryRequests = auxiliary.length + events.filter(event => event.memoryExecutionBindingId &&
-        memoryBindings.some(binding => binding.id === event.memoryExecutionBindingId && binding.startedAt !== null)).length;
+      const auxiliaryRequests = auxiliary.length;
       const accounting = summarizeActivationUsage(events.map(event => ({ ...event,
         // An independently settled auxiliary attempt is one dispatched call;
-        // Memory's missing operation count stays unknown rather than invented.
+        // any other missing operation count stays unknown rather than invented.
         operationCount: event.operationCount ?? (auxiliary.includes(event) ? 1 : null) })));
       const paidRequests = accounting.paidRequests;
       const error = object(run.errorPayload).code;
@@ -472,8 +442,6 @@ async function main() {
         receipts[event.id] = hash;
       }
       journal.accountedReceipts = receipts;
-      journal.accountedMemoryBindings = [...new Set([...(journal.accountedMemoryBindings ?? []),
-        ...events.flatMap(event => event.memoryExecutionBindingId ? [event.memoryExecutionBindingId] : [])])];
       await db.$transaction(tx => assertAccountingBoundary(tx));
       if (baseline && prompt.office) {
         const guideCalls = await db.modelRunToolCall.findMany({ where: { modelRunId: run.id },

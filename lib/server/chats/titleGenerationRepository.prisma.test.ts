@@ -46,7 +46,6 @@ async function fixture(run: (work: ReturnType<typeof chatTitleWork>, userMessage
     } }), question.id);
   } finally {
     await prisma.chat.deleteMany({ where: { userId } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.delete({ where: { id: userId } });
     await prisma.providerConnection.update({ where: { id: connectionId }, data: { defaultCredentialId: null } });
     await prisma.providerCredential.updateMany({ where: { connectionId }, data: { activeVersionId: null } });

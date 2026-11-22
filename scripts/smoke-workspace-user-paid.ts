@@ -155,9 +155,7 @@ async function main() {
     await json(await page.request.patch("/api/admin/providers/system-model-policy", { data: {
       expectedVersion: system.systemModelPolicy.policy.version, providerModelId: null, reasoningEffort: null, rerankerProviderModelId: null
     } }));
-    await json(await page.request.patch("/api/me/memory/settings", { data: {
-      useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false, decayEnabled: false
-    } }));
+    await json(await page.request.patch("/api/me/memory/preferences", { data: { memoryEnabled: false } }));
     const workspace = await json(await page.request.get("/api/admin/workspace"));
     await json(await page.request.patch("/api/admin/workspace", { data: {
       expectedVersion: workspace.workspace.version ?? workspace.workspace.policy.version, enabled: true, internetEnabled: false
@@ -280,10 +278,9 @@ async function main() {
       const calls = await db.modelRunToolCall.findMany({ select: { toolName: true, state: true }, where: { modelRunId: run.id } });
       requireValue((clarification || calls.length > 0) && calls.length <= 30 && calls.every(call => call.toolName.startsWith("mcp_workspace_")), "workspace_tool_bounds");
       if (!clarification) requireValue(calls.some(call => call.state === "complete" && /sandbox_(shell|exec)/u.test(call.toolName)), "real_execution_missing");
-      requireValue(await db.memoryRetrievalAttempt.count({ where: { outcome: "DEGRADED" } }) === 0, "memory_degraded");
       if (calls.length) await expect(page.locator('article[data-role="assistant"]').last().getByTestId("tool-activity-disclosure")).toBeVisible();
       memory();
-      emit({ stage: "answer_complete", case: stage, toolCalls: calls.length, codexLbVerified: true, memoryDegraded: 0 });
+      emit({ stage: "answer_complete", case: stage, toolCalls: calls.length, codexLbVerified: true });
       answerTurns += 1;
       return { chatId, run, session };
     };
@@ -381,7 +378,7 @@ async function main() {
     }
     cleanupComplete = true;
     emit({ status: "passed", scenarios: completedScenarios, answerTurns, provider: "codex-lb", model: route.model, guestMemoryMiB: 1024,
-      minimumAvailableMiB, elapsedSeconds: Math.round((Date.now() - started.getTime()) / 1000), memoryDegraded: 0, remainingGuests: guestCount() });
+      minimumAvailableMiB, elapsedSeconds: Math.round((Date.now() - started.getTime()) / 1000), remainingGuests: guestCount() });
   } finally {
     const failureStage = stage;
     const failureStep = step;

@@ -18,19 +18,19 @@ describe("failure cause allowlists", () => {
     for (const name of Object.keys(constraints)) {
       expect(describeFailureFacts(unique({ target: name })).db_constraint).toBe(name);
     }
-    const fields = ["userId", "chatId", "branchGeneration", "sourceRevisionAtCreation", "projectionVersion", "sourceProjectionVersion", "roundOrdinal"];
-    const failure = unique({ modelName: "MemoryRecallRound", target: fields, private: CANARY });
-    expect(describeFailureFacts(failure)).toMatchObject({ prisma_code: "P2002", db_constraint: "MemoryRecallRound_source_ordinal_key" });
+    const fields = ["chatId", "userMessageId", "ordinal"];
+    const failure = unique({ modelName: "ChatSearchPassage", target: fields, private: CANARY });
+    expect(describeFailureFacts(failure)).toMatchObject({ prisma_code: "P2002", db_constraint: "ChatSearchPassage_chatId_userMessageId_ordinal_key" });
     expect(describeFailureFacts(unique({ modelName: "ModelRun", target: ["chatId", "subagentThreadId"] })).db_constraint)
       .toBe("ModelRun_one_active_per_chat_idx");
     const wrapped = new Error("wrapper");
     retainFailureCause(wrapped, failure);
-    const record = event("job_persistence", { error: wrapped, job_kind: "INDEX_HISTORY", subsystem: "memory", stage: "complete", outcome: "unconfirmed" });
-    expect(record).toMatchObject({ db_constraint: "MemoryRecallRound_source_ordinal_key", job_kind: "INDEX_HISTORY", prisma_code: "P2002" });
+    const record = event("job_persistence", { error: wrapped, subsystem: "background", stage: "complete", outcome: "unconfirmed" });
+    expect(record).toMatchObject({ db_constraint: "ChatSearchPassage_chatId_userMessageId_ordinal_key", prisma_code: "P2002" });
     expect(JSON.stringify(record)).not.toContain(CANARY);
     expect(describeFailureFacts(unique({ target: CANARY })).db_constraint).toBe("other");
     expect(describeFailureFacts(unique({ modelName: CANARY, target: [CANARY] })).db_constraint).toBe("other");
-    expect(event("job_attempt", { subsystem: "memory", stage: "process", outcome: "failed", job_kind: CANARY })).not.toHaveProperty("job_kind");
+    expect(event("job_attempt", { subsystem: "background", stage: "process", outcome: "failed", job_kind: CANARY })).not.toHaveProperty("job_kind");
   });
 
   it("allows only opaque MCP server and tool identities, registered fetch reasons and HTTP status classes", () => {

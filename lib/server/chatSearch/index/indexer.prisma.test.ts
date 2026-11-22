@@ -256,7 +256,7 @@ describe("the past-chat index in PostgreSQL", () => {
       providerModelId: model.id, purpose: "memory_indexing", requestCount: 1, usage: { inputTokens: 5, totalTokens: 5 }, userId }))
       .resolves.toBe("recorded");
     expect(await prisma.usageEvent.findFirstOrThrow({ where: { userId } })).toMatchObject({
-      estimatedCostMicros: 10, memoryExecutionBindingId: null, operationCount: 1, purpose: "memory_indexing", usageCompleteness: "PARTIAL"
+      estimatedCostMicros: 10, operationCount: 1, purpose: "memory_indexing", usageCompleteness: "PARTIAL"
     });
   });
 });

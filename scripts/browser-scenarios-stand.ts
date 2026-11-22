@@ -482,9 +482,7 @@ export type StandSetup = Readonly<{ chatProvider: StandModel; model: CatalogMode
 export async function setUpStand(api: Api, input: Readonly<{
   chat: ChatRoute; openRouterKey?: string; route: Readonly<{ apiRoot: string; model: string }>; secret: string;
 }>): Promise<StandSetup> {
-  await json(api, "/api/me/memory/settings", { body: {
-    decayEnabled: false, learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false
-  }, method: "PATCH" });
+  await json(api, "/api/me/memory/preferences", { body: { memoryEnabled: false }, method: "PATCH" });
   await ensureWorkspaceInternet(api);
   const provider = await ensureModel(api, input.route, input.secret);
   // System Vision stays on the vision-capable codex-lb model whichever chat route runs.
