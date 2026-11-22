@@ -117,6 +117,17 @@ describe("manage_memory", () => {
     expect(test.state.offers).toEqual([]);
   });
 
+  it("refuses a change or an offer whose resulting note would hold a credential the edit assembled", async () => {
+    test.note("alice", "Staging: https://staging.example.org/", 1);
+    for (const askFirst of [false, true]) {
+      const refused = json(await test.run({ action: "replace", ask_first: askFirst, find: "staging.example.org",
+        text: "demo:fixture-pass@staging.example.org" }));
+      expect(refused).toMatchObject({ code: "memory_note_secret", saved: false });
+    }
+    expect(test.state.notes.get("alice")).toMatchObject({ revision: 1, text: "Staging: https://staging.example.org/" });
+    expect(test.state.offers).toEqual([]);
+  });
+
   it("only offers when asked to ask first: a pending offer bound to this answer, an offer card, and an unchanged note", async () => {
     test.note("alice", "Use tables.", 1);
     const result = await test.run({ action: "add", ask_first: true, text: " Prefers short answers. " });

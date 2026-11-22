@@ -143,6 +143,16 @@ describe("an offer's decision", () => {
       .toEqual({ body: { error: "memory_note_offer_stale" }, status: 409 });
   });
 
+  it("refuses an offer whose edit assembles a credential in the note as it is now, keeping it pending", async () => {
+    test.note("alice", "Staging: https://staging.example.org/", 1);
+    const offerId = test.offer("alice", "replace", "staging.example.org", "demo:fixture-pass@staging.example.org");
+    const refused = await answer(await test.routes("alice").offerPOST(request(`/api/me/memory/offers/${offerId}`, "POST", { decision: "accept" }),
+      offerId));
+    expect(refused.body).toMatchObject({ error: "memory_note_invalid", reason: "secret" });
+    expect(test.state.notes.get("alice")).toMatchObject({ revision: 1, text: "Staging: https://staging.example.org/" });
+    expect(test.state.offers.find((offer) => offer.id === offerId)).toMatchObject({ state: "pending" });
+  });
+
   it("dismisses an offer without touching the note, and then cannot accept it", async () => {
     test.note("alice", "Use tables.", 1);
     const offerId = test.offer("alice", "add", null, "Prefers short answers.");
