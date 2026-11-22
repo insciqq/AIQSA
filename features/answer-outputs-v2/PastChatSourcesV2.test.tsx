@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PastChatSource } from "@/lib/contracts/pastChats";
 import { AnswerProcessV2 } from "./AnswerProcessV2";
-import { groupPastChatSources, PastChatSourcesV2 } from "./PastChatSourcesV2";
+import { groupPastChatSources, pastChatExcerptText, PastChatSourcesV2 } from "./PastChatSourcesV2";
 
 const source = (chat: number, message: number, excerpt = `Excerpt ${chat}.${message}`): PastChatSource => ({
   chatId: `chat_${chat}`, chatTitle: `Deployment ${chat}`, date: "2026-11-02T09:30:00.000Z", messageId: `msg_${chat}_${message}`, excerpt
@@ -59,5 +59,13 @@ describe("AnswerProcessV2 with past-chat sources", () => {
     const fold = screen.getByTestId("tool-activity-disclosure");
     expect(fold.querySelector(":scope > summary")).toHaveTextContent("Past chats · 2");
     expect(within(fold).getByTestId("past-chat-sources").querySelector("summary")).toHaveTextContent("Past chats · 2");
+  });
+});
+
+describe("pastChatExcerptText", () => {
+  it("drops the index's turn labels and reads the question and answer as one line", () => {
+    expect(pastChatExcerptText("User: And the rollback?\nAssistant: Keep the previous image tagged."))
+      .toBe("And the rollback? — Keep the previous image tagged.");
+    expect(pastChatExcerptText("A window in the middle of an answer.")).toBe("A window in the middle of an answer.");
   });
 });

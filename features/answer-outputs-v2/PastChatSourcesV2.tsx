@@ -53,7 +53,7 @@ function PastChatGroupV2({ group, hidden, onOpen }: Readonly<{ group: PastChatGr
         <SourceLinkV2 label={copy.pastChatOpenLabel(first.chatTitle)} onOpen={onOpen} source={first}>{first.chatTitle}</SourceLinkV2>
         <time dateTime={first.date}>{memoryNoteDate(first.date)}</time>
       </div>
-      <p className="v2-past-chat-preview">{first.excerpt}</p>
+      <p className="v2-past-chat-preview">{pastChatExcerptText(first.excerpt)}</p>
       {rest.length ? (
         <details className="v2-past-chat-excerpts">
           <summary className="v2-focusable">{copy.pastChatMore(rest.length)}</summary>
@@ -62,7 +62,7 @@ function PastChatGroupV2({ group, hidden, onOpen }: Readonly<{ group: PastChatGr
               <li key={source.messageId}>
                 <SourceLinkV2 label={`${copy.pastChatOpenLabel(source.chatTitle)}, ${memoryNoteDate(source.date)}`} onOpen={onOpen}
                   source={source}>{memoryNoteDate(source.date)}</SourceLinkV2>
-                <p>{source.excerpt}</p>
+                <p>{pastChatExcerptText(source.excerpt)}</p>
               </li>
             ))}
           </ul>
@@ -70,6 +70,14 @@ function PastChatGroupV2({ group, hidden, onOpen }: Readonly<{ group: PastChatGr
       ) : null}
     </article>
   );
+}
+
+/**
+ * An excerpt as a reader sees it: the index labels each turn's parts ("User:", "Assistant:") for the model, which a
+ * person does not need, so the labels go and the question and answer read as one line.
+ */
+export function pastChatExcerptText(excerpt: string): string {
+  return excerpt.split(/\n+/u).map((line) => line.replace(/^(?:User|Assistant):\s*/u, "").trim()).filter(Boolean).join(" — ");
 }
 
 /**
