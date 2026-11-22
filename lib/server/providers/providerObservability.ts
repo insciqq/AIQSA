@@ -401,7 +401,7 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       .find((candidate): candidate is number => typeof candidate === "number" &&
         Number.isInteger(candidate) && candidate >= 100 && candidate <= 599);
     const reason: FailureReason = providerStatus === "cancelled" || code === "openai_response_cancelled" ||
-      code === "model_run_cancelled" || code === "search_cancelled" || code === "knowledge_search_cancelled" || code === "provider_response_cancelled"
+      code === "model_run_cancelled" || code === "search_cancelled" || code === "provider_response_cancelled"
       ? "cancelled"
       : cause === "max_output_tokens" ? "safety_limit"
       : cause === "content_filter" ? "policy"
@@ -414,9 +414,8 @@ function classifyFailure(value: unknown, signal: AbortSignal | undefined, httpCl
       : code === PROVIDER_CONTEXT_LENGTH_EXCEEDED ? "safety_limit"
       : code.startsWith("gemini_interactions_stream_") || code === "gemini_interactions_empty_response" ||
         code === "provider_response_failed" || code === "openai_response_incomplete" || code === "openai_response_failed" ||
-        code === "openai_response_not_completed" || code === "knowledge_answer_contract_failed" || code === "knowledge_citation_contract_failed" ||
-        code === "image_response_invalid" ? "invalid_response"
-      : code === "provider_admission_changed" || code === "project_access_revoked" || code === "provider_capability_unsupported" ||
+        code === "openai_response_not_completed" || code === "image_response_invalid" ? "invalid_response"
+      : code === "provider_admission_changed" || code === "provider_capability_unsupported" ||
         code === "provider_response_not_retryable" || code === "provider_refused" || code.startsWith("provider_http_")
         ? "policy" : "unknown";
     const classified = httpClass && reason === "http" ? providerHttpFailureClass(code, status, ownValue(value, "quotaExhausted") === true,

@@ -146,10 +146,10 @@ export function createToolObservationRepository(input: Readonly<{
           FROM "ModelRun" producer WHERE producer."id" = o."modelRunId" AND producer."chatId" = ${run.chatId}
             AND ((o."state" = 'RESERVED' AND NOT ${activeToolLoopRunSql("producer")})
               OR (o."state" = 'STORING' AND o."leaseExpiresAt" <= CURRENT_TIMESTAMP))`;
-        // Source-owned producers (Skill/Knowledge) keep their bytes in their
-        // owner: they neither consume nor are degraded by the store budget.
+        // A source-owned producer (a Skill) keeps its bytes in its owner: it
+        // neither consumes nor is degraded by the store budget.
         let reservedBytes = maximumBytes;
-        if (sourceKind !== "skill" && sourceKind !== "knowledge") {
+        if (sourceKind !== "skill") {
           // Only externalized bytes and in-flight ceilings count: a ceiling
           // becomes the exact size of an object at publication, and nothing
           // once the original is inline or UNAVAILABLE. Rows are not counted.
@@ -314,7 +314,7 @@ export function createToolObservationRepository(input: Readonly<{
     async loadProducerSource(context: ObservationProducer) {
       return prisma.$transaction(async tx => {
         const source = await producer(tx, context, false);
-        if (source.state !== "RESERVED" || !["skill", "knowledge"].includes(source.sourceKind)) throw unavailable();
+        if (source.state !== "RESERVED" || source.sourceKind !== "skill") throw unavailable();
         await input.authorizeSource(tx, source, context);
         return input.loadSource(tx, source, context);
       });

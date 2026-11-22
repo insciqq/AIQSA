@@ -1025,24 +1025,6 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
-  it.each([
-    { agentEnabled: true },
-    { agentEnabled: true, workspace: { enabled: true } },
-    { agentEnabled: "yes" }
-  ])("refuses a removed Agent turn visibly before Workspace effects: %j", async (body) => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const workspace = { prepare: vi.fn() };
-    expect(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody(body))))
-      .toMatchObject({ ok: false, code: "agent_mode_removed", status: 409 });
-    expect(workspace.prepare).not.toHaveBeenCalled();
-  });
-
-  it("answers an older client's explicit Agent Off as an ordinary turn", async () => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const prepared = preparedFrom(await prepareRun(harness.deps, sendInput(successBody({ agentEnabled: false }))));
-    expect(prepared.normalizedRequest).not.toHaveProperty("agent");
-  });
-
   it("freezes owner instructions for sends and regeneration without changing the user question", async () => {
     for (const input of [sendInput(), regenerateInput(successBody())]) {
       const h = createHarness();
@@ -5108,44 +5090,6 @@ describe("image model admission by chat scope", () => {
     expect(analyzed.normalizedRequest.imagePlan).toEqual(personalChoice);
     expect(tools(analyzed)).toEqual(expect.arrayContaining(["analyze_image", "generate_image"]));
     expect(analyzed.providerRequest.tools?.find((tool) => tool.name === "generate_image")?.description).toContain("editing unavailable");
-  });
-});
-
-describe("a request that still asks for automatic answer review", () => {
-  it("is refused visibly before anything is accepted, while an absent or null review asks for nothing", async () => {
-    const review = { maxRounds: 2, reviewers: [{ modelId: "openai-tool-model", provider: "openai",
-      searchPlan: { mode: "all_selected", optionIds: [] } }] };
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const workspace = { prepare: vi.fn() };
-    for (const input of [sendInput(successBody({ answerReview: review })), regenerateInput(successBody({ answerReview: review }))]) {
-      expect(await prepareRun({ ...harness.deps, workspace }, input))
-        .toMatchObject({ code: "answer_review_removed", ok: false, status: 409 });
-    }
-    expect(workspace.prepare).not.toHaveBeenCalled();
-    for (const input of [sendInput(successBody({ answerReview: null })), regenerateInput(successBody())]) {
-      expect((await prepareRun(harness.deps, input)).ok).toBe(true);
-    }
-  });
-});
-
-describe("a request that still names Knowledge", () => {
-  it("accepts a legacy explicit none, refuses every other selection and never admits Knowledge", async () => {
-    const none = { baseIds: [], mode: "none", sourceIds: [], version: 1 };
-    for (const input of [sendInput(successBody({ knowledgePlan: none })), regenerateInput(successBody({ knowledgePlan: none }))]) {
-      const prepared = preparedFrom(await prepareRun(createHarness().deps, input));
-      expect(prepared.normalizedRequest).not.toHaveProperty("knowledgePlan");
-      expect(prepared).not.toHaveProperty("knowledgeAdmissionPlan");
-    }
-    for (const knowledgePlan of [
-      { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 },
-      { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
-      { baseIds: [], mode: "none", sourceIds: [], version: 1, extra: true },
-      "none",
-      null
-    ]) {
-      await expect(prepareRun(createHarness().deps, sendInput(successBody({ knowledgePlan })))).resolves
-        .toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
-    }
   });
 });
 

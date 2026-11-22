@@ -62,30 +62,6 @@ const genericMcpAutoDiscoveryFailure = {
   message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
 } as const;
 
-/** Stored runs may carry codes and copy of the retired System Model tool
- * selector. They are recognized only to render the generic failure. */
-const RETIRED_MCP_AUTO_DISCOVERY_CODES: ReadonlySet<string> = new Set([
-  "mcp_auto_discovery_request_rejected",
-  "mcp_auto_discovery_output_limit",
-  "mcp_auto_discovery_model_output_limit",
-  "mcp_auto_discovery_timeout",
-  "mcp_auto_discovery_output_invalid",
-  "mcp_auto_discovery_credential_unavailable",
-  "mcp_auto_discovery_model_unavailable"
-]);
-const RETIRED_MCP_AUTO_DISCOVERY_MESSAGES: ReadonlySet<string> = new Set([
-  "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
-  "The System Model rejected automatic tool selection (Gemini HTTP 400: parameter_unknown). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
-  "The System Model rejected automatic tool selection (Gemini HTTP 400). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
-  "The System Model could not complete automatic tool selection. Retry in Auto, or use Load all to bypass automatic selection.",
-  "Automatic tool discovery reached its output-token limit before completing the JSON selection. Retry in Auto, use Load all, or ask an administrator to review MCP Auto output tokens.",
-  "The MCP Auto output-token allowance exceeds the System Model’s declared output limit. Ask an administrator to lower the allowance or select a model with a larger limit.",
-  "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all.",
-  "Automatic tool discovery returned an invalid selection. Retry in Auto or use Load all.",
-  "Automatic tool discovery could not use the System Model credential. Ask an administrator to check it, or use Load all.",
-  "Automatic tool discovery needs an available, verified System Model. Ask an administrator to check Defaults & roles, or use Load all."
-]);
-
 /** Internal discovery reason of a runtime that rejected the user's own credential. */
 export const MCP_MATERIALIZATION_PERSONAL_CREDENTIAL_REJECTED =
   "mcp_materialization_personal_credential_rejected" as const;
@@ -131,9 +107,7 @@ export function mcpAutoDiscoveryFailure(
 
 export function isMcpAutoDiscoveryFailureCode(code: string | null | undefined): boolean {
   return code === MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE || code === MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE ||
-    typeof code === "string" && (
-      RETIRED_MCP_AUTO_DISCOVERY_CODES.has(code) ||
-      Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code));
+    typeof code === "string" && Object.values(mcpAutoDiscoveryFailures).some((failure) => failure.code === code);
 }
 
 export function mcpAutoDiscoveryFailureForMessage(message: string | null | undefined) {
@@ -141,7 +115,7 @@ export function mcpAutoDiscoveryFailureForMessage(message: string | null | undef
   if (CREDENTIAL_REJECTED_MESSAGE.test(message)) {
     return { code: MCP_AUTO_DISCOVERY_CREDENTIAL_REJECTED_CODE, message };
   }
-  return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE || RETIRED_MCP_AUTO_DISCOVERY_MESSAGES.has(message)
+  return message === MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE
     ? genericMcpAutoDiscoveryFailure
     : Object.values(mcpAutoDiscoveryFailures).find((failure) => failure.message === message) ?? null;
 }

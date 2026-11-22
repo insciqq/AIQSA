@@ -46,20 +46,6 @@ describe("safe MCP Auto discovery failures", () => {
     expect(mcpAutoDiscoveryFailureForMessage(hostile.message)).toEqual(hostile);
     expect(mcpAutoDiscoveryFailureForMessage(`${named.message} PRIVATE_BODY`)).toBeNull();
   });
-
-  it("renders stored codes and copy of the retired System Model selector as the generic failure", () => {
-    for (const code of ["mcp_auto_discovery_request_rejected", "mcp_auto_discovery_timeout", "mcp_auto_discovery_model_unavailable"]) {
-      expect(isMcpAutoDiscoveryFailureCode(code)).toBe(true);
-    }
-    expect(isMcpAutoDiscoveryFailureCode("mcp_auto_discovery_unknown_future")).toBe(false);
-    for (const stored of [
-      "The System Model rejected automatic tool selection (Gemini HTTP 400: invalid_request). Ask an administrator to check its routing compatibility, or use Load all to bypass automatic selection.",
-      "Automatic tool discovery exceeded its time limit. Retry in Auto or use Load all."
-    ]) {
-      expect(mcpAutoDiscoveryFailureForMessage(stored)).toEqual({
-        code: MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, message: MCP_AUTO_DISCOVERY_UNAVAILABLE_MESSAGE });
-    }
-  });
 });
 
 describe("decodeCancelModelRunResponse", () => {

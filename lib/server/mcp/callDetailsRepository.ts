@@ -3,7 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { resolveChatAccess } from "../chats/access";
 import { decodeToolObservationSourceBinding } from "../toolObservations/contract";
 import { displayedToolCallState } from "../runs/toolLoopPersistence";
-import { acceptedMcpCallIdentity, canReadAcceptedMcpCall, mcpDetailRecord as record } from "./callDetailsAuthority";
+import { acceptedMcpCallIdentity, canReadAcceptedMcpCall } from "./callDetailsAuthority";
 import { mcpCallDisplayRedaction } from "./callDetailsRedaction";
 import type { McpCallDetailsRepository } from "./callDetails";
 
@@ -19,9 +19,7 @@ export function createPrismaMcpCallDetailsRepository(prisma: PrismaClient): McpC
         const run = await tx.modelRun.findFirst({ where: { id: key.runId, userId: key.userId },
           select: { id: true, chatId: true, normalizedRequest: true, status: true,
             chat: { select: { memoryMode: true, temporaryRetentionDeadline: true } } } });
-        // A retired Codex Agent turn's MCP calls never had displayable details.
-        if (!run || record(run.normalizedRequest) && run.normalizedRequest.agent ||
-          !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
+        if (!run || !await resolveChatAccess(tx, { chatId: run.chatId, userId: key.userId })) return null;
         // The main agent's call: a sub-agent thread numbers its own rounds (`ModelRunToolCall.subagentThreadId`).
         const call = await tx.modelRunToolCall.findFirst({ where: {
           modelRunId: key.runId, ordinal: key.ordinal, roundIndex: key.roundIndex, subagentThreadId: null

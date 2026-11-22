@@ -128,9 +128,7 @@ export function createWorkspaceSkillBundles(db: PrismaClient, storage: StorageAd
     for (const reference of manifest.pinned) {
       if (!bindings.some(binding => binding.skillId === reference.skillId && binding.revisionId === reference.revisionId && binding.mode === "pinned")) return invalid();
     }
-    // The hash input keeps `agent: false` from the removed Codex Agent, so a
-    // guest prepared for a run before the upgrade still matches that run.
-    return { bindings, manifest, manifestHash: hashCanonicalMcpValue({ version: 1, agent: false, manifest }) };
+    return { bindings, manifest, manifestHash: hashCanonicalMcpValue({ version: 1, manifest }) };
   }
 
   return {

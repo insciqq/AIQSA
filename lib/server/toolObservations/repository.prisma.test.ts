@@ -413,7 +413,7 @@ describe("durable tool observation ownership", () => {
     const producer = await f.call();
     const original = await f.loadSource();
     const identity = measureObservationJson(original, 4096, 0);
-    await f.repository.reserve(producer, "knowledge", 4096);
+    await f.repository.reserve(producer, "skill", 4096);
     await f.repository.recordOutcome(producer, "complete");
     const value = { byteSize: identity.byteSize, checksum: identity.checksum, inlineText: null, storageMode: "SOURCE" as const,
       projection: null, sourceTruncated: false, maskable: true };
@@ -462,7 +462,7 @@ describe("durable tool observation ownership", () => {
       ordinal: index, providerCallId: randomUUID(), toolName: "synthetic_tool", arguments: {}, state: "complete" as const }));
     await prisma.modelRunToolCall.createMany({ data: calls });
     await prisma.toolObservation.createMany({ data: calls.map((call, index) => index < 300 ? {
-      id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id, toolCallId: call.id, sourceKind: "knowledge", state: "READY",
+      id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id, toolCallId: call.id, sourceKind: "skill", state: "READY",
       executionOutcome: "complete", reservedBytes: 256 * 1024, byteSize: 256 * 1024, checksum: "c".repeat(64), storageMode: "SOURCE"
     } : {
       id: randomUUID().replaceAll("-", ""), modelRunId: f.run.id, toolCallId: call.id, sourceKind: "mcp", state: "UNAVAILABLE",

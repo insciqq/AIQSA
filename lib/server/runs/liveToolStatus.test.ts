@@ -10,7 +10,6 @@ describe("live run phase status", () => {
     expect(payload("model")).toEqual({ stage: "model", status: "waiting" });
     expect(payload("tools", 2.7)).toEqual({ count: 2, stage: "tools", status: "running" });
     expect(payload("tools", -1)).toEqual({ count: 0, stage: "tools", status: "running" });
-    expect(payload("knowledge")).toEqual({ stage: "knowledge", status: "running" });
     expect(payload("files")).toEqual({ stage: "files", status: "running" });
   });
 });

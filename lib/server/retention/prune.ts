@@ -121,16 +121,6 @@ export type PruneRetentionOptions = {
   storage: Pick<StorageAdapter, "deleteObject" | "directMultipartUpload">;
 };
 
-export type DeletionObligationDrainSummary = Readonly<{
-  attachmentJobs: Readonly<{
-    claimed: number;
-    completed: number;
-    failed: number;
-  }>;
-  exhausted: boolean;
-  passes: number;
-}>;
-
 type RetentionCount = {
   deleted: number;
   matched: number;
@@ -369,51 +359,6 @@ export async function runObjectDeletionPass(input: Readonly<{
     if (batch.failedJobIds.length > 0 || batch.claimed < batchSize) break;
   }
   return { batches, claimed, completed, failed };
-}
-
-export async function drainDeletionObligations(input: Readonly<{
-  batchSize?: number;
-  deletionJobLeaseMinutes?: number;
-  maxPasses?: number;
-  repository: RetentionRepository;
-  storage: AttachmentDeletionStorage;
-}>): Promise<DeletionObligationDrainSummary> {
-  const batchSize = positiveInteger(input.batchSize, DEFAULT_PRUNE_BATCH_SIZE);
-  const deletionJobLeaseMinutes = positiveInteger(
-    input.deletionJobLeaseMinutes,
-    DEFAULT_DELETION_JOB_LEASE_MINUTES
-  );
-  const maxPasses = positiveInteger(input.maxPasses, 100);
-  const summary: DeletionObligationDrainSummary = {
-    attachmentJobs: { claimed: 0, completed: 0, failed: 0 },
-    exhausted: false,
-    passes: 0
-  };
-
-  for (let pass = 1; pass <= maxPasses; pass += 1) {
-    const now = new Date();
-    const objects = await processAttachmentDeletionJobs({
-      claimableBefore: deletionJobClaimableBefore(now, deletionJobLeaseMinutes),
-      limit: batchSize,
-      now,
-      repository: input.repository,
-      storage: input.storage
-    });
-    const failed = objects.failedJobIds.length;
-    Object.assign(summary, {
-      attachmentJobs: {
-        claimed: summary.attachmentJobs.claimed + objects.claimed,
-        completed: summary.attachmentJobs.completed + objects.completed,
-        failed: summary.attachmentJobs.failed + failed
-      },
-      passes: pass
-    });
-    if (failed > 0) return summary;
-    if (objects.claimed === 0) return summary;
-  }
-
-  Object.assign(summary, { exhausted: true });
-  return summary;
 }
 
 function prunableAuthSessionWhere(cutoff: Date): Prisma.AuthSessionWhereInput {

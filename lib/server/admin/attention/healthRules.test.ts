@@ -122,13 +122,13 @@ describe("evaluateHealthRules", () => {
       serverErrors: [row({}, 6, 70), row({}, 4, 20), row({}, 6, 3)],
       processStarts: [row({ role: "memory_coordinator" }, 2, 50), row({ role: "memory_coordinator" }, 1, 5), row({ role: "app" }, 2, 5)],
       droppedRecords: [row({}, 2, 10, 37)],
-      backgroundErrors: [row({ subsystem: "knowledge" }, 20, 15), row({ subsystem: "memory" }, 19, 15), row({ subsystem: null }, 99, 15)]
+      backgroundErrors: [row({ subsystem: "attachments" }, 20, 15), row({ subsystem: "memory" }, 19, 15), row({ subsystem: null }, 99, 15)]
     }), now);
     expect(findings).toEqual([
       { code: "server_errors_rising", errors: 10 },
       { code: "process_restarting", role: "memory_coordinator", starts: 3 },
       { code: "logs_dropped", lines: 37 },
-      { code: "background_failures", subsystem: "knowledge", errors: 20 },
+      { code: "background_failures", subsystem: "attachments", errors: 20 },
       // Records without a subsystem (or beyond the counter key bound) still count, as other work.
       { code: "background_failures", subsystem: "other", errors: 99 }
     ]);
@@ -285,7 +285,7 @@ describe("healthAttentionItems", () => {
     { code: "server_errors_rising", errors: 12 },
     { code: "process_restarting", role: "memory_coordinator", starts: 4 },
     { code: "logs_dropped", lines: 1 },
-    { code: "background_failures", subsystem: "knowledge", errors: 25 },
+    { code: "background_failures", subsystem: "attachments", errors: 25 },
     { code: "operation_timeouts_rising", operation: { kind: "tool", name: "vision" }, timeouts: 3, total: 8 }
   ];
 
@@ -301,7 +301,7 @@ describe("healthAttentionItems", () => {
       { code: "server_errors_rising", count: 12, id: "server_errors_rising", severity: "warn", target: { section: "health" }, title: "Server errors are rising" },
       { code: "process_restarting", count: 4, id: "process_restarting:memory_coordinator", severity: "bad", target: { section: "health" }, title: "A service keeps restarting" },
       { code: "logs_dropped", count: 1, id: "logs_dropped", severity: "warn", target: { section: "health" }, title: "Log lines were dropped" },
-      { code: "background_failures", count: 25, id: "background_failures:knowledge", severity: "warn", target: { section: "health" }, title: "Background work is failing" },
+      { code: "background_failures", count: 25, id: "background_failures:attachments", severity: "warn", target: { section: "health" }, title: "Background work is failing" },
       { code: "operation_timeouts_rising", count: 3, id: "operation_timeouts_rising:tool:vision", severity: "warn", target: { section: "health" }, title: "Operations are timing out" }
     ]);
     expect(items.map((item) => item.detail)).toEqual([
@@ -311,7 +311,7 @@ describe("healthAttentionItems", () => {
       "12 requests ended with a server error in the last hour",
       "The background worker started 4 times in the last hour — check its logs",
       "1 log line could not be written in the last hour, so some diagnostics are missing",
-      "Knowledge removal · 25 errors in the last hour",
+      "File attachments · 25 errors in the last hour",
       "Image analysis · 3 of 8 ran out of time in the last 24 hours"
     ]);
     const copy = JSON.stringify(items.map(({ action, detail, title }) => ({ action, detail, title })));

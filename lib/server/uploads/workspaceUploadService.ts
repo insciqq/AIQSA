@@ -13,15 +13,13 @@ import { joinedUploadParts, meteredUploadBody, WorkspaceUploadStreamError } from
 
 type CreateInput = { byteSize: number; fileName: string; mimeType: string; idempotencyKey: string };
 
-/** A `projectId` of null from clients older than the removal of Projects is ignored. */
 export function decodeWorkspaceUploadCreate(value: unknown): CreateInput | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).some(key => !["byteSize", "fileName", "mimeType", "projectId", "idempotencyKey"].includes(key)) ||
+  if (Object.keys(v).some(key => !["byteSize", "fileName", "mimeType", "idempotencyKey"].includes(key)) ||
     typeof v.byteSize !== "number" || !Number.isSafeInteger(v.byteSize) || v.byteSize < 1 ||
     typeof v.fileName !== "string" || v.fileName.length < 1 || v.fileName.length > 512 ||
     typeof v.mimeType !== "string" || v.mimeType.length > 255 || /[\u0000-\u001f\u007f]/u.test(v.mimeType) ||
-    (v.projectId !== undefined && v.projectId !== null) ||
     typeof v.idempotencyKey !== "string" || !/^[a-zA-Z0-9-]{16,64}$/u.test(v.idempotencyKey)) return null;
   return { byteSize: v.byteSize, fileName: v.fileName, idempotencyKey: v.idempotencyKey, mimeType: v.mimeType };
 }
