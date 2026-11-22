@@ -81,12 +81,12 @@ describe("past-chat passages", () => {
       { answer: "Failed answer", question: "Failed question", status: "error" },
       { answer: "Still writing", question: "Streaming question", status: "streaming" },
       { answer: "Scheduled result", question: "Scheduled prompt", scheduledTaskPrompt: true },
-      { answer: "Reviewed version", answerReviewSessionId: "review-1", question: "Review step" },
-      { answer: "Revised", question: "Revise this", systemTurnKind: "answer_revision_request" },
+      // A server-written kind the index does not list stays out until it is listed.
+      { answer: "Unlisted answer", question: "Unlisted server turn", systemTurnKind: "unlisted_server_turn" },
       { answer: "Done after approval.", question: "Continue after approval", systemTurnKind: "mcp_approval_continuation" },
       { answer: "Sub-agents reported.", question: "Wake up", systemTurnKind: "subagent_callback" }
     ] });
-    expect(chatSearchTurns(snapshot.path).map((turn) => turn.user.id)).toEqual(["m-q0", "m-q7", "m-q8"]);
+    expect(chatSearchTurns(snapshot.path).map((turn) => turn.user.id)).toEqual(["m-q0", "m-q6", "m-q7"]);
     const passages = buildChatSearchPassages(snapshot, []);
     expect(passages.map((passage) => chatSearchPassageBody(passage.text))).toEqual([
       "User: Ordinary question\n\nAssistant: Settled answer.",

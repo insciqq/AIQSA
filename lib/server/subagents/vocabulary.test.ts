@@ -34,7 +34,6 @@ describe("sub-agent vocabulary", () => {
     expect(Object.values(MessageSystemTurnKind)).toContain(SUBAGENT_CALLBACK_TURN_KIND);
     // A reader sees the wake-up turn as server-written, never as the user's speech.
     expect(isMessageSystemTurnKind(SUBAGENT_CALLBACK_TURN_KIND)).toBe(true);
-    expect(isMessageSystemTurnKind("answer_review_request")).toBe(false);
     expect(Object.values(UsagePurpose)).toContain(SUBAGENT_USAGE_PURPOSE);
     expect(isPersonalUsagePurpose(SUBAGENT_USAGE_PURPOSE)).toBe(true);
     expect(isRunUsageAttributionPurpose(SUBAGENT_USAGE_PURPOSE)).toBe(true);

@@ -2267,17 +2267,17 @@ describe("model run route handlers", () => {
     expect(JSON.stringify(observation.records())).not.toContain("Private message");
   });
 
-  it("sends after a reviewed answer's hidden step from the version standing for it, under that step", async () => {
-    // The chat's stored leaf is a review step's answer; the browser was shown the version standing for it.
+  it("sends after a quiet check from the answer the browser was shown, under the stored leaf", async () => {
+    // The chat's stored leaf is a quiet check's answer; the browser was shown the answer before it.
     const { repository, state } = createMemoryRepository(entitledFakeModel, [
       { content: { blocks: [{ text: "Question", type: "text" }] }, id: "question", role: "user" },
-      { content: { blocks: [{ text: "Answer", type: "text" }] }, id: "version", role: "assistant" },
-      { content: { blocks: [{ text: "Review step", type: "text" }] }, id: "review-step", role: "assistant" }
+      { content: { blocks: [{ text: "Answer", type: "text" }] }, id: "shown", role: "assistant" },
+      { content: { blocks: [{ text: "Quiet check", type: "text" }] }, id: "quiet-check", role: "assistant" }
     ]);
     const looked: string[] = [];
     repository.loadVisibleLeafMessageId = async (_chatId, leafMessageId) => {
       looked.push(leafMessageId);
-      return leafMessageId === "review-step" ? "version" : leafMessageId;
+      return leafMessageId === "quiet-check" ? "shown" : leafMessageId;
     };
     const POST = createSendMessageHandler({ ...authDeps, providers: { fake: createFakeProviderAdapter() }, repository });
     const send = (expectedActiveLeafId: string) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
@@ -2289,11 +2289,11 @@ describe("model run route handlers", () => {
     // Any other message the browser names is still a moved branch.
     expect((await send("question")).status).toBe(409);
     expect(state.created).toBeNull();
-    const accepted = await send("version");
+    const accepted = await send("shown");
     expect(accepted.status).toBe(200);
     await accepted.text();
-    expect(state.created?.expectedActiveLeafId).toBe("review-step");
-    expect(looked).toEqual(["review-step", "review-step"]);
+    expect(state.created?.expectedActiveLeafId).toBe("quiet-check");
+    expect(looked).toEqual(["quiet-check", "quiet-check"]);
   });
 
   it("stops a run whose provider has not answered yet, at once", async () => {

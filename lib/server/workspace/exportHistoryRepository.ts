@@ -1,7 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { WORKSPACE_EXPORT_PAGE_SIZE, type WorkspaceExportEntry } from "../../contracts/workspaceExports";
 import { prisma } from "../prisma";
-import { hiddenOnActivePath } from "../chats/legacyAnswerReviews";
 import type { WorkspaceExportHistoryRepository } from "./exportHistoryHandlers";
 
 export function createWorkspaceExportHistoryRepository(client: PrismaClient = prisma): WorkspaceExportHistoryRepository {
@@ -13,8 +12,6 @@ export function createWorkspaceExportHistoryRepository(client: PrismaClient = pr
           where: { id: chatId, permanentDeletionAt: null }
         });
         if (!chat || chat.userId !== userId) return null;
-        // A step of an answer review recorded before the feature's removal is no answer of the path as it reads.
-        const hidden = await hiddenOnActivePath(tx, chatId, chat.activeLeafMessageId);
         const rows = await tx.$queryRaw<Array<Omit<WorkspaceExportEntry, "createdAt"> & { createdAt: Date }>>(Prisma.sql`
           WITH RECURSIVE path AS (
             SELECT "id", "parentMessageId", "createdAt" FROM "Message"
@@ -51,7 +48,7 @@ export function createWorkspaceExportHistoryRepository(client: PrismaClient = pr
             AND attachment."chatId" = ${chatId} AND attachment."messageId" = path."id" AND attachment."status" = 'ready'
           WHERE ${cursor === null ? Prisma.sql`true` : Prisma.sql`
             (path."createdAt", path."id") < (SELECT "createdAt", "id" FROM path WHERE "id" = ${cursor})
-          `}${hidden.length > 0 ? Prisma.sql` AND NOT (path."id" = ANY(${hidden}::text[]))` : Prisma.empty}
+          `}
           GROUP BY path."id", path."createdAt"
           ORDER BY path."createdAt" DESC, path."id" DESC
           LIMIT ${WORKSPACE_EXPORT_PAGE_SIZE + 1}

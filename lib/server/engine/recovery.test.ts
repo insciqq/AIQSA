@@ -32,18 +32,6 @@ describe("native run recovery", () => {
     expect(recovery.repository.failRun).toHaveBeenCalledWith("run-1", "answer-run-1", NATIVE_RUN_INTERRUPTED, { recoveryTerminal: true });
   });
 
-  it("ends an answer review step the upgrade left running like any other run, never starting its retired report", async () => {
-    // A step the previous release admitted: its stored request still carries the step's marker.
-    const step = orphan("run-step", { normalizedRequest: { answerReviewStep: { kind: "review", modelName: "Reviewer", reviewer: 0,
-      round: 1, sessionId: "session-1", step: 0, version: 1 } } });
-    const recovery = deps([step]);
-    await expect(reconcileNativeRuns(recovery)).resolves.toBe(1);
-    expect(recovery.repository.failRun).toHaveBeenCalledWith("run-step", "answer-run-step", NATIVE_RUN_INTERRUPTED,
-      { recoveryTerminal: true });
-    expect(recovery.workspace.settle).not.toHaveBeenCalled();
-    expect(recovery.runs.complete).not.toHaveBeenCalled();
-  });
-
   it("ends a cut-off run on the user's computer too, so what it left running there stops", async () => {
     const computer = freezeComputerBinding({ cwd: "~", deviceId: "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11" },
       { arch: "amd64", name: "Laptop", online: true, os: "linux" });

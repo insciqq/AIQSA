@@ -19,12 +19,6 @@ import { foldSkillSaveCards } from "../../contracts/skillSaves";
 import { foldResourceChangeCards } from "../../contracts/resourceChanges";
 import { isMessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import { SUBAGENT_CALLBACK_TURN_KIND, SUBAGENT_FOLLOWUP_LIMITS, normalizeSubagentName } from "../../contracts/subagents";
-import {
-  collapseChatAnswerReviewTree,
-  isAnswerReviewStepToolCall,
-  loadAnswerReviewSessions
-} from "./legacyAnswerReviews";
-import { collapseAnswerReviews } from "../../domain/answerReviewTranscript";
 import { loadQuietCheckSummary, quietCheckOmission, type QuietCheckMessage } from "./quietScheduledChecks";
 import { mcpApprovalCardSelect, projectMcpApprovalCards, type McpApprovalCardRow } from "../mcp/writeApprovalRepository";
 import { mcpApprovalGated } from "../runs/mcpApprovalGate";
@@ -478,11 +472,8 @@ type ActiveBranchMessage = QuietCheckMessage;
  * The active branch from its root to the leaf, walked in PostgreSQL along
  * the leaf's ancestors only, so other branches and every body stay unread. A
  * walk that ends before a root (a missing ancestor, or a cycle cut at the
- * chat's message count) yields no branch. An answer review recorded before
- * the feature's removal reads as its question and latest version: its steps
- * leave the branch, the version hangs from the question, and a leaf that is
- * a step ends the branch at the version standing for it. Quiet checks stay on
- * it; `visibleBranch` leaves them out.
+ * chat's message count) yields no branch. Quiet checks stay on it;
+ * `visibleBranch` leaves them out.
  */
 async function loadActiveBranchPath(
   tx: Prisma.TransactionClient,
@@ -490,29 +481,23 @@ async function loadActiveBranchPath(
   activeLeafMessageId: string | null
 ): Promise<ActiveBranchMessage[]> {
   if (!activeLeafMessageId) return [];
-  const rows = await tx.$queryRaw<Array<ActiveBranchMessage & {
-    answerReviewSessionId: string | null;
-    status: string;
-    systemTurnKind: string | null;
-  }>>(Prisma.sql`
+  const rows = await tx.$queryRaw<ActiveBranchMessage[]>(Prisma.sql`
     WITH RECURSIVE "bound" AS MATERIALIZED (
       SELECT count(*)::int AS "messages" FROM "Message" WHERE "chatId" = ${chatId}
     ), "path" AS (
-      SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
-        message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", message."scheduledTaskPrompt",
+      SELECT message."id", message."parentMessageId", message."role", message."scheduledTaskPrompt",
         message."branchSourceModelRunId", 0 AS "depth"
       FROM "Message" AS message
       WHERE message."chatId" = ${chatId} AND message."id" = ${activeLeafMessageId}
       UNION ALL
-      SELECT parent."id", parent."parentMessageId", parent."role", parent."status", parent."answerReviewSessionId",
-        parent."systemTurnKind", parent."scheduledTaskPrompt", parent."branchSourceModelRunId", path."depth" + 1
+      SELECT parent."id", parent."parentMessageId", parent."role", parent."scheduledTaskPrompt", parent."branchSourceModelRunId",
+        path."depth" + 1
       FROM "path" AS path
       CROSS JOIN "bound"
       -- One primary-key probe per step; a join would re-read the chat's
       -- messages on every step of the walk.
       CROSS JOIN LATERAL (
-        SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
-          message."answerReviewSessionId", message."systemTurnKind"::text AS "systemTurnKind", message."scheduledTaskPrompt",
+        SELECT message."id", message."parentMessageId", message."role", message."scheduledTaskPrompt",
           message."branchSourceModelRunId"
         FROM "Message" AS message
         WHERE message."id" = path."parentMessageId" AND message."chatId" = ${chatId}
@@ -520,22 +505,10 @@ async function loadActiveBranchPath(
       ) AS parent
       WHERE path."depth" < "bound"."messages"
     )
-    SELECT "id", "parentMessageId", "role", "status", "answerReviewSessionId", "systemTurnKind", "scheduledTaskPrompt",
-      "branchSourceModelRunId"
+    SELECT "id", "parentMessageId", "role", "scheduledTaskPrompt", "branchSourceModelRunId"
     FROM "path" ORDER BY "depth" DESC
   `);
-  if (rows[0]?.parentMessageId !== null) return [];
-  const sessionIds = rows.flatMap((row) => row.answerReviewSessionId ?? []);
-  const collapse = collapseAnswerReviews(rows.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId, id: row.id,
-    parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })),
-  sessionIds.length > 0 ? await loadAnswerReviewSessions(tx, chatId, sessionIds) : []);
-  return rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{
-    branchSourceModelRunId: row.branchSourceModelRunId,
-    id: row.id,
-    parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId,
-    role: row.role,
-    scheduledTaskPrompt: row.scheduledTaskPrompt
-  }]);
+  return rows[0]?.parentMessageId === null ? rows : [];
 }
 
 /** The active branch as its reader sees it (`visibleBranch`). */
@@ -1054,9 +1027,8 @@ function chatWorkspaceProjection(input: Readonly<{
 
 /**
  * The message the chat's leaf reads as: the visible branch's last message,
- * which stands for a leaf that is a step of an answer review recorded before
- * the feature's removal, or for a leaf that is a quiet check
- * (`visibleBranch`). A history cursor keeps the stored leaf.
+ * which stands for a leaf that is a quiet check (`visibleBranch`). A history
+ * cursor keeps the stored leaf.
  */
 function visibleLeafMessageId(path: readonly ActiveBranchMessage[], activeLeafMessageId: string | null): string | null {
   return path.at(-1)?.id ?? activeLeafMessageId;
@@ -1294,14 +1266,11 @@ function subagentActivityFacts(call: ToolActivityRun["toolCalls"][number]): Pick
 
 /** Safe activity plus initiator-only MCP references; no arguments, results, or raw events. */
 export function summarizeMessageRunToolActivity(
-  stored: ToolActivityRun,
+  run: ToolActivityRun,
   viewerUserId?: string
 ): ThreadToolActivity | null {
   // Agent actions have one JSONL-backed Workspace feed, including MCP/search.
-  if (isRecord(stored.normalizedRequest) && isRecord(stored.normalizedRequest.agent)) return null;
-  // A version an answer review recorded before its removal shows its work, not its step's report.
-  const run = { ...stored, toolCalls: stored.toolCalls.filter((call) =>
-    !isAnswerReviewStepToolCall(stored.normalizedRequest, call.toolName)) };
+  if (isRecord(run.normalizedRequest) && isRecord(run.normalizedRequest.agent)) return null;
   const descriptors = toolActivityDescriptors(run.normalizedRequest);
   const calls = run.toolCalls.map((call) => {
     // A call of a tool its round did not declare never ran: a plain failed
@@ -2215,7 +2184,6 @@ export function createPrismaChatRepository(
         });
         if (!chat) return null;
         const rows = await tx.$queryRaw<Array<{
-          answerReviewSessionId: string | null;
           branchSourceModelRunId: string | null;
           id: string;
           parentMessageId: string | null;
@@ -2223,13 +2191,10 @@ export function createPrismaChatRepository(
           role: "assistant" | "user";
           scheduledTaskPrompt: boolean;
           status: "cancelled" | "complete" | "error" | "queued" | "streaming";
-          systemTurnKind: string | null;
         }>>(Prisma.sql`
           SELECT
-            m."answerReviewSessionId",
             m."branchSourceModelRunId",
             m."scheduledTaskPrompt",
-            m."systemTurnKind"::text AS "systemTurnKind",
             m."id",
             m."parentMessageId",
             LEFT(regexp_replace(COALESCE((
@@ -2250,20 +2215,12 @@ export function createPrismaChatRepository(
           WHERE m."chatId" = ${chatId}
           ORDER BY m."createdAt" ASC, m."id" ASC
         `);
-        // The graph reads as the transcript does: an answer review recorded before the feature's
-        // removal shows only its version, among its question's answers.
-        const collapse = await collapseChatAnswerReviewTree(tx, chatId, rows.map((row) => ({
-          answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
-          status: row.status, systemTurnKind: row.systemTurnKind
-        })), chat.activeLeafMessageId);
-        const collapsed = rows.flatMap((row) => collapse.removed.has(row.id) ? [] : [{ ...row,
-          parentMessageId: collapse.parents.has(row.id) ? collapse.parents.get(row.id) ?? null : row.parentMessageId }]);
-        // Nor does a quiet check show (`visibleBranch`): a version pager never offers one, and every branch that holds
-        // only quiet checks leaves the graph.
-        const quiet = await quietCheckOmission(tx, chatId, collapsed);
+        // The graph reads as the transcript does: no quiet check shows (`visibleBranch`), a version pager never
+        // offers one, and every branch that holds only quiet checks leaves the graph.
+        const quiet = await quietCheckOmission(tx, chatId, rows);
         const graph: ChatBranchGraphRecord = {
-          activeLeafMessageId: quiet.resolve(collapse.activeLeafId),
-          nodes: collapsed.flatMap((row) => quiet.removed.has(row.id) ? [] : [{
+          activeLeafMessageId: quiet.resolve(chat.activeLeafMessageId),
+          nodes: rows.flatMap((row) => quiet.removed.has(row.id) ? [] : [{
             id: row.id,
             parentMessageId: quiet.parents.has(row.id) ? quiet.parents.get(row.id) ?? null : row.parentMessageId,
             preview: boundedChatBranchPreview(row.preview),

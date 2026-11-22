@@ -60,7 +60,6 @@ export type ChatSearchSourceMessage = Readonly<{
   createdAt: Date;
   systemTurnKind: string | null;
   scheduledTaskPrompt: boolean;
-  answerReviewSessionId: string | null;
 }>;
 
 /** What the indexer reads of one chat, all from one consistent snapshot. */
@@ -104,8 +103,6 @@ export function chatSearchTurns(path: readonly ChatSearchSourceMessage[]): reado
     if (answer.status !== "complete") continue;
     // A scheduled task's prompt and every answer to it stay out, as they stayed out of Memory.
     if (user.scheduledTaskPrompt) continue;
-    // A step of an answer review recorded before its removal (2026-10-25) is not the user's turn.
-    if (user.answerReviewSessionId !== null || answer.answerReviewSessionId !== null) continue;
     if (user.systemTurnKind !== null && !ANSWER_ONLY_TURN_KINDS.has(user.systemTurnKind)) continue;
     turns.push({ answer, answerOnly: user.systemTurnKind !== null, user });
   }

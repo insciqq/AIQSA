@@ -771,11 +771,7 @@ export type RunRepository = {
       systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
     };
   } | null>;
-  /**
-   * The branch path to the leaf as the model reads it: an answer review
-   * recorded before the feature's removal reads as its source question
-   * followed by its latest version (`lib/server/chats/legacyAnswerReviews.ts`).
-   */
+  /** The branch path to the leaf as the model reads it, without quiet checks. */
   loadConversationContextForExpectedLeaf(
     chatId: string,
     userId: string,
@@ -787,10 +783,9 @@ export type RunRepository = {
     leafMessageId: string
   ): Promise<ProviderConversationMessage[]>;
   /**
-   * The message the browser reads `leafMessageId` as: a step of an answer
-   * review recorded before the feature's removal reads as the version that
-   * replaces it, a quiet check as the nearest message before it that is no
-   * quiet check (null when there is none), any other message as itself
+   * The message the browser reads `leafMessageId` as: a quiet check as the
+   * nearest message before it that is no quiet check (null when there is
+   * none), any other message as itself
    * (`lib/server/chats/quietScheduledChecks.ts`).
    */
   loadVisibleLeafMessageId?(chatId: string, leafMessageId: string): Promise<string | null>;

@@ -514,12 +514,10 @@ async function acceptedRuntimeBinding(
 
 /**
  * The stored leaf a send's expected leaf names. The browser names the message
- * it was shown: a leaf that is a step of an answer review recorded before
- * the feature's removal reads as the version standing for it
- * (`lib/server/chats/legacyAnswerReviews.ts`), and quiet checks that end the
- * branch read as the message before them, or as no message when nothing else
- * is on it (`lib/server/chats/quietScheduledChecks.ts`). Anything else is
- * compared as is. The user's message itself still follows only what they
+ * it was shown: quiet checks that end the branch read as the message before
+ * them, or as no message when nothing else is on it
+ * (`lib/server/chats/quietScheduledChecks.ts`). Anything else is compared as
+ * is. The user's message itself still follows only what they
  * were shown (`lib/server/runs/prismaRepositoryPreparation.ts`).
  */
 async function storedExpectedLeaf(

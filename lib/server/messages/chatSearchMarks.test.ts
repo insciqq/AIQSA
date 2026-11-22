@@ -87,7 +87,7 @@ describe("message writers mark past-chat search in their own transaction", () =>
         updatedAt: new Date() }),
       "message.create": () => ({ id: `copied-${copied++}` }),
       "message.findFirst": () => ({ chatId: CHAT.id, id: "answer-1", role: "assistant", status: "complete" }),
-      "message.findMany": () => MESSAGES.map((message) => ({ ...message, answerReviewSessionId: null,
+      "message.findMany": () => MESSAGES.map((message) => ({ ...message,
         assistantModelRuns: [], branchFollowups: null, branchSourceModelRunId: null, errorMessage: null, inputTokens: null,
         modelId: null, outputTokens: null, provider: null, reasoningTokens: null, scheduledTaskPrompt: false,
         systemTurnKind: null }))

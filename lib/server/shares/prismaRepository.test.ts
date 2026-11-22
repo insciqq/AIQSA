@@ -4,15 +4,9 @@ vi.mock("../prisma", () => ({ prisma: {} }));
 
 import { createPrismaShareRepository } from "./prismaRepository";
 
-/**
- * A public share holds the selected leaf's path only: an answer review that
- * went on past the selected answer (a later version) stays out, while a
- * shared review leaf reads as its group's latest version without the review
- * turns.
- */
+/** A public share holds the selected leaf's path only, each message as stored. */
 
 type Row = Readonly<{
-  answerReviewSessionId: string | null;
   content: unknown;
   id: string;
   parentMessageId: string | null;
@@ -21,25 +15,23 @@ type Row = Readonly<{
   systemTurnKind: string | null;
 }>;
 
-function row(id: string, parentMessageId: string | null, role: string, text: string,
-  session: string | null = null, systemTurnKind: string | null = null): Row {
-  return { answerReviewSessionId: session, content: { blocks: [{ text, type: "text" }] }, id, parentMessageId, role,
-    status: "complete", systemTurnKind };
+function row(id: string, parentMessageId: string | null, role: string, text: string): Row {
+  return { content: { blocks: [{ text, type: "text" }] }, id, parentMessageId, role, status: "complete", systemTurnKind: null };
 }
 
+// Turns the removed Answer Review once wrote read as ordinary turns since its storage was dropped.
 const messages = [
   row("q", null, "user", "Question"),
   row("a", "q", "assistant", "Shared answer"),
-  row("review", "a", "user", "Review request", "s", "answer_review_request"),
-  row("critique", "review", "assistant", "Critique", "s"),
-  row("revise", "critique", "user", "Revision request", "s", "answer_revision_request"),
-  row("v2", "revise", "assistant", "Later revision", "s")
+  row("review", "a", "user", "Review request"),
+  row("critique", "review", "assistant", "Critique"),
+  row("revise", "critique", "user", "Revision request"),
+  row("v2", "revise", "assistant", "Later revision")
 ];
 
 async function share(activeLeafMessageId: string) {
   const created: unknown[] = [];
   const tx = {
-    answerReviewSession: { findMany: async () => [{ id: "s", sourceAssistantMessageId: "a" }] },
     chat: { findFirst: async () => ({ activeLeafMessageId: "v2", id: "c", messages, title: "Chat" }) },
     message: { findMany: async () => [] },
     sharedChatSnapshot: { create: async ({ data }: { data: unknown }) => { created.push(data); return { id: "share" }; } }
@@ -50,19 +42,18 @@ async function share(activeLeafMessageId: string) {
   return data!.snapshot.messages.map((message) => `${message.role}:${JSON.stringify(message.content)}`);
 }
 
-describe("createChatShare with answer reviews", () => {
-  it("shares the selected answer, not a later review version of it", async () => {
+describe("createChatShare along a branch", () => {
+  it("shares the selected answer, not what followed it", async () => {
     const shown = await share("a");
     expect(shown.join("\n")).toContain("Shared answer");
     expect(shown.join("\n")).not.toContain("Later revision");
     expect(shown).toHaveLength(2);
   });
 
-  it("shares a review leaf as its latest version without the review turns", async () => {
+  it("shares every turn of the selected leaf's path as stored", async () => {
     const shown = await share("v2");
-    expect(shown).toHaveLength(2);
-    expect(shown[1]).toContain("Later revision");
-    expect(shown.join("\n")).not.toMatch(/Review request|Critique|Revision request|Shared answer/u);
+    expect(shown.map((entry) => entry.split(":")[0])).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+    expect(shown.join("\n")).toMatch(/Shared answer[\s\S]*Review request[\s\S]*Critique[\s\S]*Revision request[\s\S]*Later revision/u);
   });
 });
 
@@ -77,7 +68,6 @@ describe("createChatShare with quiet checks", () => {
   async function shareChecks(activeLeafMessageId: string | null) {
     const created: Array<{ snapshot: { messages: Array<{ content: { blocks: Array<{ text: string }> }; role: string }> } }> = [];
     const tx = {
-      answerReviewSession: { findMany: async () => [] },
       chat: { findFirst: async () => ({ activeLeafMessageId: "q2-a", id: "c", messages: checks, title: "Chat" }) },
       message: { findMany: async () => [] },
       modelRun: { findMany: async (args: { where: { userMessageId: { in: string[] } } }) => args.where.userMessageId.in
@@ -104,7 +94,6 @@ describe("createChatShare ownership", () => {
   it("shares only the requester's own chat and records them as its owner", async () => {
     const create = vi.fn(async () => ({ id: "share" }));
     const tx = {
-      answerReviewSession: { findMany: async () => [] },
       chat: { findFirst: vi.fn(async () => ({ activeLeafMessageId: "a", id: "c", messages, title: "Chat" })) },
       message: { findMany: async () => [] },
       sharedChatSnapshot: { create }
@@ -125,7 +114,6 @@ describe("createChatShare for a service account's chat", () => {
       row("a", "q", "assistant", "It is DB_PASSWORD=s3cr3t-Value-Only-Here and the key sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd")
     ] }));
     const tx = {
-      answerReviewSession: { findMany: async () => [] },
       chat: { findFirst },
       message: { findMany: async () => [] },
       sharedChatSnapshot: { create: async ({ data }: { data: (typeof created)[number] }) => { created.push(data); return { id: "share" }; } }

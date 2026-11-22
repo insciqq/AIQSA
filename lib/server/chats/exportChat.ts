@@ -11,7 +11,6 @@ import type { RequestAuthResolver } from "../auth/requestAuth";
 import { messageFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { omitSubagentCallbackTurns } from "../../domain/subagentCallbackTurns";
 import { projectMessageFollowups } from "../runs/runFollowups";
-import { collapseChatAnswerReviewTree } from "./legacyAnswerReviews";
 import { quietCheckOmission } from "./quietScheduledChecks";
 
 export const chatExportChatSelect = {
@@ -28,7 +27,6 @@ export type ChatExportChatRow = Prisma.ChatGetPayload<{ select: typeof chatExpor
 
 const chatExportMessageSelect = {
   ...messageFollowupSelect,
-  answerReviewSessionId: true,
   branchSourceModelRunId: true,
   content: true,
   createdAt: true,
@@ -42,7 +40,7 @@ const chatExportMessageSelect = {
   systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
-type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession" | "attachment" | "message" | "modelRun">;
+type ChatExportReadClient = Pick<Prisma.TransactionClient, "attachment" | "message" | "modelRun">;
 
 /**
  * Every message of one chat with its follow-ups and attachment metadata, in
@@ -50,20 +48,10 @@ type ChatExportReadClient = Pick<Prisma.TransactionClient, "answerReviewSession"
  */
 export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatExportChatRow): Promise<ChatExportSource> {
   const loaded = await db.message.findMany({ select: chatExportMessageSelect, where: { chatId: chat.id } });
-  // The chat reads as its branch graph does: each answer review recorded
-  // before the feature's removal as its answer, the source question then the
-  // latest version. Its server-written turns, reviews and earlier versions
-  // stay out.
-  const collapse = await collapseChatAnswerReviewTree(db, chat.id, loaded.map((row) => ({
-    answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
-    status: row.status, systemTurnKind: row.systemTurnKind
-  })), chat.activeLeafMessageId);
-  const collapsed = loaded.filter((row) => !collapse.removed.has(row.id))
-    .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
   // A quiet check is no result: it stays out like the chat's history leaves it out, without a new export version, since
   // an export of a chat without one is unchanged (operator decision 2026-11-11, `lib/server/chats/quietScheduledChecks.ts`).
-  const quiet = await quietCheckOmission(db, chat.id, collapsed);
-  const shown = collapsed.filter((row) => !quiet.removed.has(row.id))
+  const quiet = await quietCheckOmission(db, chat.id, loaded);
+  const shown = loaded.filter((row) => !quiet.removed.has(row.id))
     .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
   // A sub-agent wake-up turn and a Sign in again request are the server's, never the user's speech: they stay out, each
   // answer under the turn before it.
@@ -71,7 +59,7 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
     systemTurnKind: row.systemTurnKind })));
   const rows = shown.filter((row) => !wakeUps.removed.has(row.id))
     .map((row) => wakeUps.parents.has(row.id) ? { ...row, parentMessageId: wakeUps.parents.get(row.id) ?? null } : row);
-  const activeLeafKey = wakeUps.resolve(quiet.resolve(collapse.activeLeafId));
+  const activeLeafKey = wakeUps.resolve(quiet.resolve(chat.activeLeafMessageId));
   const attachmentIds = [...new Set(rows.flatMap((row) => chatExportAttachmentIds(row.content)))];
   const attachmentRows = attachmentIds.length
     ? await db.attachment.findMany({

@@ -40,7 +40,7 @@ export function activityName(value: unknown, fallback: string): string {
  * that reads another key adds it here.
  */
 export const TOOL_ACTIVITY_REQUEST_KEYS = Object.freeze([
-  "agent", "answerReviewStep", "computer", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
+  "agent", "computer", "fetchUrl", "imagePlan", "mcp", "mcpDiscovery", "monitoringVerdictTool", "scheduledTaskManagementTool",
   "scheduledTaskTool", "searchPlan", "skillSaveTool", "skills", "toolBudgets", "visionAnalysis", "workspace", "workspaceImageView"
 ]);
 

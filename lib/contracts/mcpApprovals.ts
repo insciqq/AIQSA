@@ -56,11 +56,10 @@ export type McpApprovalCard = Readonly<{
 /** The kind of the server-written user turn that continues after an approval. */
 export const MCP_APPROVAL_CONTINUATION_KIND = "mcp_approval_continuation";
 /**
- * Every kind of user turn the server writes for the user that a reader sees
+ * Every kind of user turn the server writes for the user
  * (`Message.systemTurnKind`): the continuation after an approval, the
  * wake-up turn with background sub-agents' callbacks, and the request a
- * Sign in again button sends (`lib/contracts/browserSignIn.ts`). The retired
- * answer review turns never reach a reader (`lib/domain/answerReviewTranscript.ts`).
+ * Sign in again button sends (`lib/contracts/browserSignIn.ts`).
  */
 export type MessageSystemTurnKind = typeof MCP_APPROVAL_CONTINUATION_KIND | typeof SUBAGENT_CALLBACK_TURN_KIND |
   typeof BROWSER_SIGN_IN_TURN_KIND;

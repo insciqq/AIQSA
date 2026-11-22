@@ -4,7 +4,6 @@ import {
   type ChatMessageMatchWire
 } from "../../contracts/chats";
 import type { prisma } from "../prisma";
-import { hiddenAnswerReviewMessageIds } from "./legacyAnswerReviews";
 import { quietTurnSql } from "./quietScheduledChecks";
 
 /**
@@ -112,9 +111,6 @@ export async function findMessageMatches(
   try {
     rows = await client.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_config('statement_timeout', ${String(MESSAGE_SEARCH_STATEMENT_TIMEOUT_MS)}, true)`;
-      // An answer review recorded before the removal reads as its latest
-      // version: its steps and superseded versions never match.
-      const hidden = await hiddenAnswerReviewMessageIds(tx, input.userId);
       return tx.$queryRaw<MessageMatchRow[]>(Prisma.sql`
         WITH matched AS (
           SELECT message."chatId", message."id", message."createdAt"
@@ -127,7 +123,6 @@ export async function findMessageMatches(
             ${after}
             -- A turn the server wrote for the user is not the user's text.
             AND message."systemTurnKind" IS NULL
-            ${hidden.length > 0 ? Prisma.sql`AND NOT (message."id" = ANY(${hidden}::text[]))` : Prisma.empty}
             -- A quiet check's turn and every answer to it leave what the chat shows, a branch copy's included
             -- (lib/server/chats/quietScheduledChecks.ts), so a match there would open nothing.
             AND NOT ${quietTurnSql("message")}

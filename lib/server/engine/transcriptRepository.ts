@@ -36,14 +36,6 @@ export type RetiredRunEffects = Readonly<{
 export type NativeRunBeforeTurn = Readonly<{
   assistantMessageId: string;
   nextUserMessageId: string;
-  /**
-   * The stopped answer is a step of an answer review recorded before the
-   * feature's removal, or an answer to one of its steps' turns
-   * (`lib/server/chats/legacyAnswerReviews.ts`): the branch reads without it,
-   * so its run's items never return to the conversation, and only its calls
-   * still count for the unknown-effect guard.
-   */
-  reviewStep?: true;
   runId: string;
 }>;
 
@@ -237,8 +229,8 @@ export function createTranscriptRepository(client: TranscriptClient) {
       const children = { chatId: input.chatId, id: { in: ids } };
       const runs = await client.modelRun.findMany({
         orderBy: { createdAt: "asc" },
-        select: { assistantMessage: { select: { answerReviewSessionId: true, parent: { select: { answerReviewSessionId: true } },
-          children: { select: { id: true }, take: 1, where: children } } }, assistantMessageId: true, id: true },
+        select: { assistantMessage: { select: { children: { select: { id: true }, take: 1, where: children } } },
+          assistantMessageId: true, id: true },
         where: { chatId: input.chatId, engine: "native", userId: input.userId, assistantMessage: {
           chatId: input.chatId, children: { some: children }, status: { in: ["cancelled", "error"] } } }
       });
@@ -247,11 +239,7 @@ export function createTranscriptRepository(client: TranscriptClient) {
       for (const run of runs) {
         const next = run.assistantMessage?.children[0]?.id;
         if (run.assistantMessageId && next) {
-          byAnswer.set(run.assistantMessageId, { assistantMessageId: run.assistantMessageId, nextUserMessageId: next, runId: run.id,
-            // A legacy review step, or a revision copy under one (`lib/server/chats/legacyAnswerReviews.ts`): its calls
-            // count, its answer stays off the branch.
-            ...(run.assistantMessage?.answerReviewSessionId || run.assistantMessage?.parent?.answerReviewSessionId
-              ? { reviewStep: true as const } : {}) });
+          byAnswer.set(run.assistantMessageId, { assistantMessageId: run.assistantMessageId, nextUserMessageId: next, runId: run.id });
         }
       }
       return [...byAnswer.values()];

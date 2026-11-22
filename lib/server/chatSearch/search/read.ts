@@ -11,7 +11,6 @@ import {
 import { chatExportAttachmentIds } from "../../../domain/chatExportDocument";
 import { chatExportText } from "../../../domain/chatExport";
 import { omitSubagentCallbackTurns } from "../../../domain/subagentCallbackTurns";
-import { collapseChatAnswerReviewTree } from "../../chats/legacyAnswerReviews";
 import { quietCheckOmission } from "../../chats/quietScheduledChecks";
 import { chatSearchEligibleWhere } from "../eligibility";
 import { pastChatTimestamp } from "./dates";
@@ -22,9 +21,8 @@ import { readPastChatSwitches, type PastChatSwitches } from "./store";
  * `read_past_chat`: a bounded window of one past chat's current active branch,
  * read from the messages themselves, never from the index, so the agent sees
  * what was actually said and done. The branch reads as the chat's history
- * and exports read it: an answer review recorded before its removal as its
- * latest version, quiet scheduled checks and server-written turns (sub-agent
- * wake-ups, Sign in again requests) left out. A message shows its redacted
+ * and exports read it: quiet scheduled checks and server-written turns
+ * (sub-agent wake-ups, Sign in again requests) left out. A message shows its redacted
  * text, the names of the files the user attached and the answer generated,
  * and the tools the answer called, by name only: never arguments, results or
  * file contents. Only the owner's own eligible chats are read
@@ -204,11 +202,10 @@ export function createPastChatReader(dependencies: Readonly<{ store: PastChatRea
   });
 }
 
-type ReadDb = Pick<Prisma.TransactionClient, "answerReviewSession" | "attachment" | "chat" | "message" | "modelRun" | "modelRunToolCall" | "userSettings">;
+type ReadDb = Pick<Prisma.TransactionClient, "attachment" | "chat" | "message" | "modelRun" | "modelRunToolCall" | "userSettings">;
 
 const branchSelect = {
-  answerReviewSessionId: true, branchSourceModelRunId: true, id: true, parentMessageId: true, role: true, scheduledTaskPrompt: true,
-  status: true, systemTurnKind: true
+  branchSourceModelRunId: true, id: true, parentMessageId: true, role: true, scheduledTaskPrompt: true, systemTurnKind: true
 } satisfies Prisma.MessageSelect;
 
 /** Bounds of what one window's names are read from. */
@@ -224,14 +221,8 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         where: { ...chatSearchEligibleWhere(ownerId), id: chatId } });
       if (!chat) return null;
       const rows = await db.message.findMany({ select: branchSelect, where: { chatId: chat.id } });
-      const collapse = await collapseChatAnswerReviewTree(db, chat.id, rows.map((row) => ({
-        answerReviewSessionId: row.answerReviewSessionId, id: row.id, parentId: row.parentMessageId, role: row.role,
-        status: row.status, systemTurnKind: row.systemTurnKind
-      })), chat.activeLeafMessageId);
-      const collapsed = rows.filter((row) => !collapse.removed.has(row.id))
-        .map((row) => collapse.parents.has(row.id) ? { ...row, parentMessageId: collapse.parents.get(row.id) ?? null } : row);
-      const quiet = await quietCheckOmission(db, chat.id, collapsed);
-      const shown = collapsed.filter((row) => !quiet.removed.has(row.id))
+      const quiet = await quietCheckOmission(db, chat.id, rows);
+      const shown = rows.filter((row) => !quiet.removed.has(row.id))
         .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
       const wakeUps = omitSubagentCallbackTurns(shown.map((row) => ({ id: row.id, parentId: row.parentMessageId, role: row.role,
         systemTurnKind: row.systemTurnKind })));
@@ -239,7 +230,7 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         .map((row) => [row.id, wakeUps.parents.has(row.id) ? { ...row, parentMessageId: wakeUps.parents.get(row.id) ?? null } : row]));
       const path: PastChatBranchNode[] = [];
       const seen = new Set<string>();
-      for (let cursor = wakeUps.resolve(quiet.resolve(collapse.activeLeafId)); cursor !== null;) {
+      for (let cursor = wakeUps.resolve(quiet.resolve(chat.activeLeafMessageId)); cursor !== null;) {
         const row = kept.get(cursor);
         if (!row || seen.has(cursor)) break;
         seen.add(cursor);

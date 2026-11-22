@@ -35,7 +35,6 @@ import {
   type PreparingRunAdmissionResult
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
-import { loadAnswerReviewPathView, type AnswerReviewPathView } from "../chats/legacyAnswerReviews";
 import { quietCheckStandIn } from "../chats/quietScheduledChecks";
 import { recordUsageMessageAdmission } from "../usageLimits/repository";
 import type { WorkspaceRunAdmissionPlan } from "../workspace/admission";
@@ -741,25 +740,13 @@ export async function admitPreparingRunWithClient(
         const preSendSourceMessageId = userLeafWithoutAssistant
           ? input.userMessageId
           : input.preSendAssistantMessageId;
-        // An answer review recorded before the feature's removal reads as its question and latest
-        // version: the chat's leaf may be a step that version stands for, and the version's stored
-        // parent is the revision request, while it answers the source question.
         const leafMessageId = lockedChat.activeLeafMessageId;
-        let reviewedPath: AnswerReviewPathView | null | undefined;
-        const reviewed = async (): Promise<AnswerReviewPathView | null> => {
-          if (reviewedPath === undefined) {
-            reviewedPath = leafMessageId ? await loadAnswerReviewPathView(tx, input.chatId, leafMessageId) : null;
-          }
-          return reviewedPath;
-        };
         // Quiet checks that end the branch leave its history (`lib/server/chats/quietScheduledChecks.ts`), so the
         // latest answer the user was shown is the leaf they read; its new version leaves them on the old branch.
-        if (!preSendSourceMessageId || (leafMessageId !== preSendSourceMessageId &&
-          (userLeafWithoutAssistant || ((await reviewed())?.standInId !== preSendSourceMessageId &&
-            (!leafMessageId || await quietCheckStandIn(tx, input.chatId, leafMessageId) !== preSendSourceMessageId))))) {
+        if (!preSendSourceMessageId || (leafMessageId !== preSendSourceMessageId && (userLeafWithoutAssistant ||
+          !leafMessageId || await quietCheckStandIn(tx, input.chatId, leafMessageId) !== preSendSourceMessageId))) {
           throw new ActiveLeafConflictError();
         }
-        let reviewedVersion = false;
         if (userLeafWithoutAssistant) {
           const [sourceUser] = await tx.$queryRaw<Array<{
             scheduledTaskPrompt: boolean;
@@ -802,10 +789,8 @@ export async function admitPreparingRunWithClient(
               AND assistant."id" = ${preSendSourceMessageId}
             FOR SHARE OF assistant, user_message
           `);
-          reviewedVersion = source !== undefined && source.assistantParentId !== input.userMessageId &&
-            (await reviewed())?.parentOf(preSendSourceMessageId) === input.userMessageId;
           if (!source || source.assistantRole !== "assistant" || source.userRole !== "user" ||
-            (source.assistantParentId !== input.userMessageId && !reviewedVersion) ||
+            source.assistantParentId !== input.userMessageId ||
             !sameContent(source.userContent, input.normalizedRequest.content)) {
             throw new ActiveLeafConflictError();
           }
