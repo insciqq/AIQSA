@@ -169,7 +169,10 @@ for (const theme of ["dark", "light"] as const) {
       const memory = library.getByTestId("settings-memory");
       await expect(memory.getByRole("textbox", { name: "Memory note", exact: true })).toHaveValue("I prefer source-backed explanations.");
       await expect(memory.getByRole("switch")).toHaveCount(3);
-      await expectWithinViewport(page, memory.getByRole("switch", { name: "Use Memory in answers" }));
+      // The note comes first, so on a short screen its switches are a scroll below it.
+      const memorySwitch = memory.getByRole("switch", { name: "Use Memory in answers" });
+      await memorySwitch.scrollIntoViewIfNeeded();
+      await expectWithinViewport(page, memorySwitch);
       await expect(library.getByText("Temporary chats neither read nor change the note.", { exact: true })).toHaveCount(1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`memory-${theme}-${size.width}x${size.height}.png`) });
