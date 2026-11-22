@@ -1,16 +1,9 @@
-import { act, render, renderHook } from "@testing-library/react";
-import { createElement } from "react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { observeMcpSettings } from "@/components/app-shell/mcpSettingsStore";
 import type { UserMcpServer } from "@/lib/contracts/mcp";
 import { resetMcpSettingsStoreForTest } from "@/tests/support/appShellStores";
-import {
-  MEMORY_LIST_POLL_INTERVAL_MS,
-  memoryListPollingActiveV2,
-  MemoryListPollingV2,
-  memoryManagerErrorCopy,
-  useStudioMcpAttentionV2
-} from "./WorkspaceWelcomeV2";
+import { useStudioMcpAttentionV2 } from "./WorkspaceWelcomeV2";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -68,104 +61,5 @@ describe("Settings MCP attention", () => {
     alone.unmount();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchMock).toHaveBeenCalledTimes(5);
-  });
-});
-
-describe("memoryManagerErrorCopy", () => {
-  it("shows only input validation and keeps Memory failures silent", () => {
-    expect(memoryManagerErrorCopy("memory_secret_rejected")).toMatch(/looks like a secret/i);
-    expect(memoryManagerErrorCopy("memory_changed")).toMatch(/draft was kept/i);
-    for (const code of ["memory_unavailable", "memory_action_failed", "classifier_internal_code", null]) {
-      expect(memoryManagerErrorCopy(code)).toBeNull();
-    }
-  });
-});
-
-describe("Memory list polling", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function setVisibility(value: DocumentVisibilityState) {
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue(value);
-    document.dispatchEvent(new Event("visibilitychange"));
-  }
-
-  it("polls only the open Memory tab while Memory is on, with or without automatic learning", () => {
-    const learning = { settings: { learnAutomatically: true }, status: "ON" };
-    const learningOff = { settings: { learnAutomatically: false }, status: "ON" };
-    expect(memoryListPollingActiveV2({ activeTab: "memory", memory: learning })).toBe(true);
-    expect(memoryListPollingActiveV2({ activeTab: "files", memory: learning })).toBe(false);
-    // "remember that…" requests still commit in the background with learning off.
-    expect(memoryListPollingActiveV2({ activeTab: "memory", memory: learningOff })).toBe(true);
-    for (const status of ["PAUSED", "NEEDS_ADMIN_SETUP", "UNAVAILABLE", "PREPARING"]) {
-      const memory = { settings: { learnAutomatically: true }, status };
-      expect(memoryListPollingActiveV2({ activeTab: "memory", memory }), status).toBe(false);
-    }
-    expect(memoryListPollingActiveV2({ activeTab: "memory", memory: null })).toBe(false);
-  });
-
-  it("refreshes on a calm interval, waits for a slow read and stops when inactive", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    expect(MEMORY_LIST_POLL_INTERVAL_MS).toBe(30_000);
-    let settleFirst: (() => void) | undefined;
-    const first = new Promise<void>((resolve) => { settleFirst = resolve; });
-    const refresh = vi.fn().mockReturnValueOnce(first).mockResolvedValue(undefined);
-    const view = render(createElement(MemoryListPollingV2, { active: true, onRefresh: refresh }));
-
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS - 1));
-    expect(refresh).not.toHaveBeenCalled();
-    await act(async () => vi.advanceTimersByTime(1));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS * 2));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => {
-      settleFirst?.();
-      await first;
-    });
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS));
-    expect(refresh).toHaveBeenCalledTimes(2);
-
-    view.rerender(createElement(MemoryListPollingV2, { active: false, onRefresh: refresh }));
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS * 3));
-    expect(refresh).toHaveBeenCalledTimes(2);
-    view.unmount();
-  });
-
-  it("schedules nothing while hidden and refreshes once when the page is visible again", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    const refresh = vi.fn().mockResolvedValue(undefined);
-    const view = render(createElement(MemoryListPollingV2, { active: true, onRefresh: refresh }));
-
-    await act(async () => vi.advanceTimersByTime(10_000));
-    act(() => setVisibility("hidden"));
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS * 4));
-    expect(refresh).not.toHaveBeenCalled();
-
-    await act(async () => setVisibility("visible"));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS - 1));
-    expect(refresh).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTime(1));
-    expect(refresh).toHaveBeenCalledTimes(2);
-
-    view.unmount();
-    act(() => setVisibility("hidden"));
-    await act(async () => setVisibility("visible"));
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS * 2));
-    expect(refresh).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps polling after a failed background read", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    const refresh = vi.fn().mockRejectedValueOnce(new Error("memory_action_failed")).mockResolvedValue(undefined);
-    const view = render(createElement(MemoryListPollingV2, { active: true, onRefresh: refresh }));
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS));
-    await act(async () => vi.advanceTimersByTime(MEMORY_LIST_POLL_INTERVAL_MS));
-    expect(refresh).toHaveBeenCalledTimes(2);
-    view.unmount();
   });
 });

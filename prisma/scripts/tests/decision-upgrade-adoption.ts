@@ -15,7 +15,7 @@ DO $$ BEGIN
       (to_jsonb(policy) - 'mcpGuardProviderModelId' - 'mcpGuardReasoningEffort' - 'researchVerifierProviderModelId' - 'researchVerifierReasoningEffort' - 'researchResearcherProviderModelId' - 'researchResearcherReasoningEffort' - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
         - 'visionProviderModelId' - 'visionReasoningEffort'
         - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
-        - 'speechToTextConfiguredAt')
+        - 'speechToTextConfiguredAt' - 'embeddingProviderModelId' - 'embeddingConfiguredAt')
     WHERE policy.id = 'installation' AND "decisionAdoptionVersion" = 0 AND "decisionAdoptionReason" IS NULL) THEN
     RAISE EXCEPTION 'decision_upgrade_changed_existing_policy';
   END IF;

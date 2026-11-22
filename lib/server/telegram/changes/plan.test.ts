@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { ThreadArtifactSummary } from "../../../contracts/chats";
+import type { MemoryNoteChangeCard, MemoryNoteOfferCard } from "../../../contracts/memoryNote";
 import type {
   AssistantChangeCard, InstructionsChangeCard, ProxyChangeCard, ResourceChangeCard, SecretChangeCard, SkillDeleteProposalCard, SubagentChangeCard
 } from "../../../contracts/resourceChanges";
@@ -210,5 +211,80 @@ describe("what a press shows", () => {
       .toBe("Undone: the previous content is current again as v3.");
     expect(telegramChangeResult(plan, "undo", { kind: "changed" }).view.status)
       .toBe("Undo is not available: the Skill changed after this save, and that change is kept.");
+  });
+});
+
+describe("the memory note's cards in Telegram", () => {
+  const change: MemoryNoteChangeCard = { version: 1, resource: "memory_note", action: "replaced", revision: 4, before: "Answer in English.",
+    after: "Answer in Russian.\nUse tables.", previousText: "Call me Sam.\nAnswer in English." };
+  const offer: MemoryNoteOfferCard = { version: 1, resource: "memory_note", action: "offered", offerId: "offer-1", operation: "add", before: null,
+    after: "Prefers short answers." };
+
+  it("travel with the answer's resource changes", () => {
+    const summary: ThreadArtifactSummary = { citations: [], reasoningText: [], sources: [], resourceChanges: [change, offer] };
+    expect(telegramAnswerChanges(summary).map((entry) => entry.kind === "resource" && entry.card.action)).toEqual(["replaced", "offered"]);
+    expect(telegramChangeRef(resource(change))).not.toBe(telegramChangeRef(resource(offer)));
+  });
+
+  it("show a change with what it took out and put in, and Undo through the note's guarded save", () => {
+    const plan = telegramChangePlan(resource(change));
+    expect(plan.view).toEqual({ details: ["− Answer in English.", "+ Answer in Russian.", "+ Use tables."], heading: "Memory updated",
+      meta: "from your next message", name: "Memory note", status: null });
+    expect(plan.undo?.operation).toEqual({ card: change, kind: "memory_note_undo" });
+    expect(plan.proposal).toBeNull();
+    expect(telegramChangeResult(plan, "undo", { kind: "done" }).view).toMatchObject({ heading: "Change undone",
+      status: "Your memory note is back to the previous text from your next message." });
+    expect(telegramChangeResult(plan, "undo", { kind: "changed" }).view.status)
+      .toBe("Undo is not available: your memory note changed after this, and that change is kept.");
+    expect(telegramChangeResult(plan, "undo", { code: "memory_note_invalid", kind: "refused" })).toMatchObject({ retry: true,
+      view: { status: "This text holds a password, token or key, which your memory note cannot keep. Keep it in Settings › Secrets." } });
+    expect(telegramChangePlan(resource({ ...change, action: "added", before: null, after: "Call me Sam." })).view)
+      .toMatchObject({ details: ["+ Call me Sam."], heading: "Saved to memory" });
+    expect(telegramChangePlan(resource({ ...change, action: "removed", after: null })).view)
+      .toMatchObject({ details: ["− Answer in English."], heading: "Removed from memory" });
+  });
+
+  it("bound a long passage to what a message holds", () => {
+    const long = "x".repeat(400);
+    const lines = Array.from({ length: 14 }, (_, index) => `Line ${index}`).join("\n");
+    expect(telegramChangePlan(resource({ ...change, action: "added", before: null, after: long })).view.details).toEqual([`+ ${"x".repeat(300)}…`]);
+    expect(telegramChangePlan(resource({ ...change, action: "added", before: null, after: lines })).view.details)
+      .toEqual([...Array.from({ length: 12 }, (_, index) => `+ Line ${index}`), "⋯ more"]);
+  });
+
+  it("ask about an offer with Remember and No thanks, both of them requests to the offer route", () => {
+    const plan = telegramChangePlan(resource(offer));
+    expect(plan.view).toMatchObject({ details: ["+ Prefers short answers."], heading: "Remember this for future chats?", name: "Memory note" });
+    expect(plan.undo).toBeNull();
+    expect(plan.proposal).toMatchObject({ confirmLabel: "Remember", keepLabel: "No thanks",
+      operation: { decision: "accept", kind: "memory_note_offer", offerId: "offer-1" } });
+    expect(plan.proposal?.dismiss?.operation).toEqual({ decision: "dismiss", kind: "memory_note_offer", offerId: "offer-1" });
+    expect(telegramChangePlan(resource({ ...offer, operation: "replace", before: "Answer in English.", after: "Answer in Russian." })).proposal)
+      .toMatchObject({ confirmLabel: "Update" });
+    expect(telegramChangePlan(resource({ ...offer, operation: "remove", before: "Use tables.", after: null })).view)
+      .toMatchObject({ details: ["− Use tables."], heading: "Remove this from your memory note?" });
+  });
+
+  it("say what a decision did, or why nothing was saved, and ask again where the user can fix it", () => {
+    const plan = telegramChangePlan(resource(offer));
+    expect(telegramChangeResult(plan, "confirm", { kind: "done" }).view).toMatchObject({ details: [], heading: "Remembered",
+      status: "Your chats include it from your next message. Change it any time in Settings › Memory." });
+    expect(telegramChangeResult(plan, "confirm", { kind: "changed" })).toMatchObject({ retry: false, view: { heading: "Not saved",
+      status: "Your memory note changed since this offer, or the offer was answered already, so nothing was saved. Review it in Settings › Memory." } });
+    expect(telegramChangeResult(plan, "confirm", { kind: "missing" }).view).toMatchObject({ heading: "Not saved", status: "This offer no longer exists." });
+    expect(telegramChangeResult(plan, "confirm", { code: "memory_note_too_long", kind: "refused" })).toMatchObject({ retry: true,
+      view: { heading: "Remember this for future chats?", status: "Your memory note is full. Make room in Settings › Memory, then try again." } });
+    expect(telegramChangeResult(plan, "confirm", { code: "memory_disabled", kind: "refused" }).view.status)
+      .toBe("Memory is off. Turn it on in Settings › Memory, then try again.");
+    expect(telegramChangeResult(plan, "cancel", { kind: "done" })).toMatchObject({ retry: false, view: { heading: "Not saved", status: null } });
+    expect(telegramChangeResult(plan, "cancel", { kind: "changed" }).view).toMatchObject({ heading: "Already saved",
+      status: "You accepted this offer already. Change your note in Settings › Memory." });
+    expect(telegramChangeResult(plan, "cancel", { kind: "failed" })).toMatchObject({ retry: true, view: { status: "That did not work. Try again." } });
+  });
+
+  it("keep Cancel of every other proposal an answer in the message alone", () => {
+    const deletion = telegramChangePlan(resource(secretCard({ action: "delete_proposed", proposalId: "proposal-9" })));
+    expect(deletion.proposal?.dismiss).toBeUndefined();
+    expect(telegramChangeResult(deletion, "cancel", { kind: "failed" })).toMatchObject({ retry: false, view: { heading: "Secret kept" } });
   });
 });

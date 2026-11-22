@@ -268,7 +268,7 @@ export function createTelegramChanges(deps: TelegramChangesDeps): TelegramChange
   }
 
   async function act(press: Press, plan: TelegramChangePlan): Promise<TelegramChangeOutcome> {
-    const action = press.verb === "undo" ? plan.undo : plan.proposal;
+    const action = press.verb === "undo" ? plan.undo : press.verb === "cancel" ? plan.proposal?.dismiss ?? null : plan.proposal;
     if (!action) return { kind: "failed" };
     try {
       return await deps.gateway.act({ operation: action.operation, userId: press.link.userId });
@@ -290,7 +290,9 @@ export function createTelegramChanges(deps: TelegramChangesDeps): TelegramChange
     }
     const plan = change ? telegramChangePlan(change) : null;
     const offered = plan && (press.verb === "undo" ? plan.undo !== null : plan.proposal !== null);
-    const outcome: TelegramChangeOutcome = !plan || !offered || press.verb === "cancel" ? { kind: "done" } : await act(press, plan);
+    // Cancel asks a route only where it closes something (a memory note offer's No thanks).
+    const outcome: TelegramChangeOutcome = !plan || !offered || (press.verb === "cancel" && !plan.proposal?.dismiss) ? { kind: "done" }
+      : await act(press, plan);
     // Checked again once the request returned, right before its outcome goes out.
     const reached = await reach(pressed(press), press.payload.runId);
     if (!reached) return;

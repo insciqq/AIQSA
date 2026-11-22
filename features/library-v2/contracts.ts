@@ -86,14 +86,3 @@ export type FileSummaryV2 = Readonly<{
   mutation?: "saving" | "saved" | "removing" | "error";
   status: "failed" | "processing" | "ready";
 }>;
-
-export type MemoryOverviewV2 = Readonly<{
-  administratorDisabled: boolean;
-  automaticLearning: boolean;
-  disabledReason?: string;
-  explicitCrudAvailable: boolean;
-  loadState: "error" | "idle" | "loading" | "ready";
-  referenceChatHistory: boolean;
-  status: "NEEDS_ADMIN_SETUP" | "ON" | "PAUSED" | "PREPARING" | "UNAVAILABLE" | null;
-  useMemoryFacts: boolean;
-}>;

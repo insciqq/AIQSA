@@ -11,6 +11,7 @@ import { runningSearchEngineCalls, unknownSearchEngineCalls,
 import { chatPdfProcessLine, chatPdfRouteDescription, settledChatPdfDocuments,
   type ChatPdfPreparationWire } from "@/lib/contracts/chatPdfPreparation";
 import type { MemoryAnswerSource } from "@/lib/contracts/memoryClient";
+import type { PastChatSource } from "@/lib/contracts/pastChats";
 import type { ThreadWorkspaceActivity, ThreadWorkspaceActivityEntry } from "@/lib/contracts/workspace";
 import type { ContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
@@ -36,6 +37,7 @@ import {
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
 import { MemorySourcesV2 } from "./MemorySourcesV2";
 import { presentMemorySourcesV2 } from "./memorySourcePresentation";
+import { groupPastChatSources, PastChatSourcesV2 } from "./PastChatSourcesV2";
 import { McpCallDetailsV2 } from "./McpCallDetailsV2";
 import { ResearchPlanCardV2, researchPlanCardRowV2 } from "./ResearchPlanCardV2";
 
@@ -342,6 +344,10 @@ export type AnswerProcessV2Props = Readonly<{
   onPinSkill?(skillId: string): Promise<void>;
   pinnedSkillIds?: readonly string[];
   memorySources?: readonly MemoryAnswerSource[];
+  /** Opens a past-chat source's chat at its message in the shell; without it the link loads the page. */
+  onOpenChatMessage?(chatId: string, messageId: string): void;
+  /** The past chats `search_past_chats` and `read_past_chat` brought into the answer's context. */
+  pastChatSources?: readonly PastChatSource[];
   /** The run streamed thinking whose text arrives with the settled answer: the line keeps its slot meanwhile. */
   reasoningPending?: boolean;
   reasoningTexts?: readonly string[];
@@ -387,6 +393,8 @@ function AnswerProcessFoldV2({
   onPinSkill,
   pinnedSkillIds = [],
   memorySources = [],
+  onOpenChatMessage,
+  pastChatSources = [],
   reasoningPending = false,
   reasoningTexts = [],
   reasoningTruncated = false,
@@ -402,6 +410,7 @@ function AnswerProcessFoldV2({
   const listedMemorySources = memorySources.filter((source) =>
     source.sourceAvailable && !forgottenRefs.has(source.memoryRef));
   const { memories, pastChats } = presentMemorySourcesV2(listedMemorySources);
+  const pastChatGroupCount = groupPastChatSources(pastChatSources).length;
   const reasoning = reasoningTexts.map((text) => text.trim()).filter(Boolean).join("\n\n");
   // Workspace steps are rendered by the timeline; the generic list keeps only
   // other tools so no raw sandbox identifier can reach the thread.
@@ -456,7 +465,7 @@ function AnswerProcessFoldV2({
     : answerProcessLabelV2({
         hasReasoning: reasoning.length > 0 || reasoningPending,
         memoryCount: memories.length,
-        pastChatCount: pastChats.length,
+        pastChatCount: pastChats.length + pastChatGroupCount,
         stepCount: calls.length,
         workDurationMs
       });
@@ -469,7 +478,7 @@ function AnswerProcessFoldV2({
   if (!displayLabel) return warning;
   // Nothing to unfold yet (the thinking arrives with the settled answer): the
   // same row as plain text, so the line neither disappears nor moves.
-  if (!live && !compactionLabel && !timeline && !plan && !reasoning && calls.length === 0 && listedMemorySources.length === 0 &&
+  if (!live && !compactionLabel && !timeline && !plan && !reasoning && calls.length === 0 && listedMemorySources.length === 0 && pastChatGroupCount === 0 &&
     !searchEngines && documentRows.length === 0) {
     return (
       <>
@@ -602,6 +611,7 @@ function AnswerProcessFoldV2({
             <MemorySourcesV2 memories={memories} pastChats={pastChats}
               onForgotten={(memoryRef) => setForgottenRefs((current) => new Set(current).add(memoryRef))} />
           ) : null}
+          {pastChatGroupCount > 0 ? <PastChatSourcesV2 onOpenChatMessage={onOpenChatMessage} sources={pastChatSources} /> : null}
         </div>
       </details>
       {warning}

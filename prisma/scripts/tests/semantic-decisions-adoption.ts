@@ -15,7 +15,7 @@ DO $$ BEGIN
         - 'decisionAdoptionVersion' - 'decisionAdoptionReason'
         - 'visionProviderModelId' - 'visionReasoningEffort'
         - 'speechToTextConnectionId' - 'speechToTextModelId' - 'speechToTextCredentialVersionId'
-        - 'speechToTextConfiguredAt')
+        - 'speechToTextConfiguredAt' - 'embeddingProviderModelId' - 'embeddingConfiguredAt')
     WHERE policy.id = 'installation' AND "decisionProviderModelId" IS NULL
       AND "decisionConfiguredAt" IS NULL AND "decisionFeaturesJson" = '{}') THEN
     RAISE EXCEPTION 'optional_decisions_changed_existing_policy_or_enabled_unqualified_feature';

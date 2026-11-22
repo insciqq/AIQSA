@@ -54,7 +54,7 @@ export type MemoryLegacySuggestionOrigin = (typeof MEMORY_LEGACY_SUGGESTION_ORIG
 export const MEMORY_LEGACY_SUGGESTION_ACTIONS = ["keep", "remove"] as const;
 export type MemoryLegacySuggestionAction = (typeof MEMORY_LEGACY_SUGGESTION_ACTIONS)[number];
 
-/** Refusals of the note, offer and suggestion routes; the body is always `{code}`. */
+/** Refusals of the note, offer and suggestion routes; the body is `memoryNoteErrorResponseSchema`, `{ error: code, ... }`. */
 export const MEMORY_NOTE_ERROR_CODES = [
   /** The request is malformed or its text is over the limit. */
   "memory_note_invalid",
@@ -81,6 +81,28 @@ export const MEMORY_NOTE_ERROR_HTTP_STATUS = Object.freeze({
   memory_note_offer_stale: 409,
   memory_legacy_suggestion_not_found: 404
 } satisfies Record<MemoryNoteErrorCode, number>);
+
+/** Why a text was refused as `memory_note_invalid` beyond its shape: it holds a credential or a saved secret's value. */
+export const MEMORY_NOTE_INVALID_REASONS = ["secret"] as const;
+export type MemoryNoteInvalidReason = (typeof MEMORY_NOTE_INVALID_REASONS)[number];
+
+/** Characters a refusal's `message` holds at most. */
+export const MEMORY_NOTE_ERROR_MESSAGE_MAX_LENGTH = 500;
+
+/**
+ * A refusal's body. `reason` and `message` explain a `memory_note_invalid` whose text holds a credential, which belongs
+ * in Settings › Secrets; `characters` and `limit` say how long a `memory_note_too_long` change would have left the note.
+ * The routes' other answers (`unauthorized`, `forbidden`, `request_body_too_large`, `memory_note_unavailable` with 503)
+ * are generic and not refusals of the note.
+ */
+export const memoryNoteErrorResponseSchema = z.strictObject({
+  error: z.enum(MEMORY_NOTE_ERROR_CODES),
+  reason: z.enum(MEMORY_NOTE_INVALID_REASONS).optional(),
+  message: z.string().min(1).max(MEMORY_NOTE_ERROR_MESSAGE_MAX_LENGTH).optional(),
+  characters: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  limit: z.literal(MEMORY_NOTE_MAX_CHARACTERS).optional()
+});
+export type MemoryNoteErrorResponse = z.infer<typeof memoryNoteErrorResponseSchema>;
 
 /** Characters as the note's limit counts them (Unicode code points). */
 export function memoryNoteCharacterCount(value: string): number {
@@ -300,7 +322,7 @@ export const memoryLegacySuggestionPageSchema = z.strictObject({
   "a suggestion is listed twice");
 export type MemoryLegacySuggestionPage = z.infer<typeof memoryLegacySuggestionPageSchema>;
 
-/** Keep or Remove one suggestion; Keep answers with the note it changed. */
+/** Keep or Remove one suggestion; both answer with the note as it is afterwards (`memoryNoteSchema`), changed only by Keep. */
 export const memoryLegacySuggestionActionSchema = z.strictObject({
   action: z.enum(MEMORY_LEGACY_SUGGESTION_ACTIONS)
 });
