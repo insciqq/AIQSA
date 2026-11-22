@@ -38,14 +38,9 @@ const compactionItem = (): TranscriptItem => ({ id: randomUUID(), keepFromId: "m
   origin: { model: "fake-qsa", provider: "fake" }, retained: "Kept.", summary: "## Summary\n- facts" });
 const marker = makeContextCompactionStatus({ afterTokens: 10, beforeTokens: 100, cycle: 1, outcome: "summary_applied", state: "complete" });
 
-/** The deletion fence as admission writes it: a durable operation, then the chat leaves the live key space. */
-async function fence(tx: Prisma.TransactionClient, chatId: string, userId: string): Promise<void> {
-  const chat = await tx.chat.findUniqueOrThrow({ select: { memorySourceRevision: true }, where: { id: chatId } });
-  const deletionId = randomUUID();
-  await tx.memoryDeletionOutbox.create({ data: { admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: chat.memorySourceRevision,
-    alsoForgetOriginMemories: false, id: deletionId, memoryGeneration: 0, operation: "SOURCE_PURGE", targetId: chatId,
-    targetType: "CHAT@memory-chat-delete-v1", userId } });
-  await tx.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: deletionId },
+/** The deletion fence as admission writes it: the chat is archived and fenced under the deletion's own opaque id. */
+async function fence(tx: Prisma.TransactionClient, chatId: string): Promise<void> {
+  await tx.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() },
     where: { id: chatId } });
 }
 
@@ -59,10 +54,7 @@ async function recordedCompactions(runId: string) {
 
 afterEach(async () => {
   for (const id of owners.splice(0)) {
-    // The deletion fence leaves its durable operation, which the fenced chat references and which restricts
-    // deleting the owner: chats first, then the operation, then the owner.
     await prisma.chat.deleteMany({ where: { userId: id } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: id } });
     await prisma.user.deleteMany({ where: { id } });
   }
 });
@@ -156,7 +148,7 @@ describe("native run store", () => {
 
   it("writes nothing once the chat is fenced for deletion, also when the fence commits while the write waits for the chat", async () => {
     const fenced = await nativeRun("native", "cancelled");
-    await prisma.$transaction(async (tx) => fence(tx, fenced.chatId, fenced.userId));
+    await prisma.$transaction(async (tx) => fence(tx, fenced.chatId));
     await expect(store.recordDetachedCompaction(fenced, { item: compactionItem(), sequence: 0, status: marker })).resolves.toBe(false);
     await expect(recordedCompactions(fenced.runId)).resolves.toEqual({ events: 0, items: 0 });
 
@@ -167,7 +159,7 @@ describe("native run store", () => {
       await tx.$queryRaw`SELECT "id" FROM "Chat" WHERE "id" = ${racing.chatId} FOR UPDATE`;
       pending.write = store.recordDetachedCompaction(racing, { item: compactionItem(), sequence: 0, status: marker });
       await new Promise((resolve) => setTimeout(resolve, 200));
-      await fence(tx, racing.chatId, racing.userId);
+      await fence(tx, racing.chatId);
     });
     await expect(pending.write).resolves.toBe(false);
     await expect(recordedCompactions(racing.runId)).resolves.toEqual({ events: 0, items: 0 });

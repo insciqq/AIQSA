@@ -34,7 +34,6 @@ const archivedSummary = {
   memoryMode: "NORMAL" as const,
   messageCount: 1,
   pinned: false,
-  sourceRevision: 4,
   title: "Archived source",
   updatedAt
 };
@@ -106,13 +105,12 @@ describe("chat lifecycle handlers", () => {
     expectPrivate(response);
   });
 
-  it("keeps explicit Archive and Restore CAS-shaped and distinct from Archive DELETE", async () => {
+  it("keeps explicit Archive and Restore fenced by the chat's state and distinct from Archive DELETE", async () => {
     const setArchived = vi.fn<ChatLifecycleRepository["setArchived"]>(async (input) => ({
       chat: {
         archived: input.archived,
         id: input.chatId,
         memoryMode: "NORMAL",
-        sourceRevision: input.expectedChatRevision,
         updatedAt
       },
       kind: "ok"
@@ -121,9 +119,10 @@ describe("chat lifecycle handlers", () => {
     const archive = createArchiveChatExplicitHandler(deps);
     const restore = createRestoreChatHandler(deps);
     const archiveResponse = await archive(request("/api/chats/chat-1/archive", {
-      body: JSON.stringify({ expectedChatRevision: 4 }),
+      body: JSON.stringify({}),
       method: "POST"
     }), { params: { chatId: "chat-1" } });
+    // A tab opened before the upgrade still sends the retired revision: accepted and ignored.
     const restoreResponse = await restore(request("/api/chats/chat-1/restore", {
       body: JSON.stringify({ expectedChatRevision: 4 }),
       method: "POST"
@@ -132,17 +131,17 @@ describe("chat lifecycle handlers", () => {
     expect(setArchived).toHaveBeenNthCalledWith(1, {
       archived: true,
       chatId: "chat-1",
-      expectedChatRevision: 4,
       userId: config.bootstrapUserId
     });
     expect(setArchived).toHaveBeenNthCalledWith(2, {
       archived: false,
       chatId: "chat-1",
-      expectedChatRevision: 4,
       userId: config.bootstrapUserId
     });
-    expect(await archiveResponse.json()).toMatchObject({ chat: { archived: true } });
-    expect(await restoreResponse.json()).toMatchObject({ chat: { archived: false } });
+    expect(await archiveResponse.json()).toEqual({ chat: { archived: true, id: "chat-1", memoryMode: "NORMAL",
+      updatedAt } });
+    expect(await restoreResponse.json()).toEqual({ chat: { archived: false, id: "chat-1", memoryMode: "NORMAL",
+      updatedAt } });
     expectPrivate(archiveResponse);
     expectPrivate(restoreResponse);
 
@@ -159,7 +158,7 @@ describe("chat lifecycle handlers", () => {
       repository: repository({ setArchived: async () => ({ kind: "stale" }) }),
       resolveAuth: auth.resolveAuth
     })(request("/api/chats/chat-1/restore", {
-      body: JSON.stringify({ expectedChatRevision: 3 }),
+      body: JSON.stringify({}),
       method: "POST"
     }), { params: { chatId: "chat-1" } });
     expect(stale.status).toBe(409);
@@ -174,7 +173,7 @@ describe("chat lifecycle handlers", () => {
       }),
       resolveAuth: auth.resolveAuth
     })(request("/api/chats/chat-1/archive", {
-      body: JSON.stringify({ expectedChatRevision: 4 }),
+      body: JSON.stringify({}),
       method: "POST"
     }), { params: { chatId: "chat-1" } });
     expect(active.status).toBe(409);
@@ -190,7 +189,7 @@ describe("chat lifecycle handlers", () => {
       }),
       resolveAuth: auth.resolveAuth
     })(request("/api/chats/chat-1/archive", {
-      body: JSON.stringify({ expectedChatRevision: 4 }),
+      body: JSON.stringify({}),
       method: "POST"
     }), { params: { chatId: "chat-1" } });
     expect(subagents.status).toBe(409);
@@ -214,7 +213,6 @@ describe("chat lifecycle handlers", () => {
           chatId: "chat-1",
           location: "ARCHIVED_PREVIEW",
           memoryMode: "NORMAL",
-          sourceRevision: 4,
           updatedAt
         })
       }),
@@ -247,28 +245,17 @@ describe("chat lifecycle handlers", () => {
         chatId: "chat-1",
         location: "ARCHIVED_PREVIEW",
         memoryMode: "NORMAL",
-        sourceRevision: 4,
         updatedAt
       }
     });
   });
 
-  it("requires current Resume disclosure and maps source/counter fences", async () => {
-    const setMemoryMode = vi.fn<ChatLifecycleRepository["setMemoryMode"]>(async (input) => ({
-      kind: "ok",
-      response: {
-        chatId: input.chatId,
-        memoryGeneration: 8,
-        memoryRevision: 12,
-        mode: input.mode,
-        sourceRevision: 5
-      }
-    }));
+  it("requires current Resume disclosure and answers with the chat's new state", async () => {
+    const setMemoryMode = vi.fn<ChatLifecycleRepository["setMemoryMode"]>(async () => ({ kind: "ok" }));
     const getChatMemoryState = vi.fn<ChatLifecycleRepository["getChatMemoryState"]>(async () => ({
       archived: false,
       chatId: "chat-1",
       mode: "NORMAL",
-      sourceRevision: 5,
       temporaryRetentionDeadline: null,
       temporaryRetentionPolicyVersion: null,
       updatedAt
@@ -328,7 +315,6 @@ describe("chat lifecycle handlers", () => {
       archived: false,
       chatId: "chat-temp",
       mode: "TEMPORARY",
-      sourceRevision: 1,
       temporaryRetentionDeadline: "2026-08-11T08:00:00.000Z",
       temporaryRetentionPolicyVersion: "temporary-24h-v1",
       updatedAt
@@ -359,7 +345,6 @@ describe("chat lifecycle handlers", () => {
       chatId: "chat-imported",
       importSource: "CHATGPT",
       mode: "EXCLUDED",
-      sourceRevision: 1,
       temporaryRetentionDeadline: null,
       temporaryRetentionPolicyVersion: null,
       updatedAt

@@ -20,7 +20,6 @@ async function owner(): Promise<string> {
   await prisma.user.create({ data: { displayName: "Import fixture", id: userId, status: "active" } });
   cleanups.push(async () => {
     await prisma.chat.deleteMany({ where: { userId } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   });
   return userId;
@@ -107,16 +106,9 @@ describe("chat import against PostgreSQL", () => {
     const item = { document: document(), source: "AIQSA" as const };
     await importChatForUser(prisma, userId, item);
     const first = await importedChat(userId);
-    const deletionId = randomUUID();
-    // The permanent-deletion fence: an exact durable operation, then the chat leaves the live key space.
-    await prisma.$transaction(async (tx) => {
-      await tx.memoryDeletionOutbox.create({ data: {
-        admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: first.memorySourceRevision,
-        alsoForgetOriginMemories: false, id: deletionId, memoryGeneration: 0, operation: "SOURCE_PURGE",
-        targetId: first.id, targetType: "CHAT@memory-chat-delete-v1", userId
-      } });
-      await tx.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: deletionId }, where: { id: first.id } });
-    });
+    // The permanent-deletion fence: the chat leaves the live key space under the deletion's own opaque id.
+    await prisma.chat.update({ data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() },
+      where: { id: first.id } });
     expect(await importChatForUser(prisma, userId, item)).toMatchObject({ status: "imported" });
     const second = await prisma.chat.findFirstOrThrow({ where: { permanentDeletionAt: null, userId } });
     await prisma.chat.delete({ where: { id: second.id } });

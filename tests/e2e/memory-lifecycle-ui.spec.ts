@@ -116,7 +116,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   let temporaryChatId: string | null = null;
   let archived = false;
   let memoryMode: "EXCLUDED" | "NORMAL" = "NORMAL";
-  let sourceRevision = 1;
   const modePatches: Record<string, unknown>[] = [];
   const temporaryAdmissions: Record<string, unknown>[] = [];
 
@@ -157,7 +156,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
         : ["mode"]
     );
     memoryMode = body.mode as typeof memoryMode;
-    sourceRevision += 1;
     await route.fulfill({
       contentType: "application/json",
       json: {
@@ -176,7 +174,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
           chatId: normal.id,
           location: archived ? "ARCHIVED_PREVIEW" : "ACTIVE_CHAT",
           memoryMode,
-          sourceRevision,
           updatedAt: timestamp
         }
       }
@@ -184,7 +181,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
   });
   await page.route("**/api/chats/chat-normal/archive", async (route: Route) => {
     if (route.request().method() === "POST") {
-      expect(route.request().postDataJSON()).toEqual({ expectedChatRevision: sourceRevision });
+      expect(route.request().postDataJSON()).toEqual({});
       archived = true;
       await route.fulfill({
         contentType: "application/json",
@@ -193,7 +190,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
             archived: true,
             id: normal.id,
             memoryMode,
-            sourceRevision,
             updatedAt: timestamp
           }
         }
@@ -206,14 +202,13 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
         chat: {
           ...normal,
           archived: true,
-          memoryMode,
-          sourceRevision
+          memoryMode
         }
       }
     });
   });
   await page.route("**/api/chats/chat-normal/restore", async (route: Route) => {
-    expect(route.request().postDataJSON()).toEqual({ expectedChatRevision: sourceRevision });
+    expect(route.request().postDataJSON()).toEqual({});
     archived = false;
     await route.fulfill({
       contentType: "application/json",
@@ -222,7 +217,6 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
           archived: false,
           id: normal.id,
           memoryMode,
-          sourceRevision,
           updatedAt: timestamp
         }
       }
@@ -237,8 +231,7 @@ test("keeps Archive, Exclude, Restore, and immutable Temporary admission distinc
               ...chatSummary(normal.id, normal.title, normal.messageCount),
               archived: true,
               lastMessageAt: timestamp,
-              memoryMode,
-              sourceRevision
+              memoryMode
             }]
           : [],
         nextCursor: null

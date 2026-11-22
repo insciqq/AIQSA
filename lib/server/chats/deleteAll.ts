@@ -22,7 +22,6 @@ export type PersonalChatLifecycleRow = Readonly<{
   archived: boolean;
   id: string;
   memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
-  sourceRevision: number;
 }>;
 
 export type DeleteAllPersonalChatsDeps = Readonly<{
@@ -45,24 +44,15 @@ function json(body: unknown, status = 200): Response {
 export function createPrismaPersonalChatLister(
   prisma: Pick<PrismaClient, "chat">
 ): DeleteAllPersonalChatsDeps["listPersonalChats"] {
-  return async (userId) => {
-    const chats = await prisma.chat.findMany({
-      orderBy: { updatedAt: "asc" },
-      select: {
-        archived: true,
-        id: true,
-        memoryMode: true,
-        memorySourceRevision: true
-      },
-      where: { permanentDeletionAt: null, userId }
-    });
-    return chats.map((chat) => ({
-      archived: chat.archived,
-      id: chat.id,
-      memoryMode: chat.memoryMode,
-      sourceRevision: chat.memorySourceRevision
-    }));
-  };
+  return (userId) => prisma.chat.findMany({
+    orderBy: { updatedAt: "asc" },
+    select: {
+      archived: true,
+      id: true,
+      memoryMode: true
+    },
+    where: { permanentDeletionAt: null, userId }
+  });
 }
 
 /**
@@ -109,7 +99,6 @@ export async function deleteAllPersonalChats(
       const result = await deps.archive({
         archived: true,
         chatId: chat.id,
-        expectedChatRevision: chat.sourceRevision,
         userId
       });
       if (result.kind === "ok") archived += 1;

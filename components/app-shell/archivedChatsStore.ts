@@ -12,7 +12,6 @@ import { create } from "zustand";
 export type ArchivedChatPreview = ChatDetail & {
   archived: true;
   memoryMode: "NORMAL" | "EXCLUDED";
-  sourceRevision: number;
 };
 
 type LoadState = "error" | "idle" | "loading" | "ready";
@@ -65,8 +64,7 @@ function previewFromWire(
   return {
     ...chatDetailFromApi(wire),
     archived: true,
-    memoryMode: wire.memoryMode,
-    sourceRevision: wire.sourceRevision
+    memoryMode: wire.memoryMode
   };
 }
 
@@ -177,18 +175,17 @@ export async function loadEarlierArchivedMessages(): Promise<void> {
 }
 
 /**
- * Restores an archived chat directly from its list row, using the summary's
- * current source-revision fence. Returns the restored chat id, or null while
- * another restore is in flight.
+ * Restores an archived chat directly from its list row. Returns the restored
+ * chat id, or null while another restore is in flight.
  */
 export async function restoreArchivedChatSummary(
-  chat: Pick<ArchivedChatSummaryWire, "id" | "sourceRevision">
+  chat: Pick<ArchivedChatSummaryWire, "id">
 ): Promise<string | null> {
   if (useArchivedChatsStore.getState().restoring) return null;
   const generation = ++restoreGeneration;
   useArchivedChatsStore.setState({ listError: null, restoring: true });
   try {
-    const response = await restoreChat(chat.id, chat.sourceRevision);
+    const response = await restoreChat(chat.id);
     if (generation !== restoreGeneration) return null;
     removeArchivedChat(chat.id);
     useArchivedChatsStore.setState({ restoring: false });
@@ -208,7 +205,7 @@ export async function restoreArchivedChat(): Promise<string | null> {
   const sourceDetailGeneration = detailGeneration;
   useArchivedChatsStore.setState({ detailError: null, restoring: true });
   try {
-    const response = await restoreChat(detail.id, detail.sourceRevision);
+    const response = await restoreChat(detail.id);
     if (generation !== restoreGeneration) return null;
     removeArchivedChat(detail.id);
     useArchivedChatsStore.setState({ restoring: false });

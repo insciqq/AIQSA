@@ -2435,7 +2435,6 @@ describe("message run actions", () => {
               archived: false,
               chatId: createdChat.id,
               mode: "TEMPORARY",
-              sourceRevision: 1,
               temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z",
               temporaryRetentionPolicyVersion: "temporary-24h-v1",
               updatedAt: "2026-06-10T00:00:00.000Z"
@@ -2507,7 +2506,6 @@ describe("message run actions", () => {
     const existingTemporary = {
       ...chat(),
       memoryMode: "TEMPORARY" as const,
-      memorySourceRevision: 2,
       messageCount: 2,
       temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
     };
@@ -2518,7 +2516,6 @@ describe("message run actions", () => {
               archived: false,
               chatId: existingTemporary.id,
               mode: "TEMPORARY",
-              sourceRevision: 2,
               temporaryRetentionDeadline: existingTemporary.temporaryRetentionDeadline,
               temporaryRetentionPolicyVersion: "temporary-24h-v1",
               updatedAt: existingTemporary.updatedAt

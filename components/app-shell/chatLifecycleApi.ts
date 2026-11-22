@@ -125,24 +125,24 @@ export function loadChatMemoryState(
   );
 }
 
+/** The chat's own state is the server's fence (`decodeChatLifecycleRequest`), so the body is empty. */
 function lifecycleMutation(
   chatId: string,
-  operation: "archive" | "restore",
-  expectedChatRevision: number
+  operation: "archive" | "restore"
 ): Promise<ChatLifecycleResponseWire> {
   return request(
     `/api/chats/${encodeURIComponent(chatId)}/${operation}`,
-    { body: JSON.stringify({ expectedChatRevision }), method: "POST" },
+    { body: JSON.stringify({}), method: "POST" },
     decodeChatLifecycleResponse
   );
 }
 
-export function archiveChat(chatId: string, expectedChatRevision: number) {
-  return lifecycleMutation(chatId, "archive", expectedChatRevision);
+export function archiveChat(chatId: string) {
+  return lifecycleMutation(chatId, "archive");
 }
 
-export function restoreChat(chatId: string, expectedChatRevision: number) {
-  return lifecycleMutation(chatId, "restore", expectedChatRevision);
+export function restoreChat(chatId: string) {
+  return lifecycleMutation(chatId, "restore");
 }
 
 export function patchChatMemoryMode(input: Readonly<{

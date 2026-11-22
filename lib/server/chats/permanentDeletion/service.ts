@@ -16,7 +16,6 @@ export type PermanentChatDeletionSnapshot = Readonly<{
   activeLeafMessageId: string | null;
   activeRunCount: number;
   memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
-  sourceRevision: number;
 }>;
 
 /**
@@ -36,7 +35,6 @@ export type PermanentChatDeletionRepository = Readonly<{
     chatId: string;
     condition?: PermanentChatDeletionCondition;
     expectedActiveLeafMessageId: string | null;
-    expectedChatRevision: number;
     now: Date;
     userId: string;
   }>): Promise<
@@ -113,7 +111,6 @@ export function createPermanentChatDeletionService(input: Readonly<{
           chatId,
           ...(options.condition ? { condition: options.condition } : {}),
           expectedActiveLeafMessageId: snapshot.activeLeafMessageId,
-          expectedChatRevision: snapshot.sourceRevision,
           now: now(),
           userId
         });

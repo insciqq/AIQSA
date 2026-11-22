@@ -11,7 +11,7 @@ import { createChatTitleRepository } from "./titleGenerationRepository";
 const OWNER = "owner-1";
 const CHAT_ID = "chat-1";
 const LOCKED = { activeLeafMessageId: "answer-1", archived: false, folderId: null, id: CHAT_ID, memoryMode: "NORMAL",
-  memorySourceRevision: 4, title: "Trip plans", updatedAt: new Date("2026-11-01T10:00:00Z"), userId: OWNER };
+  title: "Trip plans", updatedAt: new Date("2026-11-01T10:00:00Z"), userId: OWNER };
 
 const workspaceAvailability = {
   project: () => ({ state: "unavailable" }),
@@ -35,7 +35,6 @@ function chats(handlers: Parameters<typeof recordingTransaction>[0] = {}) {
     "chat.findUniqueOrThrow": () => summaryRow(),
     "chat.update": () => summaryRow(),
     "message.findFirst": () => ({ id: "answer-0" }),
-    "userMemorySettings.findUniqueOrThrow": () => ({ memoryGeneration: 2, memoryRevision: 9 }),
     ...handlers
   });
   return {
@@ -48,8 +47,8 @@ describe("chat writers mark past-chat search in their own transaction", () => {
   it("excluding a chat clears its passages at once, after the chat is locked and written", async () => {
     const { recorder, repository } = chats();
 
-    await expect(repository.setMemoryMode({ chatId: CHAT_ID, mode: "EXCLUDED", userId: OWNER })).resolves.toMatchObject({
-      kind: "ok", response: { chatId: CHAT_ID, mode: "EXCLUDED", sourceRevision: 4 }
+    await expect(repository.setMemoryMode({ chatId: CHAT_ID, mode: "EXCLUDED", userId: OWNER })).resolves.toEqual({
+      kind: "ok"
     });
 
     const write = recorder.indexOf((call) => call.name === "chat.update");
@@ -60,8 +59,9 @@ describe("chat writers mark past-chat search in their own transaction", () => {
     ]);
     expect(recorder.indexOf((call) => call.text?.startsWith("DELETE FROM \"ChatSearchState\"") ?? false))
       .toBeGreaterThan(write);
-    // The old Memory counters no longer move with a mode change.
-    expect(recorder.calls.some((call) => call.name.startsWith("userMemorySettings.update"))).toBe(false);
+    // The old Memory settings and counters are neither read nor written by a mode change.
+    expect(recorder.calls.some((call) => call.name.startsWith("userMemorySettings."))).toBe(false);
+    expect(recorder.calls.some((call) => call.text?.includes("memorySourceRevision") ?? false)).toBe(false);
   });
 
   it("resuming a chat marks it to be indexed again", async () => {
@@ -128,8 +128,11 @@ describe("chat writers mark past-chat search in their own transaction", () => {
       $queryRaw: (call) => isChatLock(call as RecordedCall) ? [{ ...LOCKED, archived: true }] : []
     });
 
-    await expect(repository.setArchived({ archived: false, chatId: CHAT_ID, expectedChatRevision: 4, userId: OWNER }))
-      .resolves.toMatchObject({ chat: { archived: false, sourceRevision: 4 }, kind: "ok" });
+    await expect(repository.setArchived({ archived: false, chatId: CHAT_ID, userId: OWNER }))
+      .resolves.toMatchObject({ chat: { archived: false }, kind: "ok" });
+    // The chat's own state is the fence: restoring a chat that is not archived is stale.
+    await expect(chats().repository.setArchived({ archived: false, chatId: CHAT_ID, userId: OWNER }))
+      .resolves.toEqual({ kind: "stale" });
 
     expect(recorder.calls.find((call) => call.name === "chat.update")?.args).toMatchObject({
       data: { archived: false, ownerKeptAt: expect.any(Date) }, where: { id: CHAT_ID }
@@ -139,12 +142,11 @@ describe("chat writers mark past-chat search in their own transaction", () => {
 
   it("the permanent-deletion fence clears the chat's passages in the fencing transaction", async () => {
     const recorder = recordingTransaction({
-      $queryRaw: () => [{ activeLeafMessageId: "answer-1", memoryMode: "NORMAL", memorySourceRevision: 4,
-        permanentDeletionAt: null }]
+      $queryRaw: () => [{ activeLeafMessageId: "answer-1", memoryMode: "NORMAL", permanentDeletionAt: null }]
     });
     const repository = createPrismaPermanentChatDeletionRepository(recorder.client as unknown as PrismaClient);
 
-    await expect(repository.admit({ chatId: CHAT_ID, expectedActiveLeafMessageId: "answer-1", expectedChatRevision: 4,
+    await expect(repository.admit({ chatId: CHAT_ID, expectedActiveLeafMessageId: "answer-1",
       now: new Date(), userId: OWNER })).resolves.toMatchObject({ kind: "ok" });
 
     const fence = recorder.indexOf((call) => call.name === "chat.updateMany");

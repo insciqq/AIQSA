@@ -145,9 +145,9 @@ import { loadDeepResearchMarks } from "./deepResearchProjection";
 import { clearChatSearch, markChatSearchDirty } from "../chatSearch/index/dirty";
 
 /**
- * A chat row its lifecycle writers lock `FOR UPDATE` before they change it. `memorySourceRevision` is no longer
- * written (the old Memory source counters stopped with the cutover to past-chat search); it is read only as the
- * revision the browser echoes, until its readers go with the column.
+ * A chat row its lifecycle writers lock `FOR UPDATE` before they change it. Their fences are the row's own state
+ * (archived, mode, leaf); the old Memory source counters are neither read nor written since the cutover to past-chat
+ * search.
  */
 type LockedChatRow = Readonly<{
   activeLeafMessageId: string | null;
@@ -155,7 +155,6 @@ type LockedChatRow = Readonly<{
   folderId: string | null;
   id: string;
   memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
-  memorySourceRevision: number;
   userId: string;
 }>;
 
@@ -340,7 +339,6 @@ const archivedChatSummarySelect = {
   ...chatSummarySelect,
   archived: true,
   memoryMode: true,
-  memorySourceRevision: true,
   messages: {
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     select: {
@@ -1211,8 +1209,7 @@ function serializeArchivedChatSummary(
     ...serializeChatSummary(chat, availability, workspaceSnapshot),
     archived: true,
     lastMessageAt: chat.messages[0]?.createdAt ?? null,
-    memoryMode: chat.memoryMode,
-    sourceRevision: chat.memorySourceRevision
+    memoryMode: chat.memoryMode
   };
 }
 
@@ -1234,8 +1231,7 @@ function serializeArchivedChatDetail(input: {
   return {
     ...serializeChatDetail(input),
     archived: true,
-    memoryMode: input.chat.memoryMode,
-    sourceRevision: input.chat.memorySourceRevision
+    memoryMode: input.chat.memoryMode
   };
 }
 
@@ -1864,8 +1860,7 @@ export function createPrismaChatRepository(
       return prismaClient.$transaction(async (tx) => {
         const chats = await tx.$queryRaw<LockedChatRow[]>`
           SELECT
-            "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memorySourceRevision"
+            "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1883,15 +1878,11 @@ export function createPrismaChatRepository(
         return true;
       });
     },
-    setArchived: async ({ archived, chatId, expectedChatRevision, userId }) => {
-      if (!Number.isSafeInteger(expectedChatRevision) || expectedChatRevision < 0) {
-        return { kind: "stale" };
-      }
+    setArchived: async ({ archived, chatId, userId }) => {
       return prismaClient.$transaction(async (tx): Promise<ChatLifecycleMutationResult> => {
         const chats = await tx.$queryRaw<LockedChatRow[]>`
           SELECT
-            "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memorySourceRevision"
+            "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1900,10 +1891,8 @@ export function createPrismaChatRepository(
         `;
         const chat = chats[0];
         if (!chat || chat.memoryMode === "TEMPORARY") return { kind: "not_found" };
-        if (
-          chat.archived === archived ||
-          chat.memorySourceRevision !== expectedChatRevision
-        ) return { kind: "stale" };
+        // The chat's own state is the fence: a chat already in the asked state was changed by another tab.
+        if (chat.archived === archived) return { kind: "stale" };
 
         await assertChatHasNoActiveRuns(tx, chatId);
 
@@ -1919,7 +1908,6 @@ export function createPrismaChatRepository(
             archived,
             id: chat.id,
             memoryMode: chat.memoryMode,
-            sourceRevision: chat.memorySourceRevision,
             updatedAt: updated.updatedAt
           },
           kind: "ok"
@@ -2189,7 +2177,6 @@ export function createPrismaChatRepository(
           id: true,
           importSource: true,
           memoryMode: true,
-          memorySourceRevision: true,
           temporaryRetentionDeadline: true,
           temporaryRetentionPolicyVersion: true,
           updatedAt: true
@@ -2209,7 +2196,6 @@ export function createPrismaChatRepository(
         chatId: chat.id,
         ...(chat.importSource ? { importSource: chat.importSource } : {}),
         mode: chat.memoryMode,
-        sourceRevision: chat.memorySourceRevision,
         temporaryRetentionDeadline: chat.memoryMode === "TEMPORARY"
           ? chat.temporaryRetentionDeadline
           : null,
@@ -2525,7 +2511,6 @@ export function createPrismaChatRepository(
           archived: true,
           id: true,
           memoryMode: true,
-          memorySourceRevision: true,
           updatedAt: true
         },
         where: {
@@ -2540,26 +2525,16 @@ export function createPrismaChatRepository(
         chatId: chat.id,
         location: chat.archived ? "ARCHIVED_PREVIEW" as const : "ACTIVE_CHAT" as const,
         memoryMode: chat.memoryMode,
-        sourceRevision: chat.memorySourceRevision,
         updatedAt: chat.updatedAt
       };
     },
     setMemoryMode: async ({
       chatId,
-      expectedChatRevision,
-      expectedMemoryRevision,
       mode,
       resumeDisclosureCopyVersion,
       userId
     }) => {
-      const hasChatFence = expectedChatRevision !== undefined;
-      const hasMemoryFence = expectedMemoryRevision !== undefined;
       if (
-        hasChatFence !== hasMemoryFence ||
-        (hasChatFence && (!Number.isSafeInteger(expectedChatRevision) ||
-          (expectedChatRevision ?? -1) < 0)) ||
-        (hasMemoryFence && (!Number.isSafeInteger(expectedMemoryRevision) ||
-          (expectedMemoryRevision ?? -1) < 0)) ||
         (mode === "NORMAL" &&
           resumeDisclosureCopyVersion !== MEMORY_CONFIRMATION_COPY_VERSION) ||
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
@@ -2567,8 +2542,7 @@ export function createPrismaChatRepository(
       return prismaClient.$transaction(async (tx) => {
         const chats = await tx.$queryRaw<Array<LockedChatRow & { importSource: string | null }>>`
           SELECT
-            "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memorySourceRevision",
+            "id", "userId", "activeLeafMessageId", "archived", "folderId", "memoryMode",
             "importSource"::text AS "importSource"
           FROM "Chat"
           WHERE "id" = ${chatId}
@@ -2582,36 +2556,14 @@ export function createPrismaChatRepository(
         // An imported chat, or a copy of one, stays Excluded (a database check
         // backs this for every other writer).
         if (chat.importSource !== null && mode === "NORMAL") return { kind: "imported" as const };
-        if (
-          (hasChatFence && chat.memorySourceRevision !== expectedChatRevision) ||
-          chat.memoryMode === mode
-        ) return { kind: "source_stale" as const };
-
-        // The old Memory counters no longer move with a chat's mode; the fence and the response still carry them
-        // until their contract goes with the old Memory tables. Nothing learns from a resumed chat, so resuming
-        // needs no Memory preflight.
-        const counters = await tx.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        });
-        if (hasMemoryFence && counters.memoryRevision !== expectedMemoryRevision) {
-          return { kind: "memory_stale" as const };
-        }
+        // The chat's mode is the fence: one already in the asked mode was changed by another tab.
+        if (chat.memoryMode === mode) return { kind: "source_stale" as const };
 
         await tx.chat.update({ data: { memoryMode: mode }, select: { id: true }, where: { id: chat.id } });
         // An Excluded chat leaves past-chat search at once; a resumed one is indexed again by the pass.
         if (mode === "EXCLUDED") await clearChatSearch(tx, { chatId: chat.id });
         else await markChatSearchDirty(tx, { chatId: chat.id, userId });
-        return {
-          kind: "ok" as const,
-          response: {
-            chatId: chat.id,
-            memoryGeneration: counters.memoryGeneration,
-            memoryRevision: counters.memoryRevision,
-            mode,
-            sourceRevision: chat.memorySourceRevision
-          }
-        };
+        return { kind: "ok" as const };
       });
     },
     updateChat: async ({
@@ -2651,7 +2603,7 @@ export function createPrismaChatRepository(
         const chats = await tx.$queryRaw<Array<LockedChatRow & { title: string; updatedAt: Date }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memorySourceRevision", "title", "updatedAt"
+            "memoryMode", "title", "updatedAt"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
