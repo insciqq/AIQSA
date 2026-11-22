@@ -81,7 +81,7 @@ function createWorld(seedChats: readonly SeedChat[], seedPassages: readonly Seed
     async wordStatistics(ownerId, query, phrases) {
       calls.push("wordStatistics");
       const corpus = owned(ownerId);
-      const stats = [...lexemes(query)].flatMap((lexeme) => [
+      const stats: Array<{ key: string; kind: "exact" | "prefix" | "phrase"; query: string }> = [...lexemes(query)].flatMap((lexeme) => [
         { key: lexeme, kind: "exact" as const, query: `'${lexeme}'` },
         ...(lexeme.length >= 4 ? [{ key: lexeme, kind: "prefix" as const, query: `'${lexeme}':*` }] : [])
       ]);

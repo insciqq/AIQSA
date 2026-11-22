@@ -103,7 +103,7 @@ export type PastChatSearchDependencies = Readonly<{
   reranker?: PastChatReranker;
   recordUsage: PastChatUsageRecorder;
   savedSecretValues: SavedSecretValuesReader;
-  timeouts?: Partial<typeof PAST_CHAT_SEARCH_TIMEOUTS>;
+  timeouts?: Partial<Record<keyof typeof PAST_CHAT_SEARCH_TIMEOUTS, number>>;
   now?: () => number;
 }>;
 
