@@ -68,7 +68,7 @@ export type ChatSearchChatSnapshot = Readonly<{
   title: string;
   activeLeafMessageId: string | null;
   eligibility: ChatSearchEligibilityFields;
-  /** The active branch, root first. */
+  /** The active branch, root first, without the messages kept out of search (`ChatSearchExcludedMessage`). */
   path: readonly ChatSearchSourceMessage[];
   /** Names of the ready files on each path message, oldest first: uploads on user messages, generated files on answers. */
   fileNames: ReadonlyMap<string, readonly string[]>;
