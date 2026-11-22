@@ -926,6 +926,7 @@ model User {
   scheduledTasks ScheduledTask[]
   answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
   answerProblemReports AnswerProblemReport[]
+  backgroundWorkItems BackgroundWorkItem[]
   signInRefusals SignInRefusal[]
   telegramLink TelegramLink?
   telegramLinkCodes TelegramLinkCode[]
@@ -2601,6 +2602,8 @@ model Chat {
   importSourceKey                 String?              @db.Char(64)
   /// The source's chat-level model label, for display only.
   importSourceModel               String?              @db.VarChar(128)
+  /// The permanent-deletion fence: set once, with the deletion's opaque id, and then immutable (SQL guard);
+  /// the background worker purges every fenced chat (`lib/server/chats/permanentDeletion/cleanup.ts`).
   permanentDeletionAt             DateTime?
   permanentDeletionOperationId    String?              @unique
   temporaryRetentionPolicyVersion String?              @db.VarChar(64)
@@ -5896,6 +5899,40 @@ model MemoryWorkerHeartbeat {
   startedAt  DateTime
   lastSeenAt DateTime
   ready      Boolean  @default(true)
+}
+
+/// Liveness of the background worker (`scripts/background-worker.ts`, the `memory-worker` service): one row,
+/// `installation`. Observability only, never a leader election: work items carry their own leases.
+model BackgroundWorkerHeartbeat {
+  id         String   @id @db.VarChar(64)
+  instanceId String   @db.VarChar(128)
+  startedAt  DateTime
+  lastSeenAt DateTime
+  ready      Boolean  @default(false)
+}
+
+/// A background duty's bookkeeping for one item (`lib/server/background/workItems.ts`): the lease of the worker
+/// processing it, its attempts and backoff, and when it completed. The obligation itself lives on the item's own
+/// rows (a Temporary chat's deadline, a chat's permanent-deletion fence), so losing this row loses only backoff.
+/// A completed row lets the owner read the outcome after the item is gone, and is pruned after a week. SQL CHECKs
+/// keep the lease columns together, a completed row unleased and the codes content-free.
+model BackgroundWorkItem {
+  duty           String    @db.VarChar(64)
+  itemId         String    @db.VarChar(256)
+  userId         String
+  leaseToken     String?   @db.VarChar(64)
+  leaseExpiresAt DateTime?
+  attemptCount   Int       @default(0)
+  nextAttemptAt  DateTime?
+  lastErrorCode  String?   @db.VarChar(64)
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now())
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([duty, itemId])
+  @@index([userId])
+  @@index([duty, completedAt])
 }
 
 model MemoryDeletionOutbox {

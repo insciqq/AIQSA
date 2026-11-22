@@ -1,20 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
+import { PERMANENT_CHAT_DELETION_DUTY } from "../../background/duties";
 import { prisma } from "../../prisma";
-import {
-  applyMemoryScopedTargetOwnerLifecycle,
-  applyMemorySourceMutations,
-  type LockedMemorySourceChat
-} from "../../memory/sourceState";
-import { defaultMemorySourceMutationHooks } from "../../memory/sourceHooks";
-import { lockMemorySettings } from "../../memory/persistence/transaction";
-import { consumeMemoryMutationAuthorization } from "../../memory/persistence/authorizations";
-import { memoryPersistenceFailure } from "../../memory/persistence/errors";
-import { PERMANENT_CHAT_DELETION_TARGET_TYPE } from "./contract";
-import type {
-  PermanentChatDeletionAdmission,
-  PermanentChatDeletionRepository
-} from "./service";
+import type { PermanentChatDeletionRepository } from "./service";
 
 const activeRunStatuses = [
   "preparing",
@@ -23,69 +11,20 @@ const activeRunStatuses = [
   "in_progress"
 ] as const;
 
-type LockedPermanentDeleteChat = LockedMemorySourceChat & Readonly<{
+type LockedChat = Readonly<{
+  activeLeafMessageId: string | null;
+  memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+  memorySourceRevision: number;
   permanentDeletionAt: Date | null;
-  permanentDeletionOperationId: string | null;
 }>;
-
-type ReplayInput = Readonly<{
-  alsoForgetOriginMemories: boolean;
-  authorizationId: string;
-  chatId: string;
-  expectedActiveLeafMessageId: string | null;
-  expectedChatRevision: number;
-  userId: string;
-}>;
-
-async function replayDeletion(
-  tx: Prisma.TransactionClient,
-  input: ReplayInput
-): Promise<PermanentChatDeletionAdmission | null> {
-  const row = await tx.memoryDeletionOutbox.findUnique({
-    select: {
-      admittedActiveLeafMessageId: true,
-      admittedChatSourceRevision: true,
-      alsoForgetOriginMemories: true,
-      createdAt: true,
-      id: true,
-      operation: true,
-      state: true,
-      targetId: true,
-      targetType: true,
-      userId: true
-    },
-    where: { admissionAuthorizationId: input.authorizationId }
-  });
-  if (!row) return null;
-  if (
-    row.userId !== input.userId ||
-    row.operation !== "SOURCE_PURGE" ||
-    row.targetType !== PERMANENT_CHAT_DELETION_TARGET_TYPE ||
-    row.targetId !== input.chatId ||
-    row.admittedChatSourceRevision !== input.expectedChatRevision ||
-    row.admittedActiveLeafMessageId !== input.expectedActiveLeafMessageId ||
-    row.alsoForgetOriginMemories !== input.alsoForgetOriginMemories
-  ) {
-    return memoryPersistenceFailure("memory_mutation_authorization_invalid");
-  }
-  return {
-    deletionId: row.id,
-    fencedAt: row.createdAt,
-    state: row.state
-  };
-}
 
 async function lockChat(
   tx: Prisma.TransactionClient,
   chatId: string,
   userId: string
-): Promise<LockedPermanentDeleteChat | null> {
-  const rows = await tx.$queryRaw<LockedPermanentDeleteChat[]>(Prisma.sql`
-    SELECT
-      "id", "userId", "activeLeafMessageId", "folderId", "archived",
-      "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-      "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
-      "permanentDeletionAt", "permanentDeletionOperationId"
+): Promise<LockedChat | null> {
+  const rows = await tx.$queryRaw<LockedChat[]>(Prisma.sql`
+    SELECT "activeLeafMessageId", "memoryMode"::text AS "memoryMode", "memorySourceRevision", "permanentDeletionAt"
     FROM "Chat"
     WHERE "id" = ${chatId} AND "userId" = ${userId}
     FOR UPDATE
@@ -130,25 +69,8 @@ export function createPrismaPermanentChatDeletionRepository(
 
     async admit(input) {
       return client.$transaction(async (tx) => {
-        const replayInput: ReplayInput = {
-          alsoForgetOriginMemories: input.alsoForgetOriginMemories,
-          authorizationId: input.authorization.authorizationId,
-          chatId: input.chatId,
-          expectedActiveLeafMessageId: input.expectedActiveLeafMessageId,
-          expectedChatRevision: input.expectedChatRevision,
-          userId: input.userId
-        };
-        const replay = await replayDeletion(tx, replayInput);
-        if (replay) return { admission: replay, kind: "ok" as const };
-
         const chat = await lockChat(tx, input.chatId, input.userId);
-        if (!chat) return { kind: "not_found" as const };
-        if (chat.permanentDeletionAt || chat.permanentDeletionOperationId) {
-          const concurrentReplay = await replayDeletion(tx, replayInput);
-          return concurrentReplay
-            ? { admission: concurrentReplay, kind: "ok" as const }
-            : { kind: "not_found" as const };
-        }
+        if (!chat || chat.permanentDeletionAt) return { kind: "not_found" as const };
         if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
         if (
           chat.memorySourceRevision !== input.expectedChatRevision ||
@@ -160,7 +82,7 @@ export function createPrismaPermanentChatDeletionRepository(
         if (input.condition && !(await input.condition(tx))) return { kind: "stale" as const };
 
         // Under the chat lock: the main agent's answer refuses; background sub-agents are stopped after the fence
-        // (`stopSubagents`), and cleanup waits until no run of the chat is active.
+        // (`stopSubagents`), and the purge waits until no run of the chat is active.
         const activeRunCount = await tx.modelRun.count({
           where: {
             chatId: input.chatId,
@@ -171,87 +93,23 @@ export function createPrismaPermanentChatDeletionRepository(
         });
         if (activeRunCount > 0) return { kind: "active_run" as const };
 
-        const snapshot = await applyMemorySourceMutations(tx, {
-          chat,
-          hooks: defaultMemorySourceMutationHooks,
-          mutations: ["SOURCE_HARD_DELETE"],
-          patch: { archived: true, memoryMode: "EXCLUDED" },
-          sourceRequiresBranchGeneration: chat.activeLeafMessageId !== null
-        });
-        await applyMemoryScopedTargetOwnerLifecycle(
-          tx,
-          defaultMemorySourceMutationHooks,
-          {
-            kind: "CHAT_DELETE",
-            sourceSnapshots: [snapshot],
-            targetId: input.chatId,
-            userId: input.userId
-          }
-        );
-
-        await tx.memoryJob.updateMany({
-          data: {
-            completedAt: input.now,
-            errorCode: "memory_source_deleted",
-            errorMessage: null,
-            leaseExpiresAt: null,
-            leaseToken: null,
-            nextAttemptAt: null,
-            state: "CANCELLED",
-            updatedAt: input.now
-          },
-          where: {
-            chatId: input.chatId,
-            state: {
-              in: [
-                "CLAIMED",
-                "QUEUED",
-                "RETRYABLE_FAILED",
-                "WAITING_FOR_CONFIGURATION",
-                "WAITING_FOR_EGRESS_CONSENT"
-              ]
-            },
-            userId: input.userId
-          }
-        });
-
-        const settings = await lockMemorySettings(tx, input.userId, false);
+        // The fence is the durable obligation: immutable once set (SQL guard), it keeps the chat out of every
+        // list, search, share and new child write, and the background worker purges every fenced chat.
         const deletionId = randomUUID();
-        const deletion = await tx.memoryDeletionOutbox.create({
-          data: {
-            admissionAuthorizationId: input.authorization.authorizationId,
-            admittedActiveLeafMessageId: input.expectedActiveLeafMessageId,
-            admittedChatSourceRevision: input.expectedChatRevision,
-            alsoForgetOriginMemories: input.alsoForgetOriginMemories,
-            createdAt: input.now,
-            id: deletionId,
-            memoryGeneration: settings.memoryGeneration,
-            operation: "SOURCE_PURGE",
-            targetId: input.chatId,
-            targetType: PERMANENT_CHAT_DELETION_TARGET_TYPE,
-            updatedAt: input.now,
-            userId: input.userId
-          },
-          select: { createdAt: true, id: true, state: true }
-        });
         const fenced = await tx.chat.updateMany({
           data: {
+            archived: true,
             permanentDeletionAt: input.now,
-            permanentDeletionOperationId: deletion.id
+            permanentDeletionOperationId: deletionId
           },
           where: {
-            archived: true,
             id: input.chatId,
-            memoryMode: "EXCLUDED",
-            memorySourceRevision: snapshot.memorySourceRevision,
             permanentDeletionAt: null,
             permanentDeletionOperationId: null,
             userId: input.userId
           }
         });
-        if (fenced.count !== 1) {
-          return memoryPersistenceFailure("memory_counter_contract_invalid");
-        }
+        if (fenced.count !== 1) return { kind: "not_found" as const };
         await tx.sharedChatSnapshot.updateMany({
           data: { revokedAt: input.now },
           where: {
@@ -260,85 +118,27 @@ export function createPrismaPermanentChatDeletionRepository(
             revokedAt: null
           }
         });
-        await consumeMemoryMutationAuthorization(
-          tx,
-          input.userId,
-          input.authorization,
-          input.now
-        );
-        return {
-          admission: {
-            deletionId: deletion.id,
-            fencedAt: deletion.createdAt,
-            state: deletion.state
-          },
-          kind: "ok" as const
-        };
+        return { deletionId, kind: "ok" as const };
       });
     },
 
-    async status({ chatId, deletionId, userId }) {
-      const deletion = await client.memoryDeletionOutbox.findFirst({
-        select: {
-          attemptCount: true,
-          createdAt: true,
-          errorCode: true,
-          id: true,
-          lastAuditAt: true,
-          state: true,
-          updatedAt: true
-        },
-        where: {
-          id: deletionId,
-          operation: "SOURCE_PURGE",
-          targetId: chatId,
-          targetType: PERMANENT_CHAT_DELETION_TARGET_TYPE,
-          userId
-        }
+    async progress({ chatId, userId }) {
+      const fenced = await client.chat.count({
+        where: { id: chatId, permanentDeletionAt: { not: null }, userId }
       });
-      return deletion
-        ? {
-            attemptCount: deletion.attemptCount,
-            deletionId: deletion.id,
-            errorCode: deletion.errorCode,
-            fencedAt: deletion.createdAt,
-            lastAuditAt: deletion.lastAuditAt,
-            state: deletion.state,
-            updatedAt: deletion.updatedAt
-          }
-        : null;
-    },
-
-    async latestStatus({ chatId, userId }) {
-      const deletion = await client.memoryDeletionOutbox.findFirst({
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: {
-          attemptCount: true,
-          createdAt: true,
-          errorCode: true,
-          id: true,
-          lastAuditAt: true,
-          state: true,
-          updatedAt: true
-        },
-        where: {
-          operation: "SOURCE_PURGE",
-          targetId: chatId,
-          targetType: PERMANENT_CHAT_DELETION_TARGET_TYPE,
-          userId
-        }
-      });
-      return deletion
-        ? {
-            attemptCount: deletion.attemptCount,
-            deletionId: deletion.id,
-            errorCode: deletion.errorCode,
-            fencedAt: deletion.createdAt,
-            lastAuditAt: deletion.lastAuditAt,
-            state: deletion.state,
-            updatedAt: deletion.updatedAt
-          }
-        : null;
+      if (fenced > 0) return "in_progress";
+      // The chat is gone: only its owner's completed work row says the deletion finished; anything else reads
+      // as unknown, like a chat that never existed.
+      const [row] = await client.$queryRaw<Array<{ completed: boolean }>>(Prisma.sql`
+        SELECT TRUE AS "completed"
+        FROM "BackgroundWorkItem"
+        WHERE "duty" = ${PERMANENT_CHAT_DELETION_DUTY}
+          AND "itemId" = ${chatId}
+          AND "userId" = ${userId}
+          AND "completedAt" IS NOT NULL
+        LIMIT 1
+      `);
+      return row?.completed ? "complete" : null;
     }
   });
 }

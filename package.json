@@ -38,6 +38,7 @@
     "db:stateful-test:catalog": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-catalog.ts",
     "start": "next start --hostname 0.0.0.0",
     "lint": "node scripts/lint.mjs",
+    "background:worker": "tsx scripts/background-worker.ts",
     "memory:coordinator": "tsx scripts/memory-coordinator.ts",
     "workspace:runner": "tsx scripts/workspace-runner.ts",
     "memory:restore:reconcile": "tsx scripts/memory-restore-reconcile.ts",

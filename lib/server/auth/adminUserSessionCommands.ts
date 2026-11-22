@@ -11,14 +11,12 @@ import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
 import { isServiceAccount } from "./serviceAccounts";
 import { lockActiveAdmins, lockAuthUser } from "./transactionLocks";
-import { MemoryCoordinatorError } from "../memory/coordinator/errors";
-import { countAccountMemoryOwnedData } from "../memory/accountDeletion/inventory";
-import type { AccountMemoryDeletionHook } from "../memory/accountDeletion/integration";
+import { purgeLegacyMemoryRowsOfAccount } from "../background/legacyMemoryRows";
 import { archivePersonalMcpServers } from "../mcp/personalArchive";
 import {
   revokeAllInboundMcpGrants,
   revokeInboundMcpGrantsForUser
-} from "../memoryMcp/oauth/repository";
+} from "../mcp/inboundGrantRevocation";
 import { revokeAllConnectDevices, revokeConnectDevicesForUser } from "../connect/revocation";
 import { clearTelemetryIncidentUser } from "../telemetry/store";
 import { revokeAllTelegramLinks, revokeTelegramLinksForUser } from "../telegram/linking/revocation";
@@ -36,22 +34,13 @@ export type AdminUserSessionCommands = Pick<
   | "setUserRole"
 >;
 
-class AccountDeletionPurgeUnavailableError extends Error {
-  constructor() {
-    super("account_deletion_purge_unavailable");
-    this.name = "AccountDeletionPurgeUnavailableError";
-  }
-}
-
 export function createAdminUserSessionCommands(
   prisma: PrismaClient,
   options: Readonly<{
-    accountMemoryDeletionHook?: () => AccountMemoryDeletionHook | null;
     /** After commit: wakes MCP runtime revocation and finalization of archived personal servers. */
     accountMcpDeletionKick?: () => void;
   }> = {}
 ): AdminUserSessionCommands {
-  const accountMemoryDeletionHook = options.accountMemoryDeletionHook ?? (() => null);
   return {
     async approveUser(input) {
       return prisma.$transaction(async (tx) => {
@@ -100,109 +89,75 @@ export function createAdminUserSessionCommands(
         return "self_delete_forbidden";
       }
 
-      let admittedMemoryDeletion = false;
       let personalMcpPending = false;
-      const deletionKicks: { memory: (() => void) | null } = { memory: null };
-      try {
-        const result = await prisma.$transaction(async (tx) => {
-          await lockAuthUser(tx, input.userId);
-          const user = await tx.user.findUnique({
-            select: {
-              authIdentities: {
-                select: {
-                  normalizedEmail: true
-                }
-              },
-              email: true,
-              id: true,
-              status: true
+      const result = await prisma.$transaction(async (tx) => {
+        await lockAuthUser(tx, input.userId);
+        const user = await tx.user.findUnique({
+          select: {
+            authIdentities: {
+              select: {
+                normalizedEmail: true
+              }
             },
-            where: {
-              id: input.userId
-            }
-          });
-
-          if (!user) {
-            return "not_found" as const;
+            email: true,
+            id: true,
+            status: true
+          },
+          where: {
+            id: input.userId
           }
-
-          const statusDeletionBlock = adminUserDeletionBlock({
-            ownedDataCount: 0,
-            status: user.status
-          });
-
-          if (statusDeletionBlock) {
-            return statusDeletionBlock;
-          }
-
-          const ownedData = await countUserOwnedAppData(tx, user.id);
-          if (ownedData.nonPurgeable > 0) {
-            return "user_has_owned_data" as const;
-          }
-          let memoryReady = ownedData.memory === 0;
-          const memoryHook = ownedData.memory > 0
-            ? accountMemoryDeletionHook()
-            : null;
-          if (ownedData.memory > 0 && !memoryHook) {
-            throw new AccountDeletionPurgeUnavailableError();
-          }
-          if (ownedData.memory > 0) {
-            const advanced = await memoryHook!.advance(tx, {
-              now: new Date(),
-              userId: user.id
-            });
-            if (!advanced.deletionPending && !advanced.readyForUserDeletion) {
-              throw new AccountDeletionPurgeUnavailableError();
-            }
-            admittedMemoryDeletion = advanced.admitted;
-            memoryReady = advanced.readyForUserDeletion;
-            deletionKicks.memory = memoryHook!.kick;
-          }
-          if (ownedData.personalMcp > 0) {
-            // Fence like a user disconnect; runtime finalization revokes the
-            // tokens and removes the archived servers before a later attempt.
-            await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: user.id });
-            personalMcpPending = true;
-          }
-          if (!memoryReady || personalMcpPending) {
-            return "deletion_pending" as const;
-          }
-
-          await clearTelemetryIncidentUser(tx, user.id);
-          // Refused sign-ins under the account's emails; those naming the account go with it.
-          await deleteSignInRefusalsOfEmails(tx, [
-            user.email,
-            ...user.authIdentities.map((identity) => identity.normalizedEmail)
-          ]);
-          await tx.user.delete({
-            where: {
-              id: user.id
-            }
-          });
-
-          return "deleted" as const;
         });
-        if (admittedMemoryDeletion) {
-          deletionKicks.memory?.();
+
+        if (!user) {
+          return "not_found" as const;
         }
-        if (personalMcpPending) {
-          try {
-            options.accountMcpDeletionKick?.();
-          } catch {
-            // The archive is durable; the runtime's periodic reconcile finalizes it.
+
+        const statusDeletionBlock = adminUserDeletionBlock({
+          ownedDataCount: 0,
+          status: user.status
+        });
+
+        if (statusDeletionBlock) {
+          return statusDeletionBlock;
+        }
+
+        const ownedData = await countUserOwnedAppData(tx, user.id);
+        if (ownedData.nonPurgeable > 0) {
+          return "user_has_owned_data" as const;
+        }
+        if (ownedData.personalMcp > 0) {
+          // Fence like a user disconnect; runtime finalization revokes the
+          // tokens and removes the archived servers before a later attempt.
+          await archivePersonalMcpServers(tx, { now: new Date(), ownerUserId: user.id });
+          personalMcpPending = true;
+          return "deletion_pending" as const;
+        }
+
+        // Until the old Memory tables are dropped, the account's rows there go first: several reference it
+        // through restrictive keys. The Memory note and kept suggestions go with the user's own cascade.
+        await purgeLegacyMemoryRowsOfAccount(tx, user.id);
+        await clearTelemetryIncidentUser(tx, user.id);
+        // Refused sign-ins under the account's emails; those naming the account go with it.
+        await deleteSignInRefusalsOfEmails(tx, [
+          user.email,
+          ...user.authIdentities.map((identity) => identity.normalizedEmail)
+        ]);
+        await tx.user.delete({
+          where: {
+            id: user.id
           }
+        });
+
+        return "deleted" as const;
+      }, { timeout: 30_000 });
+      if (personalMcpPending) {
+        try {
+          options.accountMcpDeletionKick?.();
+        } catch {
+          // The archive is durable; the runtime's periodic reconcile finalizes it.
         }
-        return result;
-      } catch (error) {
-        if (error instanceof AccountDeletionPurgeUnavailableError) {
-          admittedMemoryDeletion = false;
-          return "user_has_owned_data";
-        }
-        if (error instanceof MemoryCoordinatorError) {
-          return "user_has_owned_data";
-        }
-        throw error;
       }
+      return result;
     },
     async disableUser(input) {
       if (input.userId === input.revokedByUserId) {
@@ -393,7 +348,7 @@ export function createAdminUserSessionCommands(
 async function countUserOwnedAppData(
   tx: Prisma.TransactionClient,
   userId: string
-): Promise<Readonly<{ memory: number; nonPurgeable: number; personalMcp: number }>> {
+): Promise<Readonly<{ nonPurgeable: number; personalMcp: number }>> {
   // Rows of a personal server can name only its owner (database fence); they
   // leave with its finalization. Installation MCP rows keep the account.
   const installationMcp = { server: { ownerUserId: null }, userId };
@@ -413,8 +368,7 @@ async function countUserOwnedAppData(
     subagentDefinitions,
     settings,
     sharedSnapshots,
-    usageEvents,
-    memory
+    usageEvents
   ] = await Promise.all([
     tx.accessGrant.count({
       where: {
@@ -487,13 +441,13 @@ async function countUserOwnedAppData(
         ownerUserId: userId
       }
     }),
+    // Usage of an old Memory call goes with the account's Memory rows (`purgeLegacyMemoryRowsOfAccount`).
     tx.usageEvent.count({
       where: {
         memoryExecutionBindingId: null,
         userId
       }
-    }),
-    countAccountMemoryOwnedData(tx, userId)
+    })
   ]);
 
   const nonPurgeable = adminOwnedAppDataCount({
@@ -514,7 +468,7 @@ async function countUserOwnedAppData(
     sharedSnapshots,
     usageEvents
   });
-  return { memory, nonPurgeable, personalMcp };
+  return { nonPurgeable, personalMcp };
 }
 
 /** Ends the account's sessions, inbound MCP grants and Telegram link; disable and reject inherit all three. */

@@ -6,7 +6,6 @@ import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaPermanentChatDeletionRepository } from "../chats/permanentDeletion/repository";
 import { createPermanentChatDeletionService, type PermanentChatDeletionService } from "../chats/permanentDeletion/service";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../memory/persistence/authorizations";
 import { prisma } from "../prisma";
 import { loadProviderAdmissionPlan } from "../providerRuntime/admission";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
@@ -20,8 +19,7 @@ const runs = createPrismaRunRepository(prisma);
 const runner = createPrismaScheduledTaskRunnerStore(prisma);
 const chats = createPrismaChatRepository(prisma);
 const service = createPermanentChatDeletionService({
-  authorizationRepository: createPrismaMemoryMutationAuthorizationRepository(prisma), capability: { enabled: true },
-  kick: () => undefined, repository: createPrismaPermanentChatDeletionRepository(prisma)
+  capability: { enabled: true }, repository: createPrismaPermanentChatDeletionRepository(prisma)
 });
 const retention = createPrismaScheduledTaskHistoryRetention({ deletion: { capability: { enabled: true }, service }, prisma });
 let instants = 0;
@@ -127,10 +125,10 @@ describe("persisted scheduled task history retention", () => {
     expect(await fenced(due)).toBe(true);
     expect(await fenced(archivedDue)).toBe(true);
     for (const kept of [recent, written, pinned, filed, shared, renamed, restored, current]) expect(await fenced(kept)).toBe(false);
-    // The same durable obligation as the owner's own permanent deletion.
-    const purges = await prisma.memoryDeletionOutbox.findMany({ select: { targetId: true },
-      where: { operation: "SOURCE_PURGE", userId } });
-    expect(purges.map((purge) => purge.targetId).sort()).toEqual([due, archivedDue].sort());
+    // The same durable obligation as the owner's own permanent deletion: the fence the worker purges.
+    const purges = await prisma.chat.findMany({ select: { id: true },
+      where: { permanentDeletionAt: { not: null }, userId } });
+    expect(purges.map((purge) => purge.id).sort()).toEqual([due, archivedDue].sort());
     expect(await prisma.scheduledTask.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ historyDeletedChats: 2 });
     // Next: the recent chat, once it is old enough.
     const after = await loadScheduledTaskHistoryNextDeletions(prisma, userId, [created.id], now);

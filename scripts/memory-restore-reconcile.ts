@@ -1,11 +1,10 @@
 import "./worker-bootstrap.cjs";
 import { maintenanceFailureCode } from "./maintenance-observability";
 import { logEvent } from "../lib/server/observability";
-import { createSourcePurgeDeletionHandler } from
-  "../lib/server/chats/permanentDeletion/sourcePurge";
-import { createPrismaPermanentChatDeletionHandler } from
-  "../lib/server/chats/permanentDeletion/cleanup";
-import { createS3StorageAdapter } from "../lib/server/uploads/storage";
+import {
+  createMemorySourcePurgeDeletionHandler,
+  legacyTemporaryChatDeletionHandler
+} from "../lib/server/memory/deletionComposition";
 import {
   createPrismaAccountMemoryDeletionHandler
 } from "../lib/server/memory/accountDeletion";
@@ -23,8 +22,6 @@ import {
   defaultMemoryDeletionContributorRegistry,
   reconcileDefaultCompletedMemoryDeletionAudits
 } from "../lib/server/memory/purge/defaultPurge";
-import { createPrismaTemporaryChatDeletionHandler } from
-  "../lib/server/memory/temporaryDeletion";
 import { createMemorySavedSecretScrubDeletionHandler } from
   "../lib/server/memory/savedSecretScrub";
 import { prisma } from "../lib/server/prisma";
@@ -111,18 +108,15 @@ async function reopenIncompleteCompletedDeletions(now: Date): Promise<void> {
 async function main(): Promise<void> {
   assertIsolatedRuntime();
   const now = new Date();
-  const storage = createS3StorageAdapter();
   const registry = new MemoryCoordinatorRegistry();
-  const permanentChat = createPrismaPermanentChatDeletionHandler(storage, prisma);
 
   registry.registerDeletion(defaultMemoryDeletionContributorRegistry.handler());
-  registry.registerDeletion(
-    createPrismaTemporaryChatDeletionHandler(storage, prisma)
-  );
+  // Fenced and expired chats are purged by the background worker once the installation starts; their outbox
+  // rows complete here as no-ops.
+  registry.registerDeletion(legacyTemporaryChatDeletionHandler);
   registry.registerDeletion(memoryHistoryClearDeletionHandler);
-  registry.registerDeletion(createSourcePurgeDeletionHandler({
+  registry.registerDeletion(createMemorySourcePurgeDeletionHandler({
     history: memoryHistorySourceDeletionHandler,
-    permanentChat,
     savedSecretScrub: createMemorySavedSecretScrubDeletionHandler(prisma)
   }));
   registry.registerDeletion(createPrismaAccountMemoryDeletionHandler(prisma));

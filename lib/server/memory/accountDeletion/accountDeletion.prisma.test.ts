@@ -1,14 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
 import { Prisma } from "@prisma/client";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { createPrismaAdminRepository } from "../../auth/adminRepository";
 import { prisma } from "../../prisma";
-import { MemoryCoordinator } from "../coordinator/coordinator";
-import { createPrismaMemoryCoordinatorRepository } from
-  "../coordinator/prismaRepository";
-import { MemoryCoordinatorRegistry } from "../coordinator/registry";
-import type { MemoryDeletionClaim } from "../coordinator/types";
 import {
   MEMORY_FACT_EXTRACTION_PIPELINE_VERSION,
   MEMORY_FACT_EXTRACTION_POLICY_VERSION,
@@ -21,12 +15,6 @@ import { memoryMaintenanceOutputHash } from "../maintenance/provider";
 import { memorySha256, normalizeMemorySearchText } from "../persistence/lexical";
 import { createPrismaMemoryFeedbackRepository } from "../review/feedbackRepository";
 import { purgeMemoryFeedbackAccount } from "../review/purge";
-import { ACCOUNT_MEMORY_DELETION_TARGET_TYPE } from "./contract";
-import {
-  createPrismaAccountMemoryDeletionHandler,
-  inspectAccountMemoryDeletionResiduals
-} from "./handler";
-import { createAccountMemoryDeletionHook } from "./integration";
 import { countAccountMemoryOwnedData } from "./inventory";
 
 type ProviderFixture = Readonly<{
@@ -804,60 +792,6 @@ async function populateMaintenanceArtifacts(
   });
 }
 
-async function maintenanceArtifacts(userId: string) {
-  return {
-    reviews: await prisma.memoryMaintenanceReview.findMany({ where: { userId }, orderBy: { id: "asc" } }),
-    executions: await prisma.memoryMaintenanceExecution.findMany({ where: { userId }, orderBy: { id: "asc" } }),
-    suppressions: await prisma.memoryMaintenanceSuppression.findMany({ where: { userId }, orderBy: { id: "asc" } })
-  };
-}
-
-function coordinatorFor(
-  registry: MemoryCoordinatorRegistry,
-  now: () => Date
-): MemoryCoordinator {
-  return new MemoryCoordinator({
-    now,
-    policy: {
-      blockedDeletionRetryMs: 1_000,
-      deletionFastRetryDelaysMs: [100],
-      heartbeatMs: 5_000,
-      intervalMs: 60_000,
-      leaseMs: 30_000,
-      maxDeletionFastAttempts: 2,
-      maxDeletionParallel: 1,
-      maxJobAttempts: 1,
-      maxJobParallel: 1,
-      reconciliationBatchSize: 10
-    },
-    registry,
-    repository: createPrismaMemoryCoordinatorRepository(prisma)
-  });
-}
-
-async function claimFor(deletionId: string): Promise<MemoryDeletionClaim> {
-  const row = await prisma.memoryDeletionOutbox.findUniqueOrThrow({
-    where: { id: deletionId }
-  });
-  return {
-    admissionAuthorizationId: row.admissionAuthorizationId,
-    admittedActiveLeafMessageId: row.admittedActiveLeafMessageId,
-    admittedChatSourceRevision: row.admittedChatSourceRevision,
-    alsoForgetOriginMemories: row.alsoForgetOriginMemories,
-    attemptCount: row.attemptCount,
-    claimToken: "idempotency-audit",
-    id: row.id,
-    leaseExpiresAt: new Date(Date.now() + 60_000),
-    memoryGeneration: row.memoryGeneration,
-    operation: row.operation,
-    recoveredLease: false,
-    resumedFromBlocked: false,
-    targetId: row.targetId,
-    targetType: row.targetType,
-    userId: row.userId
-  };
-}
-
 describe("Prisma account Memory deletion", () => {
   afterAll(async () => {
     await prisma.$disconnect();
@@ -1030,321 +964,50 @@ describe("Prisma account Memory deletion", () => {
     }
   });
 
-  it("keeps the stale-user path zero-mutation before composition", async () => {
-    const userId = await createOwner("disabled");
+  // Account deletion no longer waits for the Memory coordinator (2026-11-22): the stale-account path deletes the
+  // old Memory rows in its own transaction (`lib/server/background/legacyMemoryRows.ts`), whatever state they are in.
+  it.each(["SUCCEEDED", "OUTCOME_UNKNOWN"] as const)(
+    "deletes an account with reusable Memory and %s provider calls in one step, the other owner untouched",
+    async (executionState) => {
+      const now = new Date(Date.now() - 60_000);
+      const provider = await createProviderFixture(now);
+      const userId = await createOwner();
+      const otherUserId = await createOwner();
+      const admin = createPrismaAdminRepository(prisma);
+      try {
+        await populateReusableMemory(userId, provider, { executionState, now });
+        await populateMaintenanceArtifacts(userId, provider, now);
+        await populateMaintenanceArtifacts(otherUserId, provider, now);
+        const otherOwnedCount = await countAccountMemoryOwnedData(prisma, otherUserId);
+        await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
+        expect(await countAccountMemoryOwnedData(prisma, userId)).toBeGreaterThan(0);
+
+        await expect(admin.deleteStaleUser({ actingAdminUserId: `admin-${randomUUID()}`, userId }))
+          .resolves.toBe("deleted");
+        await expect(prisma.user.findUnique({ where: { id: userId } })).resolves.toBeNull();
+        await expect(countAccountMemoryOwnedData(prisma, userId)).resolves.toBe(0);
+        await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
+        await expect(prisma.memoryExecutionBinding.count({ where: { userId } })).resolves.toBe(0);
+        await expect(prisma.memoryDeletionOutbox.count({ where: { userId } })).resolves.toBe(0);
+        await expect(countAccountMemoryOwnedData(prisma, otherUserId)).resolves.toBe(otherOwnedCount);
+      } finally {
+        await cleanupOwner(userId);
+        await cleanupOwner(otherUserId);
+        await cleanupProvider(provider);
+      }
+    }
+  );
+
+  it("refuses an active account and changes none of its Memory", async () => {
+    const userId = await createOwner();
     try {
-      await prisma.memoryScope.create({
-        data: { scopeType: "GLOBAL_USER", userId }
-      });
-      const before = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
+      await prisma.memoryScope.create({ data: { scopeType: "GLOBAL_USER", userId } });
       await expect(createPrismaAdminRepository(prisma).deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("user_has_owned_data");
-      expect(await prisma.userMemorySettings.findUnique({ where: { userId } }))
-        .toEqual(before);
-      await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
-        .resolves.toBe(0);
+        actingAdminUserId: `admin-${randomUUID()}`, userId
+      })).resolves.toBe("user_active");
       await expect(prisma.memoryScope.count({ where: { userId } })).resolves.toBe(1);
     } finally {
       await cleanupOwner(userId);
-    }
-  });
-
-  it("keeps a composed but rolled-back account gate zero-mutation", async () => {
-    const userId = await createOwner("disabled");
-    const kick = vi.fn();
-    const hook = createAccountMemoryDeletionHook({
-      admissionEnabled: () => false,
-      kick
-    });
-    try {
-      await prisma.memoryScope.create({
-        data: { scopeType: "GLOBAL_USER", userId }
-      });
-      const before = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      await expect(createPrismaAdminRepository(prisma, {
-        accountMemoryDeletionHook: () => hook
-      }).deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("user_has_owned_data");
-      expect(kick).not.toHaveBeenCalled();
-      expect(await prisma.userMemorySettings.findUnique({ where: { userId } }))
-        .toEqual(before);
-      await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("does not admit Memory cleanup through an unrelated global owned-data blocker", async () => {
-    const userId = await createOwner("disabled");
-    const advance = vi.fn(async () => ({
-      admitted: true,
-      deletionPending: true,
-      readyForUserDeletion: false
-    }));
-    const hook = { advance, kick: vi.fn() };
-    try {
-      await prisma.memoryScope.create({
-        data: { scopeType: "GLOBAL_USER", userId }
-      });
-      await prisma.chat.create({ data: { title: "Global blocker", userId } });
-      const before = await prisma.userMemorySettings.findUniqueOrThrow({
-        where: { userId }
-      });
-      await expect(createPrismaAdminRepository(prisma, {
-        accountMemoryDeletionHook: () => hook
-      }).deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("user_has_owned_data");
-      expect(advance).not.toHaveBeenCalled();
-      expect(await prisma.userMemorySettings.findUnique({ where: { userId } }))
-        .toEqual(before);
-      await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
-        .resolves.toBe(0);
-    } finally {
-      await cleanupOwner(userId);
-    }
-  });
-
-  it("fences, detaches provider evidence, purges derivatives, audits idempotently, and finalizes globally", async () => {
-    let clock = new Date(Date.now() - 60_000);
-    const provider = await createProviderFixture(clock);
-    const userId = await createOwner();
-    const otherUserId = await createOwner();
-    const coordinatorRegistry = new MemoryCoordinatorRegistry();
-    const handler = createPrismaAccountMemoryDeletionHandler();
-    coordinatorRegistry.registerDeletion(handler);
-    const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
-    const kick = vi.fn();
-    let admissionEnabled = true;
-    const hook = createAccountMemoryDeletionHook({
-      admissionEnabled: () => admissionEnabled,
-      kick
-    });
-    const admin = createPrismaAdminRepository(prisma, {
-      accountMemoryDeletionHook: () => hook
-    });
-    try {
-      const fixture = await populateReusableMemory(userId, provider, { now: clock });
-      const maintenance = await populateMaintenanceArtifacts(userId, provider, clock);
-      await populateMaintenanceArtifacts(otherUserId, provider, clock);
-      const otherMaintenance = await maintenanceArtifacts(otherUserId);
-      const otherOwnedCount = await countAccountMemoryOwnedData(prisma, otherUserId);
-      expect(otherMaintenance.reviews).toHaveLength(1);
-      expect(otherMaintenance.executions).toHaveLength(2);
-      expect(otherMaintenance.executions.some((execution) => execution.acceptedOutput !== null)).toBe(true);
-      expect(otherMaintenance.suppressions).toHaveLength(1);
-      await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
-      expect(await countAccountMemoryOwnedData(prisma, userId)).toBeGreaterThan(0);
-
-      const cleanupStartedAt = performance.now();
-      await expect(admin.deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("deletion_pending");
-      expect(kick).toHaveBeenCalledOnce();
-      const admitted = await prisma.memoryDeletionOutbox.findFirstOrThrow({
-        where: { operation: "ACCOUNT_MEMORY_DELETE", userId }
-      });
-      expect(admitted).toMatchObject({
-        state: "PENDING",
-        targetId: userId,
-        targetType: ACCOUNT_MEMORY_DELETION_TARGET_TYPE
-      });
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
-        .resolves.toMatchObject({
-          activeIndexGenerationId: null,
-          embeddingProviderModelId: null,
-          learnAutomatically: false,
-          referenceChatHistory: false,
-          useMemoryFacts: false
-        });
-
-      admissionEnabled = false;
-      const directClaim = await claimFor(admitted.id);
-      const direct = await handler.execute(directClaim, {
-        now: () => new Date(clock),
-        signal: new AbortController().signal
-      });
-      await prisma.$transaction((tx) => direct.apply!(tx, directClaim));
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } }))
-        .resolves.toMatchObject({
-          decayEnabled: false,
-          decayPolicyVersion: null,
-          learnAutomatically: false,
-          useMemoryFacts: false
-        });
-      await coordinator.reconcileNow();
-      const succeeded = await prisma.memoryDeletionOutbox.findUniqueOrThrow({
-        where: { id: admitted.id }
-      });
-      expect(succeeded).toMatchObject({ errorCode: null, state: "SUCCEEDED" });
-      expect(await prisma.memoryFact.count({ where: { userId } })).toBe(0);
-      expect(await prisma.memoryFeedback.count({ where: { userId } })).toBe(0);
-      expect(await prisma.memoryIdentityCompatibility.count({ where: { userId } }))
-        .toBe(0);
-      expect(await prisma.memorySearchEntry.count({ where: { userId } })).toBe(0);
-      expect(await prisma.memoryPauseInterval.count({ where: { userId } })).toBe(0);
-      await expect(maintenanceArtifacts(userId)).resolves.toEqual({ reviews: [], executions: [], suppressions: [] });
-      await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
-      await expect(countAccountMemoryOwnedData(prisma, otherUserId)).resolves.toBe(otherOwnedCount);
-      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({ where: { id: maintenance.pendingBindingId } }))
-        .resolves.toMatchObject({ relationsDetachedAt: clock, connectionId: null, providerModelId: null });
-      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
-        where: { id: fixture.bindingId }
-      })).toMatchObject({
-        connectionId: null,
-        credentialId: null,
-        credentialVersionId: null,
-        providerModelId: null,
-        providerResponseId: null,
-        relationsDetachedAt: clock
-      });
-      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
-        where: { id: fixture.manualClassifierBindingId }
-      })).toMatchObject({
-        connectionId: null,
-        credentialId: null,
-        credentialVersionId: null,
-        ownerType: "MUTATION_AUTHORIZATION",
-        providerModelId: null,
-        providerResponseId: null,
-        relationsDetachedAt: clock
-      });
-      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
-        where: { id: fixture.inboundMcpBindingId }
-      })).toMatchObject({
-        connectionId: null,
-        credentialId: null,
-        credentialVersionId: null,
-        inboundMcpRequestId: expect.any(String),
-        ownerType: "INBOUND_MCP_REQUEST",
-        providerModelId: null,
-        providerResponseId: null,
-        relationsDetachedAt: clock
-      });
-      const evidence = Object.freeze({
-        cleanupLatencyMs: Number((performance.now() - cleanupStartedAt).toFixed(2)),
-        evidenceVersion: "memory-account-cleanup-v1",
-        maximumCleanupLatencyMs: 15 * 60_000,
-        providerEvidenceDetached: true,
-        sanitizedAggregatesOnly: true
-      });
-      expect(evidence.cleanupLatencyMs).toBeLessThan(evidence.maximumCleanupLatencyMs);
-      expect(JSON.stringify(evidence)).not.toContain(userId);
-      expect(JSON.stringify(evidence)).not.toContain(provider.connectionId);
-      console.info("memory_account_cleanup", evidence);
-
-      const replayClaim = await claimFor(admitted.id);
-      const replay = await handler.execute(replayClaim, {
-        now: () => new Date(clock),
-        signal: new AbortController().signal
-      });
-      await expect(prisma.$transaction((tx) => replay.apply!(tx, replayClaim)))
-        .resolves.toBeUndefined();
-
-      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
-        where: { id: admitted.id }
-      })).resolves.toMatchObject({ state: "SUCCEEDED" });
-      await expect(prisma.$transaction((tx) =>
-        inspectAccountMemoryDeletionResiduals(tx, {
-          deletionId: admitted.id,
-          userId
-        }))).resolves.toEqual([]);
-
-      await expect(admin.deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      })).resolves.toBe("deleted");
-      await expect(prisma.user.findUnique({ where: { id: userId } })).resolves.toBeNull();
-      await expect(prisma.memoryDeletionOutbox.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.memoryExecutionBinding.count({ where: { userId } }))
-        .resolves.toBe(0);
-      await expect(prisma.usageEvent.count({ where: { userId } })).resolves.toBe(0);
-      await expect(maintenanceArtifacts(otherUserId)).resolves.toEqual(otherMaintenance);
-      await expect(prisma.user.findUnique({ where: { id: otherUserId } })).resolves.toMatchObject({ status: "active" });
-    } finally {
-      coordinator.stop();
-      await cleanupOwner(userId);
-      await cleanupOwner(otherUserId);
-      await cleanupProvider(provider);
-    }
-  });
-
-  it("keeps uncertain provider calls attached and leaves the purge retryable until honest recovery", async () => {
-    let clock = new Date(Date.now() - 60_000);
-    const provider = await createProviderFixture(clock);
-    const userId = await createOwner();
-    const coordinatorRegistry = new MemoryCoordinatorRegistry();
-    coordinatorRegistry.registerDeletion(createPrismaAccountMemoryDeletionHandler());
-    const coordinator = coordinatorFor(coordinatorRegistry, () => new Date(clock));
-    const hook = createAccountMemoryDeletionHook({ kick: () => undefined });
-    const admin = createPrismaAdminRepository(prisma, {
-      accountMemoryDeletionHook: () => hook
-    });
-    try {
-      const fixture = await populateReusableMemory(userId, provider, {
-        executionState: "OUTCOME_UNKNOWN",
-        now: clock
-      });
-      await prisma.user.update({ data: { status: "disabled" }, where: { id: userId } });
-      await admin.deleteStaleUser({
-        actingAdminUserId: `admin-${randomUUID()}`,
-        userId
-      });
-      await coordinator.reconcileNow();
-      const blocked = await prisma.memoryDeletionOutbox.findFirstOrThrow({
-        where: { operation: "ACCOUNT_MEMORY_DELETE", userId }
-      });
-      expect(blocked).toMatchObject({
-        errorCode: "memory_account_execution_recovery_pending",
-        state: "RETRY_WAIT"
-      });
-      expect(await prisma.memoryFact.count({ where: { id: fixture.factId, userId } })).toBe(1);
-      expect(await prisma.memoryExecutionBinding.findUniqueOrThrow({
-        where: { id: fixture.bindingId }
-      })).toMatchObject({
-        connectionId: provider.connectionId,
-        providerModelId: provider.modelId,
-        relationsDetachedAt: null,
-        state: "OUTCOME_UNKNOWN"
-      });
-
-      clock = new Date(clock.getTime() + 2 * 24 * 60 * 60 * 1_000);
-      await prisma.memoryExecutionBinding.update({
-        data: {
-          errorCode: "provider_recovered_failed",
-          recoverableUntil: new Date(clock.getTime() - 1),
-          state: "FAILED"
-        },
-        where: { id: fixture.bindingId }
-      });
-      await coordinator.reconcileNow();
-      await expect(prisma.memoryDeletionOutbox.findUniqueOrThrow({
-        where: { id: blocked.id }
-      })).resolves.toMatchObject({ errorCode: null, state: "SUCCEEDED" });
-      await expect(prisma.memoryFact.count({ where: { userId } })).resolves.toBe(0);
-      await expect(prisma.memoryExecutionBinding.findUniqueOrThrow({
-        where: { id: fixture.bindingId }
-      })).resolves.toMatchObject({
-        connectionId: null,
-        relationsDetachedAt: clock,
-        state: "FAILED"
-      });
-    } finally {
-      coordinator.stop();
-      await cleanupOwner(userId);
-      await cleanupProvider(provider);
     }
   });
 });

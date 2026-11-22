@@ -7,7 +7,7 @@ import { loadChatUsageTotals } from "../chats/usageTotals";
 import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import { scheduleTemporaryChatDeletion } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
-import { createPrismaTemporaryChatDeletionHandler } from "../memory/temporaryDeletion";
+import { deleteExpiredTemporaryChat } from "../chats/temporaryDeletion";
 import type { MemoryDeletionClaim } from "../memory/coordinator/types";
 import { createChatPdfAttempts } from "./chatPdfAttempts";
 import { createChatPdfRepository, chatPdfJson, chatPdfAdmissionFromRow } from "./chatPdfPersistence";
@@ -439,24 +439,19 @@ describe("chat PDF database lifecycle", () => {
     const h = await fixture(false, true); await h.savePlan();
     const artifacts = await prisma.chatPdfArtifact.findMany({ where: { attachmentId: h.admission.attachmentId } });
     const now = new Date(Date.now() + 7200000);
+    // The deadline is still ahead on the database's clock: the fixture's claimed outbox row lets the guard pass.
     const obligation = await prisma.memoryDeletionOutbox.findFirstOrThrow({ where: { userId: h.userId, targetId: h.chatId } });
-    const claim: MemoryDeletionClaim = { ...obligation, claimToken: randomUUID(),
-      leaseExpiresAt: new Date(now.getTime() + 300000), recoveredLease: false, resumedFromBlocked: false };
     await prisma.memoryDeletionOutbox.update({ where: { id: obligation.id }, data: {
-      state: "RUNNING", leaseToken: claim.claimToken, leaseExpiresAt: claim.leaseExpiresAt, nextAttemptAt: null
+      state: "RUNNING", leaseToken: randomUUID(), leaseExpiresAt: new Date(now.getTime() + 300000), nextAttemptAt: null
     } });
     const removed: string[] = [];
-    const handler = createPrismaTemporaryChatDeletionHandler({ async deleteObject(key) { removed.push(key); } }, prisma);
-    const result = await handler.execute(claim, { now: () => now, signal: new AbortController().signal });
-    const apply = result.apply;
-    if (!apply) throw new Error("Temporary deletion must provide an aggregate mutation");
-    await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
-      await apply(tx, claim);
-      await tx.memoryDeletionOutbox.update({ where: { id: claim.id }, data: {
-        state: "SUCCEEDED", completedAt: now, lastAuditAt: now, leaseToken: null, leaseExpiresAt: null
-      } });
-    });
+    let completed = false;
+    await expect(deleteExpiredTemporaryChat(
+      { client: prisma, storage: { async deleteObject(key) { removed.push(key); } } },
+      { chatId: h.chatId, userId: h.userId },
+      { complete: async () => { completed = true; return true; }, now, signal: new AbortController().signal }
+    )).resolves.toBe("deleted");
+    expect(completed).toBe(true);
     expect(removed).toEqual(expect.arrayContaining([`test/${h.admission.attachmentId}`, ...artifacts.map((a) => a.storageKey)]));
     expect(await prisma.chat.count({ where: { id: h.chatId } })).toBe(0);
     expect(await prisma.chatPdfArtifact.count({ where: { attachmentId: h.admission.attachmentId } })).toBe(0);

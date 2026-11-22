@@ -129,6 +129,13 @@ export async function register(): Promise<void> {
     }
     if (process.env.NODE_ENV !== "production") {
       try {
+        // Chat and account deletion run on the background worker, which the disposable stand runs in-process.
+        const { startBackgroundWorkerLocally } = await import("./lib/server/background/defaultPasses");
+        await startBackgroundWorkerLocally();
+      } catch (error) {
+        reportSubsystemFailure({ error, subsystem: "background", stage: "startup", code: "background_worker_startup_failed", action: "degrade" });
+      }
+      try {
         const { startDefaultMemoryCoordinatorFeatureLocally } = await import(
           "./lib/server/memory/coordinator/startup"
         );

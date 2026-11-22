@@ -172,6 +172,7 @@ export type HealthRole = keyof typeof roleLabels | "other";
 const subsystemLabels = {
   admin: "Control Center",
   attachments: "File attachments",
+  background: "Chat and account deletion",
   chat_title: "Chat titles",
   configuration: "Configuration",
   database: "Database",

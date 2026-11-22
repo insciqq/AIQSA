@@ -2,34 +2,20 @@ import { getAuthConfig } from "../../auth/config";
 import { resolveRequestAuth } from "../../auth/defaultAuth";
 import { createPrismaLoginRateLimiter } from "../../auth/prismaRateLimit";
 import { prisma } from "../../prisma";
-import { kickDefaultMemoryCoordinator } from "../../memory/coordinator/defaultCoordinator";
-import { createPrismaMemoryMutationAuthorizationRepository } from "../../memory/persistence/authorizations";
-import {
-  defaultPermanentChatDeletionCapability,
-  tryEnsureDefaultMemoryDeletionComposition
-} from "../../memory/deletionComposition";
 import type { PermanentChatDeletionHandlerDeps } from "./handlers";
 import { createPrismaPermanentChatDeletionRepository } from "./repository";
 import {
   createPermanentChatDeletionService,
-  type PermanentChatDeletionCapability
+  permanentChatDeletionCapability
 } from "./service";
 
-/** Admission stays feature-dark until the complete deletion composition opens. */
-export const permanentChatDeletionCapability: PermanentChatDeletionCapability =
-  defaultPermanentChatDeletionCapability;
-
-tryEnsureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
+export { permanentChatDeletionCapability };
 
 const repository = createPrismaPermanentChatDeletionRepository(prisma);
-const authorizationRepository =
-  createPrismaMemoryMutationAuthorizationRepository(prisma);
 
 export const defaultPermanentChatDeletionService =
   createPermanentChatDeletionService({
-    authorizationRepository,
     capability: permanentChatDeletionCapability,
-    kick: kickDefaultMemoryCoordinator,
     repository,
     // Imported on first use: the deletion routes must not load the run pipeline's defaults.
     stopSubagents: async (scope) => (await import("../../runs/subagentBackground/default"))

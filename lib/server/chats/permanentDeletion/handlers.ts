@@ -75,7 +75,6 @@ function statusFor(code: PermanentChatDeletionErrorCode): number {
     case "chat_not_found":
       return 404;
     case "active_run_in_progress":
-    case "chat_permanent_delete_authorization_invalid":
     case "chat_permanent_delete_stale":
     case "chat_permanent_delete_temporary_forbidden":
       return 409;

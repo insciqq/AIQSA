@@ -5,6 +5,8 @@ const { installProcessFailureHooks } = require("../lib/server/observability/proc
 const { announceProcess, setProcessRole } = require("../lib/server/observability/runtime.cjs");
 
 const roles = new Map([
+  // The background worker keeps the role of the Memory worker it replaces, so its records stay continuous.
+  ["background-worker.ts", "memory_coordinator"],
   ["memory-coordinator.ts", "memory_coordinator"],
   ["workspace-runner.ts", "workspace_runner"],
   ["workspace-maintenance.ts", "maintenance"],

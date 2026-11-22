@@ -15,8 +15,6 @@ import { defaultMemoryCoordinatorRegistry } from "./registry";
 import {
   MemoryScheduler
 } from "./scheduler";
-import { createS3StorageAdapter } from "../../uploads/storage";
-import { createPrismaTemporaryChatDeletionHandler } from "../temporaryDeletion";
 import { defaultMemoryExecutionAuthority } from "../execution/defaultAuthority";
 import { probeMemoryStructuredOutputAuthority } from "../execution";
 import { createPrismaMemoryRebuildHandler } from "../rebuild/handler";
@@ -30,7 +28,10 @@ import { createPrismaMemoryRelationHandler } from "../learning/relations/handler
 import { reconcileMemoryFactRelationJobs } from "../learning/relations/reconcile";
 import { reconcileMemoryExplicitEquivalenceSweep } from "../learning/relations/explicitSweep";
 import type { MemoryDeletionHandler, MemoryJobHandler } from "./types";
-import { ensureDefaultMemoryDeletionComposition } from "../deletionComposition";
+import {
+  ensureDefaultMemoryDeletionComposition,
+  legacyTemporaryChatDeletionHandler
+} from "../deletionComposition";
 import { defaultMemoryWorkerHeartbeat } from "./workerHeartbeat";
 import { preflightPrismaMemoryProviderBindings } from "./providerPreflight";
 import { createPrismaMemoryRetrievalCutoverRepository } from "../cutover/repository";
@@ -43,7 +44,6 @@ import {
   resolveMemoryHistoryBackfillWindow
 } from "../history/backfill";
 import { repairFencedMemoryHistoryJobs } from "../history/fenceRepair";
-import { workspaceRuntime } from "../../workspace/defaultServices";
 import { createPrismaMemoryEmbeddingSetup } from "../embedding/setup";
 import { createPrismaMemoryEmbeddingSweep } from "../embedding/sweep";
 import { defaultMemorySavedSecretScrubBackfill } from "../savedSecretScrub";
@@ -147,12 +147,8 @@ const defaultItemEmbeddingHandler = createPrismaMemoryEmbeddingHandler(
   prisma
 );
 
-const defaultTemporaryChatDeletionHandler =
-  createPrismaTemporaryChatDeletionHandler(
-    createS3StorageAdapter(),
-    prisma,
-    workspaceRuntime
-  );
+// Temporary expiry runs on the background worker; a TEMPORARY_DELETE row still written for a chat completes as a no-op.
+const defaultTemporaryChatDeletionHandler = legacyTemporaryChatDeletionHandler;
 
 const defaultHistoryIndexHandler = createPrismaMemoryHistoryIndexHandler(prisma);
 const defaultFactExtractionHandler = createPrismaMemoryFactExtractionHandler(
@@ -230,7 +226,7 @@ export function ensureDefaultMemoryHandlersRegistered(): void {
     memoryHistoryClearDeletionHandler,
     "memory_default_history_clear_handler_conflict"
   );
-  ensureDefaultMemoryDeletionComposition(kickDefaultMemoryCoordinator);
+  ensureDefaultMemoryDeletionComposition();
   ensureJobHandlerRegistered(
     defaultHistoryIndexHandler,
     "memory_default_history_index_handler_conflict"

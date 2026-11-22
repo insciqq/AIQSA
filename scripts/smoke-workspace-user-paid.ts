@@ -142,8 +142,8 @@ async function main() {
     memory();
     requireValue(await db.modelRun.count() === 0, "fresh_database_required");
     if (stand.services.app.environment.NODE_ENV === "production") {
-      requireValue(await db.memoryWorkerHeartbeat.count({
-        where: { lastSeenAt: { gte: new Date(Date.now() - 60_000) } }
+      requireValue(await db.backgroundWorkerHeartbeat.count({
+        where: { lastSeenAt: { gte: new Date(Date.now() - 60_000) }, ready: true }
       }) > 0, "deletion_worker_not_ready");
     }
     stage = "setup";

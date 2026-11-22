@@ -53,9 +53,10 @@ Durable state: the PostgreSQL schema and migrations (`prisma/schema.prisma`, `pr
 ## Deletion
 
 - Deletion first fences future admission, recall and sharing and records a durable obligation, then acknowledges. Handlers reauthorize the exact aggregate, settle active work and retry idempotently; an obligation an administrator blocked waits, it is never abandoned.
+- Chat deletion keeps its obligation on the chat row (decision 2026-11-22): the permanent-deletion fence and a Temporary chat's retention deadline. The background worker (`lib/server/background/`) finds chats by them and claims each in `BackgroundWorkItem`, which holds only leases, backoff and the outcome the owner reads for a week.
 - Object deletion rechecks every reference before removing bytes; the application drains due deletions itself.
 - `npm run prune -- --dry-run` is read-only and comes before any explicitly authorized `--execute`. Pruning never touches active sessions or runs, evidence still visible to retrieval, or referenced objects.
-- Account deletion drains personal MCP servers and owned Memory before deleting their parents, and stays pending until then. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
+- Account deletion drains personal MCP servers before deleting the account, and stays pending until then; the old Memory rows go in the deleting transaction. Disconnecting a personal MCP server wipes its saved values immediately. Revoking an inbound Memory OAuth grant keeps the facts.
 - A missing Workspace disk is recreated from canonical originals and the UI never claims the old files survived.
 - Data already sent to external providers or tools, and their own retention and backups, are outside the application's erasure claims.
 
