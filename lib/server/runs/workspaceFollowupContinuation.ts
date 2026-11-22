@@ -9,7 +9,7 @@ import { logEvent } from "../observability";
 import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
-import { nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
+import { nativeEntryConnectorTurn, nativeEntryUserRequest, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
 import { isRetiredAnswerReviewStep } from "./retiredAnswerReview";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "./runRepositoryContract";
 import { WorkspaceFollowupError, type createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
@@ -87,7 +87,7 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
       repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(connectorTurn ? { connectorTurn } : {}),
-      userId: claim.userId, ...(deps.workspace ? { workspace: deps.workspace } : {}) });
+      userId: claim.userId, userRequest: nativeEntryUserRequest(entry), ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     void (async () => {
       const reader = response.body?.getReader();
       if (!reader) return;

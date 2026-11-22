@@ -64,6 +64,7 @@ import {
   type MaterializedPreparedRunData,
   type RunPreparationFailure
 } from "./runPreparation";
+import { turnProvenance } from "./turnProvenance";
 import {
   ActiveLeafConflictError,
   ActiveRunConflictError,
@@ -780,8 +781,10 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ? body.systemTurn as Record<string, unknown> : null;
     const approvalId = typeof systemTurn?.approvalId === "string" ? systemTurn.approvalId : undefined;
     // A send behind the previous answer's Workspace hand-off waits for it, keeping the entry facts its execution needs
-    // when the follow-up starts it.
-    const nativeEntry = { ...(approvalId ? { approvalId } : {}), ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}) };
+    // when the follow-up starts it, among them that a turn that is not the user's own request takes no self-service tools.
+    const { userRequest } = preparation.provenance;
+    const nativeEntry = { ...(approvalId ? { approvalId } : {}), ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}),
+      ...(userRequest ? {} : { userRequest: false as const }) };
     const followupSnapshot = () => ({ ...acceptedRunSnapshot(preparedData), native: nativeEntry });
     let created: CreatedRun;
     try {
@@ -909,7 +912,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       ...(deps.scheduledOccurrence ? { scheduled: true } : {}),
       ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}),
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-      services: nativeRunServices(deps), userId: auth.userId,
+      services: nativeRunServices(deps), userId: auth.userId, userRequest,
       ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
     });
   });
@@ -992,7 +995,10 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     }
     const scopeFingerprint = chatPdfFingerprint({ chatId: source.chat.id,
       memoryMode: source.chat.memoryMode ?? null, userMessage: source.userMessage });
+    // A document retry answers the same message again, so it has that message's provenance.
     const preparation = retry ? await preparePdfRetry(deps, { ...retry, signal: request.signal,
+      provenance: turnProvenance({ ...(deps.connectorTurn ? { origin: deps.connectorTurn } : {}),
+        source: { kind: "regenerate", source } }),
       userId: auth.userId, userMessageId: source.userMessage.id }) : await prepareRun(deps, {
       body,
       skillCatalogDecision: {
@@ -1033,7 +1039,9 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
     let created: CreatedRun;
     try {
       created = await deps.repository.createRegenerationRun({
-        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : undefined),
+        ...deferredPdfInput(preparedData, admissionKey, source.assistantMessage?.id, {
+          ...(deps.connectorTurn ? { connectorTurn: deps.connectorTurn } : {}),
+          ...(preparation.provenance.userRequest ? {} : { userRequest: false as const }) }),
         ...(preparedData.assistant ? { assistant: preparedData.assistant } : {}),
         ...(chatAssistant ? { chatAssistant } : {}),
         // A document retry reuses its frozen preparation and changes no choice again.
@@ -1125,7 +1133,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}),
       created, prepared: preparedData, repository: deps.repository,
       ...(runtime?.searchRuntimes ? { searchRuntimes: runtime.searchRuntimes } : {}),
-      services: nativeRunServices(deps), userId: auth.userId,
+      services: nativeRunServices(deps), userId: auth.userId, userRequest: preparation.provenance.userRequest,
       ...(deps.workspaceCoordinator ? { workspace: deps.workspaceCoordinator } : {})
     });
   });

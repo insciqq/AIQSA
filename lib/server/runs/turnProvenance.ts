@@ -85,7 +85,7 @@ export function turnProvenance(input: Pick<RunPreparationInput, "mcpApprovalId" 
   const serverTurnKind = source.kind === "regenerate"
     ? source.source.userMessage.systemTurnKind
     : serverAuthoredInput ? input.systemTurnKind ?? "server_authored" : undefined;
-  const userAuthoredTurn = serverTurnKind === undefined || serverTurnKind === MCP_APPROVAL_CONTINUATION_KIND;
+  const userAuthoredTurn = userTurnKind(serverTurnKind);
   return Object.freeze({
     computerOrigin: scheduledOccurrence ? "scheduled" : input.origin ?? "interactive",
     connector,
@@ -102,4 +102,18 @@ export function turnProvenance(input: Pick<RunPreparationInput, "mcpApprovalId" 
     userAuthoredTurn,
     userRequest: userAuthoredTurn && !scheduledPromptAnswer
   });
+}
+
+/** No turn the server wrote, or the continuation after the user's MCP Allow, which goes on with the user's own turn. */
+function userTurnKind(kind: string | null | undefined): boolean {
+  return kind === null || kind === undefined || kind === MCP_APPROVAL_CONTINUATION_KIND;
+}
+
+/**
+ * `TurnProvenance.userRequest` as a stored user message shows it, for the checks a change makes again as it commits (the
+ * self-service fence, the memory note's service): a turn the server wrote (`Message.systemTurnKind`, retired kinds
+ * included) or an answer to a scheduled task's prompt is never the user's own request.
+ */
+export function storedUserRequest(message: Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>): boolean {
+  return !message.scheduledTaskPrompt && userTurnKind(message.systemTurnKind);
 }

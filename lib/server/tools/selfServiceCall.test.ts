@@ -45,11 +45,14 @@ describe("committing a self-service change with its call", () => {
 
 describe("the run fence of a self-service change", () => {
   const scope = { runId: "run_1", userId: "user_1" };
-  const allowed = { scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
+  const allowed = { scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", systemTurnKind: null, userStatus: "active" };
 
   it("admits the active user's own interactive personal run and locks it", async () => {
     const tx = { $queryRaw: vi.fn(async () => [allowed]) };
     expect(await selfServiceRunAllowedInTransaction(tx as never, scope)).toBe(true);
+    // The continuation after the user's MCP Allow goes on with the user's own turn.
+    const continued = { $queryRaw: vi.fn(async () => [{ ...allowed, systemTurnKind: "mcp_approval_continuation" }]) };
+    expect(await selfServiceRunAllowedInTransaction(continued as never, scope)).toBe(true);
     const sql = (tx.$queryRaw.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]]);
     expect(sql[0].join("?")).toContain("FOR UPDATE OF r");
     expect(sql.slice(1)).toEqual(["run_1", "user_1", "user_1"]);
@@ -62,8 +65,12 @@ describe("the run fence of a self-service change", () => {
     [[{ ...allowed, userStatus: "disabled" }]],
     [[{ ...allowed, scheduledTaskId: "task_1" }]],
     [[{ ...allowed, scheduledTaskPrompt: true }]],
-    [[{ ...allowed, scheduledTaskPrompt: null }]]
-  ])("refuses %j: another user's run or chat, a finished run, an inactive user or scheduled work", async (rows) => {
+    [[{ ...allowed, scheduledTaskPrompt: null }]],
+    // A turn the server wrote authorizes nothing, as the memory note's service reads it (`storedUserRequest`).
+    [[{ ...allowed, systemTurnKind: "subagent_callback" }]],
+    [[{ ...allowed, systemTurnKind: "browser_sign_in_request" }]],
+    [[{ ...allowed, systemTurnKind: "answer_review_request" }]]
+  ])("refuses %j: another user's run or chat, a finished run, an inactive user, scheduled work or a turn the server wrote", async (rows) => {
     const tx = { $queryRaw: vi.fn(async () => rows) };
     expect(await selfServiceRunAllowedInTransaction(tx as never, scope)).toBe(false);
   });

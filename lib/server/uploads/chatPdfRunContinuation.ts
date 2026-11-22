@@ -8,7 +8,7 @@ import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
-import { acceptedRunSnapshot, nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
+import { acceptedRunSnapshot, nativeEntryConnectorTurn, nativeEntryUserRequest, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "../../contracts/chatPdfPreparation";
 import { ChatPdfPreparationError } from "./chatPdfCore";
@@ -147,7 +147,7 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
       ...(entry?.approvalId ? { approvalId: entry.approvalId } : {}),
       ...(deps.chatTitleGenerator ? { chatTitleGenerator: deps.chatTitleGenerator } : {}), created, prepared,
       repository: deps.repository, searchRuntimes, services: nativeRunServices(deps), ...(connectorTurn ? { connectorTurn } : {}),
-      userId: claim.userId,
+      userId: claim.userId, userRequest: nativeEntryUserRequest(entry),
       ...(deps.workspace ? { workspace: deps.workspace } : {}) });
     logEvent("run_recovery", { subsystem: "pdf", run_id: claim.runId, stage: "continuation", outcome: "completed", action: "complete" });
     // Answer persistence and its controller have taken ownership. Do not hold
