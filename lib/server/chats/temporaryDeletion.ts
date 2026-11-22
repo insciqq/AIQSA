@@ -121,6 +121,8 @@ export async function deleteExpiredTemporaryChat(
   const dispositions = await deleteExclusiveChatObjects({
     attachments: snapshot.attachments, client, signal: context.signal, storage: dependencies.storage
   });
+  // A worker that lost its claim (or is stopping) starts no further work; the new holder finishes the item.
+  context.signal.throwIfAborted();
   return client.$transaction(async (tx) => {
     const chat = await lockTemporaryChat(tx, scope);
     if (!chat) throw new BackgroundWorkError("chat_deletion_aggregate_changed");

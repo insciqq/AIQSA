@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { createPermanentChatDeletionService } from "../chats/permanentDeletion/service";
 import { deleteAllPersonalChats } from "../chats/deleteAll";
@@ -11,7 +11,12 @@ import {
   type ChatDeletionWorkStore
 } from "./chatDeletionPasses";
 import { BackgroundWorkError } from "./errors";
-import { backgroundWorkRetryDelayMs, BACKGROUND_WORK_LEASE_MS, type BackgroundWorkClaim } from "./workItems";
+import {
+  backgroundWorkRetryDelayMs,
+  BACKGROUND_WORK_LEASE_MS,
+  BACKGROUND_WORK_RENEW_MS,
+  type BackgroundWorkClaim
+} from "./workItems";
 
 type Row = {
   attemptCount: number;
@@ -28,6 +33,7 @@ type Chat = { due: (duty: ChatDeletionDuty) => boolean; userId: string };
 /** The `BackgroundWorkItem` claim rules (`workItems.ts`) over plain maps, for the pass orchestration. */
 function memoryStore(chats: Map<string, Chat>) {
   const rows = new Map<string, Row>();
+  const renewFailures = { count: 0 };
   let tokens = 0;
   const key = (duty: string, itemId: string) => `${duty}:${itemId}`;
   const claimable = (row: Row | undefined, now: Date) => !row || (row.completedAt === null &&
@@ -67,6 +73,16 @@ function memoryStore(chats: Map<string, Chat>) {
         nextAttemptAt: new Date(now.getTime() + backgroundWorkRetryDelayMs(claim.attempt)) });
     },
     async prune() {},
+    async renew(claim, now) {
+      const row = rows.get(key(claim.duty, claim.itemId));
+      if (renewFailures.count > 0) {
+        renewFailures.count -= 1;
+        throw new Error("synthetic_database_unavailable");
+      }
+      if (row?.leaseToken !== claim.token || row.completedAt) return null;
+      row.leaseExpiresAt = new Date(now.getTime() + BACKGROUND_WORK_LEASE_MS);
+      return row.leaseExpiresAt;
+    },
     async release(claim) {
       const row = rows.get(key(claim.duty, claim.itemId));
       if (row?.leaseToken !== claim.token) return;
@@ -83,7 +99,7 @@ function memoryStore(chats: Map<string, Chat>) {
       }
     }
   };
-  return { row: (duty: string, itemId: string) => rows.get(key(duty, itemId)), store };
+  return { renewFailures, row: (duty: string, itemId: string) => rows.get(key(duty, itemId)), store };
 }
 
 function clock(start: string) {
@@ -265,5 +281,93 @@ describe("chat deletion passes", () => {
     expect(chats.size).toBe(0);
     await expect(service.consumerStatus("owner", "a")).resolves.toEqual({ status: "COMPLETE" });
     await expect(service.consumerStatus("intruder", "a")).rejects.toMatchObject({ code: "chat_not_found" });
+  });
+
+  describe("a slow purge", () => {
+    function slowFixture() {
+      const chats = new Map<string, Chat>([["one", { due: () => true, userId: "owner" }]]);
+      const fixture = memoryStore(chats);
+      const log: string[] = [];
+      let release!: () => void;
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      let signal: AbortSignal | null = null;
+      const held = fakeHandler(chats, { hold, log });
+      const handler: ChatDeletionHandler = async (dependencies, scope, context) => {
+        signal = context.signal;
+        return held(dependencies, scope, context);
+      };
+      const now = () => new Date();
+      return { chats, ...fixture, handler, log, now, release, signal: () => signal as AbortSignal | null };
+    }
+
+    it("keeps its claim past the lease, so a second worker never starts the same chat", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-22T12:00:00.000Z"));
+      try {
+        const fixture = slowFixture();
+        const first = createPermanentChatDeletionPass(dependencies, { handler: fixture.handler, store: fixture.store });
+        const second = createPermanentChatDeletionPass(dependencies, {
+          handler: fakeHandler(fixture.chats, { log: fixture.log }), store: fixture.store
+        });
+        const running = first.run(passContext(fixture.now));
+        await vi.advanceTimersByTimeAsync(0);
+        // Longer than one lease: the holder's renewals keep it.
+        await vi.advanceTimersByTimeAsync(BACKGROUND_WORK_LEASE_MS + 1);
+        await second.run(passContext(fixture.now));
+        expect(fixture.log.filter((entry) => entry === "start:one")).toHaveLength(1);
+        expect(fixture.signal()?.aborted).toBe(false);
+        fixture.release();
+        await running;
+        expect(fixture.chats.size).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops issuing operations once another worker holds its chat", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-22T12:00:00.000Z"));
+      try {
+        const fixture = slowFixture();
+        const pass = createPermanentChatDeletionPass(dependencies, { handler: fixture.handler, store: fixture.store });
+        const running = pass.run(passContext(fixture.now));
+        await vi.advanceTimersByTimeAsync(0);
+        // Another worker took the chat over (its lease had lapsed while this one was stalled).
+        fixture.row(PERMANENT_CHAT_DELETION_DUTY, "one")!.leaseToken = "other-worker";
+        await vi.advanceTimersByTimeAsync(BACKGROUND_WORK_RENEW_MS);
+        expect(fixture.signal()?.aborted).toBe(true);
+        fixture.release();
+        await running;
+        // The handler stopped before its file and Workspace steps, and the new holder's claim is untouched.
+        expect(fixture.log).toEqual(["start:one"]);
+        expect(fixture.chats.has("one")).toBe(true);
+        expect(fixture.row(PERMANENT_CHAT_DELETION_DUTY, "one")).toMatchObject({ leaseToken: "other-worker" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rides out one failed renewal but stops before its lease could lapse unrenewed", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-11-22T12:00:00.000Z"));
+      try {
+        const fixture = slowFixture();
+        fixture.renewFailures.count = 2;
+        const pass = createPermanentChatDeletionPass(dependencies, { handler: fixture.handler, store: fixture.store });
+        const running = pass.run(passContext(fixture.now));
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(BACKGROUND_WORK_RENEW_MS);
+        expect(fixture.signal()?.aborted).toBe(false);
+        await vi.advanceTimersByTimeAsync(BACKGROUND_WORK_RENEW_MS);
+        expect(fixture.signal()?.aborted).toBe(true);
+        fixture.release();
+        await running;
+        expect(fixture.row(PERMANENT_CHAT_DELETION_DUTY, "one")).toMatchObject({
+          lastErrorCode: "background_work_lease_lost", leaseToken: null
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

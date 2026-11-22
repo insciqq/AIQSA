@@ -5,7 +5,8 @@ const workspace = vi.hoisted(() => ({ fail: 0, removed: [] as string[] }));
 const legacy = vi.hoisted(() => ({ purged: [] as string[], settled: [] as string[] }));
 
 vi.mock("../workspace/removal", () => ({
-  async removeWorkspaceForDeletion(input: { prisma: { __state: FakeState }; sessionId: string }) {
+  async removeWorkspaceForDeletion(input: { prisma: { __state: FakeState }; sessionId: string; signal?: AbortSignal }) {
+    input.signal?.throwIfAborted();
     if (workspace.fail > 0) {
       workspace.fail -= 1;
       throw new Error("synthetic_vm_stop_failed");
@@ -22,6 +23,7 @@ vi.mock("../background/legacyMemoryRows", () => ({
 }));
 
 import { BackgroundWorkError } from "../background/errors";
+import { deleteChatAggregate } from "./aggregateDeletion";
 import { purgePermanentlyDeletedChat } from "./permanentDeletion/cleanup";
 import { deleteExpiredTemporaryChat } from "./temporaryDeletion";
 
@@ -36,6 +38,8 @@ type FakeChat = {
 };
 type FakeState = {
   attachments: Array<{ chatId: string; id: string; storageKey: string; userId: string }>;
+  deletionJobs: string[];
+  objectLocks: string[];
   chats: Map<string, FakeChat>;
   messages: Array<{ chatId: string; id: string; status: string }>;
   runs: Array<{ assistantMessageId: string | null; chatId: string; id: string; status: string; userId: string }>;
@@ -49,6 +53,8 @@ const ACTIVE = ["preparing", "queued", "streaming", "in_progress"];
 function clone(state: FakeState): FakeState {
   return {
     attachments: state.attachments.map((row) => ({ ...row })),
+    deletionJobs: [...state.deletionJobs],
+    objectLocks: [...state.objectLocks],
     chats: new Map([...state.chats].map(([id, chat]) => [id, { ...chat }])),
     messages: state.messages.map((row) => ({ ...row })),
     runs: state.runs.map((row) => ({ ...row })),
@@ -87,6 +93,10 @@ function fakeClient(initial: FakeState) {
           box.state.shares.filter((row) => row.chatId === chatId).length;
         return [{ residual }];
       }
+      if (text.includes("pg_advisory_xact_lock")) {
+        box.state.objectLocks.push(String(query.values[0]));
+        return [{ lock: "" }];
+      }
       if (text.includes("FROM \"Chat\"")) {
         const [chatId, userId] = query.values as string[];
         const chat = box.state.chats.get(chatId!);
@@ -118,7 +128,13 @@ function fakeClient(initial: FakeState) {
           .map((row) => ({ ...row, chatPdfArtifacts: [] }));
       }
     },
-    attachmentDeletionJob: { async deleteMany() { return { count: 0 }; } },
+    attachmentDeletionJob: {
+      async create({ data }: { data: { storageKey: string } }) { box.state.deletionJobs.push(data.storageKey); },
+      async deleteMany() { return { count: 0 }; },
+      async findUnique({ where }: { where: { storageKey: string } }) {
+        return box.state.deletionJobs.includes(where.storageKey) ? { id: where.storageKey } : null;
+      }
+    },
     chat: {
       async deleteMany({ where }: { where: { id: string; memoryMode?: string; permanentDeletionAt?: unknown } }) {
         const chat = box.state.chats.get(where.id);
@@ -176,6 +192,8 @@ function state(chat: Partial<FakeChat> & Pick<FakeChat, "id">): FakeState {
       { chatId: chat.id, id: `${chat.id}-a2`, storageKey: "uploads/shared", userId: "owner" },
       { chatId: "other-chat", id: "other-a", storageKey: "uploads/shared", userId: "owner" }
     ],
+    deletionJobs: [],
+    objectLocks: [],
     chats: new Map([[chat.id, {
       archived: false, memoryMode: "NORMAL", permanentDeletionAt: null, temporaryRetentionDeadline: null,
       temporaryRetentionPolicyVersion: null, userId: "owner", ...chat
@@ -340,5 +358,59 @@ describe("permanent chat purge", () => {
     )).rejects.toEqual(new BackgroundWorkError("chat_deletion_lease_lost"));
     expect(client.__state.chats.has("chat-1")).toBe(true);
     expect(client.__state.attachments).toHaveLength(3);
+  });
+});
+
+describe("objects shared between deleted chats", () => {
+  const fenced = { archived: true, id: "chat-1", permanentDeletionAt: new Date(NOW.getTime() - 5_000) };
+
+  it("stages the object's deletion when the other chat's reference went while this one waited for the object lock", async () => {
+    const initial = state(fenced);
+    // The other chat sharing the object was deleted (and committed) after this purge found the object shared.
+    initial.attachments = initial.attachments.filter((row) => row.id !== "other-a");
+    initial.sessions.clear();
+    const client = fakeClient(initial);
+    const attachments = [
+      { id: "chat-1-a1", storageKey: "uploads/chat-1-1" },
+      { id: "chat-1-a2", storageKey: "uploads/shared" }
+    ];
+    await client.$transaction((tx) => deleteChatAggregate(tx as never, {
+      attachments,
+      chatExists: true,
+      chatWhere: { permanentDeletionAt: { not: null } },
+      dispositions: [{ deleted: true, storageKey: "uploads/chat-1-1" }, { deleted: false, storageKey: "uploads/shared" }],
+      now: NOW,
+      scope: { chatId: "chat-1", userId: "owner" }
+    }));
+    // The reference check ran under the object's lock, and the bytes are left to the object worker.
+    expect(client.__state.objectLocks).toEqual(["uploads/shared"]);
+    expect(client.__state.deletionJobs).toEqual(["uploads/shared"]);
+    expect(client.__state.chats.size).toBe(0);
+  });
+
+  it("leaves an object another chat still references without staging its deletion", async () => {
+    const client = fakeClient(state(fenced));
+    await expect(purgePermanentlyDeletedChat(
+      { client: client as unknown as PrismaClient, storage: storage().adapter },
+      { chatId: "chat-1", userId: "owner" }, context([])
+    )).resolves.toBe("deleted");
+    expect(client.__state.objectLocks).toEqual(["uploads/shared"]);
+    expect(client.__state.deletionJobs).toEqual([]);
+    expect(client.__state.attachments.map((row) => row.storageKey)).toEqual(["uploads/shared"]);
+  });
+
+  it("starts no object delete or final transaction once the claim is lost", async () => {
+    const client = fakeClient(state(fenced));
+    const files = storage();
+    const controller = new AbortController();
+    controller.abort(new BackgroundWorkError("background_work_lease_lost"));
+    await expect(purgePermanentlyDeletedChat(
+      { client: client as unknown as PrismaClient, storage: files.adapter },
+      { chatId: "chat-1", userId: "owner" },
+      { complete: async () => true, now: NOW, signal: controller.signal }
+    )).rejects.toEqual(new BackgroundWorkError("background_work_lease_lost"));
+    expect(files.deleted).toEqual([]);
+    expect(workspace.removed).toEqual([]);
+    expect(client.__state.chats.has("chat-1")).toBe(true);
   });
 });

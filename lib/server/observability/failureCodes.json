@@ -2449,5 +2449,6 @@
   "temporary_chat_deletion_not_due",
   "temporary_chat_deletion_failed",
   "permanent_chat_deletion_failed",
-  "memory_temporary_retention_expired"
+  "memory_temporary_retention_expired",
+  "background_work_lease_lost"
 ]

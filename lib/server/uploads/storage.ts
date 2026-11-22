@@ -121,7 +121,8 @@ export function isStoredObjectTooLargeError(error: unknown): error is StoredObje
 }
 
 export type StorageAdapter = {
-  deleteObject(storageKey: string): Promise<void>;
+  /** An aborted signal stops the delete before or while it is sent; an unknown outcome is retried by the caller. */
+  deleteObject(storageKey: string, options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
   getObject(storageKey: string, options?: StoredObjectReadOptions): Promise<StoredObjectInput>;
   getObjectStream?(
     storageKey: string,
@@ -269,8 +270,9 @@ export async function getStoredObjectStream(
 
 export function createFileSystemStorageAdapter(root: string): StorageAdapter {
   return {
-    async deleteObject(storageKey) {
+    async deleteObject(storageKey, options) {
       return observeStorageOperation("delete", async () => {
+        throwIfAborted(options?.signal);
         const path = join(root, storageKey);
         await rm(path, { force: true });
         // The object key is reserved durably before writes. A crashed atomic
@@ -1023,15 +1025,16 @@ export function createS3StorageAdapter(env: Record<string, string | undefined> =
     : undefined;
 
   return {
-    async deleteObject(storageKey) {
+    async deleteObject(storageKey, options) {
       return observeStorageOperation("delete", async () => {
-        await client.send(
-          new DeleteObjectCommand({
-            Bucket: bucket,
-            Key: storageKey
-          })
-        );
-      });
+        throwIfAborted(options?.signal);
+        const command = new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: storageKey
+        });
+        if (options?.signal) await client.send(command, { abortSignal: options.signal });
+        else await client.send(command);
+      }, { signal: options?.signal });
     },
     async getObject(storageKey, options) {
       return observeStorageOperation("read", async () => {

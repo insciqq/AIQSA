@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { createPrismaPermanentChatDeletionRepository } from "../chats/permanentDeletion/repository";
+import { purgePermanentlyDeletedChat } from "../chats/permanentDeletion/cleanup";
 import { createPermanentChatDeletionService } from "../chats/permanentDeletion/service";
 import { prisma } from "../prisma";
 import { createMemoryStorageAdapter } from "@/tests/support/storage";
@@ -17,7 +18,8 @@ import {
   completeBackgroundWorkItem,
   failBackgroundWorkItem,
   pruneCompletedBackgroundWorkItems,
-  releaseBackgroundWorkItem
+  releaseBackgroundWorkItem,
+  renewBackgroundWorkItem
 } from "./workItems";
 
 const users: string[] = [];
@@ -192,5 +194,67 @@ describe("chat deletion on the background worker", () => {
     await expect(prisma.chat.count({ where: { id: later.id } })).resolves.toBe(1);
     expect(deleted).toContain(storageKey);
     await expect(work(TEMPORARY_CHAT_DELETION_DUTY, due.id)).resolves.toMatchObject({ completedAt: now });
+  });
+
+  it("strands no object when two chats sharing it are purged at the same time", async () => {
+    const userId = await owner();
+    const sharedKey = `test/${randomUUID()}`;
+    const exclusiveA = `test/${randomUUID()}`;
+    const exclusiveB = `test/${randomUUID()}`;
+    const first = await chatWithFile(userId, exclusiveA);
+    const second = await chatWithFile(userId, exclusiveB);
+    for (const chat of [first, second]) {
+      await prisma.attachment.create({ data: {
+        byteSize: 18, chatId: chat.id, fileName: "shared.txt", kind: "file", metadata: {}, mimeType: "text/plain",
+        status: "ready", storageKey: sharedKey, userId
+      } });
+      await service.confirm(userId, chat.id, {
+        alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
+      });
+    }
+    // Both purges finish their object step before either final transaction, so each saw the other's reference.
+    const deletes: string[] = [];
+    let arrived = 0;
+    let open!: () => void;
+    const barrier = new Promise<void>((resolve) => { open = resolve; });
+    const storage = { async deleteObject(key: string) {
+      deletes.push(key);
+      if (++arrived === 2) open();
+      await barrier;
+    } };
+    const context = { complete: async () => true, now: new Date(), signal: new AbortController().signal };
+    await Promise.all([first, second].map((chat) => purgePermanentlyDeletedChat(
+      { client: prisma, storage }, { chatId: chat.id, userId }, context
+    )));
+    await expect(prisma.chat.count({ where: { id: { in: [first.id, second.id] } } })).resolves.toBe(0);
+    await expect(prisma.attachment.count({ where: { storageKey: sharedKey } })).resolves.toBe(0);
+    expect(deletes.sort()).toEqual([exclusiveA, exclusiveB].sort());
+    // The later final transaction, serialized by the object lock, left the shared bytes to the object worker.
+    await expect(prisma.attachmentDeletionJob.count({ where: { storageKey: sharedKey } })).resolves.toBe(1);
+    await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: sharedKey } });
+  });
+});
+
+describe("claim renewal", () => {
+  it("extends only the holder's claim and refuses a claim another worker took over", async () => {
+    const userId = await owner();
+    const itemId = randomUUID();
+    const duty = "synthetic_duty";
+    const start = new Date();
+    const claim = await claimBackgroundWorkItem(prisma, { duty, itemId, now: start, userId });
+    const renewedAt = new Date(start.getTime() + BACKGROUND_WORK_LEASE_MS / 2);
+    const renewed = await renewBackgroundWorkItem(prisma, claim!, renewedAt);
+    expect(renewed?.getTime()).toBe(renewedAt.getTime() + BACKGROUND_WORK_LEASE_MS);
+    // Past the first lease the renewed claim still holds.
+    await expect(claimBackgroundWorkItem(prisma, {
+      duty, itemId, now: new Date(start.getTime() + BACKGROUND_WORK_LEASE_MS + 1), userId
+    })).resolves.toBeNull();
+    const takeoverAt = new Date(renewed!.getTime());
+    const takeover = await claimBackgroundWorkItem(prisma, { duty, itemId, now: takeoverAt, userId });
+    expect(takeover).not.toBeNull();
+    await expect(renewBackgroundWorkItem(prisma, claim!, takeoverAt)).resolves.toBeNull();
+    await completeBackgroundWorkItem(prisma, takeover!, takeoverAt);
+    await expect(renewBackgroundWorkItem(prisma, takeover!, takeoverAt)).resolves.toBeNull();
+    await prisma.backgroundWorkItem.deleteMany({ where: { itemId } });
   });
 });
