@@ -5,7 +5,7 @@ import {
   type McpUnavailableServerReason
 } from "../../contracts/mcp";
 import { getMcpRequestMaxBytes } from "./responseLimits";
-import { LEGACY_MCP_DISCOVERY_MAX_RESULTS } from "./discovery";
+import { MCP_DISCOVERY_DEFAULT_MAX_RESULTS } from "./discovery";
 import type {
   McpCapabilityCatalog,
   McpCapabilityCatalogServer,
@@ -212,7 +212,7 @@ export function mcpDiscoveryUnavailableServers(
 
 export function decodeMcpDiscoveryState(
   value: unknown,
-  maxResults = LEGACY_MCP_DISCOVERY_MAX_RESULTS
+  maxResults = MCP_DISCOVERY_DEFAULT_MAX_RESULTS
 ): McpDiscoveryState | null {
   if (!Number.isSafeInteger(maxResults) || maxResults < 1 ||
     maxResults > MCP_RUN_PLAN_LIMITS.maxTools) return null;

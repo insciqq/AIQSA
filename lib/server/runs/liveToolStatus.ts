@@ -69,15 +69,14 @@ export function liveToolCallStatus(
 /**
  * Minimal factual phase status for the active SSE response; never persisted.
  * The server names only the phase that is doing work and the client owns the
- * words: `files` while stored conversation images are read, `knowledge`
- * while Knowledge is searched, `model` when a model request is sent (after a
- * tool round it reads the results) or its provider starts answering again,
- * `tools` when a declared batch starts. `wait` is what a model request is
- * waiting on its provider for.
+ * words: `files` while stored conversation images are read, `model` when a
+ * model request is sent (after a tool round it reads the results) or its
+ * provider starts answering again, `tools` when a declared batch starts.
+ * `wait` is what a model request is waiting on its provider for.
  */
 export function liveRunPhaseStatus(input: Readonly<{
   count?: number;
-  phase: "files" | "knowledge" | "model" | "tools";
+  phase: "files" | "model" | "tools";
   wait?: RunProviderWait;
 }>): ModelRunSseEvent {
   const count = Math.max(0, Math.floor(input.count ?? 0));

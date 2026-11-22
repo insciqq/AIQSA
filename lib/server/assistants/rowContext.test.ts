@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultProviderModels } from "../../domain/catalog";
 import type { CatalogData } from "../catalog/currentUserCatalog";
-import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields, type AssistantRows } from "../../contracts/assistants";
 import type { ChatAssistantOverrides } from "../../contracts/chats";
 import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
 import { personalAssistantRowDefaults, storedOverridesInEffect } from "./rowContext";
@@ -75,7 +75,7 @@ describe("personal Assistant row defaults", () => {
 });
 
 describe("stored overrides in effect", () => {
-  const legacy = assistantRowsFromLegacyFields({
+  const legacy = assistantRowsFromFlatFields({
     mcpServerIds: [], providerModelId: "model-a", runControls: {},
     searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: []
   });

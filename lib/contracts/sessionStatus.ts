@@ -37,19 +37,3 @@ export function decodeSessionContextStatus(value: unknown): SessionContextStatus
     typeof record.provider !== "string" || !record.provider || record.provider.length > 128) return null;
   return record as SessionContextStatus;
 }
-
-export function sessionContextCapacity(status: SessionContextStatus): Readonly<{
-  availableTokens: number | null;
-  budgetTokens: number | null;
-  percent: number | null;
-}> {
-  const budgetTokens = status.contextWindow === null ? null : Math.max(
-    0, status.contextWindow - status.maxOutputTokens - status.safetyMarginTokens
-  );
-  return {
-    availableTokens: budgetTokens === null ? null : Math.max(0, budgetTokens - status.approximateInputTokens),
-    budgetTokens,
-    percent: budgetTokens === null || budgetTokens === 0
-      ? null : Math.round(status.approximateInputTokens / budgetTokens * 100)
-  };
-}

@@ -15,7 +15,7 @@ function row(index: number, input: Partial<Row> = {}): Row {
   const own = index % 2 === 0;
   return {
     id: index.toString(16).padStart(32, "0"), modelRunId: own ? "run-2" : "run-1", toolCallId: `call-${index}`, formatVersion: 1,
-    sourceKind: index % 3 === 0 ? "knowledge" : index % 3 === 1 ? "mcp" : "workspace", sourceBinding: null, executionReceipt: null,
+    sourceKind: index % 3 === 0 ? "skill" : index % 3 === 1 ? "mcp" : "workspace", sourceBinding: null, executionReceipt: null,
     state: "READY", reservedBytes: 20, executionOutcome: "complete", byteSize: 20, checksum: "a".repeat(64), storageMode: "OBJECT",
     inlineText: null, storageKey: `tool-observations/v1/${index}/lease`, projection: null, sourceTruncated: false, maskable: true,
     leaseToken: null, leaseExpiresAt: null, failureCode: null, createdAt: new Date(), updatedAt: new Date(),
@@ -69,8 +69,8 @@ describe("observation availability", () => {
     ["a revoked MCP grant", (source: ToolObservation) => {
       if (source.sourceKind === "mcp") throw new McpToolAccessDeniedError();
     }],
-    ["a deleted Knowledge source", (source: ToolObservation) => {
-      if (source.sourceKind === "knowledge") throw new ObservationStoreError("tool_observation_unavailable");
+    ["a Skill revision no longer available", (source: ToolObservation) => {
+      if (source.sourceKind === "skill") throw new ObservationStoreError("tool_observation_unavailable");
     }]
   ])("is unavailable when %s is among them", async (_label, refuse) => {
     const rows = Array.from({ length: 50 }, (_, index) => row(index));
@@ -185,7 +185,7 @@ describe("observation reservation budget", () => {
 
   it("never degrades source-owned producers, which the store budget does not count", async () => {
     const f = reservation(exhausted);
-    expect(await f.repository.reserve(f.producer, "knowledge", 4096))
+    expect(await f.repository.reserve(f.producer, "skill", 4096))
       .toEqual({ claimed: true, observation: expect.objectContaining({ reservedBytes: 4096 }) });
     expect(f.budgetQueries).not.toHaveBeenCalled();
   });

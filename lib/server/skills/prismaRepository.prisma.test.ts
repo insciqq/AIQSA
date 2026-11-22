@@ -2,11 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "../../domain/content";
 import { prisma } from "../prisma";
-import {
-  assertCurrentSkillRunBindings,
-  insertAcceptedSkillRunBindings
-} from "../runs/prismaRepositoryBindings";
-import { SkillRunConflictError } from "../runs/runRepositoryContract";
+import { insertAcceptedSkillRunBindings } from "../runs/prismaRepositoryBindings";
 import { createPrismaSkillRepository } from "./prismaRepository";
 import { createSkillSharingService } from "./shareRequests";
 
@@ -115,11 +111,6 @@ describe("Prisma Skill repository", () => {
       await expect(prisma.modelRunSkillBinding.findUnique({
         where: { modelRunId_skillId: { modelRunId: run.id, skillId } }
       })).resolves.toMatchObject(firstBinding);
-      await expect(prisma.$transaction((tx) => assertCurrentSkillRunBindings(tx, {
-        bindings: [firstBinding],
-        runId: run.id,
-        userId: memberUserId
-      }))).resolves.toBeUndefined();
 
       await expect(repository.revokePublication({
         actorIsAdmin: false,
@@ -127,11 +118,6 @@ describe("Prisma Skill repository", () => {
         skillId,
         userId: ownerUserId
       })).resolves.toBe("ok");
-      await expect(prisma.$transaction((tx) => assertCurrentSkillRunBindings(tx, {
-        bindings: [firstBinding],
-        runId: run.id,
-        userId: memberUserId
-      }))).rejects.toBeInstanceOf(SkillRunConflictError);
       await expect(repository.resolveForRun(memberUserId, [skillId])).resolves.toEqual({
         code: "skill_not_available",
         ok: false,

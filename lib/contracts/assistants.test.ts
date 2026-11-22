@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assistantAvatarRecipeFromBytes,
-  assistantRowsFromLegacyFields,
+  assistantRowsFromFlatFields,
   decodeAssistantAvatarRecipe,
   decodeAssistantIdentity,
   decodeAssistantDetail,
@@ -647,7 +647,7 @@ describe("Assistant rows", () => {
     }
   });
 
-  it("maps legacy flat row fields to fixed rows for fixtures", () => {
+  it("maps flat row fields to fixed rows for fixtures", () => {
     const base = {
       mcpServerIds: [],
       providerModelId: "model-1",
@@ -655,14 +655,14 @@ describe("Assistant rows", () => {
       searchPlan: { mode: "all_selected" as const, optionIds: [] },
       skillIds: []
     };
-    expect(assistantRowsFromLegacyFields(base)).toEqual({
+    expect(assistantRowsFromFlatFields(base)).toEqual({
       controls: { policy: "adjustable", value: {} },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
       search: { policy: "fixed", value: { mode: "off" } },
       skills: { policy: "fixed", value: { links: [], mode: "auto" } },
       tools: { policy: "fixed", value: { mode: "off" } }
     });
-    expect(assistantRowsFromLegacyFields({
+    expect(assistantRowsFromFlatFields({
       ...base,
       mcpServerIds: ["server"],
       runControls: { temperature: 0.3 },

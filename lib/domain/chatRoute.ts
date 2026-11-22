@@ -26,11 +26,8 @@ export const CHAT_SCOPED_ROUTE_PARAMETERS = [
   "message", "artifactEdit", "artifactId", "versionId", SUBAGENT_THREAD_ROUTE_PARAMETER
 ] as const;
 
-/**
- * Legacy query names of the path form; they are read once and never written.
- * `project` named a removed Project and is only dropped.
- */
-const LEGACY_ROUTE_PARAMETERS = ["chat", "project"] as const;
+/** The legacy query name of the path form; it is read once and never written. */
+const LEGACY_ROUTE_PARAMETER = "chat";
 const ROUTE_ID_MAX_LENGTH = 256;
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 
@@ -95,10 +92,10 @@ export function sameChatRoute(left: ChatRoute, right: ChatRoute): boolean {
   return left.chatId === right.chatId;
 }
 
-/** The route path followed by the carried query, without legacy route parameters. */
+/** The route path followed by the carried query, without the legacy route parameter. */
 export function chatRouteHref(route: ChatRoute, carried: string | URLSearchParams = ""): string {
   const params = new URLSearchParams(carried);
-  for (const key of LEGACY_ROUTE_PARAMETERS) params.delete(key);
+  params.delete(LEGACY_ROUTE_PARAMETER);
   const query = params.toString();
   return `${formatChatRoutePath(route)}${query ? `?${query}` : ""}`;
 }
@@ -120,12 +117,9 @@ function singleRouteParameter(params: URLSearchParams, key: string): string | nu
  * lands on the new chat without its one-shot parameters.
  */
 export function legacyChatRouteHref(params: URLSearchParams): string | null {
-  if (!LEGACY_ROUTE_PARAMETERS.some((key) => params.has(key))) return null;
-  const chatId = singleRouteParameter(params, "chat");
-  if (params.has("chat") && !chatId) {
-    return chatRouteHref(BLANK_CHAT_ROUTE, withoutChatScopedParameters(params));
-  }
-  return chatRouteHref({ chatId }, params);
+  if (!params.has(LEGACY_ROUTE_PARAMETER)) return null;
+  const chatId = singleRouteParameter(params, LEGACY_ROUTE_PARAMETER);
+  return chatId ? chatRouteHref({ chatId }, params) : chatRouteHref(BLANK_CHAT_ROUTE, withoutChatScopedParameters(params));
 }
 
 /**

@@ -202,7 +202,7 @@ export function createToolObservationService(input: Readonly<{
       recordSearch(result: ToolExecutionResult): Promise<void>;
     }>) => Promise<T>): Promise<T> {
       const { producer, signal } = options;
-      if (options.sourceOwned && options.source !== "skill" && options.source !== "knowledge") throw unavailable();
+      if (options.sourceOwned && options.source !== "skill") throw unavailable();
       if (!options.sourceOwned && options.maximumBytes > TOOL_OBSERVATION_LIMITS.inlineBytes) requireStreaming(storage);
       // Transient backpressure before any reservation or business dispatch.
       // It is not a budget: the same call may be retried once storage drains.

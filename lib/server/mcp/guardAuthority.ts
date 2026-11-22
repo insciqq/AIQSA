@@ -8,7 +8,8 @@ import { MCP_GUARD_LIMITS } from "./guardPrompt";
 
 export type McpGuardReference = Readonly<{ kind: "message"; id: string } | { kind: "followup"; id: string; answerId: string }>;
 type GuardBinding = Readonly<{ approvedBy?: string; plan: AcceptedMcpGuardPlan }>;
-/** Already-admitted legacy runs keep working; new admissions never copy message text. */
+/** Admissions name messages and never copy their text. A stored admission of the first version, which copied it, is
+ * still decoded (`writeApproval.ts`) but authorizes nothing: `readGuardAuthority` finds it unavailable. */
 export type McpGuardAdmission = GuardBinding & Readonly<
   | { version?: never; userMessages: readonly string[] | null; messages?: never; currentMessageId?: never; unavailable?: never }
   | { version: 2; messages: readonly McpGuardReference[]; currentMessageId?: string; unavailable?: true; userMessages?: never }
@@ -66,9 +67,7 @@ export async function readGuardAuthority(db: PrismaClient, input: Readonly<{
     orderBy: { ordinal: "desc" }, take: MCP_GUARD_LIMITS.messages, select: { text: true, authorUserId: true } });
   const newest = live.map(row => row.authorUserId === input.userId ? row.text : null);
   const admission = input.admission;
-  if (admission.version !== 2) return admission.userMessages === null ? { ok: false, code: "unavailable" }
-    : guardAuthorityWindow([...newest, ...admission.userMessages]);
-  if (admission.unavailable) return { ok: false, code: "unavailable" };
+  if (admission.version !== 2 || admission.unavailable) return { ok: false, code: "unavailable" };
   const references = admission.messages;
   const currentId = admission.currentMessageId === scope.userMessageId ? admission.currentMessageId : undefined;
   if (admission.currentMessageId && !currentId) return { ok: false, code: "unavailable" };

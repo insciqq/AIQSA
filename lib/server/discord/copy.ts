@@ -1,4 +1,3 @@
-import type { DiscordReasonCode } from "../../contracts/discord";
 
 /**
  * Every text the Discord bot posts (PRD §5, §10): English, short and fixed.
@@ -118,37 +117,6 @@ export function discordQuestionFallbackThreadName(authorName: string): string {
 /** The line under an answer whose artifacts (some or all) could not be linked (operator decision 2026-11-16). */
 export function discordArtifactsOnlyInAiqsaText(count: number): string {
   return count === 1 ? "1 artifact is only in AIQSA" : `${count} artifacts are only in AIQSA`;
-}
-
-/**
- * The visible reason of a refusal code that people in Discord see, or `null`
- * for codes that stay silent there (the kill switch, unknown delivery) or
- * whose text needs numbers (limits) or is the administrator's only.
- */
-export function discordReasonText(code: DiscordReasonCode): string | null {
-  switch (code) {
-    case "discord_busy": return DISCORD_COPY.busy;
-    case "discord_setup_incomplete":
-    case "discord_service_account_missing":
-    case "discord_service_account_inactive":
-    case "discord_assistant_missing":
-    case "discord_assistant_unavailable":
-    case "discord_model_unavailable":
-    case "discord_mcp_not_granted":
-    case "discord_mcp_too_many_tools":
-    case "discord_search_disabled":
-    case "discord_guild_missing":
-    case "discord_token_missing":
-    case "discord_message_content_disabled":
-      return DISCORD_COPY.notSetUp;
-    case "discord_context_unavailable": return DISCORD_COPY.contextUnavailable;
-    case "discord_key_limit": return DISCORD_COPY.keyLimit;
-    case "discord_reply_expired": return DISCORD_COPY.somethingWrong;
-    case "discord_stopped":
-    case "discord_question_deleted":
-      return DISCORD_COPY.stopped;
-    default: return null;
-  }
 }
 
 /** Voice messages (`voice.ts`): why one stayed without its text, as the run reads it and as the bot's refusal says it. */

@@ -4,7 +4,7 @@ import { OBSERVATION_READ_LIMITS, ObservationReadError, type ObservationByteSele
 import { getMcpResponseWireLimits, type McpResponseWireLimits } from "../mcp/responseLimits";
 
 export const TOOL_OBSERVATION_POLICY_VERSION = 1 as const;
-export const TOOL_OBSERVATION_SOURCES = ["mcp", "workspace", "search", "skill", "knowledge"] as const;
+export const TOOL_OBSERVATION_SOURCES = ["mcp", "workspace", "search", "skill"] as const;
 export type ToolObservationSource = typeof TOOL_OBSERVATION_SOURCES[number];
 
 /** Private accepted authority, separate from the model-visible descriptor.

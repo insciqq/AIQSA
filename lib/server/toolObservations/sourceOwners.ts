@@ -17,8 +17,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** No runtime/discovery/provider calls: recall rechecks the live resource
- * permissions while retaining the accepted source identity. Observations of
- * the removed Knowledge (operator decision 2026-10-23) are unavailable. */
+ * permissions while retaining the accepted source identity. */
 export function createObservationSourceOwners() {
   return {
     async authorizeSource(tx: Prisma.TransactionClient, source: ToolObservation, actor: ObservationActor) {
@@ -28,7 +27,6 @@ export function createObservationSourceOwners() {
       // The durable parent owns accepted Workspace bytes. Reset, expiration or
       // turning Workspace off cannot grant a reread of the mutable guest path.
       if (source.sourceKind === "workspace") return;
-      if (source.sourceKind === "knowledge") throw unavailable();
       const binding = decodeToolObservationSourceBinding(source.sourceBinding, source.sourceKind);
       if (!binding) throw unavailable();
       if (binding.source === "mcp") {

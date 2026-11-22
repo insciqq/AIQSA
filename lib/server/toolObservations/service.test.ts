@@ -74,8 +74,8 @@ function fixture(storage: StorageAdapter = createMemoryStorageAdapter()) {
   };
   const service = () => createToolObservationService({ repository, storage });
   const write = (original: unknown, extra: { maximumBytes?: number; signal?: AbortSignal; sourceOwned?: boolean } = {}) =>
-    service().withReservation({ producer, source: extra.sourceOwned ? "knowledge" : "mcp", maximumBytes: 1024 * 1024, ...extra },
-      receipt => receipt.store({ original, outcome: "complete", sourceTruncated: true, maskable: true }));
+    service().withReservation({ producer, source: extra.sourceOwned ? "skill" : "mcp", maximumBytes: 1024 * 1024, ...extra },
+      receipt => receipt.store({ original, outcome: "complete", sourceTruncated: true, maskable: !extra.sourceOwned }));
   /** The repository's next reservation when the run or branch budget cannot
    * admit its ceiling: claimed and degraded, with a zero ceiling. */
   const exhaust = () => {

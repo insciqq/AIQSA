@@ -26,11 +26,7 @@ export type StoredAssistantSearchPlan =
 
 export type StoredAssistantMcpMode = "exact" | "inherit" | "off";
 
-/**
- * The definition columns behind the five rows, as the database stores them.
- * The retired Knowledge columns stay in the table until a later migration
- * drops them; Assistant code neither reads nor writes them.
- */
+/** The definition columns behind the five rows, as the database stores them. */
 export type StoredAssistantRowColumns = {
   controlsPolicy: AssistantRowPolicy;
   mcpMode: StoredAssistantMcpMode;

@@ -800,52 +800,6 @@ describe("chat route handlers", () => {
     expect(body.chat).not.toHaveProperty("usageStats");
   });
 
-  it("refuses turning on the removed automatic answer review and saves nothing of that update", async () => {
-    const received: unknown[] = [];
-    const repository: ChatRepository = {
-      ...historyRepositoryMethods,
-      archiveChat: async () => false,
-      createChat: async () => null,
-      createFolder: async () => null,
-      deleteFolder: async () => false,
-      getChat: async () => null,
-      listWorkspace: async () => null,
-      updateChat: async (input) => {
-        received.push(input);
-        return {
-          activeLeafMessageId: null,
-          createdAt: "2026-10-08T00:00:00.000Z",
-          defaultModelId: "fake-qsa",
-          defaultProvider: "fake",
-          folderId: null,
-          id: input.chatId,
-          messageCount: 1,
-          pinned: input.pinned ?? false,
-          title: "Review",
-          updatedAt: "2026-10-08T00:00:00.000Z"
-        };
-      },
-      updateFolder: async () => null
-    };
-    const patch = createUpdateChatHandler({ repository, resolveAuth: auth.resolveAuth });
-    const send = (body: unknown) => patch(new Request("http://app.local/api/chats/chat-1", {
-      body: JSON.stringify(body), headers: { cookie: authCookie() }, method: "PATCH"
-    }), { params: { chatId: "chat-1" } });
-
-    // A tab of the previous release still turning it on is told so, and nothing of its update is saved.
-    const refused = await send({ answerReview: { enabled: true, maxRounds: 2, reviewers: [{ modelId: "model-b", provider: "connection-b" }] },
-      pinned: true });
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: "answer_review_removed" });
-    expect(received).toHaveLength(0);
-    // Turning it off asks for nothing the server lacks.
-    const off = await send({ answerReview: null, pinned: true });
-    expect(off.status).toBe(200);
-    expect(received).toEqual([expect.objectContaining({ chatId: "chat-1", pinned: true })]);
-    expect(received[0]).not.toHaveProperty("answerReview");
-    expect((await off.json()).chat).not.toHaveProperty("answerReview");
-  });
-
   it("returns a stable conflict for active-leaf checkout and archive during an active run", async () => {
     const repository: ChatRepository = {
       ...historyRepositoryMethods,

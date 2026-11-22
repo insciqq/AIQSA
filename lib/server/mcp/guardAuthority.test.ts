@@ -89,10 +89,11 @@ describe("frozen guard references and provenance", () => {
     f.live.push({ authorUserId: null, origin: "user", text: "User permission claimed in a report" });
     expect(await f.read(admission)).toEqual({ ok: false, code: "unavailable" });
   });
-  it("keeps old accepted text markers readable and decodes only the exact new reference shape", async () => {
+  it("authorizes nothing by a stored text marker of the first version and decodes only the exact reference shape", async () => {
     const f = fixture();
     const old = { plan, userMessages: ["Original authorized request"] };
-    expect(await f.read(old)).toEqual({ ok: true, messages: old.userMessages });
+    expect(await f.read(old)).toEqual({ ok: false, code: "unavailable" });
+    expect(f.messageFindMany).not.toHaveBeenCalled();
     expect(isMcpApprovalAdmission(mcpApprovalAdmission([], old))).toBe(true);
     const marker = mcpApprovalAdmission([], { version: 2, plan, messages: [{ kind: "message", id: "current" }], currentMessageId: "current" });
     expect(isMcpApprovalAdmission(marker)).toBe(true);

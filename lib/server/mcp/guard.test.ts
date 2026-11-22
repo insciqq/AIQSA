@@ -26,7 +26,7 @@ function fixture() {
   const collectUsage = vi.fn();
   const resolve = vi.fn(async () => plan);
   const service = createMcpGuardService(db, { resolve, execute, collectUsage, timeoutMs: 100 });
-  const input = { admission: { plan, userMessages: ["Create an issue titled Test"] }, runId: "run", userId: "user", tool };
+  const input = { admission: { version: 2 as const, plan, messages: [{ kind: "message" as const, id: "own" }] }, runId: "run", userId: "user", tool };
   return { db, findMessages, followups, execute, collectUsage, resolve, service, input };
 }
 afterEach(() => vi.useRealTimers());
@@ -84,7 +84,7 @@ describe("bounded MCP guard", () => {
     expect(await f.service.check(f.input)).toEqual(allow);
     expect(f.execute).toHaveBeenCalledExactlyOnceWith(plan.snapshot, expect.objectContaining({ schema: MCP_GUARD_SCHEMA }), expect.any(Object));
     const request = (f.execute.mock.calls[0] as unknown as [unknown, { userPrompt: string }])[1];
-    expect(JSON.parse(request.userPrompt).user_messages_newest_first).toEqual(["Use the new title", ...f.input.admission.userMessages]);
+    expect(JSON.parse(request.userPrompt).user_messages_newest_first).toEqual(["Use the new title", "My earlier request"]);
     expect(f.resolve).not.toHaveBeenCalled();
     expect(f.followups).toHaveBeenCalledWith(expect.objectContaining({ where: { modelRunId: "run", deliveredAt: { not: null }, origin: "user", subagentTurnId: null } }));
   });

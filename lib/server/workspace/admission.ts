@@ -3,7 +3,6 @@ import type { PrismaClient } from "@prisma/client";
 import {
   WORKSPACE_INBOX_INDEX_PATH,
   WORKSPACE_PROJECT_DIRECTORY,
-  WORKSPACE_POLICY_ID,
   workspaceMessageManifestPath,
   workspaceRunOutputDirectory,
   workspaceSandboxName
@@ -205,19 +204,6 @@ export function createWorkspaceAdmissionService(input: Readonly<{
       return { ok: true, plan, tools: workspaceRunTools(catalog.tools) };
     }
   };
-}
-
-export async function assertWorkspacePolicySnapshot(
-  tx: Pick<PrismaClient, "workspacePolicy">,
-  plan: WorkspaceRunAdmissionPlan
-): Promise<void> {
-  const policy = await tx.workspacePolicy.findUnique({
-    select: { enabled: true, version: true },
-    where: { id: WORKSPACE_POLICY_ID }
-  });
-  if (!policy?.enabled || policy.version !== plan.policyRevision) {
-    throw new WorkspaceAdmissionConflictError("workspace_disabled");
-  }
 }
 
 export class WorkspaceAdmissionConflictError extends Error {

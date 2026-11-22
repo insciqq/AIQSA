@@ -45,7 +45,6 @@ import {
   UNAVAILABLE_CHAT_WORKSPACE_STATE,
   type ChatWorkspaceState
 } from "../../contracts/workspace";
-import { ANSWER_REVIEW_REMOVED, requestsAnswerReview } from "../runs/retiredAnswerReview";
 import { ChatAssistantUpdateError, type ChatAssistantUpdateErrorCode } from "./assistantUpdateError";
 
 export type {
@@ -602,10 +601,6 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
     const search = body?.defaultSearchPlan == null ? null : decodeSearchPlan(body.defaultSearchPlan);
     if (search && !search.ok) {
       return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
-    }
-    // A tab of the previous release that still turns on the chat's automatic review is refused, never saved without it.
-    if (requestsAnswerReview(body)) {
-      return chatRouteErrorJson({ error: ANSWER_REVIEW_REMOVED }, { status: 409 });
     }
     const workspaceEnabled = workspaceEnabledValue(body);
     if (!workspaceEnabled.ok) {

@@ -48,9 +48,6 @@ describe("Workspace upload HTTP admission", () => {
     const service = new WorkspaceUploadService({ repository, available, storage: { getObject: vi.fn(), putObject: vi.fn(), deleteObject: vi.fn() } });
     expect(decodeWorkspaceUploadCreate(input)).toEqual(input);
     expect(decodeWorkspaceUploadCreate({ ...input, secret: true })).toBeNull();
-    // An older browser names no Project with an explicit null; a Project is never accepted.
-    expect(decodeWorkspaceUploadCreate({ ...input, projectId: null })).toEqual(input);
-    expect(decodeWorkspaceUploadCreate({ ...input, projectId: "project-1" })).toBeNull();
     await expect(service.create({ ...input, byteSize: WORKSPACE_UPLOAD_MAX_BYTES + 1 }, "owner")).rejects.toMatchObject({ code: "file_too_large", status: 413 });
     expect(available).not.toHaveBeenCalled(); expect(repository.create).not.toHaveBeenCalled();
     expect(workspaceUploadMaxBytes({})).toBe(WORKSPACE_UPLOAD_MAX_BYTES);

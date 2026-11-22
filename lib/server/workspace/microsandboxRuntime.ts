@@ -1625,9 +1625,6 @@ export class MicrosandboxWorkspaceRuntime implements WorkspaceRuntime {
     // Do not turn a large registry into minutes of sequential signal timeouts.
     // The VM fallback covers all commands regardless of batch size.
     if (ids.length > 32 || signal?.aborted) return unknown;
-    // Executions of the removed Codex Agent, registered by earlier releases,
-    // are no MCP executions: only the exact-VM stop proves their cleanup.
-    if (ids.some((id) => id.startsWith("agent-"))) return unknown;
     const mcp = await this.mcp(session);
     const deadline = AbortSignal.timeout(10_000);
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;

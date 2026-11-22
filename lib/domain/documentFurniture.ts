@@ -1,6 +1,6 @@
-export const KNOWLEDGE_FURNITURE_EDGE_FRACTION = 0.15;
-export const KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION = 0.5;
-export const KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT = 0.05;
+const DOCUMENT_FURNITURE_EDGE_FRACTION = 0.15;
+const DOCUMENT_FURNITURE_MIN_PAGE_FRACTION = 0.5;
+const DOCUMENT_FURNITURE_MAX_POSITION_DRIFT = 0.05;
 
 type FurnitureBoundingBox = Readonly<{
   bottom: number;
@@ -9,7 +9,7 @@ type FurnitureBoundingBox = Readonly<{
   top: number;
 }>;
 
-export type KnowledgeFurnitureCandidate<Identifier> = Readonly<{
+export type DocumentFurnitureCandidate<Identifier> = Readonly<{
   boundingBoxes: readonly FurnitureBoundingBox[];
   id: Identifier;
   order: number;
@@ -26,7 +26,7 @@ type PageVerticalExtent = Readonly<{
 }>;
 
 function verticalExtents<Identifier>(
-  blocks: readonly KnowledgeFurnitureCandidate<Identifier>[]
+  blocks: readonly DocumentFurnitureCandidate<Identifier>[]
 ): ReadonlyMap<string, PageVerticalExtent> {
   const mutable = new Map<string, { maximum: number; minimum: number }>();
   for (const block of blocks) {
@@ -47,7 +47,7 @@ function verticalExtents<Identifier>(
 }
 
 function furniturePosition<Identifier>(
-  block: KnowledgeFurnitureCandidate<Identifier>,
+  block: DocumentFurnitureCandidate<Identifier>,
   extents: ReadonlyMap<string, PageVerticalExtent>
 ): Readonly<{ edge: "bottom" | "top"; position: number }> | null {
   if (block.pageStart !== block.pageEnd || block.boundingBoxes.length === 0) return null;
@@ -63,8 +63,8 @@ function furniturePosition<Identifier>(
     (extent.maximum - extent.minimum);
   const position = origin === "top_left" ? rawPosition : 1 - rawPosition;
   if (!Number.isFinite(position)) return null;
-  if (position <= KNOWLEDGE_FURNITURE_EDGE_FRACTION) return { edge: "top", position };
-  if (position >= 1 - KNOWLEDGE_FURNITURE_EDGE_FRACTION) {
+  if (position <= DOCUMENT_FURNITURE_EDGE_FRACTION) return { edge: "top", position };
+  if (position >= 1 - DOCUMENT_FURNITURE_EDGE_FRACTION) {
     return { edge: "bottom", position };
   }
   return null;
@@ -79,13 +79,13 @@ function furnitureKey(value: string): string {
  * Keeping one canonical occurrence mirrors current retrieval behavior.
  */
 export function geometryProvenRepeatedFurniture<Identifier>(
-  blocks: readonly KnowledgeFurnitureCandidate<Identifier>[],
+  blocks: readonly DocumentFurnitureCandidate<Identifier>[],
   pageCount: number,
   preserveCanonical: boolean
 ): ReadonlySet<Identifier> {
   const extents = verticalExtents(blocks);
   const candidatesByKey = new Map<string, Array<Readonly<{
-    block: KnowledgeFurnitureCandidate<Identifier>;
+    block: DocumentFurnitureCandidate<Identifier>;
     edge: "bottom" | "top";
     position: number;
   }>>>();
@@ -104,7 +104,7 @@ export function geometryProvenRepeatedFurniture<Identifier>(
 
   const requiredPageCount = Math.max(
     3,
-    Math.ceil(pageCount * KNOWLEDGE_FURNITURE_MIN_PAGE_FRACTION)
+    Math.ceil(pageCount * DOCUMENT_FURNITURE_MIN_PAGE_FRACTION)
   );
   const excluded = new Set<Identifier>();
   for (const candidates of candidatesByKey.values()) {
@@ -113,7 +113,7 @@ export function geometryProvenRepeatedFurniture<Identifier>(
     const positions = candidates.map(({ position }) => position);
     if (pages.size < requiredPageCount || edges.size !== 1 ||
       Math.max(...positions) - Math.min(...positions) >
-        KNOWLEDGE_FURNITURE_MAX_POSITION_DRIFT) continue;
+        DOCUMENT_FURNITURE_MAX_POSITION_DRIFT) continue;
     const duplicates = preserveCanonical
       ? [...candidates].sort((left, right) => left.block.order - right.block.order).slice(1)
       : candidates;

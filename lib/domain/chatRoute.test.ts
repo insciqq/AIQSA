@@ -93,8 +93,8 @@ describe("chat route contract", () => {
     expect(sameChatRoute({ chatId }, BLANK_CHAT_ROUTE)).toBe(false);
   });
 
-  it("carries unconsumed parameters and never writes legacy route parameters", () => {
-    expect(chatRouteHref({ chatId }, "chat=old&project=old&message=m&library=mcp&oauth=connected"))
+  it("carries unconsumed parameters and never writes the legacy route parameter", () => {
+    expect(chatRouteHref({ chatId }, "chat=old&message=m&library=mcp&oauth=connected"))
       .toBe(`/c/${chatId}?message=m&library=mcp&oauth=connected`);
     expect(chatRouteHref(BLANK_CHAT_ROUTE)).toBe("/");
     // Another chat never inherits the open sub-agent thread view.
@@ -106,13 +106,9 @@ describe("chat route contract", () => {
     expect(legacyChatRouteHref(new URLSearchParams(`chat=${chatId}`))).toBe(`/c/${chatId}`);
     expect(legacyChatRouteHref(new URLSearchParams(`chat=${chatId}&message=m1&keep=yes`)))
       .toBe(`/c/${chatId}?message=m1&keep=yes`);
-    // A removed Project's parameter is only dropped.
-    expect(legacyChatRouteHref(new URLSearchParams(`project=${projectId}&chat=${chatId}`)))
-      .toBe(`/c/${chatId}`);
     expect(legacyChatRouteHref(new URLSearchParams(
       `chat=${chatId}&artifactEdit=edit&artifactId=artifact&versionId=version`
     ))).toBe(`/c/${chatId}?artifactEdit=edit&artifactId=artifact&versionId=version`);
-    expect(legacyChatRouteHref(new URLSearchParams(`project=${projectId}`))).toBe("/");
     expect(legacyChatRouteHref(new URLSearchParams("library=artifacts"))).toBeNull();
     expect(legacyChatRouteHref(new URLSearchParams("chat=&message=m&keep=yes"))).toBe("/?keep=yes");
     expect(legacyChatRouteHref(new URLSearchParams(`chat=a&chat=b`))).toBe("/");

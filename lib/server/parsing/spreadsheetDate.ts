@@ -19,7 +19,6 @@ type SpreadsheetFormatter = Readonly<{
 }>;
 
 const spreadsheetFormatter = SSF as unknown as SpreadsheetFormatter;
-const DATE_VALUE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?)?$/u;
 
 function pad(value: number, length = 2): string {
   return String(value).padStart(length, "0");
@@ -30,18 +29,6 @@ function validCalendarDate(year: number, month: number, day: number): boolean {
   if (year < 1 || year > 9_999 || month < 1 || month > 12 || day < 1) return false;
   const maximum = new Date(Date.UTC(year, month, 0)).getUTCDate();
   return day <= maximum;
-}
-
-export function isSpreadsheetDateValue(value: string): boolean {
-  const match = DATE_VALUE_PATTERN.exec(value);
-  if (!match) return false;
-  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  if (!validCalendarDate(year, month, day)) return false;
-  if (hourText === undefined) return true;
-  return Number(hourText) <= 23 && Number(minuteText) <= 59 && Number(secondText) <= 59;
 }
 
 export function spreadsheetDateFromSerial(

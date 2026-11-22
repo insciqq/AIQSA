@@ -8,7 +8,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
-import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields, type AssistantRows } from "../../contracts/assistants";
 import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText } from "../../contracts/browserSignIn";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
@@ -84,7 +84,7 @@ function handlerAssistant(rows: Partial<AssistantRows> = {}): AssistantRunResolu
         paletteId: "ember", recipeVersion: 1, rotations: [0, 0] }, name: "Reviewer" },
       name: "Reviewer",
       provider: "fake",
-      rows: { ...assistantRowsFromLegacyFields(fields), ...rows },
+      rows: { ...assistantRowsFromFlatFields(fields), ...rows },
       systemPrompt: "Review carefully."
     },
     ok: true
@@ -2252,42 +2252,6 @@ describe("model run route handlers", () => {
     repository.createRun = async () => { throw new SubagentCallbackClaimConflictError(); };
     const claimed = await send();
     expect([claimed.status, await claimed.json()]).toEqual([409, { error: "subagent_callback_claimed" }]);
-  });
-
-  it("refuses a send or regeneration that still asks for the removed automatic review, never answering without it", async () => {
-    const { repository, state } = createMemoryRepository(entitledFakeModel, [], null, {
-      toolCalling: true, contextWindow: 32_768, nativePdfInput: false, nativeSearch: false,
-      pdf: true, reasoning: true, streaming: true, vision: true
-    });
-    const providers = { fake: createFakeProviderAdapter() };
-    const POST = createSendMessageHandler({ ...authDeps, providers, repository });
-    const send = (answerReview: unknown) => POST(new Request("http://app.local/api/chats/chat-1/messages", {
-      body: JSON.stringify({ answerReview, content: { blocks: [{ text: "Check the total.", type: "text" }] }, modelId: "fake-qsa",
-        provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] } }),
-      headers: { cookie: authCookie() },
-      method: "POST"
-    }), { params: { chatId: "chat-1" } });
-    // A tab of the previous release with the chat's automatic review on.
-    const refused = await send({ maxRounds: 2, reviewers: [{ modelId: "fake-reviewer", provider: "fake",
-      searchPlan: { mode: "all_selected", optionIds: [] } }] });
-    expect(refused.status).toBe(409);
-    expect(await refused.json()).toEqual({ error: "answer_review_removed" });
-    expect(state.created).toBeNull();
-    const regenerate = createRegenerateModelRunHandler({ ...authDeps, providers, repository });
-    const regenerated = await regenerate(new Request("http://app.local/api/messages/assistant-message-1/regenerate", {
-      body: JSON.stringify({ answerReview: { maxRounds: 1, reviewers: [] }, modelId: "fake-qsa", provider: "fake",
-        searchPlan: { mode: "all_selected", optionIds: [] } }),
-      headers: { cookie: authCookie() },
-      method: "POST"
-    }), { params: { messageId: "assistant-message-1" } });
-    expect(regenerated.status).toBe(409);
-    expect(await regenerated.json()).toEqual({ error: "answer_review_removed" });
-    expect(state.regenerated).toBeNull();
-    // One that asks for nothing is answered as ever.
-    const accepted = await send(null);
-    expect(accepted.status).toBe(200);
-    await accepted.text();
-    expect(state.created).toMatchObject({ chatId: "chat-1" });
   });
 
   it("records the reason a busy Workspace refused a message", async () => {

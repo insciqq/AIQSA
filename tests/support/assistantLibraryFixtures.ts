@@ -10,7 +10,7 @@ import {
   type AssistantLibraryEditorState
 } from "@/components/app-shell/assistantLibraryStore";
 import {
-  assistantRowsFromLegacyFields,
+  assistantRowsFromFlatFields,
   type AssistantAvatarRecipe,
   type AssistantContent,
   type AssistantDetail,
@@ -39,7 +39,7 @@ export function assistantContent(overrides: Partial<AssistantContent> = {}): Ass
     mcpServerIds: [],
     name: "Code reviewer",
     providerModelId: "model-1",
-    rows: assistantRowsFromLegacyFields({
+    rows: assistantRowsFromFlatFields({
       mcpServerIds: [],
       providerModelId: "model-1",
       runControls: {},

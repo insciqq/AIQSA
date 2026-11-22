@@ -114,8 +114,6 @@ import { scheduledOccurrenceContext } from "../scheduledTasks/occurrenceContext"
 import { scheduledUnavailableSources, scheduledUnavailableSourcesNotice } from "../scheduledTasks/sourceHealth";
 import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
-import { AGENT_MODE_REMOVED, isRetiredAgentRequest } from "./retiredAgent";
-import { ANSWER_REVIEW_REMOVED, requestsAnswerReview } from "./retiredAnswerReview";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./requestContextBudget";
 import {
@@ -738,8 +736,6 @@ export async function preparePdfRetry(
   }>
 ): Promise<RunPreparationResult> {
   const prepared = materializePreparedRunData(input.prepared);
-  // A retired Codex Agent turn has no engine left to run it again.
-  if (isRetiredAgentRequest(prepared.normalizedRequest)) return failure(AGENT_MODE_REMOVED, 409);
   prepared.sourceKind = "regenerate";
   prepared.defaults = null;
   prepared.expectedActiveLeafId = null;
@@ -977,21 +973,6 @@ function assistantPrompt(
   };
 }
 
-/**
- * Knowledge was removed (operator decision 2026-10-23): a run never carries
- * it. A browser bundle from before the removal still sends an explicit
- * "none", which is accepted; any other selection is refused visibly.
- */
-function legacyKnowledgePlanRefused(body: Readonly<Record<string, unknown>> | null): boolean {
-  if (!body || !Object.hasOwn(body, "knowledgePlan")) return false;
-  const plan = body.knowledgePlan;
-  if (typeof plan !== "object" || plan === null || Array.isArray(plan)) return true;
-  const fields = plan as Record<string, unknown>;
-  return Object.keys(fields).sort().join(",") !== "baseIds,mode,sourceIds,version" || fields.version !== 1 ||
-    fields.mode !== "none" || !Array.isArray(fields.baseIds) || fields.baseIds.length > 0 ||
-    !Array.isArray(fields.sourceIds) || fields.sourceIds.length > 0;
-}
-
 function hasTextContent(content: NormalizedRunRequest["content"]): boolean {
   return content.blocks.some(
     (block) =>
@@ -1136,12 +1117,6 @@ export async function prepareRun(
   // occurrence, a regeneration by the task that posted the prompt (never in a branch copy).
   const scheduledMemoryRead = scheduledOccurrence ? scheduledOccurrence.memory === true
     : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
-  // The Codex Agent mode is removed (operator decision 2026-10-23): a client
-  // that still asks for it is refused visibly, never answered without it.
-  if (body?.agentEnabled !== undefined && body.agentEnabled !== false) return failure(AGENT_MODE_REMOVED, 409);
-  // So is Answer Review (operator decision 2026-10-25): a tab of the previous
-  // release that still asks for automatic review is told to reload.
-  if (requestsAnswerReview(body)) return failure(ANSWER_REVIEW_REMOVED, 409);
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
@@ -1225,7 +1200,6 @@ export async function prepareRun(
   // Memory off for the connector (owner decision 2026-11-12, O-08): only a chat excluded from Memory, never learned from
   // or carried into another, whatever the request or the stored chat says.
   if (connector && !connector.memory && resolvedChatMode.mode !== "EXCLUDED") return failure(DISCORD_RUN_REFUSALS.chatMemory, 409);
-  if (legacyKnowledgePlanRefused(body)) return failure("knowledge_plan_invalid", 400);
 
   const decodedSearchPlan = assistantRun
     ? null

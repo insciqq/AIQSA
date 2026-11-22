@@ -7,7 +7,7 @@ import * as addressPolicy from "../proxies/address";
 import { runProxiesFromRows } from "../proxies/runProxies";
 import { createFetchUrlSession, fetchUrlActivityFacts } from "../tools/fetchUrl";
 import { setRecordObserver } from "../observability";
-import { fetchThroughProxy, fetchWebPage } from "./index";
+import { fetchThroughProxy, fetchWebPage } from "./transport";
 import { localProxy, pageResponse, proxyConnection } from "./proxy.testFixtures";
 
 vi.mock("../proxies/address", async (original) => {

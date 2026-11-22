@@ -761,7 +761,6 @@ export type ChatRouteServerErrorCode =
   | MutationOriginErrorCode
   | ChatAssistantErrorCode
   | "active_run_in_progress"
-  | "answer_review_removed"
   | "archived_chat_cursor_invalid"
   | "chat_page_cursor_invalid"
   | "chat_page_stale"

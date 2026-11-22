@@ -27,7 +27,7 @@ import { renderMemoryNoteForPrompt } from "../memoryNote/prompt";
 import { providerInstructionsWithPersonalContext } from "../providers/personalContext";
 import type { NormalizedRunRequest, ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
-import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields } from "../../contracts/assistants";
 import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
 import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
 import { DISCORD_CONNECTOR_NOTE, DISCORD_RUN_REFUSALS } from "../connectors/turn";
@@ -1025,24 +1025,6 @@ async function expectFailure(input: {
 }
 
 describe("run preparation", () => {
-  it.each([
-    { agentEnabled: true },
-    { agentEnabled: true, workspace: { enabled: true } },
-    { agentEnabled: "yes" }
-  ])("refuses a removed Agent turn visibly before Workspace effects: %j", async (body) => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const workspace = { prepare: vi.fn() };
-    expect(await prepareRun({ ...harness.deps, workspace }, sendInput(successBody(body))))
-      .toMatchObject({ ok: false, code: "agent_mode_removed", status: 409 });
-    expect(workspace.prepare).not.toHaveBeenCalled();
-  });
-
-  it("answers an older client's explicit Agent Off as an ordinary turn", async () => {
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const prepared = preparedFrom(await prepareRun(harness.deps, sendInput(successBody({ agentEnabled: false }))));
-    expect(prepared.normalizedRequest).not.toHaveProperty("agent");
-  });
-
   it("freezes owner instructions for sends and regeneration without changing the user question", async () => {
     for (const input of [sendInput(), regenerateInput(successBody())]) {
       const h = createHarness();
@@ -1959,7 +1941,7 @@ describe("run preparation", () => {
         answerRules: null, assistantId: "assistant-1", definitionVersion: 1,
         identity: { name: "Writing helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
           kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-        name: "Writing helper", provider: "fake", rows: assistantRowsFromLegacyFields(fields), systemPrompt: "Help with writing.",
+        name: "Writing helper", provider: "fake", rows: assistantRowsFromFlatFields(fields), systemPrompt: "Help with writing.",
         ...fields
       } };
     };
@@ -2908,7 +2890,7 @@ describe("run preparation", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -4639,7 +4621,7 @@ describe("scheduled task creation admission", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -4714,7 +4696,7 @@ describe("Skill save admission", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -5036,7 +5018,7 @@ describe("image model admission by chat scope", () => {
       kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
     mcpServerIds: [], name: "Shared illustrator", provider: "openai",
     providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
-    rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+    rows: assistantRowsFromFlatFields({ mcpServerIds: [],
       providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
     skillIds: [], systemPrompt: "Illustrate what the user asks for."
   } });
@@ -5108,44 +5090,6 @@ describe("image model admission by chat scope", () => {
     expect(analyzed.normalizedRequest.imagePlan).toEqual(personalChoice);
     expect(tools(analyzed)).toEqual(expect.arrayContaining(["analyze_image", "generate_image"]));
     expect(analyzed.providerRequest.tools?.find((tool) => tool.name === "generate_image")?.description).toContain("editing unavailable");
-  });
-});
-
-describe("a request that still asks for automatic answer review", () => {
-  it("is refused visibly before anything is accepted, while an absent or null review asks for nothing", async () => {
-    const review = { maxRounds: 2, reviewers: [{ modelId: "openai-tool-model", provider: "openai",
-      searchPlan: { mode: "all_selected", optionIds: [] } }] };
-    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
-    const workspace = { prepare: vi.fn() };
-    for (const input of [sendInput(successBody({ answerReview: review })), regenerateInput(successBody({ answerReview: review }))]) {
-      expect(await prepareRun({ ...harness.deps, workspace }, input))
-        .toMatchObject({ code: "answer_review_removed", ok: false, status: 409 });
-    }
-    expect(workspace.prepare).not.toHaveBeenCalled();
-    for (const input of [sendInput(successBody({ answerReview: null })), regenerateInput(successBody())]) {
-      expect((await prepareRun(harness.deps, input)).ok).toBe(true);
-    }
-  });
-});
-
-describe("a request that still names Knowledge", () => {
-  it("accepts a legacy explicit none, refuses every other selection and never admits Knowledge", async () => {
-    const none = { baseIds: [], mode: "none", sourceIds: [], version: 1 };
-    for (const input of [sendInput(successBody({ knowledgePlan: none })), regenerateInput(successBody({ knowledgePlan: none }))]) {
-      const prepared = preparedFrom(await prepareRun(createHarness().deps, input));
-      expect(prepared.normalizedRequest).not.toHaveProperty("knowledgePlan");
-      expect(prepared).not.toHaveProperty("knowledgeAdmissionPlan");
-    }
-    for (const knowledgePlan of [
-      { baseIds: ["knowledge-base-1"], mode: "explicit", sourceIds: [], version: 1 },
-      { baseIds: [], mode: "all_my_knowledge", sourceIds: [], version: 1 },
-      { baseIds: [], mode: "none", sourceIds: [], version: 1, extra: true },
-      "none",
-      null
-    ]) {
-      await expect(prepareRun(createHarness().deps, sendInput(successBody({ knowledgePlan })))).resolves
-        .toMatchObject({ code: "knowledge_plan_invalid", ok: false, status: 400 });
-    }
   });
 });
 

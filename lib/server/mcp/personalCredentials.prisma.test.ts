@@ -10,7 +10,7 @@ import type { McpDraftConfiguration } from "@/lib/contracts/mcp";
 import { prisma } from "../prisma";
 import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
-import { currentMcpDispatchFailure, mcpDispatchError } from "./dispatchStatus";
+import { mcpDispatchError } from "./dispatchStatus";
 import type { McpDraftValidator } from "./draftValidator";
 import { decryptMcpEnvelope, mcpPersonalConfigEnvelopeContext } from "./encryption";
 import { createPrismaMcpRepository } from "./prismaRepository";
@@ -171,7 +171,7 @@ async function setup(input: { accepted: string[]; draftValidator?: (remote: McpD
       load: () => loadMcpRunPlanRecordsForServers(ownerId, [serverId], prisma)
     });
   };
-  /** One MCP call of a run that accepted `plan`, rechecked as run execution does. */
+  /** One MCP call of a run that accepted `plan`, refused once the current plan binds another generation. */
   const call = async (plan: Awaited<ReturnType<typeof currentPlan>>, name: string) => {
     if (!plan.ok) throw new Error("fixture_plan_not_ready");
     const route = resolveMcpRunTool(plan.snapshot, plan.snapshot.tools.find((tool) => tool.originalName === name)!.namespacedName)!;
@@ -179,8 +179,8 @@ async function setup(input: { accepted: string[]; draftValidator?: (remote: McpD
     return dispatchMcpTool({
       arguments: {},
       assertCurrent: async () => {
-        const failure = currentMcpDispatchFailure(await currentPlan([route.tool.namespacedName]), route, generationId);
-        if (failure) throw mcpDispatchError(failure);
+        const current = await currentPlan([route.tool.namespacedName]);
+        if (!current.ok || current.bindings[0]?.runtimeGenerationId !== generationId) throw mcpDispatchError("mcp_accepted_generation_changed");
       },
       callTool: (request) => runtime.callTool(request),
       generationId,

@@ -655,11 +655,11 @@ export function decodeAssistantRows(
 }
 
 /**
- * The flat row fields of the first Assistant release. Create and revise
- * accept only `rows`; server, run and Skills tests still use the flat fields
- * as a compact way to write fixed rows through `assistantRowsFromLegacyFields`.
+ * Flat row fields, a compact way for server, run and Skills tests to write
+ * fixed rows through `assistantRowsFromFlatFields`. Create and revise accept
+ * only `rows`.
  */
-export type AssistantLegacyRowFields = {
+export type AssistantFlatRowFields = {
   mcpServerIds: string[];
   providerModelId: string;
   runControls: AssistantRunControls;
@@ -670,11 +670,10 @@ export type AssistantLegacyRowFields = {
 };
 
 /**
- * Legacy values keep today's behaviour: every row is fixed, except empty
- * controls, which can never be fixed. A plan without Search sources and an
- * empty MCP list are explicit Off.
+ * Every row is fixed, except empty controls, which can never be fixed. A plan
+ * without Search sources and an empty MCP list are explicit Off.
  */
-export function assistantRowsFromLegacyFields(fields: AssistantLegacyRowFields): AssistantRows {
+export function assistantRowsFromFlatFields(fields: AssistantFlatRowFields): AssistantRows {
   return {
     controls: {
       policy: Object.keys(fields.runControls).length > 0 ? "fixed" : "adjustable",

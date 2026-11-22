@@ -8,7 +8,7 @@ import { getMcpRequestMaxBytes } from "./responseLimits";
 import { canonicalMcpJson, hashCanonicalMcpValue } from "./definitions";
 import {
   boundedMcpToolIndex,
-  LEGACY_MCP_DISCOVERY_MAX_RESULTS,
+  MCP_DISCOVERY_DEFAULT_MAX_RESULTS,
   mcpCatalogToolsByNames,
   mcpFindToolsArguments,
   mcpHubInstructions
@@ -293,7 +293,7 @@ export function createMcpToolService<Authority extends McpToolAuthority>(
     }>): Promise<McpHubDiscoveryResult> {
       const parsed = mcpFindToolsArguments({ query: input.query });
       if (!parsed) throw new McpHubServiceError("invalid_arguments");
-      const maxResults = input.maxResults ?? LEGACY_MCP_DISCOVERY_MAX_RESULTS;
+      const maxResults = input.maxResults ?? MCP_DISCOVERY_DEFAULT_MAX_RESULTS;
       if (!Number.isSafeInteger(maxResults) || maxResults < 1 ||
         maxResults > MCP_RUN_PLAN_LIMITS.maxTools) {
         throw new McpHubServiceError("invalid_arguments");
