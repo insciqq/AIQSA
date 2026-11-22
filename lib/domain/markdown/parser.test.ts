@@ -30,7 +30,7 @@ describe("Markdown parser bounds", () => {
     ["staircase lists", Array.from({ length: 40_000 }, (_, index) => `${" ".repeat(index % 70)}- x`).join("\n")],
     ["unclosed display math", "$$\nx\n".repeat(100_000)],
     ["unclosed bracket math", "\\[\nx\n".repeat(100_000)],
-    ["citations", "[K1]".repeat(140_000)],
+    ["short bracket runs", "[K1]".repeat(140_000)],
     ["character references", "&#x41;&amp;&bogus;".repeat(30_000)],
     ["table rows", `| a | b |\n| --- | --- |\n${"| x \\| y | `z` |\n".repeat(30_000)}`]
   ])("parses hostile %s within bounds", (_name, content) => {

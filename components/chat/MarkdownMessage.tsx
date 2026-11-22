@@ -67,8 +67,6 @@ function MathExpression({ displayMode, raw, source }: { displayMode: boolean; ra
   );
 }
 
-export type MarkdownCitationRenderer = (handle: string, key: string) => ReactNode | null;
-
 /**
  * Resolves a link target the ordinary safe-href allowlist would reject.
  * `{ href }` renders a same-origin link (optionally as a download); `"text"`
@@ -80,7 +78,6 @@ export type MarkdownHrefResolver = (
 ) => Readonly<{ download?: string; href: string }> | "text" | null;
 
 type RenderContext = {
-  renderCitation?: MarkdownCitationRenderer;
   resolveHref?: MarkdownHrefResolver;
   streaming: boolean;
 };
@@ -113,7 +110,6 @@ function renderLink(node: Extract<MarkdownInline, { type: "link" }>, key: string
       </code>
     );
   }
-  // Citations inside link syntax stay inert text.
   const label = renderInline(node.children, key, context, true);
   if (resolved) {
     return (
@@ -160,7 +156,7 @@ function renderInline(
       case "inlineMath":
         return <MathExpression displayMode={false} key={key} raw={node.raw} source={node.source} />;
       case "citation":
-        return (!inLink && context.renderCitation?.(node.handle, `${key}-citation`)) || node.source;
+        return node.source;
       case "strong":
         return <strong className={inLink ? "font-semibold" : "font-semibold text-ink"} key={key}>{renderInline(node.children, key, context, inLink)}</strong>;
       case "emphasis":
@@ -319,7 +315,6 @@ function renderBlock(block: MarkdownBlock, key: string, context: RenderContext, 
 
 type MarkdownMessageProps = {
   content: string;
-  renderCitation?: MarkdownCitationRenderer;
   resolveHref?: MarkdownHrefResolver;
   streaming?: boolean;
 };
@@ -409,13 +404,12 @@ function renderMarkdown(content: string, context: RenderContext): ReactNode[] {
 
 function MarkdownMessageComponent({
   content,
-  renderCitation,
   resolveHref,
   streaming = false
 }: MarkdownMessageProps) {
   const nodes = useMemo(
-    () => renderMarkdown(content, { renderCitation, resolveHref, streaming }),
-    [content, renderCitation, resolveHref, streaming]
+    () => renderMarkdown(content, { resolveHref, streaming }),
+    [content, resolveHref, streaming]
   );
   return (
     <div className="min-w-0 space-y-4">

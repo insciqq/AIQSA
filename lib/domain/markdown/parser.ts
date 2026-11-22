@@ -278,22 +278,6 @@ function oddBackslashTableCells(rule: BlockRule): BlockRule {
   };
 }
 
-const CITATION = /\[(K[1-9]\d{0,3}(?:\.[1-9]\d?)?)\]/uy;
-
-/** Known Knowledge citation handles; escaped, coded or entity-encoded brackets never reach this rule. */
-function citationRule(state: StateInline, silent: boolean): boolean {
-  // Inside link-label scanning a citation must stay plain brackets, or `[[K1]](url)` stops being a link.
-  if (silent || state.src.charCodeAt(state.pos) !== 0x5b) return false;
-  CITATION.lastIndex = state.pos;
-  const match = CITATION.exec(state.src);
-  if (!match || match.index !== state.pos) return false;
-  const token = state.push("aiqsa_citation", "", 0);
-  token.content = match[1];
-  token.markup = match[0];
-  state.pos += match[0].length;
-  return true;
-}
-
 function pushInlineMath(state: StateInline, silent: boolean, end: number, source: string) {
   if (!silent) {
     const token = state.push("aiqsa_math_inline", "", 0);
@@ -401,7 +385,6 @@ function createParser() {
 
   const link = originalRule<InlineRule>(md.inline.ruler.__rules__, "link");
   md.inline.ruler.at("link", linkSource(link.fn), { alt: link.alt });
-  md.inline.ruler.after("link", "aiqsa_citation", citationRule);
   md.inline.ruler.before("escape", "aiqsa_math_paren", parenMathRule);
   md.inline.ruler.before("escape", "aiqsa_math_dollar", dollarMathRule);
 
@@ -483,7 +466,7 @@ function literalInline(tokens: Token[], start: number, end: number): string {
       }
     }
     if (token.type === "softbreak" || token.type === "hardbreak") text += "\n";
-    else if (token.type === "aiqsa_citation" || token.type === "aiqsa_math_inline") text += token.markup;
+    else if (token.type === "aiqsa_math_inline") text += token.markup;
     else if (token.type === "code_inline") text += `${token.markup}${token.content}${token.markup}`;
     else if (token.nesting !== 0) text += token.markup;
     else text += token.content;
@@ -517,9 +500,6 @@ function buildInline(tokens: Token[], cursor: Cursor, depth: number, endType: st
         break;
       case "code_inline":
         nodes.push({ type: "inlineCode", value: token.content });
-        break;
-      case "aiqsa_citation":
-        nodes.push({ handle: token.content, source: token.markup, type: "citation" });
         break;
       case "aiqsa_math_inline":
         nodes.push({ raw: token.markup, source: token.content, type: "inlineMath" });

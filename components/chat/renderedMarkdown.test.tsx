@@ -139,16 +139,9 @@ describe("rendered Markdown selection", () => {
     expect(quoted(container)).toBe("> Inline $x^2$ here.\n>\n> $$\n> E = mc^2\n> $$\n\n");
   });
 
-  it("omits citation controls and unresolved markers without dropping ordinary text", () => {
-    const { container } = render(<MarkdownMessage content={'A claim [K1] and another [K2.1].'} renderCitation={handle => handle === "K1"
-      ? <button data-knowledge-citation={handle}>{handle}</button> : null} />);
-    expect(select(container)).toBe("A claim  and another .");
-    expect(select(container, "button")).toBe("");
-  });
-
-  it("keeps citation-shaped code literals intact", () => {
+  it("quotes bracketed reference markers as the text shows them", () => {
     const { container } = render(<MarkdownMessage content={'Literal `[K1]` and a reference [K2].\n\n```text\n[K3]\n```'} />);
-    expect(select(container)).toBe('Literal [K1] and a reference .\n\n```text\n[K3]\n```');
+    expect(select(container)).toBe('Literal [K1] and a reference [K2].\n\n```text\n[K3]\n```');
   });
 
   it("quotes a selected part of a link label without its destination or adjacent unselected text", () => {

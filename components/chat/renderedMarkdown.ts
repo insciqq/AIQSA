@@ -1,6 +1,5 @@
 /** Serialize only the known, inert MarkdownMessage DOM as plain text that keeps block structure. Never copies HTML. */
-const omitted = "button, [aria-hidden='true'], .sr-only, .v2-sr-only, .katex-html, [data-markdown-chrome], [data-knowledge-citation]";
-const withoutCitations = (text: string) => text.replace(/\[K[1-9]\d{0,3}(?:\.[1-9]\d?)?\]/gu, "");
+const omitted = "button, [aria-hidden='true'], .sr-only, .v2-sr-only, .katex-html, [data-markdown-chrome]";
 const trimEmptyLines = (text: string) => text.replace(/^(?:[\t ]*\n)+|(?:\n[\t ]*)+$/gu, "");
 
 function fenceFor(code: string) {
@@ -40,7 +39,7 @@ function listItem(item: Element, separator: string): string {
 }
 
 function serialize(node: Node): string {
-  if (node.nodeType === Node.TEXT_NODE) return withoutCitations(node.textContent ?? "");
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
   if (!(node instanceof Element)) return children(node);
   if (node.matches(omitted)) return "";
   if (node.hasAttribute("data-math-display")) {
@@ -55,7 +54,7 @@ function serialize(node: Node): string {
     return `${fence}${node.getAttribute("data-markdown-code-language") ?? ""}\n${text}${text.endsWith("\n") ? "" : "\n"}${fence}\n\n`;
   }
   if (node.tagName === "TABLE") return table(node);
-  // Inline code, including inert links, quotes as its raw text: a citation-shaped literal is data, not a citation.
+  // Inline code, including inert links, quotes as its raw text.
   if (node.tagName === "CODE") return node.textContent ?? "";
   if (node.tagName === "UL" || node.tagName === "OL") {
     const start = Number(node.getAttribute("start") ?? 1);
