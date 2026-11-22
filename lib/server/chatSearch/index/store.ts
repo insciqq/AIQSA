@@ -50,6 +50,8 @@ export type ChatSearchIndexStore = Readonly<{
   /** The chat as one consistent snapshot; null when it no longer exists. */
   loadSnapshot(chatId: string): Promise<ChatSearchChatSnapshot | null>;
   loadSavedSecretValues(userId: string): Promise<readonly string[]>;
+  /** Whether the owner's passages may go to the embedding model now (`./ownerEmbedding.ts`). */
+  ownerAllowsEmbedding(userId: string): Promise<boolean>;
   /** Writes the target if the claim's version still holds (`planChatSearchPassages`). */
   reconcile(claim: ChatSearchClaim, target: ChatSearchReconcileTarget): Promise<ChatSearchReconcileOutcome>;
   /** The chat's passages without a vector of this model, newest turn first. */

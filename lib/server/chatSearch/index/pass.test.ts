@@ -22,6 +22,8 @@ type PassageRow = {
 function memoryStore(clock: { now: Date }) {
   const chats = new Map<string, ChatSearchChatSnapshot>();
   const secrets = new Map<string, readonly string[]>();
+  /** Owners who do not allow vectors now: an inactive account, or Memory or past-chat search off. */
+  const ownersOff = new Set<string>();
   const states = new Map<string, StateRow>();
   const passages = new Map<string, PassageRow>();
   let sequence = 0;
@@ -50,6 +52,7 @@ function memoryStore(clock: { now: Date }) {
     },
     async loadSnapshot(chatId) { return chats.get(chatId) ?? null; },
     async loadSavedSecretValues(userId) { return secrets.get(userId) ?? []; },
+    async ownerAllowsEmbedding(userId) { return !ownersOff.has(userId); },
     async reconcile(claim, target) {
       if (!chats.has(claim.chatId) || !states.has(claim.chatId)) return { kind: "gone" };
       if (!same(states.get(claim.chatId), claim)) return { kind: "stale" };
@@ -97,7 +100,7 @@ function memoryStore(clock: { now: Date }) {
       return true;
     }
   };
-  return { chatPassages, chats, mark, passages, secrets, states, store };
+  return { chatPassages, chats, mark, ownersOff, passages, secrets, states, store };
 }
 
 function fakeEmbedder(initial: ChatSearchEmbeddingModel = { kind: "model", providerModelId: "embed-a" }) {
@@ -259,6 +262,32 @@ describe("the past-chat index pass", () => {
     expect(fake.calls).toEqual([]);
     expect(memory.chatPassages("chat-1")).toEqual([expect.objectContaining({ embedding: null, text: expect.stringContaining("Answer.") })]);
     expect(memory.states.get("chat-1")).toMatchObject({ dirtyAt: null, lastErrorCode: "embedding_unset" });
+  });
+
+  it("sends nothing to the embedding model for an owner who does not allow it, and embeds once they do", async () => {
+    const { fake, memory, run } = setup([{ answer: "The river hotel.", question: "Which hotel?" }]);
+    memory.ownersOff.add(OWNER);
+    expect(await run()).toMatchObject({ embedded: 0, failed: 0, indexed: 1, more: false });
+    expect(fake.calls).toEqual([]);
+    // Words stay in the installation and searchable once the switch is on again; the chat waits with no retry.
+    expect(memory.chatPassages("chat-1")).toEqual([expect.objectContaining({ embedding: null, text: expect.stringContaining("river hotel") })]);
+    expect(memory.states.get("chat-1")).toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+    expect(await run()).toMatchObject({ claimed: 0 });
+
+    // A new turn while off is indexed by words the same way.
+    memory.chats.set("chat-1", chatSnapshot({ turns: [{ answer: "The river hotel.", question: "Which hotel?" },
+      { answer: "The 9:10.", question: "Which train?" }] }));
+    memory.mark("chat-1");
+    await run();
+    expect(fake.calls).toEqual([]);
+    expect(memory.chatPassages("chat-1")).toHaveLength(2);
+
+    // Switched on: the backfill marks the chat (`./backfill.ts`), and the next pass embeds both turns once.
+    memory.ownersOff.delete(OWNER);
+    memory.mark("chat-1", "background");
+    expect(await run()).toMatchObject({ embedded: 2 });
+    expect(fake.embeddedTexts()).toEqual([expect.stringContaining("Which train?"), expect.stringContaining("Which hotel?")]);
+    expect(memory.states.get("chat-1")).toMatchObject({ dirtyAt: null, lastErrorCode: null });
   });
 
   it("never embeds with another model while the role is unusable, and says why", async () => {

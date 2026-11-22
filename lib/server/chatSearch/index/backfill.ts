@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { ChatSearchEmbedder } from "../embedder";
 import { chatSearchEligibleWhere } from "../eligibility";
+import { chatSearchOwnerEmbeddingSql } from "./ownerEmbedding";
 
 /**
  * The bounded background sweep that lets the index fill and heal itself, run every
@@ -9,7 +10,9 @@ import { chatSearchEligibleWhere } from "../eligibility";
  * - backfill: eligible chats without a state get one, most recently changed first, so an upgraded installation (or
  *   a chat whose mark was lost) is indexed without anyone asking;
  * - vectors: while the embedding role is usable, indexed chats holding passages without a vector of that role are
- *   marked, which covers a role that became usable again (a fixed credential) and a pass that stopped midway;
+ *   marked, which covers a role that became usable again (a fixed credential), a pass that stopped midway and an
+ *   owner who turned Memory or past-chat search back on; only owners who allow vectors now (`./ownerEmbedding.ts`)
+ *   are swept, so another owner's chats are not marked again and again;
  * - leftovers: indexed chats that may no longer be indexed are marked, so the pass clears them even when the caller
  *   that changed them did not.
  *
@@ -88,6 +91,7 @@ export async function runChatSearchBackfillPass(input: ChatSearchBackfillInput):
     const stale = await db.$queryRaw<Array<{ chatId: string }>>`
       SELECT state."chatId" FROM "ChatSearchState" AS state
       WHERE state."dirtyAt" IS NULL ${ownerFilter}
+        AND ${chatSearchOwnerEmbeddingSql(Prisma.sql`state."userId"`)}
         AND EXISTS (
           SELECT 1 FROM "ChatSearchPassage" AS passage
           WHERE passage."chatId" = state."chatId"

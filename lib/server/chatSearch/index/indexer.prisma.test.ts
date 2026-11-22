@@ -248,6 +248,41 @@ describe("the past-chat index in PostgreSQL", () => {
     expect(fake.embedded.size).toBe(0);
   });
 
+  it("embeds nothing for a deactivated owner or one with search off, and the sweep embeds once the switch is on", async () => {
+    const searchOff = await owner();
+    const memoryOff = await owner();
+    const inactive = await owner();
+    await prisma.userSettings.create({ data: { pastChatSearchEnabled: false, userId: searchOff } });
+    await prisma.userSettings.create({ data: { memoryEnabled: false, userId: memoryOff } });
+    await prisma.user.update({ data: { status: "disabled" }, where: { id: inactive } });
+    const chats = [await chat(searchOff, [["Hotel?", "The river one."]]), await chat(memoryOff, [["Train?", "The 9:10."]]),
+      await chat(inactive, [["Pack?", "An umbrella."]])];
+    const all = [searchOff, memoryOff, inactive];
+    const fake = fakeEmbedder();
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ added: 3 });
+    await drain(fake.embedder, all);
+    expect(fake.embedded.size).toBe(0);
+    for (const { chatId } of chats) {
+      // Words stay searchable in the installation; the chat waits without a retry.
+      expect(await passages(chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: null })]);
+      expect(await prisma.chatSearchState.findUniqueOrThrow({ where: { chatId } }))
+        .toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+    }
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ vectors: 0 });
+
+    await prisma.userSettings.update({ data: { pastChatSearchEnabled: true }, where: { userId: searchOff } });
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder: fake.embedder, limits: { ownerIds: all } }))
+      .toMatchObject({ vectors: 1 });
+    await drain(fake.embedder, all);
+    expect(fake.embedded.size).toBe(1);
+    expect(await passages(chats[0]!.chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: "fake-embed-a" })]);
+    for (const { chatId } of chats.slice(1)) {
+      expect(await passages(chatId)).toEqual([expect.objectContaining({ embeddingProviderModelId: null })]);
+    }
+  });
+
   it("records past-chat search usage without a Memory binding, as the usage checks allow", async () => {
     const userId = await owner();
     const model = await prisma.providerModel.findFirst({ select: { id: true } });

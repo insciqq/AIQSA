@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { chatSearchEligibilityFields, chatSearchEligibilitySelect } from "../eligibility";
+import { chatSearchOwnerEmbeddingSql } from "./ownerEmbedding";
 import type { ChatSearchChatSnapshot, ChatSearchSourceMessage } from "./passages";
 import { planChatSearchPassages, type StoredChatSearchPassage } from "./plan";
 import { chatSearchSavedSecretValues } from "./savedSecrets";
@@ -181,6 +182,12 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
 
     loadSavedSecretValues(userId) {
       return chatSearchSavedSecretValues(db, userId);
+    },
+
+    async ownerAllowsEmbedding(userId) {
+      const [row] = await db.$queryRaw<Array<{ allowed: boolean }>>`
+        SELECT ${chatSearchOwnerEmbeddingSql(Prisma.sql`${userId}`)} AS "allowed"`;
+      return row?.allowed === true;
     },
 
     async reconcile(claim, target) {
