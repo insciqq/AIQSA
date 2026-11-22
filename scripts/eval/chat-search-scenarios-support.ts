@@ -379,9 +379,12 @@ export function scoreChatSearchScenario(input: Readonly<{
 // The report.
 
 /**
- * Thresholds for the stand run with real models. THE FIRST REAL RUN SETS THEM: until then every value is null and
- * only the never rules (which hold without exception) fail a run. Record the measured values here and in the task;
- * a later run below them fails. Shares are of a class's scenarios that expect a chat.
+ * Thresholds for the stand run with the full setup, the embedding model and the reranker; a run without the reranker
+ * or words only is held to the never rules alone. Measured 2026-11-22 on two runs (qwen3-embedding-8b and the default
+ * reranker through OpenRouter): every class found its chats at 1, 3 and 5, search p95 4.6 s and 5.1 s. The latency
+ * bound is the old search's 4-7 s: the new one may not be slower. A provider whose embeddings time out degrades
+ * searches to words (`report.degraded`) and can breach them; that is a slow provider, not a ranking change, so check
+ * `degraded` before reading a breach as a regression. Shares are of a class's scenarios that expect a chat.
  */
 export const CHAT_SEARCH_SCENARIO_THRESHOLDS: Readonly<{
   hitAt3: Partial<Record<ChatSearchScenarioClass, number | null>>;
@@ -389,9 +392,34 @@ export const CHAT_SEARCH_SCENARIO_THRESHOLDS: Readonly<{
   /** Search latency, without reads, over every scenario. */
   latencyP95Ms: number | null;
 }> = Object.freeze({
-  hitAt3: {},
-  hitAt5: {},
-  latencyP95Ms: null
+  hitAt3: Object.freeze({
+    exact_identifier: 1,
+    paraphrase: 1,
+    cross_language: 1,
+    similar_chats: 1,
+    long_answer_detail: 1,
+    fresh: 1,
+    date_bounded: 1,
+    read_to_message: 1,
+    edited_branch: 1
+  }),
+  hitAt5: Object.freeze({
+    exact_identifier: 1,
+    paraphrase: 1,
+    cross_language: 1,
+    similar_chats: 1,
+    long_answer_detail: 1,
+    fresh: 1,
+    date_bounded: 1,
+    read_to_message: 1,
+    edited_branch: 1
+  }),
+  latencyP95Ms: 7_000
+});
+
+/** No recorded thresholds: only the never rules count. */
+export const CHAT_SEARCH_NO_THRESHOLDS: typeof CHAT_SEARCH_SCENARIO_THRESHOLDS = Object.freeze({
+  hitAt3: {}, hitAt5: {}, latencyP95Ms: null
 });
 
 export function percentile(values: readonly number[], fraction: number): number | null {
