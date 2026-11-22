@@ -52,7 +52,7 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 ```
 
 - `*.prisma.test.*` and `*.integration.test.*` files are excluded from Hermetic (`scripts/vitest-project-config.ts`). Inside an already prepared disposable app container, `npm run test:full:inner -- --project stateful <files>` runs only the stateful tests you name (omit files for all of them) without repeating Hermetic.
-- Full container parity (`check:container`) deploys migrations and repeats deterministic and stateful tests; use it for a full parity or release run, or when the change needs that scope.
+- `check:container` deploys migrations and seeds the disposable database, then runs every stateful test; it does not repeat Hermetic. Use it for a release run or when the change needs all stateful tests.
 - Serialize stateful, container and browser-reset checks. Specs that reuse a server may overlap only if they reset nothing global. Put task-owned browser output in a fresh temporary directory and never delete another process's artifacts.
 - Database, migration, prune, backup, reset and installation checks validate their exact target before mutating it and clean up only what they created.
 

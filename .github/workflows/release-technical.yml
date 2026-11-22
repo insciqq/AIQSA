@@ -50,7 +50,7 @@ jobs:
         run: npm run security:deps:go
 
   migration-and-container:
-    name: Migration and disposable container contracts
+    name: Migration contract and stateful checks
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     permissions:
@@ -88,7 +88,8 @@ jobs:
           docker compose -f docker-compose.dev.yml run --rm -T --no-deps
           storage-init
 
-      - name: Run full disposable container checks
+      # Hermetic runs in the hermetic job; this lane adds only the stateful project.
+      - name: Run disposable stateful checks
         run: npm run check:container
 
       - name: Remove disposable state
