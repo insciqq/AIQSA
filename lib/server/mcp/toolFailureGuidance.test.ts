@@ -57,7 +57,6 @@ describe("MCP tool failure guidance", () => {
       message: `The MCP server is unavailable or not ready. ${NOT_SENT} Do not retry its tools in this answer; continue without ` +
         "them and tell the user." });
     expect(mcpToolFailureGuidance(mcpDispatchError("mcp_authorization_required"), "not_sent").reason).toBe("authorization");
-    expect(mcpToolFailureGuidance(mcpDispatchError("memory_egress_destination_revoked"), "not_sent").reason).toBe("unavailable");
     expect(mcpToolFailureGuidance(mcpDispatchError("mcp_tool_disabled"), "not_sent")).toEqual({ reason: "tool_disabled",
       message: `This MCP tool is switched off or no longer available to the user. ${NOT_SENT} Do not call it again in this answer.` });
     expect(mcpToolFailureGuidance(mcpDispatchError("mcp_tool_definition_changed"), "not_sent")).toEqual({

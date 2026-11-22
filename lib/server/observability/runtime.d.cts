@@ -1,5 +1,7 @@
 import type { EventFields, ObservabilityContext, ProcessRole, EmergencyFailure, Subsystem, LifecycleStage, SubsystemFailure } from "./events";
 import type { Writable } from "node:stream";
+/** The closed values of the named string unions in events.ts, by the type's name. */
+export const ENUMERATIONS: Readonly<Record<string, readonly string[]>>;
 export const MAX_RECORD_BYTES: number;
 export const MAX_OUTPUT_BYTES: number;
 /** A tracked transaction holding its rows longer than this is an error: the foreground request budget. */

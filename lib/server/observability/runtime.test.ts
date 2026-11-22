@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Writable } from "node:stream";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { version } from "../../../package.json";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import {
-  MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
+  ENUMERATIONS, MAX_OUTPUT_BYTES, MAX_RECORD_BYTES, attributeRequestUser, bindContext, createTraceId, createWriter,
   getContext, registerRouteTemplates, reportReadiness, runInBackground, runWithContext,
   serializeEvent, setProcessRole, writeEmergencyFailure
 } from "./runtime.cjs";
@@ -133,14 +134,41 @@ describe("bounded observability runtime", () => {
     expect(JSON.stringify([unexpected, hostile])).not.toContain("PRIVATE_");
   });
 
-  it.each(["native_route_http_error", "native_route_capability_mismatch", "native_route_authority_changed"])(
-    "retains native adoption diagnosis %s without raw provider details", (code) => {
-      const event = record("service_operation", { subsystem: "admin", stage: "validate", outcome: "degraded",
-        code, httpStatus: 404, message: "PRIVATE_PROVIDER_BODY", credential: "PRIVATE_KEY" } as never);
-      expect(event).toMatchObject({ code, httpStatus: 404, stage: "validate", outcome: "degraded" });
-      expect(JSON.stringify(event)).not.toContain("PRIVATE_");
-    }
-  );
+  it.each([
+    ["service_operation", "admin", "assistant_listing_failed"], ["service_operation", "configuration", "skill_preference_failed"],
+    ["service_operation", "admin", "skill_publication_saved"], ["service_operation", "admin", "skill_sharing_failed"],
+    ["service_operation", "admin", "skill_share_request_withdrawn"], ["service_operation", "admin", "skill_share_request_approved"],
+    ["service_operation", "admin", "skill_share_request_rejected"], ["service_operation", "configuration", "subagent_definitions_failed"],
+    ["runtime_lifecycle", "workspace", "workspace_agent_stop_unproven"]
+  ] as const)("keeps the logged code %s/%s/%s by name instead of unknown", (event, subsystem, code) => {
+    expect(record(event, { subsystem, stage: "write", outcome: "failed", code })).toMatchObject({ code });
+  });
+
+  it("keeps the runner's project restore stage", () => {
+    expect(record("runtime_lifecycle", { subsystem: "workspace", stage: "restore", outcome: "failed", action: "stop" }))
+      .toMatchObject({ stage: "restore", level: "error" });
+  });
+
+  it("validates each named union of events.ts against exactly its values", () => {
+    const file = "lib/server/observability/events.ts";
+    const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const aliases = new Map(source.statements.filter(ts.isTypeAliasDeclaration).map((alias) => [alias.name.text, alias.type]));
+    // The string literals a union resolves to, through the named unions it includes; null for any other type.
+    const values = (type: ts.TypeNode): string[] | null => {
+      const members = ts.isUnionTypeNode(type) ? [...type.types] : [type];
+      const resolved = members.map((member) => ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal) ? [member.literal.text]
+        : ts.isTypeReferenceNode(member) && ts.isIdentifier(member.typeName) && aliases.has(member.typeName.text)
+          ? values(aliases.get(member.typeName.text)!) : null);
+      return resolved.every((entry) => entry !== null) ? resolved.flat() : null;
+    };
+    const unions = Object.fromEntries([...aliases].flatMap(([name, type]) => {
+      const literal = values(type);
+      return literal ? [[name, [...literal].sort()]] : [];
+    }));
+    const runtime = Object.fromEntries(Object.entries(ENUMERATIONS).map(([name, list]) => [name, [...list].sort()]));
+    for (const list of Object.values(ENUMERATIONS)) expect(new Set(list).size).toBe(list.length);
+    expect(runtime).toEqual(unions);
+  });
 
   it("shares CJS and bundled entry context, including concurrent callbacks and fresh job roots", async () => {
     const cjs = require("./runtime.cjs") as typeof import("./runtime.cjs");
@@ -393,9 +421,9 @@ describe("bounded observability runtime", () => {
   });
 
   it("keeps the bounded provider cause separately from the public run failure", () => {
-    const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "knowledge_answer_failed" } as const;
+    const fields = { run_id: "run-1", stage: "execution", outcome: "failed", code: "model_answer_empty" } as const;
     expect(record("run_execution", { ...fields, provider_code: "provider_http_invalid_request" }))
-      .toMatchObject({ code: "knowledge_answer_failed", provider_code: "provider_http_invalid_request" });
+      .toMatchObject({ code: "model_answer_empty", provider_code: "provider_http_invalid_request" });
     const unsafe = record("run_execution", { ...fields, provider_code: "private-provider-error-body" });
     expect(unsafe.provider_code).toBe("unknown");
     expect(JSON.stringify(unsafe)).not.toContain("private-provider");

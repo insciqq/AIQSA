@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 import constraints from "./databaseConstraints.json";
@@ -31,6 +32,17 @@ describe("failure cause allowlists", () => {
     expect(describeFailureFacts(unique({ target: CANARY })).db_constraint).toBe("other");
     expect(describeFailureFacts(unique({ modelName: CANARY, target: [CANARY] })).db_constraint).toBe("other");
     expect(event("job_attempt", { subsystem: "background", stage: "process", outcome: "failed", job_kind: CANARY })).not.toHaveProperty("job_kind");
+  });
+
+  it("names only constraints whose model and fields the schema still has", () => {
+    const schema = readFileSync("prisma/schema.prisma", "utf8");
+    const models = new Map([...schema.matchAll(/^model (\w+) \{\n([\s\S]*?)^\}/gmu)].map((model) =>
+      [model[1]!, new Set([...model[2]!.matchAll(/^ {2}(\w+) +\S/gmu)].map((field) => field[1]!))]));
+    const stale = Object.entries(constraints as Record<string, { model: string; fields: readonly string[] }>)
+      .filter(([, { model, fields }]) => !fields.every((field) => models.get(model)?.has(field)))
+      .map(([name]) => name);
+    expect(models.size).toBeGreaterThan(50);
+    expect(stale).toEqual([]);
   });
 
   it("allows only opaque MCP server and tool identities, registered fetch reasons and HTTP status classes", () => {
