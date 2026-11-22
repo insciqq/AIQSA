@@ -38,6 +38,16 @@ const boundaryCases = [
     filePath: "lib/server/providers/importBoundaryExample.ts",
     reason: "Provider adapters must not import run orchestration, handlers, or repositories.",
     specifier: "@/lib/server/runs/handlers"
+  },
+  {
+    filePath: "lib/server/redaction/importBoundaryExample.ts",
+    reason: "Secret redaction must not depend on Memory, which it outlives.",
+    specifier: "../memory/explicit/safety"
+  },
+  {
+    filePath: "lib/server/redaction/importBoundaryExample.test.ts",
+    reason: "Secret redaction must not depend on Memory, which it outlives.",
+    specifier: "@/lib/domain/memory/retrieval"
   }
 ] as const;
 

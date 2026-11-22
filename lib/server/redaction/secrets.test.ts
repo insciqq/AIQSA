@@ -1,49 +1,49 @@
 import { describe, expect, it } from "vitest";
 import {
-  MEMORY_UNPROCESSED_TEXT_PLACEHOLDER,
-  memoryExplicitStatementContainsSecret,
-  memoryProjectionContainsRedaction,
-  memoryProjectionHasSourceText,
-  memoryRedactionHasSourceText,
-  memorySecretJoinIsSafe,
-  parseMemorySecret,
-  redactMemorySecrets,
-  redactMemorySecretsInWindows,
-  type MemorySecretWindowedRedactionResult
-} from "./safety";
+  UNPROCESSED_TEXT_PLACEHOLDER,
+  containsSecret,
+  textContainsRedactionMarker,
+  redactedTextHasSourceText,
+  redactionHasSourceText,
+  secretJoinIsSafe,
+  parseSecrets,
+  redactSecrets,
+  redactSecretsInWindows,
+  type SecretWindowedRedactionResult
+} from "./secrets";
 
-describe("explicit Memory secret screening", () => {
+describe("secret screening", () => {
   it("accepts ordinary Russian and English saved-memory statements", () => {
-    expect(memoryExplicitStatementContainsSecret(
+    expect(containsSecret(
       "Я предпочитаю ответы о ёлках на русском языке."
     )).toBe(false);
-    expect(memoryExplicitStatementContainsSecret(
+    expect(containsSecret(
       "For work trips, I prefer hotels near a metro station."
     )).toBe(false);
-    expect(memoryExplicitStatementContainsSecret(
+    expect(containsSecret(
       "Search my history for large recovery evidence."
     )).toBe(false);
-    expect(memoryExplicitStatementContainsSecret("My password is hunter2-secret")).toBe(false);
-    expect(memoryExplicitStatementContainsSecret("Мой пароль: hunter2-secret")).toBe(false);
-    expect(memoryExplicitStatementContainsSecret("API-ключ: example-secret-value")).toBe(false);
-    expect(memoryExplicitStatementContainsSecret("The user said they were ready.")).toBe(false);
+    expect(containsSecret("My password is hunter2-secret")).toBe(false);
+    expect(containsSecret("Мой пароль: hunter2-secret")).toBe(false);
+    expect(containsSecret("API-ключ: example-secret-value")).toBe(false);
+    expect(containsSecret("The user said they were ready.")).toBe(false);
   });
 
   it.each(["private", "future", "код", "未来", "avenir"])(
     "preserves safe source text without a semantic word filter (%#)", (value) => {
-      expect(memoryRedactionHasSourceText(value)).toBe(true);
-      expect(memoryProjectionHasSourceText(value)).toBe(true);
-      expect(memoryProjectionContainsRedaction(value)).toBe(false);
+      expect(redactionHasSourceText(value)).toBe(true);
+      expect(redactedTextHasSourceText(value)).toBe(true);
+      expect(textContainsRedactionMarker(value)).toBe(false);
     }
   );
 
   it.each(["key", "ключ", "鍵", "clé"])(
     "preserves safe labels without deciding their meaning (%#)", (label) => {
       const value = `${label}: sk-abcdefghijklmnopqrstuvwxyz123456`;
-      const redaction = redactMemorySecrets(value);
+      const redaction = redactSecrets(value);
       expect(redaction.redactedText).toBe(`${label}: [REDACTED:TOKEN]`);
-      expect(memoryRedactionHasSourceText(value, redaction)).toBe(true);
-      expect(memoryProjectionHasSourceText(redaction.redactedText)).toBe(true);
+      expect(redactionHasSourceText(value, redaction)).toBe(true);
+      expect(redactedTextHasSourceText(redaction.redactedText)).toBe(true);
     }
   );
 
@@ -51,19 +51,19 @@ describe("explicit Memory secret screening", () => {
     "sk-abcdefghijklmnopqrstuvwxyz123456", "[REDACTED:TOKEN]",
     "[REDACTED_SECRET]", "[REDACTED:PRIVATE_KEY] [REDACTED:TOKEN]", " --- "
   ])("does not count removed values or markers as retained source (%#)", (value) => {
-    const redaction = redactMemorySecrets(value);
-    expect(memoryRedactionHasSourceText(value, redaction)).toBe(false);
-    expect(memoryProjectionHasSourceText(redaction.redactedText)).toBe(false);
+    const redaction = redactSecrets(value);
+    expect(redactionHasSourceText(value, redaction)).toBe(false);
+    expect(redactedTextHasSourceText(redaction.redactedText)).toBe(false);
   });
 
   it("does not classify canonical UUID identifiers as high-entropy credentials", () => {
-    expect(parseMemorySecret(
+    expect(parseSecrets(
       "Source chat 652ca28b-7ac4-4078-97cd-9b48066e7cb9"
     )).toEqual({ containsSecret: false, findings: [], spans: [] });
-    expect(parseMemorySecret(
+    expect(parseSecrets(
       "Source chunk 9c24a000-9bd2-41b9-96ff-a9369526af5c"
     )).toEqual({ containsSecret: false, findings: [], spans: [] });
-    expect(parseMemorySecret(
+    expect(parseSecrets(
       "652ca28b-7ac4-4078-97cd-9b48066e7cb9-secret123"
     ).findings).toContain("HIGH_ENTROPY_TOKEN");
   });
@@ -81,36 +81,36 @@ describe("explicit Memory secret screening", () => {
     "Card 4111 1111 1111 1111",
     "Recovery: ABCD-EFGH-IJKL-MNOP"
   ])("rejects credential-like plaintext without returning it (%#)", (statement) => {
-    expect(memoryExplicitStatementContainsSecret(statement)).toBe(true);
+    expect(containsSecret(statement)).toBe(true);
   });
 
   it("reports structural findings without treating semantic labels as secrets", () => {
-    expect(parseMemorySecret("My password is hunter2-secret")).toEqual({
+    expect(parseSecrets("My password is hunter2-secret")).toEqual({
       containsSecret: false,
       findings: [],
       spans: []
     });
-    expect(parseMemorySecret("-----BEGIN PRIVATE KEY-----")).toMatchObject({
+    expect(parseSecrets("-----BEGIN PRIVATE KEY-----")).toMatchObject({
       containsSecret: true,
       findings: ["PEM_PRIVATE_KEY"]
     });
-    expect(parseMemorySecret("postgresql://owner:private-password@db.example.test/app"))
+    expect(parseSecrets("postgresql://owner:private-password@db.example.test/app"))
       .toMatchObject({ containsSecret: true, findings: ["CREDENTIAL_URL"] });
   });
 
   it("does not require a language or keyword fallback for recovery and card formats", () => {
-    expect(parseMemorySecret("ABCD-EFGH-IJKL-MNOP").findings)
+    expect(parseSecrets("ABCD-EFGH-IJKL-MNOP").findings)
       .toContain("RECOVERY_CODE");
-    expect(parseMemorySecret("abcd-efgh-ijkl-mnop").findings)
+    expect(parseSecrets("abcd-efgh-ijkl-mnop").findings)
       .toContain("RECOVERY_CODE");
-    expect(parseMemorySecret("4111 1111 1111 1111").findings)
+    expect(parseSecrets("4111 1111 1111 1111").findings)
       .toContain("PAYMENT_CARD");
   });
 
   it("redacts exact secret spans while preserving every safe surrounding character", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const input = `Я переехал в Хельсинки, мой API token ${token}; найди мой адрес.`;
-    const result = redactMemorySecrets(input);
+    const result = redactSecrets(input);
 
     expect(result).toMatchObject({
       containsSecret: true,
@@ -138,14 +138,14 @@ describe("explicit Memory secret screening", () => {
     secret,
     placeholder
   ) => {
-    const result = redactMemorySecrets(`before ${secret} after`);
+    const result = redactSecrets(`before ${secret} after`);
     expect(result.redactedText).toBe(`before ${placeholder} after`);
     expect(result.redactedText).not.toContain(secret);
   });
 
   it("fails closed over an unterminated single-line private key", () => {
     const key = "-----BEGIN PRIVATE KEY----- private-body-without-end";
-    const result = redactMemorySecrets(`before ${key}`);
+    const result = redactSecrets(`before ${key}`);
 
     expect(result.redactedText).toBe("before [REDACTED:PRIVATE_KEY]");
     expect(result.redactedText).not.toContain("private-body-without-end");
@@ -154,7 +154,7 @@ describe("explicit Memory secret screening", () => {
   it("returns typed spans and an exact source map for retained text", () => {
     const token = "sk-abcdefghijklmnopqrstuvwxyz123456";
     const input = `before ${token} after`;
-    const result = redactMemorySecrets(input);
+    const result = redactSecrets(input);
 
     expect(result.spans).toEqual([expect.objectContaining({
       action: "REDACT",
@@ -188,7 +188,7 @@ describe("explicit Memory secret screening", () => {
 
   it("normalizes overlapping detections longest-first", () => {
     const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvd25lciJ9.signature123456";
-    const result = redactMemorySecrets(`JWT ${jwt} remains described`);
+    const result = redactSecrets(`JWT ${jwt} remains described`);
 
     expect(result.detections.map(({ finding }) => finding)).toContain("JSON_WEB_TOKEN");
     expect(result.spans).toHaveLength(1);
@@ -201,8 +201,8 @@ describe("explicit Memory secret screening", () => {
 
   it("keeps generic high entropy audit-only", () => {
     const opaque = "opaqueBuildA1B2C3D4E5F6G7H8I9J0K1L2M3N4";
-    const parsed = parseMemorySecret(opaque);
-    const redacted = redactMemorySecrets(opaque);
+    const parsed = parseSecrets(opaque);
+    const redacted = redactSecrets(opaque);
 
     expect(parsed).toMatchObject({ containsSecret: false });
     expect(parsed.spans).toEqual([expect.objectContaining({
@@ -255,9 +255,9 @@ function windowFixture(seed: number): string {
 /** One full pass, with each withheld range replaced by one marker. */
 function expectedWindowedText(
   value: string,
-  windowed: MemorySecretWindowedRedactionResult
+  windowed: SecretWindowedRedactionResult
 ): string {
-  const full = redactMemorySecrets(value);
+  const full = redactSecrets(value);
   let expected = "";
   const render = (from: number, to: number) => {
     let cursor = from;
@@ -273,7 +273,7 @@ function expectedWindowedText(
   let cursor = 0;
   for (const range of windowed.withheld) {
     render(cursor, range.start);
-    expected += MEMORY_UNPROCESSED_TEXT_PLACEHOLDER;
+    expected += UNPROCESSED_TEXT_PLACEHOLDER;
     cursor = range.end;
   }
   render(cursor, value.length);
@@ -282,7 +282,7 @@ function expectedWindowedText(
 
 function expectExactSourceMap(
   value: string,
-  windowed: MemorySecretWindowedRedactionResult
+  windowed: SecretWindowedRedactionResult
 ): void {
   let sourceCursor = 0;
   let outputCursor = 0;
@@ -300,14 +300,14 @@ function expectExactSourceMap(
   expect(outputCursor).toBe(windowed.redactedText.length);
 }
 
-describe("windowed Memory secret redaction", () => {
+describe("windowed secret redaction", () => {
   it("equals one full pass for every scanned window and withholds the rest", () => {
     let comparedWithoutWithholding = 0;
     for (let seed = 1; seed <= 250; seed += 1) {
       const value = windowFixture(seed);
-      const full = redactMemorySecrets(value);
+      const full = redactSecrets(value);
       for (const windowCodeUnits of [32, 96, 160]) {
-        const windowed = redactMemorySecretsInWindows(value, {
+        const windowed = redactSecretsInWindows(value, {
           maxCodeUnits: Number.POSITIVE_INFINITY,
           windowCodeUnits
         });
@@ -325,8 +325,8 @@ describe("windowed Memory secret redaction", () => {
 
   it.each(WINDOW_SECRETS)("keeps a secret whole across a window boundary (%#)", (secret) => {
     const value = `${"word ".repeat(25)}${secret} ${"tail words ".repeat(40)}`;
-    const full = redactMemorySecrets(value);
-    const windowed = redactMemorySecretsInWindows(value, {
+    const full = redactSecrets(value);
+    const windowed = redactSecretsInWindows(value, {
       maxCodeUnits: Number.POSITIVE_INFINITY,
       windowCodeUnits: 128
     });
@@ -342,31 +342,31 @@ describe("windowed Memory secret redaction", () => {
 
   it("withholds what one bounded window cannot scan and continues after it", () => {
     const run = "Qx".repeat(100);
-    const opaque = redactMemorySecretsInWindows(
+    const opaque = redactSecretsInWindows(
       `before words\n${run} ${run}\nafter words`,
       { maxCodeUnits: Number.POSITIVE_INFINITY, windowCodeUnits: 64 }
     );
     expect(opaque.redactedText)
-      .toBe(`before words\n${MEMORY_UNPROCESSED_TEXT_PLACEHOLDER}after words`);
+      .toBe(`before words\n${UNPROCESSED_TEXT_PLACEHOLDER}after words`);
     expect(opaque.withheld).toHaveLength(1);
     expect(opaque.containsSecret).toBe(false);
 
     const key = `-----BEGIN PRIVATE KEY-----\n${"MIIEvQIBADANBgkq\n".repeat(8)}` +
       "-----END PRIVATE KEY-----";
-    const oversizedKey = redactMemorySecretsInWindows(`note:\n${key}\nafter`, {
+    const oversizedKey = redactSecretsInWindows(`note:\n${key}\nafter`, {
       maxCodeUnits: Number.POSITIVE_INFINITY,
       windowCodeUnits: 64
     });
     expect(oversizedKey.redactedText).not.toContain("MIIEvQIBADANBgkq");
-    expect(oversizedKey.redactedText).toContain(MEMORY_UNPROCESSED_TEXT_PLACEHOLDER);
+    expect(oversizedKey.redactedText).toContain(UNPROCESSED_TEXT_PLACEHOLDER);
     expect(oversizedKey.redactedText.endsWith("after")).toBe(true);
 
-    const budgeted = redactMemorySecretsInWindows("word ".repeat(100), {
+    const budgeted = redactSecretsInWindows("word ".repeat(100), {
       maxCodeUnits: 128,
       windowCodeUnits: 64
     });
     expect(budgeted.redactedText.startsWith("word word")).toBe(true);
-    expect(budgeted.redactedText.endsWith(MEMORY_UNPROCESSED_TEXT_PLACEHOLDER))
+    expect(budgeted.redactedText.endsWith(UNPROCESSED_TEXT_PLACEHOLDER))
       .toBe(true);
     expect(budgeted.withheld).toEqual([
       { end: 500, start: expect.any(Number) }
@@ -380,7 +380,7 @@ describe("windowed Memory secret redaction", () => {
       `${"😀".repeat(150)} done`,
       `${"кофе".repeat(80)}😀${"a".repeat(20)}`
     ]) {
-      const windowed = redactMemorySecretsInWindows(value, {
+      const windowed = redactSecretsInWindows(value, {
         maxCodeUnits: Number.POSITIVE_INFINITY,
         windowCodeUnits: 64
       });
@@ -391,18 +391,18 @@ describe("windowed Memory secret redaction", () => {
   });
 
   it("rejects window options that cannot bound the scan", () => {
-    expect(() => redactMemorySecretsInWindows("text", {
+    expect(() => redactSecretsInWindows("text", {
       maxCodeUnits: 10,
       windowCodeUnits: 0
     })).toThrow("memory_secret_window_options_invalid");
-    expect(() => redactMemorySecretsInWindows("text", {
+    expect(() => redactSecretsInWindows("text", {
       maxCodeUnits: 5,
       windowCodeUnits: 10
     })).toThrow("memory_secret_window_options_invalid");
   });
 
   it("scans the join of two redacted texts instead of their combined length", () => {
-    expect(memorySecretJoinIsSafe(
+    expect(secretJoinIsSafe(
       "ordinary ".repeat(20_000),
       "\n\n",
       "reply ".repeat(20_000)
@@ -411,11 +411,11 @@ describe("windowed Memory secret redaction", () => {
     // redacts the key body.
     const left = "see -----BEGIN ";
     const right = "RSA PRIVATE KEY-----\nkey-body\n-----END RSA PRIVATE KEY-----";
-    expect(redactMemorySecrets(right).redactedText).toContain("key-body");
-    expect(memorySecretJoinIsSafe(left, "\n\n", right)).toBe(false);
-    expect(() => memorySecretJoinIsSafe("a", " ", "b"))
+    expect(redactSecrets(right).redactedText).toContain("key-body");
+    expect(secretJoinIsSafe(left, "\n\n", right)).toBe(false);
+    expect(() => secretJoinIsSafe("a", " ", "b"))
       .toThrow("memory_secret_join_separator_invalid");
-    expect(() => memorySecretJoinIsSafe("a", "", "b"))
+    expect(() => secretJoinIsSafe("a", "", "b"))
       .toThrow("memory_secret_join_separator_invalid");
   });
 });

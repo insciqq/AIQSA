@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { planMemoryRetrieval } from "../../domain/memory/retrieval";
-import { sanitizeMemoryUtilityText } from "../memory/retrieval/querySafety";
+import { redactSearchQuery } from "../redaction/searchQuery";
 import {
   MEMORY_PREPARING_ITEM_TEXT_MAX_CHARACTERS,
   MemoryPreparingRunConflictError,
@@ -51,7 +51,7 @@ describe("Memory preparing context ceiling", () => {
     `${"x".repeat(1_999)}🧠tail`,
     `${"x".repeat(1_996)}🧠🧠tail`
   ])("bounds safe Unicode queries to the durable limit without splitting a character", (text) => {
-    const safe = sanitizeMemoryUtilityText(text);
+    const safe = redactSearchQuery(text);
     expect(safe).toMatchObject({ eligible: true, redacted: false });
     const plan = planMemoryRetrieval({
       currentUserText: safe.safeText,
@@ -76,7 +76,7 @@ describe("Memory preparing context ceiling", () => {
 
   it.each(["\n", "\r\n", "\t", "  "])("preserves numeric field boundaries through safe query planning and persistence (%j)", (separator) => {
     const text = ["Independent row counts:", "4111", "1111", "1111", "1111"].join(separator);
-    const safe = sanitizeMemoryUtilityText(text);
+    const safe = redactSearchQuery(text);
     expect(safe).toMatchObject({ eligible: true, redacted: false, safeText: text });
     const plan = planMemoryRetrieval({ currentUserText: safe.safeText, now: new Date("2026-09-01T00:00:00Z") });
     expect(() => validateMemoryPreparingAttemptResult({
@@ -84,7 +84,7 @@ describe("Memory preparing context ceiling", () => {
     })).not.toThrow();
     expect(plan.originalSanitizedQuery).toBe(text);
     const card = "Example card 4111 1111 1111 1111";
-    expect(sanitizeMemoryUtilityText(card).redacted).toBe(true);
+    expect(redactSearchQuery(card).redacted).toBe(true);
     expect(() => validateMemoryPreparingAttemptResult({
       budgetSnapshot: {}, outcome: "EMPTY", querySnapshot: card
     })).toThrow(MemoryPreparingRunConflictError);
@@ -92,7 +92,7 @@ describe("Memory preparing context ceiling", () => {
 
   it("persists a long turn's head-to-tail fragment projection and rejects unplanned text", () => {
     const text = `${"Travel log entry. ".repeat(400)}Where did I leave the blue umbrella?`;
-    const safe = sanitizeMemoryUtilityText(text);
+    const safe = redactSearchQuery(text);
     const plan = planMemoryRetrieval({
       currentUserText: safe.safeText,
       now: new Date("2026-09-01T00:00:00Z")
