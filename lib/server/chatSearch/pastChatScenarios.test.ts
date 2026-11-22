@@ -126,9 +126,10 @@ function rerankScore(query: string, document: string): number {
 }
 
 /**
- * The dedicated reranker, as a fake: concepts and the query's own words, query against each document. Without one the
- * fused order stands, and a meaning-only match (a cross-language query) can sink below passages that share a common
- * word with the query and sit in both lanes; the stand run measures both.
+ * The dedicated reranker, as a fake: concepts and the query's own words, query against each document. Every scenario
+ * runs with it and without one (`VARIANTS`): an installation may have none, so the fused order must find a
+ * meaning-only match (a cross-language query) above passages that share only a weak word with the query
+ * (`lib/server/chatSearch/search/rank.ts`); the stand run measures both with real models.
  */
 const reranker: PastChatReranker = {
   resolve: async () => ({ kind: "ready", route: {
@@ -286,20 +287,22 @@ const searchStore: PastChatSearchStore = {
   },
   async wordHits(scope, units, limit) {
     return inScope(scope).flatMap((passage) => {
-      const terms = new Map<string, { weight: number; pin: boolean }>();
+      const terms = new Map<string, { admits: boolean; weight: number; pin: boolean }>();
       for (const unit of units) {
         if (!unitMatches(unit.query, passage.text)) continue;
         const known = terms.get(unit.term);
-        terms.set(unit.term, { pin: (known?.pin ?? false) || unit.pin, weight: Math.max(known?.weight ?? 0, unit.weight) });
+        terms.set(unit.term, { admits: (known?.admits ?? false) || unit.admits, pin: (known?.pin ?? false) || unit.pin,
+          weight: Math.max(known?.weight ?? 0, unit.weight) });
       }
-      if (terms.size === 0) return [];
+      // As the SQL's HAVING: a common unit alone does not bring a passage in.
+      if (![...terms.values()].some((value) => value.admits)) return [];
       const entries = [...terms.entries()].sort((left, right) => right[1].weight - left[1].weight);
       return [{ chatId: passage.chatId, id: passage.id, pinned: entries.some(([, value]) => value.pin),
         score: entries.reduce((sum, [, value]) => sum + value.weight, 0), terms: entries.map(([term]) => term), turnAt: passage.turnAt,
         userMessageId: passage.userMessageId }];
     }).sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.score - left.score ||
       right.turnAt.getTime() - left.turnAt.getTime() || (left.id < right.id ? -1 : 1))
-      .slice(0, limit).map(({ score: _score, ...hit }) => hit);
+      .slice(0, limit);
   },
   async vectorHits(scope, vector, limit) {
     return inScope(scope).filter((passage) => passage.model === vector.providerModelId && passage.vector?.length === vector.values.length)
@@ -340,28 +343,24 @@ const readStore: PastChatReadStore = {
   }
 };
 
-const search = createPastChatSearch({ embedder, recordUsage: () => undefined, reranker, savedSecretValues: async () => [], store: searchStore });
+/** Two variants of one search: with the dedicated reranker, and without one, where the fused order must stand on its own. */
+const VARIANTS = [
+  { name: "with the reranker", search: createPastChatSearch({ embedder, recordUsage: () => undefined, reranker, savedSecretValues: async () => [],
+    store: searchStore }) },
+  { name: "without a reranker", search: createPastChatSearch({ embedder, recordUsage: () => undefined, savedSecretValues: async () => [],
+    store: searchStore }) }
+] as const;
+type VariantName = (typeof VARIANTS)[number]["name"];
 const reader = createPastChatReader({ savedSecretValues: async () => [], store: readStore });
 
-const scores = new Map<string, ScenarioScore>();
+const scores = new Map<VariantName, Map<string, ScenarioScore>>(VARIANTS.map((variant) => [variant.name, new Map()]));
 
-beforeAll(async () => {
-  // The corpus is indexed as the worker would find it, then the turns that settled minutes ago arrive.
-  for (const chat of world.values()) if (!chat.seed.arrivesLate) markDirty(chat);
-  await drain();
-  for (const chat of world.values()) if (chat.seed.arrivesLate) markDirty(chat);
-  await drain();
-  // Changes after indexing that the search itself must honour, whether or not the index was cleared.
-  for (const chat of world.values()) {
-    if (chat.seed.mode === "deleted") chat.eligibility = { ...chat.eligibility, permanentDeletionAt: new Date(NOW) };
-    if (chat.seed.mode === "excluded_after_index") chat.eligibility = { ...chat.eligibility, memoryMode: "EXCLUDED" };
-  }
-
+async function runScenarios(variant: (typeof VARIANTS)[number]): Promise<void> {
   for (const scenario of fixtures.scenarios) {
     const timeZone = scenarioTimeZone(users, scenario);
     const input = scenarioSearchInput(scenario, NOW, timeZone);
     const current = scenarioCurrentChatKey(scenario);
-    const outcome = await search.search({ currentChatId: current ? idOf(current) : "no-current-chat", input, ownerId: idOf(scenario.user),
+    const outcome = await variant.search.search({ currentChatId: current ? idOf(current) : "no-current-chat", input, ownerId: idOf(scenario.user),
       timeZone });
     const results = outcome.kind === "searched" ? outcome.result.results : [];
     let read: ScenarioObservation["read"];
@@ -385,28 +384,39 @@ beforeAll(async () => {
       rerank: outcome.kind === "searched" ? outcome.rerank : null,
       ...(read ? { read } : {})
     };
-    scores.set(scenario.id, scoreChatSearchScenario({ observation, scenario, searchInput: input, users }));
+    scores.get(variant.name)!.set(scenario.id, scoreChatSearchScenario({ observation, scenario, searchInput: input, users }));
   }
+}
+
+beforeAll(async () => {
+  // The corpus is indexed as the worker would find it, then the turns that settled minutes ago arrive.
+  for (const chat of world.values()) if (!chat.seed.arrivesLate) markDirty(chat);
+  await drain();
+  for (const chat of world.values()) if (chat.seed.arrivesLate) markDirty(chat);
+  await drain();
+  // Changes after indexing that the search itself must honour, whether or not the index was cleared.
+  for (const chat of world.values()) {
+    if (chat.seed.mode === "deleted") chat.eligibility = { ...chat.eligibility, permanentDeletionAt: new Date(NOW) };
+    if (chat.seed.mode === "excluded_after_index") chat.eligibility = { ...chat.eligibility, memoryMode: "EXCLUDED" };
+  }
+  for (const variant of VARIANTS) await runScenarios(variant);
 });
 
-describe("past-chat search scenarios with a fake embedder", () => {
+describe.each(VARIANTS.map((variant) => [variant.name] as const))("past-chat search scenarios with a fake embedder, %s", (name) => {
   it.each(fixtures.scenarios.map((scenario): [string, string] => [scenario.id, scenario.class]))("%s (%s)", (id) => {
-    const score = scores.get(id)!;
+    const score = scores.get(name)!.get(id)!;
     expect({ reasons: score.reasons, violations: score.violations }).toEqual({ reasons: [], violations: 0 });
   });
 
-  it("indexes only the active branch of eligible chats and keeps the meaning lane in every search", () => {
-    const indexed = new Set(passages.map((passage) => passage.chatId));
-    for (const chat of world.values()) {
-      expect(indexed.has(chat.id)).toBe(chat.seed.mode === "normal" || chat.seed.mode === "deleted" || chat.seed.mode === "excluded_after_index");
-    }
-    expect(passages.some((passage) => passage.text.includes("Стратус"))).toBe(false);
-    expect(passages.every((passage) => passage.model === MODEL)).toBe(true);
-    expect([...scores.values()].every((score) => score.degraded === null)).toBe(true);
+  it("keeps the meaning lane in every search, and the reranker only where one is set", () => {
+    const variantScores = [...scores.get(name)!.values()];
+    expect(variantScores.every((score) => score.degraded === null)).toBe(true);
+    const reranks = new Set(variantScores.flatMap((score) => score.rerank === null || score.rerank === "not_needed" ? [] : [score.rerank]));
+    expect([...reranks]).toEqual([name === "with the reranker" ? "used" : "not_set"]);
   });
 
   it("reports every class content-free: no query, title, excerpt or id", () => {
-    const report = chatSearchScenarioReport([...scores.values()]);
+    const report = chatSearchScenarioReport([...scores.get(name)!.values()]);
     expect(report).toMatchObject({ scenarios: fixtures.scenarios.length, passed: fixtures.scenarios.length, violations: 0 });
     expect(Object.keys(report.classes).sort()).toEqual([...new Set(fixtures.scenarios.map((scenario) => scenario.class))].sort());
     const text = JSON.stringify(report);
@@ -415,5 +425,16 @@ describe("past-chat search scenarios with a fake embedder", () => {
       expect(text).not.toContain(chat.title);
       expect(text).not.toContain(chat.key);
     }
+  });
+});
+
+describe("the scenario corpus's index", () => {
+  it("indexes only the active branch of eligible chats, each passage embedded by the current model", () => {
+    const indexed = new Set(passages.map((passage) => passage.chatId));
+    for (const chat of world.values()) {
+      expect(indexed.has(chat.id)).toBe(chat.seed.mode === "normal" || chat.seed.mode === "deleted" || chat.seed.mode === "excluded_after_index");
+    }
+    expect(passages.some((passage) => passage.text.includes("Стратус"))).toBe(false);
+    expect(passages.every((passage) => passage.model === MODEL)).toBe(true);
   });
 });

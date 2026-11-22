@@ -95,20 +95,22 @@ function createWorld(seedChats: readonly SeedChat[], seedPassages: readonly Seed
     async wordHits(scope, units, limit) {
       calls.push("wordHits");
       return inScope(scope).flatMap((passage) => {
-        const terms = new Map<string, { weight: number; pin: boolean }>();
+        const terms = new Map<string, { admits: boolean; weight: number; pin: boolean }>();
         for (const unit of units) {
           if (!matches(unit.query, passage.text)) continue;
           const known = terms.get(unit.term);
-          terms.set(unit.term, { pin: (known?.pin ?? false) || unit.pin, weight: Math.max(known?.weight ?? 0, unit.weight) });
+          terms.set(unit.term, { admits: (known?.admits ?? false) || unit.admits, pin: (known?.pin ?? false) || unit.pin,
+            weight: Math.max(known?.weight ?? 0, unit.weight) });
         }
-        if (terms.size === 0) return [];
+        // As the SQL's HAVING: a common unit alone does not bring a passage in.
+        if (![...terms.values()].some((value) => value.admits)) return [];
         const entries = [...terms.entries()].sort((left, right) => right[1].weight - left[1].weight);
         return [{ chatId: passage.chatId, id: passage.id, pinned: entries.some(([, value]) => value.pin),
           score: entries.reduce((sum, [, value]) => sum + value.weight, 0), terms: entries.map(([term]) => term), turnAt: passage.turnAt,
           userMessageId: passage.userMessageId }];
       }).sort((left, right) => Number(right.pinned) - Number(left.pinned) || right.score - left.score ||
         right.turnAt.getTime() - left.turnAt.getTime() || (left.id < right.id ? -1 : 1))
-        .slice(0, limit).map(({ score: _score, ...hit }) => hit);
+        .slice(0, limit);
     },
     async vectorHits(scope, vector, limit) {
       calls.push("vectorHits");
@@ -236,6 +238,35 @@ describe("past-chat search ranking", () => {
       { timeZone: "Europe/Moscow" }));
     expect(outcome.result.results.map((result) => result.chatId)).toEqual(["late"]);
     expect(outcome.result.results[0]!.date).toBe("2026-11-11T00:30:00+03:00");
+  });
+});
+
+describe("past-chat search and common words", () => {
+  // Sixty chats: every passage says "the"; one names the invoice; one is a late bill told in other words; six say "for".
+  const text = (index: number) => index === 7 ? "the Orbita invoice is overdue" : index === 9 ? "the bill from Orbita came late"
+    : index >= 20 && index < 26 ? `the note for team ${index}` : `the note number ${index}`;
+  const world = () => createWorld(Array.from({ length: 60 }, (_, index) => chat(`c${index}`)), Array.from({ length: 60 }, (_, index) => ({
+    chatId: `c${index}`, id: `p${index}`, model: MODEL, text: text(index),
+    vector: index === 9 ? [1, 0, 0] : index >= 20 && index < 26 ? [0.7, 0.7, 0] : [0, 0.3, 1]
+  })));
+
+  it("brings no passage in by a word most passages hold, but lets it add weight to one another word brought in", async () => {
+    const { store } = world();
+    const unset = embedder({}, { model: { kind: "unset" } }).fake;
+    expect(ids(await search({ embedder: unset, store }, { query: "the invoice" }))).toEqual(["c7"]);
+    // A query of common words only still finds what holds them.
+    expect(searched(await search({ embedder: unset, store }, { query: "the" })).result.results).toHaveLength(8);
+  });
+
+  it("keeps a meaning-only match above passages that share only a weak word with the query", async () => {
+    const { store } = world();
+    // The six "for" notes sit in both lanes, low in each; the late bill shares no word but "the" and leads the meaning lane.
+    const query = "overdue payment for the services";
+    const { fake } = embedder({ [query]: [1, 0, 0] });
+    expect(ids(await search({ embedder: fake, store }, { query }))[0]).toBe("c9");
+    // Without meaning search the word matches are all there is.
+    expect(ids(await search({ embedder: embedder({}, { model: { kind: "unset" } }).fake, store }, { query })))
+      .toEqual(["c7", "c25", "c24", "c23", "c22", "c21", "c20"]);
   });
 });
 

@@ -4,12 +4,14 @@ import {
   inverseDocumentFrequency,
   pastChatPhraseChunks,
   pastChatQueryChunks,
+  pastChatQueryWeight,
   pastChatWordUnits,
   type PastChatUnitStatistics
 } from "./query";
 
 const stat = (kind: PastChatUnitStatistics["kind"], key: string, documentFrequency: number, query = kind === "prefix" ? `'${key}':*`
-  : kind === "phrase" ? `phrase(${key})` : `'${key}'`): PastChatUnitStatistics => ({ documentFrequency, key, kind, passages: 6000, query });
+  : kind === "phrase" ? `phrase(${key})` : `'${key}'`, passages = 6000): PastChatUnitStatistics => ({ documentFrequency, key, kind, passages,
+  query });
 
 describe("past-chat query chunks", () => {
   it("keep identifiers whole and drop the punctuation around them, in any script", () => {
@@ -67,5 +69,26 @@ describe("past-chat word units", () => {
 
   it("leave out units that match nothing", () => {
     expect(pastChatWordUnits([stat("exact", "absent", 0), stat("phrase", "ABC-9", 0)])).toEqual([]);
+  });
+
+  it("let a unit held by more than a quarter of the passages only add weight, unless every unit is that common", () => {
+    const mixed = pastChatWordUnits([stat("exact", "the", 4000), stat("exact", "после", 1600), stat("exact", "invoice", 40)]);
+    expect(Object.fromEntries(mixed.map((unit) => [unit.term, unit.admits]))).toEqual({ "w:invoice": true, "w:the": false, "w:после": false });
+    expect(pastChatWordUnits([stat("exact", "the", 4000), stat("exact", "for", 3000)]).every((unit) => unit.admits)).toBe(true);
+    // Below 50 passages a share says little: nothing is common there.
+    expect(pastChatWordUnits([stat("exact", "the", 30, "'the'", 40), stat("exact", "invoice", 2, "'invoice'", 40)])
+      .every((unit) => unit.admits)).toBe(true);
+  });
+
+  it("weigh the whole query, words no passage holds included", () => {
+    const held = [stat("exact", "design", 1), stat("exact", "for", 600)];
+    const withMissing = [...held, stat("exact", "hourly", 0), stat("exact", "proposal", 0)];
+    const heldWeight = pastChatWordUnits(held).reduce((sum, unit) => sum + unit.weight, 0);
+    expect(pastChatQueryWeight(held)).toBeCloseTo(heldWeight);
+    // Each missing word weighs as if one passage held it: as much as the rarest word can.
+    expect(pastChatQueryWeight(withMissing)).toBeGreaterThan(heldWeight * 2);
+    // A term counts once, by its best unit: the exact word, not its prefix.
+    const stemmed = [stat("exact", "договор", 5), stat("prefix", "договор", 30)];
+    expect(pastChatQueryWeight(stemmed)).toBeCloseTo(Math.max(...pastChatWordUnits(stemmed).map((unit) => unit.weight)));
   });
 });
