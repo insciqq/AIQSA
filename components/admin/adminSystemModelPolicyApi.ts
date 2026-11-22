@@ -75,6 +75,8 @@ export function updateAdminSystemModelPolicy(input: Readonly<{
   providerModelId?: string | null;
   /** Omit to preserve the independent reranker role. */
   rerankerProviderModelId?: string | null;
+  /** Omit to preserve the past-chat embedding role; null clears it. A change re-embeds the past-chat index. */
+  embeddingProviderModelId?: string | null;
   decisionProviderModelId?: string | null;
   decisionFeatures?: DecisionFeatureOverrides;
   reasoningEffort?: string | null;

@@ -131,6 +131,9 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
           ...(Object.hasOwn(body, "rerankerProviderModelId") ? {
             rerankerModel: body.rerankerProviderModelId ? { ...roles.rerankerCandidates.find((item) => item.id === body.rerankerProviderModelId)!, available: true } : null
           } : {}),
+          ...(Object.hasOwn(body, "embeddingProviderModelId") ? {
+            embeddingModel: body.embeddingProviderModelId ? { ...roles.embeddingCandidates!.find((item) => item.id === body.embeddingProviderModelId)!, available: true } : null
+          } : {}),
           ...(Object.hasOwn(body, "decisionProviderModelId") ? {
             decisionModel: body.decisionProviderModelId ? { ...roles.decisionCandidates!.find((item) => item.id === body.decisionProviderModelId)!, available: true } : null
           } : {}),
@@ -483,6 +486,79 @@ describe("AdminRolesSection", () => {
       .toEqual([{ expectedVersion: 1, providerModelId: "terra", reasoningEffort: null }]);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(reportNotice).toHaveBeenLastCalledWith("Saved for future work", expect.objectContaining({ label: "Undo" }));
+  });
+
+  it("assigns, changes and clears the past-chat embedding model only after confirming the cost, with Undo", async () => {
+    const small = { ...voyage, displayName: "Embed Small", id: "embed-small" };
+    const large = { ...voyage, displayName: "Embed Large", id: "embed-large" };
+    const catalog = rolesCatalog();
+    catalog.embeddingCandidates = [small, large];
+    const calls = server(catalog);
+    const { reportNotice, requestConfirmation } = renderSection();
+    const row = await screen.findByTestId("admin-role-embedding");
+    expect(row).toHaveTextContent("Embeddings");
+    expect(row).toHaveTextContent("Used by past-chat search");
+    expect(screen.getByTestId("admin-role-embedding-status")).toHaveTextContent("Not assigned");
+    const picker = within(row).getByRole("button", { name: "Embedding deployment" });
+    const patches = () => patchesTo(calls, "/api/admin/providers/system-model-policy");
+
+    // Choosing asks first and saves nothing until confirmed.
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: /Embed Small/ }));
+    const assign = requestConfirmation.mock.calls.at(-1)![0];
+    expect(assign).toMatchObject({ confirmLabel: "Assign and embed", testId: "admin-embedding-assign-confirm", tone: "warning" });
+    expect(assign.body).toContain("OpenRouter / Embed Small");
+    expect(assign.body).toMatch(/embeds every indexed chat again/);
+    expect(assign.body).toMatch(/provider usage for the whole past-chat index/);
+    expect(patches()).toEqual([]);
+    await act(async () => assign.onConfirm());
+    await waitFor(() => expect(picker).toHaveTextContent("Embed Small"));
+    expect(screen.getByTestId("admin-role-embedding-status")).toHaveTextContent("Working");
+
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: /Embed Large/ }));
+    const change = requestConfirmation.mock.calls.at(-1)![0];
+    expect(change).toMatchObject({ confirmLabel: "Change and re-embed", title: "Change the embedding model?" });
+    await act(async () => change.onConfirm());
+    await waitFor(() => expect(picker).toHaveTextContent("Embed Large"));
+
+    // Choosing the model already assigned changes nothing and asks nothing.
+    const asked = requestConfirmation.mock.calls.length;
+    fireEvent.click(picker);
+    fireEvent.click(await screen.findByRole("option", { name: /Embed Large/ }));
+    expect(requestConfirmation.mock.calls).toHaveLength(asked);
+
+    fireEvent.click(within(row).getByRole("button", { name: "Embeddings actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
+    const clear = requestConfirmation.mock.calls.at(-1)![0];
+    expect(clear).toMatchObject({ confirmLabel: "Clear role", testId: "admin-embedding-clear-confirm" });
+    expect(clear.body).toMatch(/matches words only/);
+    await act(async () => clear.onConfirm());
+    await waitFor(() => expect(screen.getByTestId("admin-role-embedding-status")).toHaveTextContent("Not assigned"));
+    // Other roles stay as they were.
+    expect(screen.getByRole("button", { name: "Reranking deployment" })).toHaveTextContent("Voyage Rerank");
+
+    await act(async () => reportNotice.mock.calls.at(-1)?.[1]?.onSelect());
+    await waitFor(() => expect(picker).toHaveTextContent("Embed Large"));
+    expect(patches()).toEqual([
+      { embeddingProviderModelId: "embed-small", expectedVersion: 1 },
+      { embeddingProviderModelId: "embed-large", expectedVersion: 2 },
+      { embeddingProviderModelId: null, expectedVersion: 3 },
+      { embeddingProviderModelId: "embed-large", expectedVersion: 4 }
+    ]);
+  });
+
+  it("says when the assigned embedding model is unavailable and search matches words only", async () => {
+    const catalog = rolesCatalog();
+    const lost = { ...voyage, displayName: "Embed Lost", id: "embed-lost" };
+    catalog.embeddingCandidates = [];
+    catalog.policy.embeddingModel = { ...lost, available: false };
+    server(catalog);
+    renderSection();
+    const row = await screen.findByTestId("admin-role-embedding");
+    expect(within(row).getByRole("button", { name: "Embedding deployment" })).toHaveTextContent("Embed Lost");
+    expect(screen.getByTestId("admin-role-embedding-status")).toHaveTextContent("Unavailable");
+    expect(screen.getByTestId("admin-embedding-unavailable")).toHaveTextContent("matches words only until this model works again");
   });
 
   it("applies a selection immediately and Undo restores the previous assignment", async () => {
