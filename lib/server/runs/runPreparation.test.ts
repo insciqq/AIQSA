@@ -27,7 +27,7 @@ import { renderMemoryNoteForPrompt } from "../memoryNote/prompt";
 import { providerInstructionsWithPersonalContext } from "../providers/personalContext";
 import type { NormalizedRunRequest, ProviderAdapter, ProviderConversationMessage, ProviderModelCapabilities, ProviderRunRequest } from "../providers/types";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
-import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields } from "../../contracts/assistants";
 import { SKILL_MAX_AVAILABLE } from "../../contracts/skills";
 import { DEEP_RESEARCH_REFUSALS } from "../../contracts/research";
 import { DISCORD_CONNECTOR_NOTE, DISCORD_RUN_REFUSALS } from "../connectors/turn";
@@ -1941,7 +1941,7 @@ describe("run preparation", () => {
         answerRules: null, assistantId: "assistant-1", definitionVersion: 1,
         identity: { name: "Writing helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring",
           kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
-        name: "Writing helper", provider: "fake", rows: assistantRowsFromLegacyFields(fields), systemPrompt: "Help with writing.",
+        name: "Writing helper", provider: "fake", rows: assistantRowsFromFlatFields(fields), systemPrompt: "Help with writing.",
         ...fields
       } };
     };
@@ -2890,7 +2890,7 @@ describe("run preparation", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -4621,7 +4621,7 @@ describe("scheduled task creation admission", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -4696,7 +4696,7 @@ describe("Skill save admission", () => {
           assistantId: "assistant-1", definitionVersion: 1, identity: { name: "Helper", avatar: { accents: [], backgroundShape: "circle", foregroundShape: "ring", kind: "generated",
             paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
           mcpServerIds: [], name: "Helper", provider: "openai", providerModelId: "openai-tool-model", runControls: {},
-          rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+          rows: assistantRowsFromFlatFields({ mcpServerIds: [],
             providerModelId: "openai-tool-model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
           searchPlan: { mode: "all_selected" as const, optionIds: [] }, skillIds: [], systemPrompt: "Assistant rules."
         } };
@@ -5018,7 +5018,7 @@ describe("image model admission by chat scope", () => {
       kind: "generated", paletteId: "ember", recipeVersion: 1, rotations: [0, 0] } },
     mcpServerIds: [], name: "Shared illustrator", provider: "openai",
     providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
-    rows: assistantRowsFromLegacyFields({ mcpServerIds: [],
+    rows: assistantRowsFromFlatFields({ mcpServerIds: [],
       providerModelId: "gpt-fixture", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }),
     skillIds: [], systemPrompt: "Illustrate what the user asks for."
   } });

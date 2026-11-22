@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  assistantRowsFromLegacyFields,
+  assistantRowsFromFlatFields,
   decodeAssistantDetailResponse,
   type AssistantRows
 } from "../../contracts/assistants";
@@ -67,7 +67,7 @@ function catalogData(): CatalogData {
 }
 
 function rows(modelId: string): AssistantRows {
-  return assistantRowsFromLegacyFields({
+  return assistantRowsFromFlatFields({
     mcpServerIds: [],
     providerModelId: modelId,
     runControls: {},

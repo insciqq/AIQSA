@@ -15,8 +15,8 @@ import {
 } from "./handlers";
 import type { AssistantAccessEntry, AssistantContentRow } from "./prismaRepository";
 import {
-  assistantRowsFromLegacyFields,
-  type AssistantLegacyRowFields,
+  assistantRowsFromFlatFields,
+  type AssistantFlatRowFields,
   decodeAssistantDetailResponse,
   decodeAssistantDuplicateResponse,
   decodeAssistantListResponse,
@@ -130,9 +130,9 @@ function draftBody(value: Record<string, unknown>): Record<string, unknown> {
   const { mcpServerIds, providerModelId, runControls, searchPlan, skillIds, ...fields } = value;
   return {
     ...fields,
-    rows: assistantRowsFromLegacyFields({
+    rows: assistantRowsFromFlatFields({
       mcpServerIds, providerModelId, runControls, searchPlan, skillIds: skillIds ?? []
-    } as AssistantLegacyRowFields)
+    } as AssistantFlatRowFields)
   };
 }
 
@@ -153,7 +153,7 @@ function contentRow(overrides: Partial<AssistantContentRow> = {}): AssistantCont
     systemPrompt: "You review code.",
     ...overrides
   };
-  const rows = overrides.rows ?? assistantRowsFromLegacyFields({
+  const rows = overrides.rows ?? assistantRowsFromFlatFields({
     mcpServerIds: content.mcpServerIds,
     providerModelId: content.providerModelId ?? "",
     runControls: content.runControls as AssistantRunControls,

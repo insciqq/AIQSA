@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields } from "../../contracts/assistants";
 import type { AssistantRunMaterialization } from "../assistants/runMaterialization";
 import { skillCatalogAuthorization } from "./catalogRelevanceAuthority";
 import type { SkillRunResolver } from "./runMaterialization";
@@ -11,7 +11,7 @@ const assistant: AssistantRunMaterialization = {
   identity: { name: "Reviewer", avatar: { kind: "generated", recipeVersion: 1, paletteId: "ember", backgroundShape: "circle", foregroundShape: "ring", accents: [], rotations: [0, 0] } },
   provider: "provider", providerModelId: "model", runControls: {}, mcpServerIds: [],
   searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: ["p", "a"], skillModes: { p: "pinned", a: "available" },
-  rows: assistantRowsFromLegacyFields({
+  rows: assistantRowsFromFlatFields({
     mcpServerIds: [], providerModelId: "model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] },
     skillIds: ["p", "a"], skillModes: { p: "pinned", a: "available" } })
 };
@@ -68,7 +68,7 @@ describe("Skill relevance current authority", () => {
   it("authorizes an Assistant without links over its runner's own enabled Skills (#48)", async () => {
     const f = setup();
     const unlinked: AssistantRunMaterialization = { ...assistant, skillIds: [], skillModes: {},
-      rows: assistantRowsFromLegacyFields({ mcpServerIds: [], providerModelId: "model", runControls: {},
+      rows: assistantRowsFromFlatFields({ mcpServerIds: [], providerModelId: "model", runControls: {},
         searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: [] }) };
     f.assistants.resolveForRun.mockResolvedValue({ ok: true, assistant: unlinked });
     f.skills.resolveForRun.mockResolvedValue({ ok: true, skills: [pinned] });

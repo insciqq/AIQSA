@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import {
-  assistantRowsFromLegacyFields,
+  assistantRowsFromFlatFields,
   decodeAssistantDetailResponse,
   decodeAssistantListResponse,
   type AssistantDetailResponse,
@@ -47,7 +47,7 @@ function assistantDraft(providerModelId: string, skillIds: string[]): AssistantD
     description: "Uses an ordered workflow.",
     name: "Workflow assistant",
     responseReminder: "",
-    rows: assistantRowsFromLegacyFields({
+    rows: assistantRowsFromFlatFields({
       mcpServerIds: [],
       providerModelId,
       runControls: {},

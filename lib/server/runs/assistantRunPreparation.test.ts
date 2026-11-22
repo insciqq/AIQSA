@@ -1,7 +1,7 @@
 const allowMcpTools: import("../mcp/toolAccess").McpToolAccessFilter = async (_userId, tools) => [...tools];
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
-import { ASSISTANT_SYSTEM_PROMPT_MAX_LENGTH, assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import { ASSISTANT_SYSTEM_PROMPT_MAX_LENGTH, assistantRowsFromFlatFields, type AssistantRows } from "../../contracts/assistants";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import type { ChatAssistantOverridesPatch } from "../../contracts/chats";
 import { nextChatAssistantOverrides } from "../chats/assistantOverrides";
@@ -68,7 +68,7 @@ function assistantResolution(
     assistant: {
       ...flat,
       rows: {
-        ...assistantRowsFromLegacyFields({ ...flat, providerModelId: flat.providerModelId ?? "fake-model" }),
+        ...assistantRowsFromFlatFields({ ...flat, providerModelId: flat.providerModelId ?? "fake-model" }),
         ...rows
       }
     },

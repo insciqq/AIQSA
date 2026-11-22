@@ -1,5 +1,5 @@
-import { KNOWLEDGE_PROCESSING_WARNING_CODES } from "../../domain/knowledgeProcessingWarnings";
-import { geometryProvenRepeatedFurniture } from "../../domain/knowledgeFurniture";
+import { DOCUMENT_PROCESSING_WARNING_CODES } from "../../contracts/uploads";
+import { geometryProvenRepeatedFurniture } from "../../domain/documentFurniture";
 import type {
   ParsedDocument,
   ParsedDocumentAsset,
@@ -11,7 +11,7 @@ import type {
   ParsedWorkbook
 } from "./types";
 
-const WARNING_ORDER: readonly ParsedDocumentWarningCode[] = KNOWLEDGE_PROCESSING_WARNING_CODES;
+const WARNING_ORDER: readonly ParsedDocumentWarningCode[] = DOCUMENT_PROCESSING_WARNING_CODES;
 
 type ParsedDocumentDraft = Readonly<{
   assets?: readonly ParsedDocumentAsset[];

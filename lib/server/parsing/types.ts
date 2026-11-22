@@ -1,7 +1,7 @@
 import type {
   SidecarParserEngine as RegistrySidecarParserEngine
 } from "../../domain/uploadFormats";
-import type { KnowledgeProcessingWarningCode } from "../../domain/knowledgeProcessingWarnings";
+import type { DocumentProcessingWarningCode } from "../../contracts/uploads";
 import type { DocumentParserErrorCode } from "./errors";
 
 export type SidecarParserEngine = RegistrySidecarParserEngine;
@@ -26,7 +26,7 @@ export type DocumentParseInput = Readonly<{
   signal?: AbortSignal;
 }>;
 
-export type ParsedDocumentWarningCode = KnowledgeProcessingWarningCode;
+export type ParsedDocumentWarningCode = DocumentProcessingWarningCode;
 
 export type ParsedDocumentBlockType =
   | "caption"

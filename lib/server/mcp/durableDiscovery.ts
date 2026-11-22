@@ -6,7 +6,7 @@ import {
   mcpAutoDiscoveryFailure
 } from "../../contracts/runs";
 import {
-  LEGACY_MCP_DISCOVERY_MAX_RESULTS,
+  MCP_DISCOVERY_DEFAULT_MAX_RESULTS,
   mcpCatalogToolsByNames,
   mcpFindToolsArguments,
   mcpFindToolsExecutionResult,
@@ -128,7 +128,7 @@ export async function executeDurableMcpDiscovery(
 ): Promise<DurableMcpDiscoveryResult> {
   const parsed = mcpFindToolsArguments(input.call.arguments);
   if (!parsed) throw new Error("mcp_discovery_arguments_invalid");
-  const maxResults = input.maxResults ?? LEGACY_MCP_DISCOVERY_MAX_RESULTS;
+  const maxResults = input.maxResults ?? MCP_DISCOVERY_DEFAULT_MAX_RESULTS;
   if (!Number.isSafeInteger(maxResults) || maxResults < 1 ||
     maxResults > MCP_RUN_PLAN_LIMITS.maxTools) {
     throw new Error("mcp_discovery_limit_invalid");

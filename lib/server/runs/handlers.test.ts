@@ -8,7 +8,7 @@ import type { ResolvedEntitlements } from "../auth/entitlements";
 import { captureRunObservation } from "@/tests/support/runObservation";
 import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
-import { assistantRowsFromLegacyFields, type AssistantRows } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields, type AssistantRows } from "../../contracts/assistants";
 import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText } from "../../contracts/browserSignIn";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
@@ -84,7 +84,7 @@ function handlerAssistant(rows: Partial<AssistantRows> = {}): AssistantRunResolu
         paletteId: "ember", recipeVersion: 1, rotations: [0, 0] }, name: "Reviewer" },
       name: "Reviewer",
       provider: "fake",
-      rows: { ...assistantRowsFromLegacyFields(fields), ...rows },
+      rows: { ...assistantRowsFromFlatFields(fields), ...rows },
       systemPrompt: "Review carefully."
     },
     ok: true

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withAssistantDependencyAvailability } from "./dependencyAvailability";
 import type { AssistantAccessEntry } from "./prismaRepository";
-import { assistantRowsFromLegacyFields } from "../../contracts/assistants";
+import { assistantRowsFromFlatFields } from "../../contracts/assistants";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 
 function entry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAccessEntry {
@@ -10,7 +10,7 @@ function entry(overrides: Partial<AssistantAccessEntry> = {}): AssistantAccessEn
     installationScope: false, memberGroupNames: [], ownerDisplayName: "Owner", updatedAt: new Date(), version: 1,
     content: { answerRules: null, id: "assistant", avatar: {}, category: null, description: "",
       mcpServerIds: [], name: "Reviewer", providerModelId: "model", runControls: {}, searchPlan: {}, skillIds: [],
-      rows: assistantRowsFromLegacyFields({
+      rows: assistantRowsFromFlatFields({
         mcpServerIds: [], providerModelId: "model", runControls: {}, searchPlan: { mode: "all_selected", optionIds: [] }, skillIds: []
       }),
       starterPrompts: [], systemPrompt: "Review the task." },
