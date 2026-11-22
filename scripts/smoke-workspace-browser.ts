@@ -214,10 +214,9 @@ async function finish(run: Run) {
   assert.equal(binding.workspaceSession.state, "STOPPED");
   assert.equal(await prisma.workspaceExecution.count({ where: { modelRunId: run.runId, state: { in: ["ACTIVE", "TERMINATING"] } } }), 0);
   step = "terminal_transaction";
-  // This fixture skips provider preparation. End its Memory gate and run
-  // atomically so deferred database invariants see a valid terminal state.
+  // This fixture skips the provider. End its message and run atomically so
+  // deferred database invariants see a valid terminal state.
   await prisma.$transaction(async (tx) => {
-    await tx.memoryRetrievalAttempt.updateMany({ where: { modelRunId: run.runId }, data: { state: "CANCELLED", errorCode: "fixture_preparation_cancelled" } });
     await tx.message.update({ where: { id: run.assistantMessageId }, data: { status: "complete", content: textMessageContent("Synthetic browser task complete.") } });
     await tx.modelRun.update({ where: { id: run.runId }, data: { status: "complete", normalizedRequest: {} } });
   });
@@ -247,7 +246,6 @@ async function main() {
     assert.equal(inventory.entries.length, 0, "browser smoke requires an empty isolated runner");
     await prisma.workspacePolicy.update({ where: { id: WORKSPACE_POLICY_ID }, data: { enabled: true } });
     await prisma.user.create({ data: { id: userId, displayName: "Synthetic browser fixture", status: "active" } }); created = true;
-    await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false, learnAutomatically: false, referenceChatHistory: false } });
     await secrets.mutate(userId, { action: "create", name: "Synthetic shop", description: "Local browser verification only", value: { kind: "env", entries: [
       { name: "SHOP_URL", value: "http://127.0.0.1:18765" }, { name: "SHOP_LOGIN", value: SHOP_LOGIN },
       { name: "SHOP_PASSWORD", value: SHOP_PASSWORD }, { name: "SHOP_TOTP_SEED", value: "JBSWY3DPEHPK3PXP" }

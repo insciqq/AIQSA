@@ -76,7 +76,6 @@ afterEach(async () => {
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
   // Branches run the Memory source lifecycle, which may leave purge obligations.
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());

@@ -52,7 +52,6 @@ afterEach(async () => {
   const created = skillIds.splice(0);
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.userSkillPreference.deleteMany({ where: { skillId: { in: created } } });
   await prisma.skillPublication.deleteMany({ where: { skillId: { in: created } } });
   await prisma.skillDefinition.updateMany({ where: { id: { in: created } }, data: { currentRevisionId: null, sharedRevisionId: null } });

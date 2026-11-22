@@ -155,9 +155,6 @@ describe("the past-chat embedding role", () => {
     });
     const absent = vi.fn().mockResolvedValue({ code: "absent", ok: false, selectedProviderModelId: null });
     const list = (assigned: typeof ready | null) => createAdminSystemModelPolicyService({
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany },
       systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({
         embeddingProviderModel: assigned, embeddingProviderModelId: assigned?.id ?? null,

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../../contracts/memoryClient";
 import { createPrismaChatRepository } from "../../chats/prismaRepository";
 import { TEMPORARY_CHAT_RETENTION_MS } from "../../chats/temporaryRetention";
 import { createPrismaMessageBranchRepository } from "../../messages/prismaRepository";
@@ -26,8 +26,6 @@ const wordsOnly: ChatSearchEmbedder = {
 
 afterEach(async () => {
   for (const id of owners.splice(0)) {
-    await prisma.chatMemoryCheckpoint.deleteMany({ where: { userId: id } });
-    await prisma.memoryScope.deleteMany({ where: { userId: id } });
     // A Temporary chat goes once its deadline has passed.
     await prisma.chat.updateMany({
       data: { temporaryRetentionDeadline: new Date(Date.now() - 60_000) },

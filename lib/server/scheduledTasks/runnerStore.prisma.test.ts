@@ -106,7 +106,6 @@ afterEach(async () => {
   await prisma.scheduledTask.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
   // Memory-mode chats run the Memory source lifecycle, which may leave purge obligations.
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());
@@ -213,8 +212,6 @@ describe("persisted scheduled task runner", () => {
     const run = await runs.createRun(await runInput(userId, chat.id, origin(occurrence.id, created)));
     // Dispatchable at once: no Memory attempt, binding or command was created for it.
     expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: run.runId } })).toMatchObject({ status: "streaming" });
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: run.runId } })).toBe(0);
-    expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: run.runId } })).toBe(0);
   });
 
   it("admits every later answer to a scheduled task's prompt without Personal Memory, in its chat and branch copies", async () => {
@@ -245,8 +242,6 @@ describe("persisted scheduled task runner", () => {
       // An ordinary run, dispatchable at once: no Memory attempt or binding, so no synchronous command either.
       expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: regenerated.runId } }))
         .toMatchObject({ scheduledTaskId: null, status: "streaming", userMessageId });
-      expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: regenerated.runId } })).toBe(0);
-      expect(await prisma.modelRunMemoryBinding.count({ where: { modelRunId: regenerated.runId } })).toBe(0);
       await cancel(regenerated.runId);
       return regenerated;
     };
@@ -267,7 +262,6 @@ describe("persisted scheduled task runner", () => {
     const inBranch = await regenerate(first.chatId, first.promptId, first.answerId);
     const second = await branch(inBranch.assistantMessageId);
     await regenerate(second.chatId, second.promptId, second.answerId);
-    expect(await prisma.memoryJob.count({ where: { kind: "MEMORY_COMMAND", userId } })).toBe(0);
   });
 
   it("settles linked occurrences from their runs, marks only news unread and keeps the newest result as the baseline", async () => {

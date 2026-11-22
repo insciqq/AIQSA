@@ -67,12 +67,10 @@ export async function createServiceAccount(
   });
 
   await provisionActiveUser(tx, { userId: account.id });
-  // The database may already hold the account's default Memory settings row; turn everything off either way.
-  const memoryOff = { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false };
-  await tx.userMemorySettings.upsert({
-    create: { ...memoryOff, userId: account.id },
+  // A service account reads and writes no Memory: no note, no past-chat search, no offers.
+  await tx.userSettings.update({
+    data: { memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false },
     select: { userId: true },
-    update: memoryOff,
     where: { userId: account.id }
   });
 

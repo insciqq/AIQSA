@@ -1,26 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
-import { textMessageContent } from "../../domain/content";
 import { providerTemplateIds } from "../../domain/providerTemplates";
-import { createPrismaMemoryCoordinatorRepository } from "../memory/coordinator/prismaRepository";
-import type { MemoryJobClaim } from "../memory/coordinator/types";
-import { createPrismaMemoryHistoryIndexHandler } from "../memory/history/handler";
-import { createPrismaMemoryFactRepository } from "../memory/persistence/facts";
-import { memorySha256 } from "../memory/persistence/lexical";
-import { createPrismaMemoryScopeRepository } from "../memory/persistence/scopes";
-import { applyMemoryScopeTargetDeletion } from "../memory/scopeLifecycle";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { applyMemorySourceMutations, lockMemorySourceChat } from "../memory/sourceState";
-import { MemorySuppressionKeyring } from "../memory/suppressionKeyring";
 import { prisma } from "../prisma";
 import { createPrismaSkillRepository } from "../skills/prismaRepository";
 import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
 import { createPrismaAssistantDeletionRepository } from "./deletionRepository";
-
-const keyBytes = Buffer.from(Array.from({ length: 32 }, (_, index) => index + 71));
-const keyring = MemorySuppressionKeyring.parse(
-  `current=assistant-delete-v1,assistant-delete-v1=${keyBytes.toString("base64")}`
-);
 
 const avatar = {
   accents: [0, 4],
@@ -31,68 +15,6 @@ const avatar = {
   recipeVersion: 1,
   rotations: [0, 2]
 };
-
-async function mutateMemorySource(
-  userId: string,
-  chatId: string,
-  input: Omit<Parameters<typeof applyMemorySourceMutations>[1], "chat" | "hooks">
-) {
-  return prisma.$transaction(async (tx) => {
-    const chat = await lockMemorySourceChat(tx, { chatId, lock: "UPDATE", userId });
-    if (!chat) throw new Error("assistant_delete_history_chat_missing");
-    return applyMemorySourceMutations(tx, { ...input, chat, hooks: defaultMemorySourceMutationHooks });
-  });
-}
-
-/** Claims and commits the newest history job the way the coordinator does. */
-async function indexMemoryHistory(userId: string): Promise<void> {
-  const job = await prisma.memoryJob.findFirstOrThrow({
-    orderBy: [{ sourceRevision: "desc" }, { createdAt: "desc" }],
-    where: { kind: "INDEX_HISTORY", state: "QUEUED", userId }
-  });
-  const claimToken = randomUUID();
-  const leaseExpiresAt = new Date(Date.now() + 60_000);
-  const claimed = await prisma.memoryJob.update({
-    data: { attemptCount: { increment: 1 }, leaseExpiresAt, leaseToken: claimToken, state: "CLAIMED" },
-    where: { id: job.id }
-  });
-  const claim: MemoryJobClaim = {
-    activeLeafMessageId: claimed.activeLeafMessageId,
-    attemptCount: claimed.attemptCount,
-    branchGeneration: claimed.branchGeneration,
-    chatId: claimed.chatId,
-    claimToken,
-    id: claimed.id,
-    idempotencyFingerprint: claimed.idempotencyFingerprint,
-    kind: claimed.kind,
-    leaseExpiresAt,
-    memoryGenerationSnapshot: claimed.memoryGenerationSnapshot,
-    memoryRevisionSnapshot: claimed.memoryRevisionSnapshot,
-    pipelineVersion: claimed.pipelineVersion,
-    recoveredLease: false,
-    sourceHash: claimed.sourceHash,
-    sourceMessageId: claimed.sourceMessageId,
-    sourceRevision: claimed.sourceRevision,
-    stage: claimed.stage,
-    targetFactVersionId: claimed.targetFactVersionId,
-    userId: claimed.userId
-  };
-  const handler = createPrismaMemoryHistoryIndexHandler(prisma);
-  await expect(handler.preflight(claim)).resolves.toEqual({ status: "READY" });
-  const now = new Date();
-  const result = await handler.execute(claim, {
-    now: () => now,
-    setStage: async () => undefined,
-    signal: new AbortController().signal
-  });
-  await expect(createPrismaMemoryCoordinatorRepository(prisma).commitJobSuccess({
-    acceptedResultHash: result.acceptedResultHash,
-    apply: result.apply,
-    claim,
-    now,
-    stage: result.stage ?? null
-  })).resolves.toBe(true);
-}
 
 describe("Prisma Assistant deletion", () => {
   afterAll(async () => {
@@ -107,7 +29,8 @@ describe("Prisma Assistant deletion", () => {
     const userIds = [ownerUserId, consumerUserId, managerUserId];
     const skillIds: string[] = [];
     const chatIds: string[] = [];
-    const outboxId = `assistant-delete-outbox-${suffix}`;
+    // A chat fenced for permanent deletion carries an opaque operation id.
+    const deletionOperationId = `assistant-delete-operation-${suffix}`;
     let assistantId: string | null = null;
 
     await prisma.user.createMany({
@@ -189,64 +112,11 @@ describe("Prisma Assistant deletion", () => {
             ${JSON.stringify(identity)}::jsonb, 'fake', 'fixture', 'complete', '{"prompt":{"system":"Accepted instructions"}}'::jsonb, now())
         `;
         await tx.$executeRaw`
-          INSERT INTO "MemoryDeletionOutbox" (id, "userId", operation, "targetType", "targetId", "memoryGeneration",
-            "admissionAuthorizationId", "admittedChatSourceRevision", "alsoForgetOriginMemories", "updatedAt")
-          VALUES (${outboxId}, ${ownerUserId}, 'SOURCE_PURGE', 'CHAT@memory-chat-delete-v1', ${deletingChat}, 0,
-            ${`${outboxId}-admission`}, 0, false, now())
-        `;
-        await tx.$executeRaw`
-          UPDATE "Chat" SET archived = true, "permanentDeletionAt" = now(), "permanentDeletionOperationId" = ${outboxId},
+          UPDATE "Chat" SET archived = true, "permanentDeletionAt" = now(), "permanentDeletionOperationId" = ${deletionOperationId},
             "updatedAt" = '2026-01-02 00:00:00'
           WHERE id = ${deletingChat}
         `;
       });
-
-      // Memory of the owner scoped to this Assistant. Its evidence chat goes
-      // with the owner account during cleanup, as in the scope lifecycle test.
-      const evidenceChat = await prisma.chat.create({ data: { title: "Memory evidence", userId: ownerUserId } });
-      const evidenceMessage = await prisma.message.create({
-        data: { chatId: evidenceChat.id, content: textMessageContent("Scoped evidence."), role: "user", status: "complete" }
-      });
-      const scope = await createPrismaMemoryScopeRepository(prisma).ensure(ownerUserId, { targetId: assistantId, type: "ASSISTANT" });
-      const statement = "Prefers terse release notes.";
-      await createPrismaMemoryFactRepository(keyring, prisma).save(ownerUserId, {
-        evidence: {
-          branchGeneration: 0,
-          chatId: evidenceChat.id,
-          kind: "MESSAGE",
-          messageId: evidenceMessage.id,
-          observedAt: new Date("2026-08-21T08:00:00.000Z"),
-          safeExcerpt: statement,
-          safeSourceHash: memorySha256(statement),
-          safetyClass: "NORMAL",
-          sourceProjectionVersion: "assistant-delete-test-v1",
-          sourceRole: "user"
-        },
-        explicitSuppressionOverride: false,
-        idempotencyFingerprint: `assistant-delete-${suffix}`,
-        requestId: `assistant-delete-request-${suffix}`,
-        scopeId: scope.id,
-        value: {
-          canonicalKey: `assistant.delete.${suffix}`,
-          category: "preference",
-          confidence: 1,
-          directness: "DIRECT",
-          displayText: statement,
-          importance: 0.8,
-          languageCode: "en",
-          modality: "PREFERENCE",
-          pipelineVersion: "assistant-delete-test-v1",
-          secretTaintedSourceWindow: false,
-          sensitivityClass: "NORMAL",
-          sourceMode: "AUTOMATIC",
-          structuredValue: { statement }
-        }
-      });
-      const memoryRows = async () => [
-        await prisma.memoryFact.count({ where: { userId: ownerUserId } }),
-        await prisma.memoryFactVersion.count({ where: { userId: ownerUserId } })
-      ];
-      const memoryBefore = await memoryRows();
 
       await prisma.assistantListingRequest.create({
         data: { assistantId, definitionVersion: 1, requestedByUserId: ownerUserId }
@@ -300,7 +170,7 @@ describe("Prisma Assistant deletion", () => {
         expect(chat.updatedAt.toISOString()).toBe(new Date("2026-01-02T00:00:00.000Z").toISOString());
       }
       await expect(prisma.chat.findUniqueOrThrow({ where: { id: deletingChat } })).resolves.toMatchObject({
-        permanentDeletionOperationId: outboxId
+        permanentDeletionOperationId: deletionOperationId
       });
 
       await expect(prisma.modelRun.findUniqueOrThrow({
@@ -310,23 +180,12 @@ describe("Prisma Assistant deletion", () => {
       await expect(prisma.userSettings.findUniqueOrThrow({ where: { userId: consumerUserId } }))
         .resolves.toMatchObject({ defaultAssistantId: null });
 
-      // The old Memory scope is no longer maintained (the cutover to the note and past-chat search): it stays,
-      // unread, for the drop of the old tables, and no longer holds the Assistant's deletion back.
-      await expect(prisma.memoryScope.findUniqueOrThrow({
-        select: { assistantId: true, state: true },
-        where: { id: scope.id }
-      })).resolves.toEqual({ assistantId, state: "ACTIVE" });
-      await expect(memoryRows()).resolves.toEqual(memoryBefore);
-
       await expect(repository.delete(ownerUserId, assistantId, version)).resolves.toEqual({ kind: "not_found" });
       await expect(repository.loadConsequences(ownerUserId, assistantId)).resolves.toBeNull();
       assistantId = null;
     } finally {
       if (assistantId) {
         const id = assistantId;
-        await prisma.$transaction((tx) => applyMemoryScopeTargetDeletion(tx, {
-          scopeType: "ASSISTANT", targetId: id, userId: ownerUserId
-        }));
         await prisma.assistantListingRequest.deleteMany({ where: { assistantId: id } });
         await prisma.assistantPublication.deleteMany({ where: { assistantId: id } });
         await prisma.assistantPin.deleteMany({ where: { assistantId: id } });
@@ -335,7 +194,6 @@ describe("Prisma Assistant deletion", () => {
       }
       await prisma.modelRun.deleteMany({ where: { chatId: { in: chatIds } } });
       await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: userIds } } });
       await prisma.skillDefinition.updateMany({
         data: { currentRevisionId: null, sharedRevisionId: null },
         where: { id: { in: skillIds } }
@@ -344,122 +202,6 @@ describe("Prisma Assistant deletion", () => {
       await prisma.skillDefinition.deleteMany({ where: { id: { in: skillIds } } });
       await prisma.group.deleteMany({ where: { id: group.id } });
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
-    }
-  });
-
-  it("detaches Memory history of every kind while keeping its owner and content", async () => {
-    const userId = `assistant-delete-history-${randomUUID()}`;
-    let assistantId: string | null = null;
-    await prisma.user.create({
-      data: { displayName: "Assistant history owner", email: `${userId}@example.test`, id: userId, status: "active" }
-    });
-    await prisma.userMemorySettings.update({
-      data: { learnAutomatically: false, referenceChatHistory: true },
-      where: { userId }
-    });
-
-    try {
-      const assistant = await prisma.assistantDefinition.create({
-        data: {
-          avatar,
-          name: "Remembered Assistant",
-          ownerUserId: userId,
-          providerModelId: providerTemplateIds.fakeModel,
-          searchPlan: { mode: "off" },
-          systemPrompt: "Answer directly."
-        }
-      });
-      assistantId = assistant.id;
-
-      // One settled turn answered by the owned Assistant. Indexing attributes
-      // its chunk and round to the Assistant that answered.
-      const chat = await prisma.chat.create({ data: { assistantId, title: "Assistant history", userId } });
-      const askedAt = new Date("2026-08-13T10:00:00.000Z");
-      const answeredAt = new Date(askedAt.getTime() + 1_000);
-      const question = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Compare the cedar and birch deployment options."),
-          createdAt: askedAt,
-          role: "user",
-          status: "complete",
-          updatedAt: askedAt
-        }
-      });
-      const answer = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Cedar was selected for deployment."),
-          createdAt: answeredAt,
-          modelId: "history-test-model",
-          parentMessageId: question.id,
-          provider: "history-test-provider",
-          role: "assistant",
-          status: "complete",
-          updatedAt: answeredAt
-        }
-      });
-      const run = await prisma.modelRun.create({
-        data: {
-          assistantId,
-          assistantIdentity: { avatar, name: "Remembered Assistant" },
-          assistantMessageId: answer.id,
-          chatId: chat.id,
-          modelId: "history-test-model",
-          normalizedRequest: {
-            prompt: { baseline: { source: "standard_chat", timeZone: "Europe/Moscow", timeZoneSource: "client" } }
-          },
-          provider: "history-test-provider",
-          status: "complete",
-          userId,
-          userMessageId: question.id
-        }
-      });
-      await mutateMemorySource(userId, chat.id, {
-        mutations: ["NORMAL_APPEND"],
-        patch: { activeLeafMessageId: answer.id }
-      });
-      await mutateMemorySource(userId, chat.id, {
-        mutations: ["TERMINAL_SETTLEMENT"],
-        terminalSettlement: { assistantMessageId: answer.id, runId: run.id, status: "complete" }
-      });
-      await indexMemoryHistory(userId);
-
-      const historyRows = async () => ({
-        chunks: await prisma.memoryRecallChunk.findMany({ orderBy: { id: "asc" }, where: { chatId: chat.id, userId } }),
-        rounds: await prisma.memoryRecallRound.findMany({ orderBy: { id: "asc" }, where: { chatId: chat.id, userId } })
-      });
-      const before = await historyRows();
-      for (const rows of [before.chunks, before.rounds]) {
-        expect(rows.length).toBeGreaterThan(0);
-        for (const row of rows) expect(row).toMatchObject({ sourceAssistantId: assistantId, state: "ACTIVE", userId });
-      }
-
-      const repository = createPrismaAssistantDeletionRepository(prisma);
-      await expect(repository.delete(userId, assistantId, assistant.version)).resolves.toEqual({ kind: "deleted" });
-
-      // Every deferred Memory source guard ran at commit on the detached rows;
-      // only the attribution changed.
-      const detached = <T extends { sourceAssistantId: string | null }>(rows: readonly T[]) =>
-        rows.map((row) => ({ ...row, sourceAssistantId: null }));
-      await expect(historyRows()).resolves.toEqual({
-        chunks: detached(before.chunks),
-        rounds: detached(before.rounds)
-      });
-      await expect(prisma.chat.findUniqueOrThrow({
-        select: { assistantId: true, assistantOverrides: true },
-        where: { id: chat.id }
-      })).resolves.toEqual({ assistantId: null, assistantOverrides: CHAT_ASSISTANT_DELETED_MARKER });
-      await expect(prisma.modelRun.findUniqueOrThrow({ select: { assistantId: true }, where: { id: run.id } }))
-        .resolves.toEqual({ assistantId: null });
-      assistantId = null;
-    } finally {
-      if (assistantId) {
-        await prisma.chat.deleteMany({ where: { userId } });
-        await prisma.assistantDefinition.deleteMany({ where: { id: assistantId } });
-      }
-      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
-      await prisma.user.deleteMany({ where: { id: userId } });
     }
   });
 });

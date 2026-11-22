@@ -30,10 +30,6 @@ function fixture() {
     maxMcpToolsPerDiscovery: 8, maxToolCalls: 12, maxToolRounds: 8, toolLimitsEnabled: false
   } };
   const roles: AdminSystemModelPolicyCatalog = { candidates, titleCandidates: [], documentCandidates: candidates, verificationCandidates: candidates,
-    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1,
-      recommendations: [{ id: "terra-low-memory-v1", providerModelId: "model-terra", connectionId: connection.id,
-        modelName: "GPT-5.6 Terra", displayName: "GPT-5.6 Terra", reasoningEffort: "low", unavailableReason: null,
-        evidence: { revision: "synthetic", passedCases: 5, totalCases: 5, latencyP50Ms: 3000, latencyP95Ms: 14000 } }] },
     ineligible: { chat_titles: [], memory: [], vision: [], direct_pdf: [] }, rerankerCandidates: [], policy: {
       chatTitleModel: null, chatTitleReasoningEffort: null, chatPdfModel: null, chatPdfReasoningEffort: null, reasoningEffort: null,
       rerankerModel: null, systemModel: null, updatedAt: "2026-09-08T12:00:00Z", updatedBy: null, version: 1
@@ -42,16 +38,15 @@ function fixture() {
     providerModels: candidates.map((model) => ({ ...model, enabled: true, searchReasoningSupported: false, searchKind: "web_search" })) };
   const chatUpdate = vi.fn(async () => {});
   const rolesUpdate = vi.fn(async () => {});
-  const memoryUpdate = vi.fn(async () => {});
   const adoptChatTitle = vi.fn(async () => true);
   const adoptDecisionModel = vi.fn(async () => true);
   const searchCreate = vi.fn(async () => ({ created: true, id: "search" }));
   const searchSave = vi.fn(async () => {});
   const complete = createAdminProviderBootstrap({ providers: { listConnections: async () => [connection] },
-    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, updateMemory: memoryUpdate, adoptChatTitle, adoptDecisionModel },
+    chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, adoptChatTitle, adoptDecisionModel },
     search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave } });
   const run = (signal = new AbortController().signal) => complete({ connectionId: connection.id, credentialId: "cred-primary", userId: "operator", signal });
-  return { chat, chatUpdate, connection, roles, rolesUpdate, memoryUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave };
+  return { chat, chatUpdate, connection, roles, rolesUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave };
 }
 
 describe("provider automatic setup", () => {
@@ -73,7 +68,6 @@ describe("provider automatic setup", () => {
       expect(result.defaults.includes("Relevance checks: Jev")).toBe(state === "verified");
       expect(f.adoptDecisionModel).toHaveBeenCalledTimes(["verified", "explicitly cleared", "adoption failed"].includes(state) ? 1 : 0);
       expect(f.chatUpdate).toHaveBeenCalledOnce();
-      expect(f.memoryUpdate).toHaveBeenCalledOnce();
       if (state === "verified") expect(f.adoptDecisionModel).toHaveBeenCalledWith({
         expectedVersion: 1, providerModelId: "jev", userId: "operator"
       });
@@ -96,7 +90,7 @@ describe("provider automatic setup", () => {
     expect(result.defaults.includes(`Image generation: ${candidate.displayName}`)).toBe(!assigned);
   });
 
-  it.each(["none", "low"])("adopts a qualified title model with economical %s reasoning", async (effort) => {
+  it.each(["none", "low"])("adopts a verified title model of this connection with economical %s reasoning", async (effort) => {
     const value = fixture();
     value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: effort === "none" ? ["none", "low", "high"] : ["low", "high"] }];
     const result = await value.run();
@@ -105,15 +99,14 @@ describe("provider automatic setup", () => {
     expect(result.defaults).toContain("Chat titles: GPT-5.6 Terra");
   });
 
-  it.each(["unqualified", "not a title candidate", "unsupported effort", "stale credential", "different connection", "assigned", "explicitly cleared"])(
+  it.each(["not a title candidate", "unsupported effort", "stale credential", "different connection", "assigned", "explicitly cleared"])(
     "preserves title authority when %s", async (state) => {
       const value = fixture();
       value.roles.titleCandidates = [{ ...value.roles.candidates[0]!, reasoningEfforts: ["none", "low"] }];
-      if (state === "unqualified") value.roles.memoryPolicy.recommendations![0]!.unavailableReason = "verification_required";
       if (state === "not a title candidate") value.roles.titleCandidates = [];
       if (state === "unsupported effort") value.roles.titleCandidates[0]!.reasoningEfforts = ["high"];
       if (state === "stale credential") value.connection.activeChecks[0]!.credentialVersionId = "old-key";
-      if (state === "different connection") value.roles.memoryPolicy.recommendations![0]!.connectionId = "other";
+      if (state === "different connection") value.roles.titleCandidates[0]!.connectionId = "other";
       if (state === "assigned") value.roles.policy.chatTitleModel = { ...value.roles.candidates[1]!, available: true };
       if (state === "explicitly cleared") value.adoptChatTitle.mockResolvedValue(false);
       const result = await value.run();
@@ -125,39 +118,11 @@ describe("provider automatic setup", () => {
     }
   );
 
-  it.each(["none", "unqualified", "different connection"])(
-    "leaves Memory for the operator without a retryable failure when the recommendation is %s", async (state) => {
-      const value = fixture();
-      if (state === "none") value.roles.memoryPolicy.recommendations = [];
-      if (state === "unqualified") value.roles.memoryPolicy.recommendations![0]!.unavailableReason = "verification_required";
-      if (state === "different connection") value.roles.memoryPolicy.recommendations![0]!.connectionId = "other";
-      const result = await value.run();
-      expect(result).toEqual({ state: "completed", search: "ready", needsConfiguration: ["memory"], defaults: [
-        "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra"
-      ], searchResults: [{ name: "OpenAI Search", status: "ready" }] });
-      expect(value.memoryUpdate).not.toHaveBeenCalled();
-      expect(value.chatUpdate).toHaveBeenCalledOnce();
-    }
-  );
-  it("keeps a failed Memory save retryable instead of asking for configuration", async () => {
-    const value = fixture();
-    value.memoryUpdate.mockRejectedValueOnce(new Error("synthetic_memory_failure"));
-    const result = await value.run();
-    expect(result).toMatchObject({ state: "partial", search: "ready" });
-    expect(result).not.toHaveProperty("needsConfiguration");
-    expect(JSON.stringify(result)).not.toContain("synthetic_memory_failure");
-  });
-  it("reports Memory configuration alongside a real failure without hiding the failure", async () => {
-    const value = fixture();
-    value.roles.memoryPolicy.recommendations = [];
-    value.searchCreate.mockRejectedValueOnce(new Error("synthetic_search_failure"));
-    expect(await value.run()).toMatchObject({ state: "partial", search: "failed", needsConfiguration: ["memory"] });
-  });
-  it("does not ask for Memory configuration once Memory is assigned", async () => {
+  it("never asks for the retired Memory utility role", async () => {
     const value = fixture();
     const result = await value.run();
-    expect(result.defaults).toContain("Memory: GPT-5.6 Terra");
     expect(result).not.toHaveProperty("needsConfiguration");
+    expect(result.defaults.some((entry) => entry.startsWith("Memory"))).toBe(false);
   });
   it.each([false, true])("publishes Anthropic Search only after its check (failure=%s)", async (fails) => {
     const value = fixture();
@@ -200,7 +165,7 @@ describe("provider automatic setup", () => {
   it("fills empty roles after exact model checks and runs a real Search check", async () => {
     const value = fixture();
     expect(await value.run()).toMatchObject({ state: "completed", search: "ready", defaults: [
-      "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra", "Memory: GPT-5.6 Terra"
+      "Chat: GPT-5.6 Terra", "System model: GPT-5.6 Terra", "Page-image reader: GPT-5.6 Terra"
     ] });
     expect(value.chatUpdate).toHaveBeenCalledWith({ expectedVersion: 1, providerModelId: "model-terra", reasoningEffort: null, userId: "operator" });
     expect(value.rolesUpdate).toHaveBeenCalledWith({ expectedVersion: 1, providerModelId: "model-terra", reasoningEffort: null,
@@ -214,7 +179,6 @@ describe("provider automatic setup", () => {
     const chosen = { ...value.roles.candidates[1]!, available: true };
     value.chat.policy.defaultModel = chosen;
     value.roles.policy.systemModel = chosen;
-    value.roles.memoryPolicy = { assignmentSource: "operator", model: chosen, reasoningEffort: "low", version: 3 };
     value.roles.policy.chatPdfModel = chosen;
     value.search.integrations.push({ archivedAt: null, broaderModelSetup: "ready", configurable: true, configuration: null,
       configurationActive: true, description: "Existing search", displayName: "Existing search", draftDirty: false, draftVersion: 2,
@@ -223,7 +187,6 @@ describe("provider automatic setup", () => {
     expect(await value.run()).toEqual({ defaults: [], state: "completed", search: "skipped" });
     expect(value.chatUpdate).not.toHaveBeenCalled();
     expect(value.rolesUpdate).not.toHaveBeenCalled();
-    expect(value.memoryUpdate).not.toHaveBeenCalled();
     expect(value.searchCreate).not.toHaveBeenCalled();
     expect(value.searchSave).not.toHaveBeenCalled();
   });
@@ -305,19 +268,12 @@ describe("provider automatic setup", () => {
     const value = fixture();
     value.connection.activeChecks[0]!.credentialVersionId = "previous-key";
     value.connection.activeChecks[1]!.evidence = null;
-    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "completed", needsConfiguration: ["memory"] });
+    expect(await value.run()).toEqual({ defaults: [], search: "skipped", state: "completed" });
     value.connection.enabled = false;
     await value.run();
     expect(value.chatUpdate).not.toHaveBeenCalled();
     expect(value.rolesUpdate).not.toHaveBeenCalled();
     expect(value.searchCreate).not.toHaveBeenCalled();
-  });
-
-  it.each(["operator", "inherited"] as const)("preserves an explicitly empty %s Memory assignment during setup", async (assignmentSource) => {
-    const value = fixture();
-    value.roles.memoryPolicy = { assignmentSource, model: null, reasoningEffort: null, version: 8 };
-    await value.run();
-    expect(value.memoryUpdate).not.toHaveBeenCalled();
   });
 
   it("keeps completed defaults on Search failure and permits a bounded retry", async () => {

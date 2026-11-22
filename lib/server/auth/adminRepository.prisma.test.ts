@@ -348,10 +348,10 @@ describe("Prisma-backed admin repository", () => {
     });
   });
 
-  it("ends Memory and Hub inbound MCP grants with admin session revocation and disable", async () => {
+  it("ends Skills and Hub inbound MCP grants with admin session revocation and disable", async () => {
     await withAdminData(async ({ adminId, domain, repository }) => {
       const mcp = await createInboundMcpTestClient(prisma, new Date());
-      const { hub, memory } = INBOUND_MCP_TEST_AUTHORITIES;
+      const { hub, skills } = INBOUND_MCP_TEST_AUTHORITIES;
       try {
         const [revoked, disabled, bystander] = await Promise.all(
           ["mcp-revoke", "mcp-disable", "mcp-bystander"].map((emailLocalPart) => createPasswordUser({
@@ -362,11 +362,11 @@ describe("Prisma-backed admin repository", () => {
           }))
         );
         const revokedConnections = [
-          await mcp.connect(revoked!.id, memory),
+          await mcp.connect(revoked!.id, skills),
           await mcp.connect(revoked!.id, hub)
         ];
         const disabledConnections = [
-          await mcp.connect(disabled!.id, memory),
+          await mcp.connect(disabled!.id, skills),
           await mcp.connect(disabled!.id, hub)
         ];
         const bystanderConnection = await mcp.connect(bystander!.id, hub);
@@ -430,7 +430,7 @@ describe("Prisma-backed admin repository", () => {
         }
         await expect(liveInboundMcpFamilyCount(prisma, disabled!.id)).resolves.toBe(0);
         await expect(mcp.access(await mcp.connect(disabled!.id, hub))).resolves.toBe(true);
-        await expect(mcp.access(await mcp.connect(revoked!.id, memory))).resolves.toBe(true);
+        await expect(mcp.access(await mcp.connect(revoked!.id, skills))).resolves.toBe(true);
       } finally {
         await mcp.cleanup();
       }

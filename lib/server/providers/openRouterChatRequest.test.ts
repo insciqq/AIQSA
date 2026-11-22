@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { anthropicStrictSchema } from "./anthropicStrictSchema";
-import { memoryFactExtractionTool } from "../memory/learning/extraction/prompt";
+import { complexStrictTool } from "./complexStrictTool.testFixtures";
 import { currentSearchToolFixture } from "@/tests/support/tools";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { defaultProviderModels } from "../../domain/catalog";
@@ -113,14 +113,15 @@ function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): Provider
 }
 
 describe("OpenRouter request builders", () => {
-  it("keeps native Anthropic routing compatible when a complex Memory schema needs server validation", () => {
+  it("keeps native Anthropic routing compatible when a complex strict schema needs server validation", () => {
+    const tool = complexStrictTool();
     const body = buildOpenRouterChatRequest(request({ modelId: "anthropic/claude-opus-5.5",
-      toolChoice: "required", tools: [memoryFactExtractionTool] }));
+      toolChoice: "required", tools: [tool] }));
     expect(body).toMatchObject({ max_tokens: 64, tool_choice: "auto", provider: { require_parameters: true },
-      tools: [{ function: { strict: false, parameters: memoryFactExtractionTool.inputSchema } }] });
+      tools: [{ function: { strict: false, parameters: tool.inputSchema } }] });
     expect(body).not.toHaveProperty("parallel_tool_calls");
     expect(body).not.toHaveProperty("max_completion_tokens");
-    expect(memoryFactExtractionTool.strict).toBe(true);
+    expect(tool.strict).toBe(true);
   });
 
   it.each([undefined, false, true])("preserves strict routing and local parallel preference %s for each tool shape", (parallelToolCalls) => {

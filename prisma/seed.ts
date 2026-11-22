@@ -319,7 +319,6 @@ async function main() {
     update: {},
     where: { id: "installation" }
   });
-
   await prisma.group.upsert({
     create: {
       id: ids.group,

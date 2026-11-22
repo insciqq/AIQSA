@@ -25,7 +25,6 @@ describe("past-chat search usage", () => {
       providerModelId: "embed-a", purpose: "memory_indexing", reasoningTokens: null, totalTokens: 40,
       usageCompleteness: "PARTIAL", userId: "owner-1"
     }]);
-    expect(created[0]).not.toHaveProperty("memoryExecutionBindingId");
   });
 
   it("prices unreported cost from the model's stored input price, else leaves it unknown", async () => {

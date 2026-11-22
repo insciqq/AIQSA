@@ -1,5 +1,5 @@
-import { defaultInboundMcpOAuthConfiguration } from "@/lib/server/memoryMcp/oauth/default";
-import { inboundMcpAuthorizationServerMetadata } from "@/lib/server/memoryMcp/oauth/service";
+import { defaultInboundMcpOAuthConfiguration } from "@/lib/server/mcp/inboundOAuth/default";
+import { inboundMcpAuthorizationServerMetadata } from "@/lib/server/mcp/inboundOAuth/service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

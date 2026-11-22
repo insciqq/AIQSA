@@ -18,7 +18,6 @@ const store = createPrismaTelegramTimeZoneStore(prisma);
 afterEach(async () => {
   const ids = users.splice(0);
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());

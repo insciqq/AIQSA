@@ -6,17 +6,14 @@ const reads = vi.hoisted(() => ({
     connected: true, enabled: false, lastConnectedAt: null as Date | null, lastFailureAt: null as Date | null, lastFailureCode: null as string | null,
     setupReady: true
   })),
-  failedRuns: vi.fn(async () => ({ runs: 2, users: 1, groups: [], groupsTruncated: false })),
-  memoryRebuilds: vi.fn(async () => [])
+  failedRuns: vi.fn(async () => ({ runs: 2, users: 1, groups: [], groupsTruncated: false }))
 }));
 vi.mock("../../prisma", () => ({ prisma: {} }));
 vi.mock("../../telemetry/store", () => ({ createPrismaTelemetryStore: () => ({}) }));
 vi.mock("../health/failedRuns", () => ({ readFailedRunLoad: reads.failedRuns }));
-vi.mock("../health/memoryRebuilds", () => ({ readMemoryRebuildLoad: reads.memoryRebuilds }));
 vi.mock("../../discord/defaultDiscord", () => ({ readDiscordHealthSnapshot: reads.discord }));
 vi.mock("./healthRules", async (importOriginal) => ({
   ...await importOriginal<typeof import("./healthRules")>(),
-  memoryRebuildFindings: () => [],
   readHealthFindings: async () => []
 }));
 

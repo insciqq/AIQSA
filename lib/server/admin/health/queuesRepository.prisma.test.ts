@@ -26,7 +26,6 @@ describe("background queue repository over PostgreSQL", () => {
       expect(row.waiting).toBeGreaterThanOrEqual(0);
       expect(row.running).toBeGreaterThanOrEqual(0);
     }
-    expect(snapshot.queues.find((row) => row.queue === "memory")?.failed24h).toBeNull();
   });
 
   it("turns synthetic stuck jobs into stalled rows and one attention item per unwatched queue", async () => {

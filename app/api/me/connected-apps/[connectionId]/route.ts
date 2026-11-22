@@ -1,12 +1,12 @@
 import type { AsyncRouteHandler } from "@/lib/server/http/asyncRouteHandler";
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
-import { createRevokeMemoryMcpConnectedAppHandler } from "@/lib/server/memoryMcp/connectedApps";
-import { defaultInboundMcpOAuthService } from "@/lib/server/memoryMcp/oauth/default";
+import { createRevokeConnectedAppHandler } from "@/lib/server/mcp/inboundOAuth/connectedApps";
+import { defaultInboundMcpOAuthService } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const DELETE: AsyncRouteHandler<ReturnType<typeof createRevokeMemoryMcpConnectedAppHandler>> = createRevokeMemoryMcpConnectedAppHandler({
+export const DELETE: AsyncRouteHandler<ReturnType<typeof createRevokeConnectedAppHandler>> = createRevokeConnectedAppHandler({
   resolveAuth: resolveRequestAuth,
   service: defaultInboundMcpOAuthService
 });

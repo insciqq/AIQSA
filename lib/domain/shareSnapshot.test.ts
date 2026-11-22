@@ -257,7 +257,7 @@ describe("share snapshots", () => {
           personalContext: privateSentinels[0]
         },
         id: "answer-memory",
-        memoryEvidence: {
+        privateEvidence: {
           attempts: privateSentinels[3],
           bindings: privateSentinels[1],
           events: privateSentinels[5],

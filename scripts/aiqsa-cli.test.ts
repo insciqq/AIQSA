@@ -17,8 +17,7 @@ const toolNames = ["awk", "basename", "bash", "cat", "chmod", "cp", "cut", "date
   "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "rmdir", "sed", "sh", "sha256sum",
   "sleep", "sort", "stat", "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
 const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_ENCRYPTION_KEY",
-  "AIQSA_MEMORY_FINGERPRINT_KEYRING", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD",
-  "AIQSA_S3_SECRET_ACCESS_KEY"];
+  "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
 const directories: string[] = [];
 let toolbox = "";
 let journalSocket = "";
@@ -257,8 +256,9 @@ describe("configure", () => {
     for (const key of hexKeys) expect(parsed[key]).toMatch(/^[a-f0-9]{64}$/u);
     const base64Keys = ["AIQSA_ENCRYPTION_KEY", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY"];
     for (const key of base64Keys) expect(Buffer.from(parsed[key], "base64")).toHaveLength(32);
-    expect(parsed.AIQSA_MEMORY_FINGERPRINT_KEYRING).toMatch(/^current=v1,v1=[A-Za-z0-9+/]{43}=$/u);
-    const secrets = [...hexKeys, ...base64Keys, "AIQSA_MEMORY_FINGERPRINT_KEYRING"].map((key) => parsed[key]);
+    // The retired Memory fingerprint keyring is no longer generated.
+    expect(parsed).not.toHaveProperty("AIQSA_MEMORY_FINGERPRINT_KEYRING");
+    const secrets = [...hexKeys, ...base64Keys].map((key) => parsed[key]);
     expect(new Set(secrets).size).toBe(secrets.length);
     for (const secret of secrets) expect(result.output).not.toContain(secret);
     expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
@@ -1154,10 +1154,11 @@ describe("backup", () => {
     }
     const manifest = readFileSync(path.join(directory, "manifest"), "utf8");
     for (const line of ["format=1", "aiqsa_version=0.3.0", "project=aiqsa-test", `migration=${latestMigration}`, "objects=bundled",
-      "size.postgres.dump=10", "image.app=ghcr.io/insciqq/aiqsa:0.3.0", "memory_fingerprint_key_ids=v1,v2",
-      "memory_fingerprint_current=v2"]) {
+      "size.postgres.dump=10", "image.app=ghcr.io/insciqq/aiqsa:0.3.0"]) {
       expect(manifest).toMatch(new RegExp(`^${line.replaceAll(".", "\\.")}$`, "mu"));
     }
+    // An upgraded .env may still carry the retired Memory keyring: the manifest names none of it.
+    expect(manifest).not.toContain("memory_fingerprint");
     expect(manifest).not.toContain("routing");
     expectNoSecrets(manifest, body);
     expect(manifest).not.toContain(keyringKey("A"));
@@ -1275,10 +1276,9 @@ describe("restore", () => {
       /^run --rm --network none --user 0:0 -i -v aiqsa-test_seaweedfs_data:\/data --entrypoint tar \S+ --numeric-owner -xzf - -C \/data$/u,
       new RegExp(`${isolated} up -d --wait --wait-timeout 600 postgres seaweedfs minio$`, "u"),
       new RegExp(`${isolated} exec -T postgres .* pg_restore --no-owner --exit-on-error -U aiqsa -d aiqsa$`, "u"),
-      /-e AIQSA_RESTORE_RECONCILIATION=YES -e AIQSA_RESTORE_NETWORK_ISOLATED=YES -e AIQSA_RESTORE_POSTGRES_SERVICE=postgres -e AIQSA_RESTORE_MINIO_SERVICE=minio --entrypoint npm memory-worker run memory:restore:reconcile$/u,
       new RegExp(`${isolated} down$`, "u"), /^volume rm aiqsa-restore-x_storage_socket$/u,
       /^compose --project-directory \S+ up -d --remove-orphans --wait /u, / storage-init status$/u]);
-    expect(fixture.dockerLog).not.toMatch(/ down -v|-p aiqsa-test /u);
+    expect(fixture.dockerLog).not.toMatch(/ down -v|-p aiqsa-test |memory:restore:reconcile/u);
     expect(readFileSync(fixture.file(".env"), "utf8")).toBe(body);
     expect(statSync(fixture.file(".env")).mode & 0o777).toBe(0o600);
     const override = readFileSync(path.join(fixture.state, "restore-override.yaml"), "utf8");
@@ -1316,18 +1316,16 @@ describe("restore", () => {
       `-p aiqsa-restore-\\d{14} -f ${fixture.project}/compose.yaml -f \\S+/restore-override.yaml -f ${fixture.project}/compose.json-file-logging.yaml up -d`, "u"));
   });
 
-  it("stops before the real project starts when reconciliation leaves duties and prints the cleanup", () => {
+  it("restores a backup whose manifest and .env still carry the retired Memory keyring", () => {
     const fixture = new Fixture();
-    const { directory, body } = makeBackup(fixture);
-    const password = values(body).AIQSA_POSTGRES_PASSWORD;
-    fixture.rules.unshift({ match: "memory:restore:reconcile", exit: 1,
-      stdout: `{"event":"runtime_lifecycle","code":"memory_restore_reconciliation_pending","detail":"${password}"}\n` });
+    const { directory, body } = makeBackup(fixture, {
+      env: { AIQSA_MEMORY_FINGERPRINT_KEYRING: keyring },
+      manifest: { memory_fingerprint_current: "v2", memory_fingerprint_key_ids: "v1,v2" }
+    });
     const result = fixture.run(["restore", directory]);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("memory:restore:reconcile failed with memory_restore_reconciliation_pending");
-    expect(result.stderr).toContain("  docker compose down -v\n  rm .env\n");
-    expect(fixture.dockerLog).toMatch(/-p aiqsa-restore-\d{14} .* down$/mu);
-    expect(fixture.dockerLog).not.toMatch(/--remove-orphans|storage-init/u);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Restore complete.");
+    expect(readFileSync(fixture.file(".env"), "utf8")).toBe(body);
     expectNoSecrets(result.output, body);
   });
 

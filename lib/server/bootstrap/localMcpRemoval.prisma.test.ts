@@ -53,7 +53,6 @@ afterEach(async () => {
   await prisma.chat.updateMany({ data: { activeLeafMessageId: null }, where: { id: { in: chatIds } } });
   await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
   await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: { in: chatIds }, userId: { in: userIds } } });
   await prisma.mcpRuntimeGeneration.deleteMany({ where: { OR: [
     { revision: { serverId: { in: serverIds } } },
     { userServer: { serverId: { in: serverIds } } }

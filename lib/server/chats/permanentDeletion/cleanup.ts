@@ -80,7 +80,6 @@ export async function purgePermanentlyDeletedChat(
       chatExists: snapshot.chatExists,
       chatWhere: { permanentDeletionAt: { not: null } },
       dispositions,
-      now: context.now,
       scope
     });
     if (!(await context.complete(tx))) chatDeletionLeaseLost();

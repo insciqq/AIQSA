@@ -111,7 +111,6 @@ function createBootstrapTransaction(input: {
     groupCreate: record("group.create", { id: "group-id" }),
     groupFindUnique: record("group.findUnique", null),
     groupUpdate: record("group.update", { id: "group-id" }),
-    memoryEgressAdminPolicyUpsert: record("memoryEgressAdminPolicy.upsert", { id: "installation" }),
     mcpActivationJobDeleteMany: record("mcpActivationJob.deleteMany", { count: 0 }),
     mcpGrantUpsert: record("mcpGrant.upsert", { id: "mcp-grant-id" }),
     mcpOAuthConnectionFindMany: record("mcpOAuthConnection.findMany", []),
@@ -132,14 +131,12 @@ function createBootstrapTransaction(input: {
     searchStrategyUpdate: record("searchStrategy.update", { id: "strategy-id" }),
     searchStrategyUpsert: record("searchStrategy.upsert", { activeRevisionId: null, id: "strategy-id" }),
     systemModelPolicyUpsert: record("systemModelPolicy.upsert", { id: "installation" }),
-    memoryUtilityModelPolicyUpsert: record("memoryUtilityModelPolicy.upsert", { id: "installation" }),
     workspacePolicyUpsert: record("workspacePolicy.upsert", { id: "installation" }),
     mcpPolicyUpsert: record("mcpPolicy.upsert", { id: "installation" }),
     usageLimitPolicyUpsert: record("usageLimitPolicy.upsert", { id: "installation" }),
     connectPolicyUpsert: record("connectPolicy.upsert", { id: "installation" }),
     telegramBotControlUpsert: record("telegramBotControl.upsert", { id: "installation" }),
     discordBotControlUpsert: record("discordBotControl.upsert", { id: "installation" }),
-    userMemorySettingsUpsert: record("userMemorySettings.upsert", {}),
     userCreate: record("user.create", { id: USER_ID }),
     userFindUnique: record("user.findUnique", user),
     userGroupUpsert: record("userGroup.upsert", {}),
@@ -162,9 +159,6 @@ function createBootstrapTransaction(input: {
       create: spies.groupCreate,
       findUnique: spies.groupFindUnique,
       update: spies.groupUpdate
-    },
-    memoryEgressAdminPolicy: {
-      upsert: spies.memoryEgressAdminPolicyUpsert
     },
     mcpGrant: {
       upsert: spies.mcpGrantUpsert
@@ -212,10 +206,6 @@ function createBootstrapTransaction(input: {
     systemModelPolicy: {
       upsert: spies.systemModelPolicyUpsert
     },
-    memoryUtilityModelPolicy: {
-      upsert: spies.memoryUtilityModelPolicyUpsert,
-      findUniqueOrThrow: vi.fn().mockResolvedValue({ recommendationAdoptionVersion: 2 })
-    },
     workspacePolicy: {
       upsert: spies.workspacePolicyUpsert
     },
@@ -230,9 +220,6 @@ function createBootstrapTransaction(input: {
     },
     userGroup: {
       upsert: spies.userGroupUpsert
-    },
-    userMemorySettings: {
-      upsert: spies.userMemorySettingsUpsert
     },
     userSettings: {
       create: spies.userSettingsCreate
@@ -279,7 +266,6 @@ function allFoundationMutationSpies(fixture: BootstrapTransactionFixture) {
     fixture.spies.mcpGrantUpsert,
     fixture.spies.folderCreate,
     fixture.spies.userSettingsCreate,
-    fixture.spies.userMemorySettingsUpsert,
     fixture.spies.accessGrantCreateMany
   ];
 }
@@ -460,12 +446,6 @@ describe("installation bootstrap", () => {
       update: {},
       where: { id: "installation" }
     });
-    expect(fixture.spies.memoryEgressAdminPolicyUpsert).not.toHaveBeenCalled();
-    expect(fixture.spies.memoryUtilityModelPolicyUpsert).toHaveBeenCalledWith({
-      create: { id: "installation" },
-      update: {},
-      where: { id: "installation" }
-    });
     expect(fixture.spies.systemModelPolicyUpsert).toHaveBeenCalledWith({
       create: {
         id: "installation",
@@ -574,7 +554,6 @@ describe("installation bootstrap", () => {
     }
 
     expect(fixture.spies.accessGrantCreateMany).not.toHaveBeenCalled();
-    expect(fixture.spies.userMemorySettingsUpsert).not.toHaveBeenCalled();
   });
 
   it("fails a fresh database without a password before catalog or foundation mutation", async () => {
@@ -706,12 +685,6 @@ describe("installation bootstrap", () => {
       create: { enabled: false, id: "installation" },
       update: {},
       where: { id: "installation" }
-    });
-    expect(fixture.spies.userMemorySettingsUpsert).toHaveBeenCalledWith({
-      create: { userId: USER_ID },
-      select: { userId: true },
-      update: {},
-      where: { userId: USER_ID }
     });
     for (const mutation of [
       fixture.spies.userCreate,

@@ -51,7 +51,7 @@ describe("development HTTP preload", () => {
       expect(item.body.secretInstalled).toBe(false);
     }
     expect(records.filter((record) => record.event === "process.started")).toEqual([
-      expect.objectContaining({ attachments: "starting", mcp: "starting", memory: "unknown" })
+      expect.objectContaining({ attachments: "starting", mcp: "starting" })
     ]);
     const logs = records.filter((record) => record.event === "http.request_completed");
     expect(logs).toHaveLength(2);

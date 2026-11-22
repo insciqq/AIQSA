@@ -54,7 +54,6 @@ export type AdminOwnedAppDataCounts = Readonly<{
   attachments: number;
   chats: number;
   folders: number;
-  memory: number;
   mcpGrants: number;
   mcpOAuthConnections: number;
   mcpUserServers: number;
@@ -125,7 +124,7 @@ export function adminUserDeletionInfo(input: AdminUserDeletionSource): AdminDele
     return {
       canDelete: true,
       reason: null,
-      summary: `${purgeableOwnedDataCount} private Memory or personal MCP record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
+      summary: `${purgeableOwnedDataCount} personal MCP record${purgeableOwnedDataCount === 1 ? "" : "s"} will be fenced and durably purged before the account is removed.`
     };
   }
 
@@ -223,13 +222,9 @@ export function adminInviteDeletionInfo(invite: AdminInviteDeletionSource, now: 
   };
 }
 
-export function adminUserOwnedDataCountWithMemory(
-  user: AdminUserOwnedDataSource,
-  memory: number
-): number {
+export function adminUserOwnedDataCount(user: AdminUserOwnedDataSource): number {
   return adminOwnedAppDataCount({
     ...user._count,
-    memory,
     settings: user.settings ? 1 : 0
   });
 }
@@ -241,7 +236,6 @@ export function adminOwnedAppDataCount(counts: AdminOwnedAppDataCounts): number 
     counts.attachments +
     counts.chats +
     counts.folders +
-    counts.memory +
     counts.mcpGrants +
     counts.mcpOAuthConnections +
     counts.mcpUserServers +

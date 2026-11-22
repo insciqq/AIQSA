@@ -96,9 +96,9 @@ const snapshot = { connection: {}, connectionId: "connection-1", model: { adapte
 const request = {
   attachmentIds: ["attachment-1"], attachments: [], chatId: "chat", content: { blocks: [{ text: "Hello", type: "text" }] },
   modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, toolCalling: true },
-  modelId: "fake-qsa", params: {}, personalContext: { approxTokens: 5, itemCount: 1, memoryGeneration: 1, memoryRevision: 1,
-    mode: "standing-v1", text: "The user lives in Madrid." },
-  prompt: { developer: "Visible answer contract", personalInstructions: "Always answer in French.", system: "Admitted chat guidance." },
+  modelId: "fake-qsa", params: {},
+  prompt: { developer: "Visible answer contract", memoryNote: "MEMORY NOTE\nThe user lives in Madrid.",
+    personalInstructions: "Always answer in French.", system: "Admitted chat guidance." },
   provider: "fake", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto"
 } as unknown as ProviderRunRequest;
 
@@ -473,7 +473,7 @@ describe("sub-agent runner", () => {
     expect(first.prompt.system).toContain("Admitted chat guidance.");
     expect(first.prompt.developer).toBeNull();
     expect(first.prompt.personalInstructions).toBeUndefined();
-    expect(first.personalContext).toBeUndefined();
+    expect(first.prompt.memoryNote).toBeUndefined();
     expect(first.attachmentIds).toEqual([]);
     // The brief and the user's message verbatim, the run's own context, and never the main transcript.
     const texts = userTexts(first);

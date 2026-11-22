@@ -5,7 +5,7 @@ import {
   CHAT_TITLE_MAX_LENGTH,
   PERSONAL_FOLDER_NAME_MAX_LENGTH
 } from "../../contracts/chats";
-import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memoryClient";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";

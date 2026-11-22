@@ -9,7 +9,7 @@ import { formatChatRoutePath } from "../../domain/chatRoute";
 import { resolveChatAccess } from "./access";
 import { markChatSearchDirty } from "../chatSearch/index/dirty";
 import { temporaryChatRetentionDeadline } from "./temporaryRetention";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { WORKSPACE_SUBAGENTS_RUNNING_CODE } from "../../contracts/subagents";
 import {
   boundedChatTitle,

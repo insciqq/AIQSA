@@ -24,7 +24,7 @@ describe("background queue projection", () => {
     const rows = projectAdminHealthQueues([
       reading("attachment_processing", 2 * 3_600),
       reading("file_deletion", 2 * 3_600, { failed24h: 4 }),
-      { queue: "memory", counts: null },
+      { queue: "mcp_activation", counts: null },
       // A due time in the future (clock skew between writers) is not late.
       reading("chat_titles", -30)
     ], now);
@@ -33,8 +33,8 @@ describe("background queue projection", () => {
         slowAfterSeconds: 600, stalledAfterSeconds: 1_800 },
       { queue: "file_deletion", state: "slow", waiting: 3, running: 1, oldestSeconds: 7_200, failed24h: 4,
         slowAfterSeconds: 3_600, stalledAfterSeconds: 86_400 },
-      { queue: "memory", state: "unavailable", waiting: null, running: null, oldestSeconds: null, failed24h: null,
-        slowAfterSeconds: 900, stalledAfterSeconds: 3_600 },
+      { queue: "mcp_activation", state: "unavailable", waiting: null, running: null, oldestSeconds: null, failed24h: null,
+        slowAfterSeconds: 600, stalledAfterSeconds: 1_800 },
       expect.objectContaining({ queue: "chat_titles", state: "ok", oldestSeconds: 0 })
     ]);
     // The projection is exactly what the browser decoder accepts.
@@ -123,8 +123,8 @@ describe("background queue repository", () => {
   it("rejects a malformed aggregate as unavailable instead of guessing", async () => {
     await captureRunObservation();
     const { client } = fakeClient(() => [{ waiting: -1, running: 0, failed: 0, oldestDueAt: null }]);
-    await expect(readAdminHealthQueueCounts(client, { now, queues: ["memory"] })).resolves.toEqual([{ queue: "memory", counts: null }]);
+    await expect(readAdminHealthQueueCounts(client, { now, queues: ["chat_titles"] })).resolves.toEqual([{ queue: "chat_titles", counts: null }]);
     const empty = fakeClient(() => []);
-    await expect(readAdminHealthQueueCounts(empty.client, { now, queues: ["memory"] })).resolves.toEqual([{ queue: "memory", counts: null }]);
+    await expect(readAdminHealthQueueCounts(empty.client, { now, queues: ["chat_titles"] })).resolves.toEqual([{ queue: "chat_titles", counts: null }]);
   });
 });

@@ -98,7 +98,6 @@ async function main() {
 
   async function publish(run: Run) {
     await prisma.$transaction(async tx => {
-      await tx.memoryRetrievalAttempt.updateMany({ where: { modelRunId: run.runId }, data: { state: "CANCELLED", errorCode: "fixture_preparation_cancelled" } });
       await tx.message.update({ where: { id: run.assistantMessageId }, data: { status: "complete", content: textMessageContent("Synthetic answer.") } });
       await tx.modelRun.update({ where: { id: run.runId }, data: { status: "complete", normalizedRequest: {} } });
     });
@@ -135,7 +134,6 @@ async function main() {
     await prisma.workspacePolicy.update({ where: { id: WORKSPACE_POLICY_ID }, data: { enabled: true } });
     await prisma.user.create({ data: { id: userId, displayName: "Synthetic untouched Workspace fixture", status: "active" } });
     created = true;
-    await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false, learnAutomatically: false, referenceChatHistory: false } });
 
     phase = "used_export";
     const first = await admit();

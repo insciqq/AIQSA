@@ -9,7 +9,6 @@ import { loadProviderAttachments } from "../runs/runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "../runs/attachmentLimits";
 import { applyProviderRequestContextBudget } from "../runs/requestContextBudget";
 import { acceptedRunSnapshot, nativeEntryConnectorTurn, type AcceptedRunSnapshot } from "../runs/acceptedRunSnapshot";
-import { applyPreparingMaterialization, createPreparingMemoryMaterializer } from "../runs/preparingRunMaterialization";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "../runs/runRepositoryContract";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "../../contracts/chatPdfPreparation";
 import { ChatPdfPreparationError } from "./chatPdfCore";
@@ -114,15 +113,13 @@ export function createChatPdfRunContinuation(deps: Dependencies): ChatPdfCoordin
     if (loaded.modelRun.status === "preparing") {
       if (!deps.repository.continuePdfPreparedRun) throw new ChatPdfPreparationError("pdf_preparation_unavailable");
       const common = { ...prepared, chatId: loaded.modelRun.chatId, modelId: prepared.normalizedRequest.modelId,
-        provider: prepared.normalizedRequest.provider, signal, userId: claim.userId,
-        memoryMaterializer: createPreparingMemoryMaterializer(prepared, runtime.adapter, runtime.toolBridge) };
+        provider: prepared.normalizedRequest.provider, signal, userId: claim.userId };
       const admission: PreparingRunAdmissionInput = prepared.sourceKind === "send"
         ? { ...common, admissionKind: "NORMAL_SEND", content: prepared.normalizedRequest.content,
             expectedActiveLeafId: prepared.expectedActiveLeafId, defaults: undefined }
         : { ...common, admissionKind: "REGENERATE", preSendAssistantMessageId: snapshot.sourceMessageId ?? null,
             userMessageId: admissionResult.userMessageId, defaults: undefined };
       created = await observeChatPdfPersistence(claim.runId, "continuation", () => deps.repository.continuePdfPreparedRun!({ admission, claimToken: claim.claimToken, created: admissionResult }));
-      prepared = applyPreparingMaterialization(prepared, created);
       // The run's first execution: its wait for the answer began at admission.
       // A run resumed after a crash records no time to first output.
       created = { ...created, acceptedAt: loaded.modelRun.createdAt };

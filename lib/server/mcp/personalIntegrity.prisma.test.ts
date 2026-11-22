@@ -76,7 +76,6 @@ afterEach(async () => {
     await prisma.chat.updateMany({ data: { activeLeafMessageId: null }, where: { id: { in: chatIds } } });
     await prisma.message.deleteMany({ where: { chatId: { in: chatIds } } });
     await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: { in: chatIds }, userId: { in: userIds } } });
     await prisma.attachmentDeletionJob.deleteMany({
       where: { storageKey: { in: observations.flatMap((row) => row.storageKey ? [row.storageKey] : []) } }
     });
@@ -541,7 +540,7 @@ describe("account deletion with personal MCP", () => {
     expect(dashboard.users.find((row) => row.id === ownerId)?.deletion).toEqual({
       canDelete: true,
       reason: null,
-      summary: "2 private Memory or personal MCP records will be fenced and durably purged before the account is removed."
+      summary: "2 personal MCP records will be fenced and durably purged before the account is removed."
     });
 
     const kick = vi.fn();

@@ -4,8 +4,8 @@ import type { TelemetryCounterGroup, TelemetryCounterQuery, TelemetryStore } fro
 import type { FailedRunLoad } from "../health/failedRuns";
 
 /**
- * Health attention rules: thresholds over the content-free telemetry counters,
- * Memory rebuild counts and failed runs, evaluated on every read and never persisted. An
+ * Health attention rules: thresholds over the content-free telemetry counters
+ * and failed runs, evaluated on every read and never persisted. An
  * item exists only while its failures are recent, so it clears by itself once
  * the window passes without them. Every threshold lives here so calibration
  * touches one place.
@@ -15,7 +15,7 @@ import type { FailedRunLoad } from "../health/failedRuns";
  * window, so a count may include up to one earlier hour of the same row.
  */
 export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
-  /** The window of every rule except operation timeouts and Memory rebuilds. */
+  /** The window of every rule except operation timeouts. */
   windowMs: 60 * 60_000,
   /** Final failed operations (rate limits, 5xx, network, timeouts) per connection. */
   providerFailingMinFailures: 5,
@@ -38,13 +38,6 @@ export const HEALTH_ATTENTION_THRESHOLDS = Object.freeze({
   newErrorWindowMs: 24 * 3_600_000,
   /** New failures named one by one; the rest are summed in one more item. */
   newErrorItemsMax: 3,
-  /**
-   * Full Memory index rebuilds admitted for one owner within the rebuild
-   * window. A deployment, an embedding change or a Resume admits one; more
-   * mean a trigger loop re-embedding that owner's Memory again and again.
-   */
-  memoryRebuildsPerOwnerMin: 3,
-  memoryRebuildWindowMs: 24 * 3_600_000,
   /** Every failed run created within this window raises the failed-runs item. */
   runsFailedWindowMs: 24 * 3_600_000,
   /** An enabled Discord bot without a gateway session this long is disconnected (PRD D-34). */
@@ -140,7 +133,6 @@ export type HealthFinding =
   | Readonly<{ code: "operation_timeouts_rising"; operation: HealthTimedOperation; timeouts: number; total: number }>
   | Readonly<{ code: "new_error"; fingerprint: string; errorClass: string; site: string | null; count: number }>
   | Readonly<{ code: "new_error"; fingerprint: null; more: number }>
-  | Readonly<{ code: "memory_index_rebuilds_repeated"; atLeast: number; maxPerOwner: number; owners: number }>
   | Readonly<{ code: "discord_disconnected"; minutes: number; reason: "connect_address" | "gateway_refused" | "network" }>
   | Readonly<{ code: "discord_token_rejected" | "discord_intents_disallowed" | "discord_session_limit" | "discord_setup_incomplete" }>
   | Readonly<{ code: "discord_failures_rising"; failures: number; requests: number }>;
@@ -162,7 +154,9 @@ const roleLabels = {
   app: "The application",
   bootstrap: "Database setup",
   maintenance: "The maintenance worker",
-  memory_coordinator: "The Memory worker",
+  // The background worker keeps the role of the Memory worker it replaced (`scripts/worker-bootstrap.cjs`).
+  memory_coordinator: "The background worker",
+  // Retired with the separate search index; incidents recorded before keep the label.
   memory_search: "The Memory search worker",
   storage_relay: "The storage relay",
   workspace_runner: "The Workspace runner"
@@ -478,24 +472,6 @@ export function failedRunFindings(load: Pick<FailedRunLoad, "runs" | "users">): 
 }
 
 /**
- * Rebuilds per owner over the rebuild window, read from PostgreSQL as counts
- * only (owners never leave it), against the per-owner threshold. One owner
- * suffices: every rebuild re-embeds that owner's whole Memory.
- */
-export function memoryRebuildFindings(
-  load: Readonly<{ maxPerOwner: number; ownersAtThreshold: number }>,
-  thresholds: HealthThresholds = HEALTH_ATTENTION_THRESHOLDS
-): HealthFinding[] {
-  if (load.maxPerOwner < thresholds.memoryRebuildsPerOwnerMin) return [];
-  return [{
-    atLeast: thresholds.memoryRebuildsPerOwnerMin,
-    code: "memory_index_rebuilds_repeated",
-    maxPerOwner: load.maxPerOwner,
-    owners: Math.max(1, load.ownersAtThreshold)
-  }];
-}
-
-/**
  * Discord session health (PRD D-34), read from the control row and this
  * process's session: only while the bot is on. A rejected token, refused
  * intents and a spent connection budget are news at once; a lost connection
@@ -657,12 +633,6 @@ export function healthAttentionItems(
           id: `${finding.code}:${finding.operation.kind}:${finding.operation.name}`, severity: "warn",
           detail: `${operationLabel(finding.operation)} · ${finding.timeouts} of ${finding.total} ran out of time in the last 24 hours`,
           target: { section: "health" }, title: "Operations are timing out" });
-        break;
-      case "memory_index_rebuilds_repeated":
-        items.push({ action: "Open Health", code: finding.code, count: finding.maxPerOwner, id: finding.code,
-          severity: "warn",
-          detail: `${plural(finding.owners, "owner")} had the Memory index rebuilt ${finding.atLeast} or more times in the last 24 hours, up to ${finding.maxPerOwner} for one owner — each rebuild re-indexes and re-embeds that owner's whole Memory; check the logged rebuild reasons`,
-          target: { section: "health" }, title: "Memory index keeps rebuilding" });
         break;
       case "discord_disconnected":
         items.push({ action: "Open Discord", code: finding.code, count: null, id: finding.code, severity: "bad",

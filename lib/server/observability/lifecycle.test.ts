@@ -104,11 +104,11 @@ describe("process and job diagnostics", () => {
     const fixture = isolatedRuntime();
     let runtime = fixture.reload();
     runtime.setProcessRole("memory_coordinator");
-    runtime.runWithContext({ job_id: "unrelated-job" }, () => runtime.announceProcess({ memory: "starting", get email(): "unknown" { throw new Error("PRIVATE_CANARY"); } }));
+    runtime.runWithContext({ job_id: "unrelated-job" }, () => runtime.announceProcess({ mcp: "starting", get email(): "unknown" { throw new Error("PRIVATE_CANARY"); } }));
     runtime = fixture.reload();
-    runtime.announceProcess({ memory: "ready" });
+    runtime.announceProcess({ mcp: "ready" });
     const startup = fixture.records()[0];
-    expect(startup).toMatchObject({ event: "process.started", role: "memory_coordinator", node_version: "v22.22.0", memory: "starting" });
+    expect(startup).toMatchObject({ event: "process.started", role: "memory_coordinator", node_version: "v22.22.0", mcp: "starting" });
     expect(startup).not.toHaveProperty("email");
     expect(startup).not.toHaveProperty("job_id");
     for (let index = 0; index < 100; index++) runtime.reportReadiness("ready", undefined, 0);

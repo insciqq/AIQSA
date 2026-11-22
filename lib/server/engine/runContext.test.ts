@@ -69,7 +69,7 @@ function request(items: readonly TranscriptItem[], target: TranscriptTarget = TA
 
 /** What the run measures for `items` before any provider figure. */
 function measured(items: readonly TranscriptItem[], target: TranscriptTarget = TARGET): number {
-  return measureContext({ calibration: contextMeasureCalibration(null), estimate, fixedTokens: estimate([PROMPT, null, []]), items, target })
+  return measureContext({ calibration: contextMeasureCalibration(null), estimate, fixedTokens: estimate([PROMPT, []]), items, target })
     .tokens;
 }
 
@@ -730,7 +730,7 @@ describe("a native run's context", () => {
       const window = { contextWindow: 1_000_000, maxOutputTokens: 1_000 };
       const earlier = harness(chat.items, { call: async () => summaryReply(), window });
       await earlier.context.prepare(request(chat.items));
-      const fixedTokens = estimate([PROMPT, null, []]);
+      const fixedTokens = estimate([PROMPT, []]);
       expect(earlier.context.requestAnchor({ inputTokens: null })).toBeNull();
       const anchor = earlier.context.requestAnchor({ inputTokens: 1_234 });
       expect(anchor).toEqual({ attachmentIds: [], baseId: null, fixedTokens, inputTokens: 1_234 });
@@ -756,7 +756,7 @@ describe("a native run's context", () => {
     const window = { contextWindow: 1_000_000, maxOutputTokens: 1_000 };
     const pdf: ProviderRunRequest["attachments"][number] = { byteSize: 4_000, extractedText: "p".repeat(4_000), fileName: "a.pdf",
       id: "pdf-1", kind: "pdf", metadata: {}, mimeType: "application/pdf", status: "ready" };
-    const earlier = { attachmentIds: [], baseId: null, fixedTokens: estimate([PROMPT, null, []]), inputTokens: 1_000 };
+    const earlier = { attachmentIds: [], baseId: null, fixedTokens: estimate([PROMPT, []]), inputTokens: 1_000 };
     const withPdf = { ...earlier, fixedTokens: earlier.fixedTokens + 1_100, inputTokens: 9_000 };
     const items: TranscriptItem[] = [...chat.items, { id: "a1", kind: "assistant_text", origin: TARGET, requestAnchor: earlier, text: "one" },
       { id: "u2", kind: "user", text: "read this" },

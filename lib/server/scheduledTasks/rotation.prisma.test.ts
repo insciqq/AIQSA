@@ -106,7 +106,6 @@ afterEach(async () => {
   await prisma.chatContinuationWorkspaceSeed.deleteMany({ where: { OR: [{ sourceChat: { userId: { in: ids } } },
     { newChat: { userId: { in: ids } } }] } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
-  await prisma.memoryDeletionOutbox.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
 });
 afterAll(() => prisma.$disconnect());

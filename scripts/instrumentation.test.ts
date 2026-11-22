@@ -7,9 +7,9 @@ vi.mock("../lib/server/observability/http.cjs", () => ({ reportNextRequestError:
 const startup = vi.hoisted(() => ({
   announce: vi.fn(), failed: vi.fn(), healthy: vi.fn(), hooks: vi.fn(),
   recovery: vi.fn(), attachments: vi.fn(), uploads: vi.fn(),
-  activation: vi.fn(), mcp: vi.fn(), memory: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
+  activation: vi.fn(), mcp: vi.fn(), nativeRouting: vi.fn(), decisionModel: vi.fn(), costs: vi.fn(),
   scheduledTasks: vi.fn(), push: vi.fn(), usageAlerts: vi.fn(), objectDeletion: vi.fn(),
-  telemetry: vi.fn(), telegram: vi.fn(), discord: vi.fn()
+  telemetry: vi.fn(), telegram: vi.fn(), discord: vi.fn(), background: vi.fn()
 }));
 vi.mock("../lib/server/observability", () => ({ announceProcess: startup.announce, reportSubsystemFailure: startup.failed, reportSubsystemHealthy: startup.healthy }));
 vi.mock("../lib/server/observability/process.cjs", () => ({ installProcessFailureHooks: startup.hooks }));
@@ -25,9 +25,9 @@ vi.mock("../lib/server/retention/defaultObjectDeletion", () => ({ startDefaultOb
 vi.mock("../lib/server/telemetry/defaultRecorder", () => ({ startDefaultTelemetryRecorder: startup.telemetry }));
 vi.mock("../lib/server/mcp/defaultActivation", () => ({ getDefaultMcpActivationCoordinator: startup.activation }));
 vi.mock("../lib/server/mcp/defaultRuntime", () => ({ getDefaultMcpRuntimeCoordinator: startup.mcp }));
-vi.mock("../lib/server/memory/coordinator/startup", () => ({ startDefaultMemoryCoordinatorFeatureLocally: startup.memory }));
 vi.mock("../lib/server/bootstrap/nativeRoutingAdoption", () => ({ startNativeRoutingAdoption: startup.nativeRouting }));
 vi.mock("../lib/server/bootstrap/decisionModelAdoption", () => ({ startDecisionModelAdoption: startup.decisionModel }));
+vi.mock("../lib/server/background/defaultPasses", () => ({ startBackgroundWorkerLocally: startup.background }));
 
 vi.mock("../lib/server/bootstrap/catalogCostBackfill", () => ({ startCatalogCostBackfill: startup.costs }));
 
@@ -35,7 +35,6 @@ import { onRequestError, register } from "../instrumentation";
 
 beforeEach(() => {
   for (const mock of Object.values(startup)) mock.mockReset();
-  startup.memory.mockResolvedValue({ status: "ready" });
 });
 
 afterEach(() => {
@@ -61,7 +60,9 @@ describe("optional subsystem startup", () => {
     expect(startup.decisionModel).toHaveBeenCalledOnce();
     expect(startup.costs).toHaveBeenCalledOnce();
     expect(startup.hooks).toHaveBeenCalledOnce();
-    expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", memory: "unknown" }));
+    // Outside production the background worker runs in-process.
+    expect(startup.background).toHaveBeenCalledOnce();
+    expect(startup.announce).toHaveBeenCalledWith(expect.objectContaining({ attachments: "starting", mcp: "starting" }));
     expect(startup.failed.mock.calls.map(([fields]) => fields)).toEqual([
       { error: expect.any(Error), subsystem: "scheduled_tasks", stage: "startup", code: "scheduled_task_runner_startup_failed", action: "degrade" },
       { error: expect.any(Error), subsystem: "push", stage: "startup", code: "push_unavailable", action: "degrade" },

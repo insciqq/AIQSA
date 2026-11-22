@@ -1,12 +1,12 @@
 import { resolveRequestAuth } from "@/lib/server/auth/defaultAuth";
-import { createListMemoryMcpConnectedAppsHandler } from "@/lib/server/memoryMcp/connectedApps";
-import { defaultInboundMcpOAuthService } from "@/lib/server/memoryMcp/oauth/default";
+import { createListConnectedAppsHandler } from "@/lib/server/mcp/inboundOAuth/connectedApps";
+import { defaultInboundMcpOAuthService } from "@/lib/server/mcp/inboundOAuth/default";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 export const runtime = "nodejs";
 
-export const GET = createListMemoryMcpConnectedAppsHandler({
+export const GET = createListConnectedAppsHandler({
   resolveAuth: resolveRequestAuth,
   service: defaultInboundMcpOAuthService
 });

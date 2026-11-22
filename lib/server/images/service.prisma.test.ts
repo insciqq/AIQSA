@@ -261,12 +261,9 @@ describe("durable conversational images", () => {
     const { call, context } = await f.call();
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () => {
       const response = await imageResponse();
-      const chat = await f.db.chat.findUniqueOrThrow({ where: { id: f.request.chatId }, select: { memorySourceRevision: true } });
-      const deletion = await f.db.memoryDeletionOutbox.create({ data: { userId: f.userId, operation: "SOURCE_PURGE",
-        targetType: "CHAT@memory-chat-delete-v1", targetId: f.request.chatId, memoryGeneration: 0,
-        admissionAuthorizationId: randomUUID(), admittedChatSourceRevision: chat.memorySourceRevision, alsoForgetOriginMemories: false } });
+      // The chat is fenced for permanent deletion: archived, with its deletion time and an opaque operation id.
       await f.db.chat.update({ where: { id: f.request.chatId }, data: { archived: true, memoryMode: "EXCLUDED",
-        permanentDeletionAt: new Date(), permanentDeletionOperationId: deletion.id } });
+        permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() } });
       return response;
     });
     const service = createPrismaImageGenerationService(f.db, f.storage, { encryptionKey: () => key, fetchFn });

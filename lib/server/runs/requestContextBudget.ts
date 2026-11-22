@@ -11,8 +11,6 @@ import {
   providerAttachmentTextLabel,
   truncateProviderAttachmentText
 } from "../providers/attachmentPayload";
-import { MEMORY_READER_CONTRACT_CURRENT, MEMORY_READER_FINALIZATION_CONTRACT_V1 } from "../providers/personalContext";
-import { memoryActionAnswerContract } from "../providers/memoryActionAnswer";
 import type {
   NormalizedRunRequest,
   ProviderConversationMessage,
@@ -94,8 +92,7 @@ function promptTokens(request: Pick<NormalizedRunRequest, "prompt">, estimate: (
     prompt.personalInstructions,
     prompt.developer,
     prompt.memoryNote,
-    prompt.responseReminder ? `Response reminder:\n${prompt.responseReminder}` : null,
-    prompt.memoryActionAnswerResult ? memoryActionAnswerContract(prompt.memoryActionAnswerResult) : null
+    prompt.responseReminder ? `Response reminder:\n${prompt.responseReminder}` : null
   ].reduce((total: number, part) => total + (part?.trim() ? estimate(part) : 0), 0);
 }
 
@@ -227,8 +224,6 @@ function irreducibleTokens(request: ProviderRunRequest, attachments: ProviderRun
     irreducibleMessageTokens(request, estimate) +
     estimate(providerFacingSerializedTools(request, bridge)) +
     estimate(request.providerToolMessages ?? []) + workspaceImageTokenReserve(request.providerToolMessages) +
-    estimate(request.personalContext?.text ?? "") +
-    (request.personalContext ? estimate(MEMORY_READER_CONTRACT_CURRENT) + estimate(MEMORY_READER_FINALIZATION_CONTRACT_V1) : 0) +
     providerAttachmentBudgetTokens({ attachments: withoutText, estimateImageTokens: imageTokenEstimator(request), estimateTokens: estimate,
       modelCapabilities: request.modelCapabilities });
 }
@@ -324,16 +319,4 @@ export function requestHeadroomTokens(request: ProviderRunRequest, bridge?: Prov
   const text = textAttachmentCandidates(attachments, request.modelCapabilities, estimate)
     .reduce((total, candidate) => total + candidate.labelTokens + candidate.sourceTokens, 0);
   return Math.max(0, limits.budgetTokens - irreducibleTokens(request, attachments, bridge) - text);
-}
-
-/** Returns the bounded room for a future Personal Memory block after the
- * admitted model's output reserve, safety margin, trusted prompt, current
- * message and pinned context. Attachments and serialized tools remain subject
- * to the exact request fit. */
-export function normalizedRequestPersonalContextTokenLimit(request: NormalizedRunRequest): number | null {
-  const limits = budgetLimits(request);
-  if (!limits) return null;
-  const estimate = contextTokenEstimator(request);
-  return Math.max(0, limits.budgetTokens - promptTokens(request, estimate) - estimate(MEMORY_READER_CONTRACT_CURRENT) -
-    estimate(MEMORY_READER_FINALIZATION_CONTRACT_V1) - irreducibleMessageTokens(request, estimate) - followupReserveTokens(request));
 }

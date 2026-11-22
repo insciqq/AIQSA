@@ -36,9 +36,9 @@ describe("experiment cleanup accounting fence", () => {
     expect(() => requireActivationSettledWork({ activeToolCalls: 1, dispatchedVisionAttempts: 0 })).toThrow("provider_accounting_pending");
     expect(() => requireActivationSettledWork({ activeToolCalls: 0, dispatchedVisionAttempts: 1 })).toThrow("provider_accounting_pending");
   });
-  const owned = { ...receipt, id: "synthetic-receipt", memoryExecutionBindingId: null };
+  const owned = { ...receipt, id: "synthetic-receipt" };
   const proof = { [owned.id]: activationReceiptHash(owned) };
-  const boundary = { receipts: [owned], bindings: [], recordedReceipts: proof, recordedMemoryBindings: [] };
+  const boundary = { receipts: [owned], recordedReceipts: proof };
   it("accepts unchanged recorded receipts and an already cleaned row on resume", () => {
     expect(() => requireActivationAccountingBoundary(boundary)).not.toThrow();
     expect(() => requireActivationAccountingBoundary({ ...boundary, receipts: [] })).not.toThrow();
@@ -50,15 +50,7 @@ describe("experiment cleanup accounting fence", () => {
       receipts: [{ ...owned, estimatedCostMicros: 100 }] })).toThrow("provider_accounting_changed");
     expect(() => requireActivationAccountingBoundary({ ...boundary, recordedReceipts: {} })).toThrow("unattributed_provider_accounting");
   });
-  it("retains pending bindings and started bindings without a recorded receipt", () => {
-    for (const state of ["PENDING", "RUNNING"]) expect(() => requireActivationAccountingBoundary({ ...boundary,
-      bindings: [{ id: "binding", state, startedAt: null }] })).toThrow("provider_accounting_pending");
-    expect(() => requireActivationAccountingBoundary({ ...boundary,
-      bindings: [{ id: "binding", state: "OUTCOME_UNKNOWN", startedAt: new Date() }] })).toThrow("provider_accounting_receipt_missing");
-    expect(() => requireActivationAccountingBoundary({ ...boundary, recordedMemoryBindings: ["binding"],
-      bindings: [{ id: "binding", state: "OUTCOME_UNKNOWN", startedAt: new Date() }] })).not.toThrow();
-  });
-  it("hashes only receipt accounting and binding identity, never incidental payloads", () => {
+  it("hashes only receipt accounting, never incidental payloads", () => {
     expect(activationReceiptHash({ ...owned, privateContent: "do not retain" } as typeof owned)).toBe(proof[owned.id]);
     expect(activationReceiptHash({ ...owned, operationCount: 2 })).not.toBe(proof[owned.id]);
   });
@@ -66,23 +58,20 @@ describe("experiment cleanup accounting fence", () => {
 
 describe("frozen experiment provider profile", () => {
   const profile = { system: { providerModelId: null, chatTitleProviderModelId: null,
-    decisionProviderModelId: null, rerankerProviderModelId: null }, memory: { providerModelId: null }, memoryEmbeddingDefault: null };
+    decisionProviderModelId: null, rerankerProviderModelId: null, embeddingProviderModelId: null } };
   it("requires the explicitly unassigned background destinations without changing user defaults", () => {
     expect(() => requireActivationBackgroundProfile(profile)).not.toThrow();
     expect(() => requireActivationBackgroundProfile({ ...profile, system: null })).toThrow("background_provider_profile_required");
-    expect(() => requireActivationBackgroundProfile({ ...profile, memory: { providerModelId: "utility" } })).toThrow("background_provider_profile_required");
-    expect(() => requireActivationBackgroundProfile({ ...profile, memoryEmbeddingDefault: "embedding" })).toThrow("background_provider_profile_required");
     for (const field of Object.keys(profile.system)) expect(() => requireActivationBackgroundProfile({ ...profile,
       system: { ...profile.system, [field]: "enabled" } })).toThrow("background_provider_profile_required");
   });
-  it("distinguishes Vision, Memory and exact Search configuration while ignoring JSON object ordering", () => {
-    const environment = { system: { ...profile.system, visionProviderModelId: "vision-a" }, memory: profile.memory,
+  it("distinguishes Vision and exact Search configuration while ignoring JSON object ordering", () => {
+    const environment = { system: { ...profile.system, visionProviderModelId: "vision-a" },
       searches: [{ optionId: "search", providerModelId: "search-model-a", revisionId: "revision-a" }] };
     const hash = activationEvidenceHash(environment);
     expect(hash).toMatch(/^[a-f0-9]{64}$/u);
-    expect(activationEvidenceHash({ searches: environment.searches, memory: environment.memory, system: environment.system })).toBe(hash);
+    expect(activationEvidenceHash({ searches: environment.searches, system: environment.system })).toBe(hash);
     expect(activationEvidenceHash({ ...environment, system: { ...environment.system, visionProviderModelId: "vision-b" } })).not.toBe(hash);
-    expect(activationEvidenceHash({ ...environment, memory: { providerModelId: "memory" } })).not.toBe(hash);
     expect(activationEvidenceHash({ ...environment, searches: [{ ...environment.searches[0], revisionId: "revision-b" }] })).not.toBe(hash);
   });
 });

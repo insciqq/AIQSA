@@ -24,7 +24,7 @@ const searchProtocols = {
 export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
-  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "updateMemory" | "adoptChatTitle" | "adoptDecisionModel">;
+  roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "adoptChatTitle" | "adoptDecisionModel">;
   search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
 }) {
   return async function complete(value: {
@@ -114,40 +114,14 @@ export function createAdminProviderBootstrap(input: {
     }
     try {
       const roles = await input.roles.list();
-      const memory = roles.memoryPolicy.assignmentSource === "unassigned"
-        ? roles.memoryPolicy.recommendations?.find((entry) => entry.unavailableReason === null &&
-          entry.connectionId === connection.id && entry.providerModelId && eligible.has(entry.providerModelId)) : null;
-      if (memory) {
+      const target = !roles.policy.chatTitleModel ? pick(roles.titleCandidates) : undefined;
+      // Titles take reasoning Off where the exact deployment supports it, else its lowest named level.
+      const effort = target ? ["none", "low"].find((entry) => target.reasoningEfforts.includes(entry)) : undefined;
+      if (target && effort) {
         value.signal.throwIfAborted();
-        await input.roles.updateMemory({ expectedVersion: roles.memoryPolicy.version,
-          providerModelId: memory.providerModelId, reasoningEffort: memory.reasoningEffort,
-          recommendationId: memory.id, assignmentSource: "BOOTSTRAP", userId: value.userId });
-        result.defaults.push(`Memory: ${memory.displayName}`);
-      } else if (roles.memoryPolicy.assignmentSource === "unassigned") {
-        // Nothing failed and a retry cannot qualify a model: the operator
-        // chooses Memory in Defaults & roles.
-        result.needsConfiguration = ["memory"];
-      }
-    } catch {
-      value.signal.throwIfAborted();
-      result.state = "partial";
-    }
-    try {
-      const roles = await input.roles.list();
-      const recommendation = !roles.policy.chatTitleModel ? roles.memoryPolicy.recommendations?.find((entry) =>
-        entry.unavailableReason === null && entry.connectionId === connection.id && entry.providerModelId &&
-        eligible.has(entry.providerModelId) && roles.titleCandidates.some((model) => model.id === entry.providerModelId)) : null;
-      const target = roles.titleCandidates.find((model) => model.id === recommendation?.providerModelId);
-      if (target && recommendation) {
-        // Use the qualified utility shortlist, not an arbitrary answer model.
-        // Titles prefer reasoning Off when the exact deployment supports it.
-        const effort = target.reasoningEfforts.includes("none") ? "none" : recommendation.reasoningEffort;
-        if (target.reasoningEfforts.includes(effort)) {
-          value.signal.throwIfAborted();
-          if (await input.roles.adoptChatTitle({ expectedVersion: roles.policy.version,
-            providerModelId: target.id, reasoningEffort: effort, userId: value.userId })) {
-            result.defaults.push(`Chat titles: ${target.displayName}`);
-          }
+        if (await input.roles.adoptChatTitle({ expectedVersion: roles.policy.version,
+          providerModelId: target.id, reasoningEffort: effort, userId: value.userId })) {
+          result.defaults.push(`Chat titles: ${target.displayName}`);
         }
       }
     } catch {

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import { createAnthropicMessagesAdapter, type AnthropicMessagesClient } from "../providers/anthropicMessages";
 import { buildCompatibleResponsesRequest } from "../providers/compatibleResponses";
-import { PERSONAL_CONTEXT_HEADING } from "../providers/personalContext";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { RunTool } from "../tools/types";
 import { SUMMARIZER_INSTRUCTIONS } from "./compaction/summaryPrompt";
@@ -21,9 +20,7 @@ const runRequest: ProviderRunRequest = {
     streaming: true, toolCalling: true, vision: true },
   modelId: "gpt-6.1-sol",
   params: { background: false, maxOutputTokens: 4_096, reasoning: { effort: "high", summary: "auto" }, store: false, stream: true },
-  personalContext: { approxTokens: 3, itemCount: 1, memoryGeneration: 1, memoryRevision: 1, mode: "prefetched",
-    text: `${PERSONAL_CONTEXT_HEADING}\nPRIVATE-MEMORY` },
-  prompt: { developer: null, system: "Run instructions." },
+  prompt: { developer: null, memoryNote: "MEMORY NOTE\nPRIVATE-MEMORY", system: "Run instructions." },
   provider: "openai_compatible",
   searchPlan: { mode: "all_selected", options: [] },
   toolChoice: "auto",
@@ -50,7 +47,7 @@ describe("compaction calls", () => {
       signal: new AbortController().signal });
     expect(request).toMatchObject({ attachments: [], prompt: { developer: null, system: SUMMARIZER_INSTRUCTIONS }, toolChoice: "none",
       toolMode: "none", tools: [] });
-    expect(request.personalContext).toBeUndefined();
+    expect(request.prompt.memoryNote).toBeUndefined();
     expect(request.params).toMatchObject({ maxOutputTokens: 8_192, reasoning: { effort: "low", summary: "auto" }, stream: true });
     const body = buildCompatibleResponsesRequest(request);
     expect(JSON.stringify(body)).not.toContain("PRIVATE-MEMORY");

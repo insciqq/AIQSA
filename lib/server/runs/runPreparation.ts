@@ -82,7 +82,7 @@ import type { StorageAdapter } from "../uploads/storage";
 import {
   decodeMemoryInitialChatMode,
   type MemoryInitialChatMode
-} from "../../contracts/memory";
+} from "../../contracts/memoryClient";
 import {
   mcpPersonalCredentialRejections,
   type McpCapabilityCatalog,

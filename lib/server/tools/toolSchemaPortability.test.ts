@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readToolResultTool as engineReadToolResultTool } from "../engine/toolResults";
 import { mcpFindToolsTool } from "../mcp/discovery";
-import { memorySearchTool } from "../memory/search/contract";
 import { AGENT_MESSAGE_TOOLS, SUBAGENT_CHILD_TOOLS, SUBAGENT_TOOLS } from "../subagents/tools";
 import { analyzeConversationImageTool, analyzeImageTool } from "./analyzeImage";
 import { artifactTool, readArtifactTool } from "./artifact";
@@ -15,6 +14,7 @@ import { computerToolDefinitions } from "./computerTools";
 import { fetchUrlTool } from "./fetchUrlPlan";
 import { HARNESS_TOOLS } from "./harnessTools";
 import { monitoringVerdictTool } from "./monitoringVerdict";
+import { readPastChatTool, searchPastChatsTool } from "./pastChats";
 import { readToolResultTool } from "./readToolResult";
 import { changeResearchFrameTool } from "./changeResearchFrame";
 import { recordEvidenceTool } from "./recordEvidence";
@@ -62,9 +62,6 @@ function containerTypeLists(schema: unknown, path = "$"): string[] {
   return found;
 }
 
-const memorySearch = { comparisonResultTokens: 12000, destinations: [], maxCalls: 3, memoryGeneration: 1, referenceChatHistory: true,
-  resultTokens: 6000, timeoutSeconds: 30, version: "memory-search-v1" } as const;
-
 /** The first-party tools the engine's registry can offer (`lib/server/engine/toolRegistry.ts`). */
 function firstPartyTools(): RunTool[] {
   return [
@@ -77,7 +74,7 @@ function firstPartyTools(): RunTool[] {
     manageScheduledTaskTool({ chatTask: { taskId: "task-1", title: "Check mail" } }),
     saveSkillTool, monitoringVerdictTool, engineReadToolResultTool, readToolResultTool, mcpFindToolsTool, fetchUrlTool,
     loadSkillTool, readSkillFileTool, artifactTool(), readArtifactTool(), checkpointOutputsTool, analyzeImageTool(),
-    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, memorySearchTool(memorySearch), browserHandoffTool,
+    analyzeConversationImageTool(), viewWorkspaceImageTool, sessionStatusTool, browserHandoffTool, searchPastChatsTool, readPastChatTool,
     recordEvidenceTool, changeResearchFrameTool, submitResearchDraftTool,
     ...computerToolDefinitions("windows"), ...computerToolDefinitions("linux")
   ];

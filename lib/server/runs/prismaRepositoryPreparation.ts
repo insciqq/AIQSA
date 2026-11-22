@@ -23,7 +23,7 @@ import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import {
   decodeMemoryInitialChatMode,
   MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
-} from "../../contracts/memory";
+} from "../../contracts/memoryClient";
 import {
   ActiveLeafConflictError,
   AttachmentLinkConflictError,
@@ -32,8 +32,7 @@ import {
   SkillRunConflictError,
   WorkspaceRunConflictError,
   type PreparingRunAdmissionInput,
-  type PreparingRunAdmissionResult,
-  type PreparingRunMaterializedRequest
+  type PreparingRunAdmissionResult
 } from "./runRepositoryContract";
 import { linkScheduledTaskOccurrence } from "../scheduledTasks/occurrenceLink";
 import { loadAnswerReviewPathView, type AnswerReviewPathView } from "../chats/legacyAnswerReviews";
@@ -456,9 +455,6 @@ function assertPreparingAdmissionInput(input: PreparingRunAdmissionInput): void 
     input.normalizedRequest.chatId !== input.chatId ||
     input.normalizedRequest.modelId !== input.modelId ||
     input.normalizedRequest.provider !== input.provider ||
-    input.normalizedRequest.personalContext !== undefined ||
-    input.normalizedRequest.memoryActionTools !== undefined ||
-    input.normalizedRequest.memoryHistoryTool !== undefined ||
     (input.admissionKind === "REGENERATE" && initialMode !== undefined) ||
     (input.admissionKind === "NORMAL_SEND" && input.personalChat !== undefined && (
       input.expectedActiveLeafId !== null ||
@@ -1076,10 +1072,7 @@ function runAcceptedWorkspaceFields(admission: PreparingRunAdmissionInput) {
 export async function createDormantPreparingRun(
   prismaClient: PrismaClient,
   admission: PreparingRunAdmissionInput
-): Promise<PreparingRunAdmissionResult & Readonly<{
-  acceptedAt: Date;
-  materializedRequest?: PreparingRunMaterializedRequest;
-}>> {
+): Promise<PreparingRunAdmissionResult & Readonly<{ acceptedAt: Date }>> {
   const created = await admitPreparingRunWithClient(prismaClient, admission);
   logEvent("run_accepted", { run_id: created.runId,
     kind: admission.admissionKind === "NORMAL_SEND" ? "send" : "regenerate",
@@ -1095,7 +1088,7 @@ async function continueDeferredPreparedRunWithClient(
     created: PreparingRunAdmissionResult;
   }>,
   gate: "pdf" | "workspace" = "pdf"
-): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
+): Promise<PreparingRunAdmissionResult> {
   const { admission, created } = input;
   const failure = (kind: "unavailable" | "invalid" | "ambiguous") => gate === "pdf"
     ? new ChatPdfPreparationError(`pdf_preparation_${kind}`, kind === "ambiguous")
@@ -1189,7 +1182,7 @@ export async function activateWorkspaceFollowupWithClient(
 export async function continueWorkspacePreparedRunWithClient(
   prismaClient: PrismaClient,
   input: Readonly<{ admission: PreparingRunAdmissionInput; claimToken: string; created: PreparingRunAdmissionResult }>
-): Promise<PreparingRunAdmissionResult & Readonly<{ materializedRequest?: PreparingRunMaterializedRequest }>> {
+): Promise<PreparingRunAdmissionResult> {
   const created = await activateWorkspaceFollowupWithClient(prismaClient, input);
   if (created.deferredPdf) return created;
   return continueDeferredPreparedRunWithClient(prismaClient, { ...input, created }, "workspace");

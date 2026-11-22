@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 
 const workspace = vi.hoisted(() => ({ fail: 0, removed: [] as string[] }));
-const legacy = vi.hoisted(() => ({ purged: [] as string[], settled: [] as string[] }));
 
 vi.mock("../workspace/removal", () => ({
   async removeWorkspaceForDeletion(input: { prisma: { __state: FakeState }; sessionId: string; signal?: AbortSignal }) {
@@ -16,10 +15,6 @@ vi.mock("../workspace/removal", () => ({
       if (session.id === input.sessionId) session.runtimeSandboxId = null;
     }
   }
-}));
-vi.mock("../background/legacyMemoryRows", () => ({
-  async purgeLegacyMemoryRowsOfChat(_tx: unknown, scope: { chatId: string }) { legacy.purged.push(scope.chatId); },
-  async settleLegacyMemoryWorkOfChat(_tx: unknown, scope: { chatId: string }) { legacy.settled.push(scope.chatId); }
 }));
 
 import { BackgroundWorkError } from "../background/errors";
@@ -233,8 +228,6 @@ function context(completions: string[]) {
 beforeEach(() => {
   workspace.fail = 0;
   workspace.removed.length = 0;
-  legacy.purged.length = 0;
-  legacy.settled.length = 0;
 });
 
 describe("Temporary chat expiry", () => {
@@ -257,7 +250,6 @@ describe("Temporary chat expiry", () => {
     expect(client.__state.attachments.map((row) => row.id)).toEqual(["other-a"]);
     expect(client.__state.runs).toEqual([]);
     expect(client.__state.sessions.size).toBe(0);
-    expect(legacy.purged).toEqual(["temp-1"]);
     expect(completions).toEqual(["complete"]);
   });
 
@@ -281,7 +273,7 @@ describe("Temporary chat expiry", () => {
       { client: client as unknown as PrismaClient, storage: storage().adapter },
       { chatId: "temp-1", userId: "owner" }, context([])
     )).resolves.toBe("deleted");
-    expect(legacy.settled).toEqual(["temp-1"]);
+    expect(client.__state.chats.has("temp-1")).toBe(false);
   });
 
   it("completes at once when the chat is already gone", async () => {
@@ -379,7 +371,6 @@ describe("objects shared between deleted chats", () => {
       chatExists: true,
       chatWhere: { permanentDeletionAt: { not: null } },
       dispositions: [{ deleted: true, storageKey: "uploads/chat-1-1" }, { deleted: false, storageKey: "uploads/shared" }],
-      now: NOW,
       scope: { chatId: "chat-1", userId: "owner" }
     }));
     // The reference check ran under the object's lock, and the bytes are left to the object worker.

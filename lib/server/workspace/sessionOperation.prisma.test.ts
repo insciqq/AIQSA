@@ -73,9 +73,6 @@ const definitions = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => ({
 async function fixture() {
   const userId = prefix + randomUUID();
   await prisma.user.create({ data: { id: userId, displayName: "Workspace Operation Test", status: "active" } });
-  await prisma.userMemorySettings.update({ data: {
-    learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false
-  }, where: { userId } });
   const chat = await prisma.chat.create({ data: { title: "Workspace operation", userId, workspaceEnabled: true } });
   const sessionId = `ws_${randomBytes(20).toString("hex")}`;
   const session = await prisma.workspaceSession.create({ data: {
@@ -214,7 +211,6 @@ describe("Prisma Workspace operation admission", () => {
     const created = await admitPreparingRunWithClient(prisma, admission);
     expect(created.deferredWorkspace).toBe(true);
     expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toEqual(before);
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
     expect(await value.repository.getRunOutcomeForUser(created.runId, value.userId)).toEqual({
       id: created.runId, status: "queued", workspacePreparation: true
     });
@@ -247,7 +243,6 @@ describe("Prisma Workspace operation admission", () => {
     const value = await publishedPredecessor();
     const admission = await value.nextRequest();
     const created = await admitPreparingRunWithClient(prisma, admission);
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
     await value.releasePrevious();
     const followups = createWorkspaceFollowupRepository(prisma);
     const claim = await followups.claim();
@@ -256,7 +251,6 @@ describe("Prisma Workspace operation admission", () => {
     expect(await prisma.modelRun.findUniqueOrThrow({ where: { id: created.runId } }))
       .toMatchObject({ status: "streaming", workspaceWaitPending: false });
     // No Memory preparation runs any more (operator decision 2026-11-22): the successor dispatches with no attempt.
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
     expect(await followups.markAnswerDispatched(claim!)).toBe(true);
     expect(await prisma.workspaceFollowup.findUniqueOrThrow({ where: { modelRunId: created.runId } }))
       .toMatchObject({ state: "dispatched", snapshot: null, admissionResult: null, claimToken: null, leaseExpiresAt: null });
@@ -299,7 +293,6 @@ describe("Prisma Workspace operation admission", () => {
       .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
     expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } }))
       .toMatchObject({ operationOwner: null });
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
     expect(await value.repository.settlePreparingRunFailure({ workspaceClaimToken: claim!.claimToken,
       runId: created.runId, userId: value.userId, errorCode: "workspace_followup_unavailable",
       message: "Preparation unavailable.", state: "FAILED" })).toBe(true);
@@ -336,7 +329,6 @@ describe("Prisma Workspace operation admission", () => {
     await expect(value.repository.continueWorkspacePreparedRun!({ admission, created, claimToken: claim!.claimToken }))
       .rejects.toMatchObject({ code: "workspace_followup_unavailable" });
     expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toMatchObject({ operationOwner: null });
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: created.runId } })).toBe(0);
     expect(await value.repository.settlePreparingRunFailure({ workspaceClaimToken: claim!.claimToken,
       runId: created.runId, userId: value.userId, errorCode: "workspace_followup_unavailable",
       message: "Preparation unavailable.", state: "FAILED" })).toBe(true);
@@ -417,7 +409,6 @@ describe("Prisma Workspace operation admission", () => {
     const accepted = await admitPreparingRunWithClient(prisma, await value.plan());
     const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: accepted.runId } });
     await prisma.$transaction(async (tx) => {
-      await tx.memoryRetrievalAttempt.updateMany({ data: { errorCode: "fixture_preparation_cancelled", state: "CANCELLED" }, where: { modelRunId: run.id } });
       await tx.message.update({ data: { content: textMessageContent("Completed answer"), status: "complete" }, where: { id: run.assistantMessageId! } });
       await tx.modelRun.update({ data: { normalizedRequest: {}, status: "complete" }, where: { id: run.id } });
     });
@@ -460,8 +451,6 @@ describe("Prisma Workspace operation admission", () => {
     const accepted = await admitPreparingRunWithClient(prisma, await value.plan());
     const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: accepted.runId } });
     await prisma.$transaction(async (tx) => {
-      // This fixture isolates post-answer admission from Memory preparation.
-      await tx.memoryRetrievalAttempt.updateMany({ data: { errorCode: "fixture_preparation_cancelled", state: "CANCELLED" }, where: { modelRunId: run.id } });
       await tx.message.update({ data: { content: textMessageContent("Completed answer"), status: "complete" }, where: { id: run.assistantMessageId! } });
       await tx.modelRun.update({ data: { normalizedRequest: {}, status: "complete" }, where: { id: run.id } });
     });

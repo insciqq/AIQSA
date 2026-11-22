@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
-import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_CONFIRMATION_COPY_VERSION, MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { createPrismaPermanentChatDeletionRepository } from "../chats/permanentDeletion/repository";
 import { purgePermanentlyDeletedChat } from "../chats/permanentDeletion/cleanup";
 import { createPermanentChatDeletionService } from "../chats/permanentDeletion/service";
@@ -138,7 +138,6 @@ describe("chat deletion on the background worker", () => {
     await expect(prisma.chat.findUniqueOrThrow({ where: { id: chat.id } })).resolves.toMatchObject({
       archived: true, memoryMode: "NORMAL"
     });
-    await expect(prisma.memoryDeletionOutbox.count({ where: { userId } })).resolves.toBe(0);
 
     let failures = 1;
     const deletes: string[] = [];

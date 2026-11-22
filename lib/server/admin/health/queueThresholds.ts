@@ -10,9 +10,9 @@ export type AdminHealthQueuePolicy = Readonly<{
   stalledAfterSeconds: number;
   /**
    * Whether a stalled queue raises its own "Needs attention" item. Queues that
-   * another alert already watches stay quiet here: Memory (its worker and
-   * processing alerts) and MCP server checks (the server's own item, and an
-   * administrator who just started the check is watching it). Stored file
+   * another alert already watches stay quiet here: MCP server checks (the
+   * server's own item, and an administrator who just started the check is
+   * watching it). Stored file
    * deletion stays quiet too: it raised no item of its own before Knowledge
    * was removed either.
    */
@@ -31,8 +31,6 @@ export const ADMIN_HEALTH_QUEUE_POLICIES: Readonly<Record<AdminHealthQueueId, Ad
   chat_titles: { slowAfterSeconds: 10 * MINUTE, stalledAfterSeconds: 30 * MINUTE, attention: true },
   // Due runs start within a minute; per-user run limits may hold a few back for a while.
   scheduled_tasks: { slowAfterSeconds: 30 * MINUTE, stalledAfterSeconds: 2 * HOUR, attention: true },
-  // The Memory card treats work without progress for 15 minutes as stalled.
-  memory: { slowAfterSeconds: 15 * MINUTE, stalledAfterSeconds: HOUR, attention: false },
   mcp_activation: { slowAfterSeconds: 10 * MINUTE, stalledAfterSeconds: 30 * MINUTE, attention: false },
   // Cleanup retries with backoff; hours of failing cleanup leave sandboxes running.
   workspace_cleanup: { slowAfterSeconds: 30 * MINUTE, stalledAfterSeconds: 2 * HOUR, attention: true },

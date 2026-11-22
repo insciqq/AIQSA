@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
   adminUserDeletionInfo,
-  adminUserOwnedDataCountWithMemory
+  adminUserOwnedDataCount
 } from "./adminDeletionMetadata";
 import { loadAdminGrantableCatalog } from "./adminCatalogQueries";
 import { adminGroupRecordInclude } from "./adminPrismaRecords";
@@ -291,17 +291,13 @@ export async function listAdminDashboard(
       (membership) => !membership.group.archivedAt
     );
     const activeGroupIds = activeMemberships.map((membership) => membership.groupId);
-    // Old Memory rows no longer count: account deletion removes them with the account.
-    const totalCount = adminUserOwnedDataCountWithMemory(
-      {
-        ...user,
-        _count: {
-          ...user._count,
-          modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
-        }
-      },
-      0
-    );
+    const totalCount = adminUserOwnedDataCount({
+      ...user,
+      _count: {
+        ...user._count,
+        modelRuns: personalModelRunCountByUserId.get(user.id) ?? 0
+      }
+    });
 
     return {
       deletion: adminUserDeletionInfo({

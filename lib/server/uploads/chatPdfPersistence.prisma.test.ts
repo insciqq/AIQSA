@@ -4,10 +4,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
-import { scheduleTemporaryChatDeletion } from "../memory/temporaryRetention";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { deleteExpiredTemporaryChat } from "../chats/temporaryDeletion";
-import type { MemoryDeletionClaim } from "../memory/coordinator/types";
 import { createChatPdfAttempts } from "./chatPdfAttempts";
 import { createChatPdfRepository, chatPdfJson, chatPdfAdmissionFromRow } from "./chatPdfPersistence";
 import { chatPdfCompatibilityKey, createChatPdfCore, encodeChatPdfArtifact, type ChatPdfWorkPlan } from "./chatPdfCore";
@@ -66,8 +64,6 @@ async function fixture(vision = false, temporary = false, workspace = false, nat
     const chat = await tx.chat.create({ data: { title: "PDF test", userId,
       ...(temporary ? { memoryMode: "TEMPORARY", temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
         temporaryRetentionDeadline: new Date(Date.now() + 3600000) } : {}) } });
-    if (temporary) await scheduleTemporaryChatDeletion(tx, { chatId: chat.id, userId,
-      deadline: chat.temporaryRetentionDeadline!, now: new Date() });
     const message = await tx.message.create({ data: { chatId: chat.id, role: "user",
       content: { blocks: [{ type: "file", attachmentId }] } } });
     const assistant = await tx.message.create({ data: { chatId: chat.id, role: "assistant",
@@ -136,13 +132,12 @@ afterEach(async () => {
     await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
     await tx.workspaceRunBinding.deleteMany({ where: { modelRun: { userId: id } } });
     await tx.workspaceSession.deleteMany({ where: { chat: { userId: id } } });
-    await tx.memoryDeletionOutbox.updateMany({
-      data: { completedAt: null, leaseExpiresAt: new Date(Date.now() + 300000),
-        leaseToken: "pdf-test-cleanup", nextAttemptAt: null, state: "RUNNING" },
-      where: { operation: "TEMPORARY_DELETE", userId: id }
-    });
+    // A Temporary chat is deleted once its deadline has passed.
+    await tx.$executeRaw`
+      UPDATE "Chat" SET "createdAt" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '2 days',
+        "temporaryRetentionDeadline" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '1 minute'
+      WHERE "userId" = ${id} AND "memoryMode" = 'TEMPORARY'::"MemoryChatMode"`;
     await tx.chat.deleteMany({ where: { userId: id, memoryMode: "TEMPORARY" } });
-    await tx.memoryDeletionOutbox.deleteMany({ where: { userId: id } });
     await tx.user.deleteMany({ where: { id } });
   });
   for (const id of attachmentIds.splice(0)) await prisma.attachmentDeletionJob.deleteMany({
@@ -277,7 +272,6 @@ describe("chat PDF database lifecycle", () => {
 
   it("commits a durable PDF gate without a Memory attempt and refuses premature answer dispatch", async () => {
     const h = await fixture();
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);
     await expect(prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } }))
       .rejects.toThrow(/chat_pdf_answer_not_ready/);
     expect(await repository.claim()).toBeNull();
@@ -393,7 +387,6 @@ describe("chat PDF database lifecycle", () => {
     expect(receipts.filter(({ chatPdfPreparation }) => chatPdfPreparation)).toHaveLength(2);
     expect(receipts.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0)).toBe(40);
     expect(await prisma.usageEvent.count({ where: runAttributionUsageWhere(h.runId) })).toBe(1);
-    expect(await prisma.memoryRetrievalAttempt.count({ where: { modelRunId: h.runId } })).toBe(0);
   });
 
   it("reuses only an exact settled page in a new sibling generation without a second receipt", async () => {
@@ -440,12 +433,12 @@ describe("chat PDF database lifecycle", () => {
   it("deletes an expired Temporary PDF through its guarded aggregate handler and fences late work", async () => {
     const h = await fixture(false, true); await h.savePlan();
     const artifacts = await prisma.chatPdfArtifact.findMany({ where: { attachmentId: h.admission.attachmentId } });
-    const now = new Date(Date.now() + 7200000);
-    // The deadline is still ahead on the database's clock: the fixture's claimed outbox row lets the guard pass.
-    const obligation = await prisma.memoryDeletionOutbox.findFirstOrThrow({ where: { userId: h.userId, targetId: h.chatId } });
-    await prisma.memoryDeletionOutbox.update({ where: { id: obligation.id }, data: {
-      state: "RUNNING", leaseToken: randomUUID(), leaseExpiresAt: new Date(now.getTime() + 300000), nextAttemptAt: null
-    } });
+    // The chat's deadline has passed on the database's clock, which is what lets its guard delete it.
+    await prisma.$executeRaw`
+      UPDATE "Chat" SET "createdAt" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '2 days',
+        "temporaryRetentionDeadline" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '1 minute'
+      WHERE "id" = ${h.chatId}`;
+    const now = new Date();
     const removed: string[] = [];
     let completed = false;
     await expect(deleteExpiredTemporaryChat(

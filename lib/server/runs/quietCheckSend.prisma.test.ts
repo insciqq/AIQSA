@@ -90,10 +90,8 @@ async function taskChat(userId: string, outcomes: readonly (string | null)[]) {
 }
 
 describe("a message after quiet checks", () => {
-  it.each([true, false])("continues the latest shown result through admission and finalization, Memory on: %s", async (memory) => {
+  it("continues the latest shown result through admission and finalization", async () => {
     const userId = await owner();
-    await prisma.userMemorySettings.upsert({ create: { referenceChatHistory: memory, useMemoryFacts: memory, userId },
-      update: { referenceChatHistory: memory, useMemoryFacts: memory }, where: { userId } });
     const { chatId, checks, leaf } = await taskChat(userId, ["baseline", "no_update", "no_update"]);
     const shown = checks[0]!;
     // The browser names the result it was shown; the stored leaf reads as it.
@@ -107,9 +105,6 @@ describe("a message after quiet checks", () => {
     const question = await prisma.message.findUniqueOrThrow({ select: { parentMessageId: true }, where: { id: created.userMessageId } });
     expect(question.parentMessageId).toBe(shown.answerId);
     expect((await prisma.modelRun.findUniqueOrThrow({ select: { status: true }, where: { id: created.runId } })).status).not.toBe("error");
-    const attempts = await prisma.memoryRetrievalAttempt.findMany({ select: { preSendActiveLeafMessageId: true },
-      where: { modelRunId: created.runId } });
-    expect(attempts.every((attempt) => attempt.preSendActiveLeafMessageId === shown.answerId)).toBe(true);
     expect((await prisma.chat.findUniqueOrThrow({ select: { activeLeafMessageId: true }, where: { id: chatId } })).activeLeafMessageId)
       .toBe(created.assistantMessageId);
     const update = await repository.getChatUpdateForRun({ assistantMessageId: created.assistantMessageId, chatId, userId,

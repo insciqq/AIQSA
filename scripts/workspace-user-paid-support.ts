@@ -1,4 +1,4 @@
-import { codexLbOverridesFromConfig } from "./memory-mcp-codex-smoke-support";
+import { codexLbOverridesFromConfig } from "./codex-smoke-support";
 
 type Service = { environment: Record<string, string>; image: string; networks?: Record<string, unknown>; ports?: { target: number; published: string; host_ip: string }[] };
 export type PaidStand = { name: string; services: Record<string, Service> };

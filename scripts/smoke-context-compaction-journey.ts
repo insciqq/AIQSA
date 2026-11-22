@@ -21,8 +21,8 @@
  *    before any paid call;
  * 2. signs in with the stand's test bootstrap token (as
  *    tests/e2e/support/localAuth.ts does);
- * 3. creates a personal chat excluded from Memory (kept in Memory, so Memory
- *    search is admitted, with AIQSA_JOURNEY_MEMORY=1) and sends a bounded
+ * 3. creates a personal chat excluded from Memory (kept in Memory, so the
+ *    memory note and past-chat search apply, with AIQSA_JOURNEY_MEMORY=1) and sends a bounded
  *    journey: a long Cyrillic brief (about 16 % of the window), two corrections, a
  *    standing three-item list rule, fillers of at most 6 % of the window each
  *    (so no turn skips the 72-85 % background band) until a summary is in
@@ -72,7 +72,7 @@
  * - AIQSA_JOURNEY_MAX_TURNS (default 20, 6..24)
  * - AIQSA_JOURNEY_CLEANUP_PROVIDERS=1
  * - AIQSA_JOURNEY_MEMORY=1: the journey chat stays in Memory (not EXCLUDED), so
- *   Memory search is admitted for its runs; default unchanged
+ *   the memory note and past-chat search apply to its runs; default unchanged
  * - AIQSA_JOURNEY_DEBUG=1: extra sanitized lines before the result, one per
  *   distinct request (method, path with ids as <id>, HTTP status and the
  *   stable error/code/outcome field of a JSON body) and one per reuse
@@ -497,7 +497,7 @@ type RouteState = {
   stage: JourneyStage;
 };
 
-/** Opt-in: the journey chat stays in Memory, so Memory search is admitted. */
+/** Opt-in: the journey chat stays in Memory, so the note and past-chat search apply. */
 const journeyMemory = process.env.AIQSA_JOURNEY_MEMORY?.trim() === "1";
 
 async function createJourneyChat(api: Api): Promise<Readonly<{ activeLeafMessageId: string | null; id: string }>> {
@@ -505,7 +505,7 @@ async function createJourneyChat(api: Api): Promise<Readonly<{ activeLeafMessage
     body: { title: "Context compaction journey" }, method: "POST"
   })) ?? fail("chat", "chat_response_invalid");
   if (journeyMemory) return chat;
-  // By default the synthetic journey never becomes a Memory learning source.
+  // By default the synthetic journey never becomes searchable as a past chat.
   const mode = decodeMemoryConsumerChatModeResponse(await json(api, "chat",
     `/api/me/chats/${encodeURIComponent(chat.id)}/memory-mode`, { body: { mode: "EXCLUDED" }, method: "PATCH" }));
   if (!mode.ok || mode.value.mode !== "EXCLUDED") fail("chat", "memory_exclusion_failed");

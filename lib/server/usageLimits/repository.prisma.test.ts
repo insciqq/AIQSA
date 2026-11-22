@@ -90,7 +90,6 @@ async function runs(userId: string, offsets: readonly number[], scheduled = fals
     await prisma.modelRun.deleteMany({ where: { chatId: chat.id } });
     await prisma.message.deleteMany({ where: { chatId: chat.id } });
     await prisma.chat.deleteMany({ where: { id: chat.id } });
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { targetId: chat.id, userId } });
   };
   cleanups.push(remove);
   await prisma.modelRun.createMany({ data: offsets.map((offset) => ({

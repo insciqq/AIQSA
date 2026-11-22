@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   MEMORY_CONFIRMATION_COPY_VERSION,
-  decodeMemoryAnswerSource,
+  MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
   decodeMemoryConsumerChatModeResponse,
+  decodeMemoryInitialChatMode,
   decodeMemoryConsumerPermanentChatDeleteInput,
   decodeMemoryConsumerPermanentChatDeleteResponse
 } from "./memoryClient";
 
-describe("Memory client-only contracts", () => {
+describe("chat Memory-mode client contracts", () => {
   it("accepts a locked chat mode only as Excluded without a Resume action", () => {
     const locked = { allowedActions: [], archived: false, lockedReason: "IMPORTED", mode: "EXCLUDED", temporaryRetentionDeadline: null };
     expect(decodeMemoryConsumerChatModeResponse(locked)).toEqual({ ok: true, value: locked });
@@ -50,22 +51,16 @@ describe("Memory client-only contracts", () => {
     }
   });
 
-  it("requires the complete source-action set for an available past-chat source", () => {
-    const source = {
-      actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"],
-      date: "2026-08-21T05:00:00.000Z",
-      memoryRef: "opaque-ref",
-      origin: "Previous discussion",
-      sourceAvailable: true,
-      chatGroup: "chat-1",
-      sourceType: "PAST_CHAT",
-      text: "The earlier discussion chose the cedar deployment."
-    } as const;
-
-    expect(decodeMemoryAnswerSource(source)).toEqual({ ok: true, value: source });
-    expect(decodeMemoryAnswerSource({
-      ...source,
-      actions: ["NOT_RELEVANT", "OPEN_SOURCE"]
+  it("accepts a new chat's Temporary mode only under the current retention policy", () => {
+    expect(decodeMemoryInitialChatMode({ chatMode: "NORMAL" })).toMatchObject({ ok: true });
+    expect(decodeMemoryInitialChatMode({
+      chatMode: "TEMPORARY",
+      temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
+    })).toMatchObject({ ok: true });
+    expect(decodeMemoryInitialChatMode({
+      chatMode: "TEMPORARY",
+      temporaryRetentionPolicyVersion: "temporary-later"
     })).toMatchObject({ ok: false });
+    expect(decodeMemoryInitialChatMode({ chatMode: "EXCLUDED" })).toMatchObject({ ok: false });
   });
 });

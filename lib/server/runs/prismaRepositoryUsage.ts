@@ -4,16 +4,16 @@ import { RUN_USAGE_ATTRIBUTION_PURPOSES, isChatModelUsagePurpose } from "../../d
 import type { RunUsageAttribution } from "./runRepositoryContract";
 
 /**
- * A run's own attribution rows: no purpose flag, no Memory binding and an
- * attribution purpose. The run's accounting reads and rewrites exactly these;
- * title, Vision, PDF, relevance, decision, image, Memory and any other row
- * linked to the run belongs to its own writer and survives every rewrite.
+ * A run's own attribution rows: no purpose flag and an attribution purpose.
+ * The run's accounting reads and rewrites exactly these; title, Vision, PDF,
+ * relevance, decision, image, past-chat search and any other row linked to the
+ * run belongs to its own writer and survives every rewrite.
  */
 export function runAttributionUsageWhere(runId: string): Prisma.UsageEventWhereInput {
   return {
     chatPdfPreparation: false, chatTitleGeneration: false, imageGeneration: false, knowledgeRelevance: false,
     mcpHubDiscovery: false, optionalDecision: false, visionAnalysis: false,
-    memoryExecutionBindingId: null, modelRunId: runId,
+    modelRunId: runId,
     purpose: { in: [...RUN_USAGE_ATTRIBUTION_PURPOSES] }
   };
 }

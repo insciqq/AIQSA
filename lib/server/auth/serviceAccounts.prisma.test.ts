@@ -67,10 +67,10 @@ describe("service accounts in the database", () => {
       })).resolves.toEqual({ email: null, kind: "service", role: "user", status: "active" });
       await expect(prisma.authIdentity.count({ where: { userId: serviceId } })).resolves.toBe(0);
       await expect(prisma.userSettings.count({ where: { userId: serviceId } })).resolves.toBe(1);
-      await expect(prisma.userMemorySettings.findUniqueOrThrow({
-        select: { learnAutomatically: true, referenceChatHistory: true, useMemoryFacts: true },
+      await expect(prisma.userSettings.findUniqueOrThrow({
+        select: { memoryEnabled: true, memorySuggestionsEnabled: true, pastChatSearchEnabled: true },
         where: { userId: serviceId }
-      })).resolves.toEqual({ learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false });
+      })).resolves.toEqual({ memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false });
       await expect(findServiceAccount(prisma, serviceId))
         .resolves.toEqual({ displayName: "Connector service", id: serviceId, status: "active" });
     });

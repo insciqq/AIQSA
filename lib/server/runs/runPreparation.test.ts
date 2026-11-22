@@ -830,9 +830,9 @@ describe("memory note and past-chat search admission", () => {
     expect(prepared.providerRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
     expect(pastChatToolsOffered(prepared)).toBe(true);
     // Personal Memory's standing read, `memory_search` and the `/memory` answer contract are gone.
-    expect(prepared.normalizedRequest.memoryStandingVersion).toBeUndefined();
-    expect(prepared.normalizedRequest.memorySearch).toBeUndefined();
-    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryStandingVersion");
+    expect(prepared.normalizedRequest).not.toHaveProperty("memorySearch");
+    expect(prepared.normalizedRequest.prompt).not.toHaveProperty("memoryActionAnswerResult");
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false).toBe(false);
     // The adapters render it after the trusted prompt and the personal Instructions, and never in a stored preview.
     // The prepared request's frozen snapshots are deeply readonly; the renderer reads it as the adapters do.
@@ -917,7 +917,7 @@ describe("memory note and past-chat search admission", () => {
     const prepared = preparedFrom(await prepareRun({ ...harness.deps, ...memoryNoteDeps() },
       sendInput(successBody({ content: textMessageContent("/memory list") }))));
     expect(prepared.normalizedRequest.memory).toEqual({ changes: true, offers: true, pastChats: true, version: 1 });
-    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt).not.toHaveProperty("memoryActionAnswerResult");
   });
 
   it("freezes the chat's Memory mode it was prepared for, which admission checks again under the chat lock", async () => {
@@ -2089,7 +2089,7 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
   });
 
@@ -2101,7 +2101,7 @@ describe("run preparation", () => {
       }))
     ));
 
-    expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
   });
 
@@ -2156,7 +2156,7 @@ describe("run preparation", () => {
     });
     expect(prepared.normalizedRequest.prompt.system).not.toContain("Project memory:");
     expect(prepared.normalizedRequest.prompt.system).not.toContain("Server project memory");
-    expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
+    expect(prepared.normalizedRequest.prompt).not.toHaveProperty("memoryActionAnswerResult");
   });
 
   it("rejects stale policy acknowledgement and late Temporary conversion", async () => {
@@ -2200,7 +2200,7 @@ describe("run preparation", () => {
       )
     ));
 
-    expect(prepared.normalizedRequest.memoryActionTools).toBeUndefined();
+    expect(prepared.normalizedRequest).not.toHaveProperty("memoryActionTools");
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
   });
 

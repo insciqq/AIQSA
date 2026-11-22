@@ -9,23 +9,22 @@ function transaction(actor: Actor) {
     id: "service-1",
     status: input.data.status
   }));
-  const createMemorySettings = vi.fn(async () => ({ userId: "service-1" }));
+  const updateSettings = vi.fn(async () => ({ userId: "service-1" }));
   const upsertSettings = vi.fn(async () => ({}));
   const tx = {
     $queryRaw: vi.fn(async () => []),
     user: { create: createUser, findUnique: vi.fn(async () => actor) },
     userGroup: { upsert: vi.fn() },
-    userMemorySettings: { upsert: createMemorySettings },
-    userSettings: { upsert: upsertSettings }
+    userSettings: { update: updateSettings, upsert: upsertSettings }
   };
-  return { createMemorySettings, createUser, tx, upsertSettings };
+  return { createUser, tx, updateSettings, upsertSettings };
 }
 
 const admin = { kind: "person", role: "admin", status: "active" };
 
 describe("service accounts", () => {
   it("creates an active, emailless, non-administrator service account with Memory off", async () => {
-    const { createMemorySettings, createUser, tx, upsertSettings } = transaction(admin);
+    const { createUser, tx, updateSettings, upsertSettings } = transaction(admin);
 
     await expect(createServiceAccount(tx as never, { createdByUserId: "admin-1", displayName: "  Discord  " }))
       .resolves.toEqual({ account: { displayName: "Discord", id: "service-1", status: "active" }, kind: "created" });
@@ -35,10 +34,9 @@ describe("service accounts", () => {
     // No identity is created: nothing touches AuthIdentity at all.
     expect(tx).not.toHaveProperty("authIdentity");
     expect(upsertSettings).toHaveBeenCalledOnce();
-    // The default row may already exist (database default): both branches turn Memory off.
-    expect(createMemorySettings).toHaveBeenCalledWith(expect.objectContaining({
-      create: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false, userId: "service-1" },
-      update: { learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false },
+    // Its settings row turns every Memory switch off.
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      data: { memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false },
       where: { userId: "service-1" }
     }));
   });

@@ -194,9 +194,6 @@ describe("administrator system model policy service", () => {
       defaultParams: { reasoning: { effort: "high" } }, upstreamModelId: "google/gemini-3.8-flash"
     } });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany: vi.fn().mockResolvedValue([]).mockResolvedValueOnce([target]).mockResolvedValueOnce([]) },
       systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: target, providerModelId: target.id,
         chatPdfProviderModel: target, chatPdfProviderModelId: target.id, updatedAt: NOW, updatedBy: null, version: 1 }) }
@@ -209,8 +206,6 @@ describe("administrator system model policy service", () => {
     for (const model of [catalog.policy.systemModel, catalog.policy.chatPdfModel]) {
       expect(model).toMatchObject({ reasoningEfforts: ["none", "low", "medium", "high"], defaultReasoningEffort: "high" });
     }
-    expect(catalog.memoryPolicy.recommendations?.find((entry) => entry.id === "gemini-flash-openrouter-low-memory-v2"))
-      .toMatchObject({ unavailableReason: "verification_required" });
   });
 
   it("projects and retains the independently selected dedicated reranker", async () => {
@@ -221,9 +216,6 @@ describe("administrator system model policy service", () => {
       .mockResolvedValueOnce([answer])
       .mockResolvedValueOnce([reranker]);
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -279,9 +271,6 @@ describe("administrator system model policy service", () => {
   it("projects answer candidates and retains an unavailable exact target", async () => {
     const target = activeModel({ enabled: false, id: "model-old" });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: {
         findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [
           activeModel(),
@@ -340,9 +329,6 @@ describe("administrator system model policy service", () => {
   it("marks the selected deployment available only for the matching resolved version", async () => {
     const target = activeModel();
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [target] : []) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -411,9 +397,6 @@ describe("administrator system model policy service", () => {
       id: "model-anthropic"
     });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [verified, unsupported] : []) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -461,9 +444,6 @@ describe("administrator system model policy service", () => {
       status: "available"
     });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findUnique: vi.fn().mockResolvedValue(target) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -517,9 +497,6 @@ describe("administrator system model policy service", () => {
     });
     const refreshActive = vi.fn();
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findUnique: vi.fn().mockResolvedValue(target) },
       systemModelPolicy: {
         findUnique: vi.fn().mockResolvedValue({
@@ -596,9 +573,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
     } as unknown as PrismaClient;
 
@@ -639,9 +613,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) =>
         operation(tx))
     } as unknown as PrismaClient;
@@ -709,9 +680,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) =>
         operation(tx))
     } as unknown as PrismaClient;
@@ -744,9 +712,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) =>
         operation(tx))
     } as unknown as PrismaClient;
@@ -783,9 +748,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) =>
         operation(tx))
     } as unknown as PrismaClient;
@@ -820,9 +782,6 @@ describe("administrator system model policy service", () => {
       id: "embedding-as-reranker"
     });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: {
         findMany: vi.fn().mockResolvedValue([])
           .mockResolvedValueOnce([activeModel()])
@@ -866,9 +825,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
     } as unknown as PrismaClient;
 
@@ -901,9 +857,6 @@ describe("administrator system model policy service", () => {
       user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }
     };
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       $transaction: vi.fn(async (operation: (store: typeof tx) => Promise<void>) => operation(tx))
     } as unknown as PrismaClient;
 
@@ -979,9 +932,6 @@ describe("administrator system model policy service", () => {
         rerankerProviderModelId: null,
         userId: "admin-1"
       })).rejects.toEqual(new AdminSystemModelPolicyServiceError(expected));
-      await expect(createAdminSystemModelPolicyService(prisma).updateMemory({
-        expectedVersion: 1, providerModelId: null, reasoningEffort: null, userId: "admin-1"
-      })).rejects.toEqual(new AdminSystemModelPolicyServiceError(expected));
     }
   });
 
@@ -990,34 +940,9 @@ describe("administrator system model policy service", () => {
       clientVersion: "test", code: "P2010", meta: { code: "42601" }
     });
     const prisma = { $transaction: vi.fn().mockRejectedValue(failure) } as unknown as PrismaClient;
-    await expect(createAdminSystemModelPolicyService(prisma).updateMemory({
+    await expect(createAdminSystemModelPolicyService(prisma).update({
       expectedVersion: 1, providerModelId: null, reasoningEffort: null, userId: "admin-1"
     })).rejects.toBe(failure);
-  });
-
-  it("revalidates the recommended pair and budget inside the Memory write transaction", async () => {
-    const update = vi.fn();
-    const tx = { $queryRaw: vi.fn().mockResolvedValue([{ version: 7, assignmentSource: "INHERITED" }]),
-      user: { findFirst: vi.fn().mockResolvedValue({ id: "admin-1" }) }, memoryUtilityModelPolicy: { update } };
-    const db = { $transaction: (run: (db: unknown) => Promise<void>) => run(tx) } as unknown as PrismaClient;
-    const role = { verifiedStructuredOutput: true, verifiedForcedToolCall: true,
-      snapshot: { providerFamily: "openai_compatible", model: { ...activeConfiguration, upstreamModelId: "gpt-5.6-terra",
-        defaultParams: { maxOutputTokens: 8192 }, capabilities: { ...activeConfiguration.capabilities, contextWindow: 128000, maxOutputTokens: 8192 } } } } as unknown as ProviderAdmissionRole;
-    const loadRole = vi.fn().mockResolvedValue(role);
-    const service = createAdminSystemModelPolicyService(db, { loadRole });
-    const input = { expectedVersion: 7, providerModelId: "model-1", reasoningEffort: "low", userId: "admin-1", recommendationId: "terra-low-memory-v1" };
-    await service.updateMemory(input);
-    expect(loadRole).toHaveBeenCalledWith(tx, { providerModelId: "model-1" });
-    expect(update).toHaveBeenCalledOnce(); update.mockClear();
-    for (const patch of [{ reasoningEffort: "high" }, { recommendationId: "unqualified" }, { providerModelId: null, reasoningEffort: null }]) {
-      await expect(service.updateMemory({ ...input, ...patch })).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
-    }
-    role.snapshot.model.defaultParams.maxOutputTokens = 512;
-    await expect(service.updateMemory(input)).rejects.toMatchObject({ code: "system_model_policy_target_unavailable" });
-    expect(update).not.toHaveBeenCalled();
-    // An explicit manual choice remains possible without claiming qualification.
-    await service.updateMemory({ ...input, recommendationId: undefined });
-    expect(update).toHaveBeenCalledOnce();
   });
 
   it("explains disabled verified capabilities and identifies the missing forced-tool requirement", async () => {
@@ -1054,9 +979,6 @@ describe("administrator system model policy service", () => {
       compatibility: { vision: "not_supported" }
     });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: { findMany: vi.fn().mockResolvedValue([]).mockResolvedValueOnce([disabled, missingForced, rejectedForced, rejectedImage, incompleteImage])
         .mockResolvedValueOnce([]) },
       systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModel: null, providerModelId: null,
@@ -1135,9 +1057,6 @@ describe("administrator system model policy service", () => {
       id: "model-revoked-key"
     });
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: {
         findMany: vi.fn().mockImplementation(async ({ where }: { where: { modelClass: string } }) => where.modelClass === "answer" ? [
           ready, unsupportedAdapter, disabled, withoutKey, unchecked, revokedKey
@@ -1335,9 +1254,6 @@ describe("published image models", () => {
       imageRow("image-candidate", null)
     ];
     const prisma = {
-      memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({
-        providerModelId: null, providerModel: null, reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED"
-      }) },
       providerModel: {
         findMany: vi.fn().mockImplementation(async ({ where }: { where: { OR?: unknown } }) => where.OR ? rows : []),
         findUnique: vi.fn()
@@ -1380,8 +1296,6 @@ describe("published image models", () => {
 it("keeps an unavailable researcher assignment visible when it leaves the candidate catalog", async () => {
   const selected = activeModel({ enabled: false });
   const prisma = {
-    memoryUtilityModelPolicy: { findUnique: vi.fn().mockResolvedValue({ providerModelId: null, providerModel: null,
-      reasoningEffort: null, version: 1, assignmentSource: "UNASSIGNED" }) },
     providerModel: { findMany: vi.fn().mockResolvedValue([]) },
     systemModelPolicy: { findUnique: vi.fn().mockResolvedValue({ researchResearcherProviderModel: selected,
       researchResearcherProviderModelId: selected.id, researchResearcherReasoningEffort: "high", updatedAt: NOW, updatedBy: null, version: 1 }) }

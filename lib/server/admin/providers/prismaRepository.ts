@@ -46,11 +46,6 @@ import { decodeHostedSearchVerificationEvidence } from "./hostedSearchCapability
 import { decodeVisionInputVerificationEvidence } from "../../providers/visionInputEvidence";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 import { decodeAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
-import {
-  countBlockingMemoryExecutionBindings,
-  detachExpiredMemoryExecutionBindings,
-  type MemoryExecutionDetachTarget
-} from "../../memory/execution/lifecycle";
 import { approvedRerankerDeployments } from "./approvedRerankers";
 
 class ProviderActivationStaleError extends Error { override name = "ProviderActivationStaleError"; }
@@ -284,10 +279,7 @@ async function countBlockingProviderRunBindings(tx: Prisma.TransactionClient, ta
 
 async function cleanupProviderReferences(
   tx: Prisma.TransactionClient,
-  target: Extract<
-    MemoryExecutionDetachTarget,
-    { connectionId: string } | { credentialId: string } | { providerModelId: string }
-  >,
+  target: Readonly<{ connectionId: string }> | Readonly<{ credentialId: string }> | Readonly<{ providerModelId: string }>,
   now = new Date()
 ): Promise<void> {
   await tx.providerRunBinding.updateMany({
@@ -310,7 +302,6 @@ async function cleanupProviderReferences(
       ]
     }
   });
-  await detachExpiredMemoryExecutionBindings(tx, target, now);
   await tx.$executeRaw(Prisma.sql`
     DELETE FROM "ProviderCredentialVersion" AS version
     WHERE NOT EXISTS (
@@ -329,11 +320,6 @@ async function cleanupProviderReferences(
         WHERE binding."credentialId" = version."credentialId"
           AND binding."credentialVersionId" = version."id"
       )
-      AND NOT EXISTS (
-        SELECT 1 FROM "MemoryExecutionBinding" AS binding
-        WHERE binding."credentialId" = version."credentialId"
-          AND binding."credentialVersionId" = version."id"
-      )
   `);
 }
 
@@ -347,12 +333,6 @@ async function lockInstallationModelPolicies(tx: Prisma.TransactionClient): Prom
   await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "SystemModelPolicy"
-    WHERE "id" = 'installation'
-    FOR UPDATE
-  `);
-  await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-    SELECT "id"
-    FROM "MemoryUtilityModelPolicy"
     WHERE "id" = 'installation'
     FOR UPDATE
   `);
@@ -1147,7 +1127,7 @@ export function createPrismaAdminProviderRepository(
     },
 
     async loadModelActivationCandidate(input) {
-      const [connection, model, systemPolicy, memoryPolicy] = await Promise.all([
+      const [connection, model, systemPolicy] = await Promise.all([
         prisma.providerConnection.findUnique({
           include: {
             defaultCredential: {
@@ -1166,12 +1146,11 @@ export function createPrismaAdminProviderRepository(
           select: { providerModelId: true, chatTitleProviderModelId: true, visionProviderModelId: true, mcpGuardProviderModelId: true, researchVerifierProviderModelId: true, researchResearcherProviderModelId: true,
             chatPdfProviderModelId: true, chatPdfNativeProviderModelId: true },
           where: { id: "installation" }
-        }),
-        prisma.memoryUtilityModelPolicy.findUnique({ select: { providerModelId: true }, where: { id: "installation" } })
+        })
       ]);
       if (!connection || connection.family === "fake" || !model) return null;
       const assignedRoles = ([
-        ["memory", memoryPolicy?.providerModelId], ["system_model", systemPolicy?.providerModelId],
+        ["system_model", systemPolicy?.providerModelId],
         ["chat_titles", systemPolicy?.chatTitleProviderModelId], ["vision", systemPolicy?.visionProviderModelId], ["mcp_guard", systemPolicy?.mcpGuardProviderModelId],
         ["research_researcher", systemPolicy?.researchResearcherProviderModelId], ["research_verifier", systemPolicy?.researchVerifierProviderModelId],
         ["chat_pdf", systemPolicy?.chatPdfProviderModelId], ["chat_pdf_native", systemPolicy?.chatPdfNativeProviderModelId]
@@ -2405,15 +2384,13 @@ export function createPrismaAdminProviderRepository(
           accessGrants,
           installationDefaults,
           systemModelRoles,
-          memoryUtilityRoles,
           publishedImageModels,
           userDefaults,
           chatDefaults,
           searchReferences,
           searchRevisionReferences,
           assistants,
-          runBindings,
-          memoryBindings
+          runBindings
         ] = await Promise.all([
           tx.accessGrant.count({ where: { providerModelId: modelId } }),
           tx.modelPolicy.count({ where: { defaultProviderModelId: modelId } }),
@@ -2432,7 +2409,6 @@ export function createPrismaAdminProviderRepository(
               ]
             }
           }),
-          tx.memoryUtilityModelPolicy.count({ where: { providerModelId: modelId } }),
           // Withdrawal in Defaults & roles resets user choices; deletion never does.
           tx.publishedImageModel.count({ where: { providerModelId: modelId } }),
           tx.userSettings.count({ where: { defaultProviderModelId: modelId } }),
@@ -2440,8 +2416,7 @@ export function createPrismaAdminProviderRepository(
           tx.searchStrategy.count({ where: { providerModelId: modelId } }),
           tx.searchIntegrationRevision.count({ where: { providerModelId: modelId } }),
           tx.assistantDefinition.count({ where: { providerModelId: modelId } }),
-          countBlockingProviderRunBindings(tx, { providerModelId: modelId }),
-          countBlockingMemoryExecutionBindings(tx, { providerModelId: modelId })
+          countBlockingProviderRunBindings(tx, { providerModelId: modelId })
         ]);
         const blocked = blockers([
           model.enabled ? { count: 1, kind: "resource_enabled" } : null,
@@ -2450,8 +2425,8 @@ export function createPrismaAdminProviderRepository(
           installationDefaults
             ? { count: installationDefaults, kind: "installation_default" }
             : null,
-          systemModelRoles + memoryUtilityRoles + publishedImageModels
-            ? { count: systemModelRoles + memoryUtilityRoles + publishedImageModels, kind: "system_model" }
+          systemModelRoles + publishedImageModels
+            ? { count: systemModelRoles + publishedImageModels, kind: "system_model" }
             : null,
           userDefaults ? { count: userDefaults, kind: "user_defaults" } : null,
           chatDefaults ? { count: chatDefaults, kind: "chat_defaults" } : null,
@@ -2460,8 +2435,7 @@ export function createPrismaAdminProviderRepository(
             ? { count: searchRevisionReferences, kind: "search_revision_references" }
             : null,
           assistants ? { count: assistants, kind: "assistants" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
-          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;
@@ -2482,22 +2456,19 @@ export function createPrismaAdminProviderRepository(
           connectionDefault,
           groupAssignments,
           userAssignments,
-          runBindings,
-          memoryBindings
+          runBindings
         ] = await Promise.all([
           tx.providerConnection.count({ where: { defaultCredentialId: credentialId } }),
           tx.providerGroupCredentialAssignment.count({ where: { credentialId } }),
           tx.providerUserCredentialAssignment.count({ where: { credentialId } }),
-          countBlockingProviderRunBindings(tx, { credentialId }),
-          countBlockingMemoryExecutionBindings(tx, { credentialId })
+          countBlockingProviderRunBindings(tx, { credentialId })
         ]);
         const blocked = blockers([
           credential.enabled ? { count: 1, kind: "resource_enabled" } : null,
           connectionDefault ? { count: connectionDefault, kind: "connection_default" } : null,
           groupAssignments ? { count: groupAssignments, kind: "group_assignments" } : null,
           userAssignments ? { count: userAssignments, kind: "user_assignments" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
-          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;
@@ -2526,8 +2497,7 @@ export function createPrismaAdminProviderRepository(
             models,
             credentials,
             logicalSearchReferences,
-            runBindings,
-            memoryBindings
+            runBindings
           ] = await Promise.all([
             tx.providerModel.findMany({
               select: { id: true },
@@ -2540,8 +2510,7 @@ export function createPrismaAdminProviderRepository(
             tx.searchOption.count({
               where: { sourceConnectionId: connectionId }
             }),
-            countBlockingProviderRunBindings(tx, { connectionId }),
-            countBlockingMemoryExecutionBindings(tx, { connectionId })
+            countBlockingProviderRunBindings(tx, { connectionId })
           ]);
           const modelIds = models.map(({ id }) => id);
           const credentialIds = credentials.map(({ id }) => id);
@@ -2573,8 +2542,7 @@ export function createPrismaAdminProviderRepository(
               ? { count: assistants, kind: "assistants" }
               : null,
             publishedImageModels ? { count: publishedImageModels, kind: "system_model" } : null,
-            runBindings ? { count: runBindings, kind: "run_bindings" } : null,
-            memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
+            runBindings ? { count: runBindings, kind: "run_bindings" } : null
           ]);
           const hardConflict = conflict(hardBlockers);
           if (hardConflict) return hardConflict;
@@ -2591,16 +2559,6 @@ export function createPrismaAdminProviderRepository(
               version: { increment: 1 }
             },
             where: { defaultProviderModelId: { in: modelIds } }
-          });
-          await tx.memoryUtilityModelPolicy.updateMany({
-            data: {
-              providerModelId: null,
-              reasoningEffort: null,
-              assignmentSource: "OPERATOR",
-              updatedByUserId: null,
-              version: { increment: 1 }
-            },
-            where: { providerModelId: { in: modelIds } }
           });
           // Clear only the deleted deployment's roles; other assignments
           // remain valid, including their explicit configuration timestamps.
@@ -2661,16 +2619,14 @@ export function createPrismaAdminProviderRepository(
           accessGrants,
           activeChildren,
           searchReferences,
-          runBindings,
-          memoryBindings
+          runBindings
         ] = await Promise.all([
           tx.providerModel.count({ where: { connectionId } }),
           tx.providerCredential.count({ where: { connectionId } }),
           tx.accessGrant.count({ where: { providerConnectionId: connectionId } }),
           tx.providerModel.count({ where: { activeVersion: { gt: 0 }, connectionId } }),
           tx.searchOption.count({ where: { sourceConnectionId: connectionId } }),
-          countBlockingProviderRunBindings(tx, { connectionId }),
-          countBlockingMemoryExecutionBindings(tx, { connectionId })
+          countBlockingProviderRunBindings(tx, { connectionId })
         ]);
         const blocked = blockers([
           connection.enabled ? { count: 1, kind: "resource_enabled" } : null,
@@ -2680,8 +2636,7 @@ export function createPrismaAdminProviderRepository(
           accessGrants ? { count: accessGrants, kind: "access_grants" } : null,
           activeChildren ? { count: activeChildren, kind: "active_child_configuration" } : null,
           searchReferences ? { count: searchReferences, kind: "search_references" } : null,
-          runBindings ? { count: runBindings, kind: "run_bindings" } : null,
-          memoryBindings ? { count: memoryBindings, kind: "memory_bindings" } : null
+          runBindings ? { count: runBindings, kind: "run_bindings" } : null
         ]);
         const blockedResult = conflict(blocked);
         if (blockedResult) return blockedResult;

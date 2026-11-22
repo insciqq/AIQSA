@@ -40,13 +40,11 @@ import type {
   NormalizedRunRequest,
   ProviderAttachment,
   ProviderConversationMessage,
-  ProviderModelCapabilities,
-  ProviderRunRequest
+  ProviderModelCapabilities
 } from "../providers/types";
-import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
-import type { MemoryInitialChatMode } from "../../contracts/memory";
+import type { MemoryInitialChatMode } from "../../contracts/memoryClient";
 
 export type RunAttachmentRecord = ProviderAttachment & {
   preparedPdf?: Readonly<{ byteSize: number; checksum: string; pageCount: number; sourceChecksum: string; storageKey: string }>;
@@ -535,7 +533,6 @@ export type CreateRunInput = {
   messageLimitExempt?: true;
   skillBindings?: AcceptedSkillRun[];
   modelId: string;
-  memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
   providerAdmissionPlan?: ProviderAdmissionPlan;
   provider: string;
@@ -588,7 +585,6 @@ export type CreateRegenerationRunInput = {
   mcpBindings?: McpRunPlanBinding[];
   skillBindings?: AcceptedSkillRun[];
   modelId: string;
-  memoryMaterializer?: PreparingRunMemoryMaterializer;
   normalizedRequest: NormalizedRunRequest;
   /** Null means a newly committed user branch with no Assistant child yet. */
   preSendAssistantMessageId: string | null;
@@ -626,20 +622,6 @@ export type PreparingRunAdmissionResult = Readonly<{
   userMessageId: string;
 }>;
 
-export type PreparingRunMaterializedRequest = Readonly<{
-  contextTruncation: ContextTruncationSummary | null;
-  normalizedRequest: NormalizedRunRequest;
-  providerRequest: ProviderRunRequest;
-  providerRequestPreview: Readonly<Record<string, unknown>>;
-}>;
-
-export type PreparingRunMemoryMaterializer = (
-  personalContext: NonNullable<NormalizedRunRequest["personalContext"]> | null,
-  memoryActionAnswerResult?: NonNullable<
-    NormalizedRunRequest["prompt"]["memoryActionAnswerResult"]
-  >
-) => PreparingRunMaterializedRequest | null;
-
 export type CreatedRun = Readonly<{
   /** When admission committed: this process's clock at the `run_accepted`
    * record (a deferred run reads its row's creation time). In memory only; the
@@ -648,7 +630,6 @@ export type CreatedRun = Readonly<{
   deferredPdf?: true;
   deferredWorkspace?: true;
   assistantMessageId: string;
-  materializedRequest?: PreparingRunMaterializedRequest;
   runId: string;
   userMessageId: string;
 }>;

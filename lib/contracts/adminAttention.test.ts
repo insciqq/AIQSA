@@ -18,12 +18,12 @@ describe("decodeAdminAttentionResponse", () => {
       attention: {
         checkedAt: "2026-09-07T12:00:00.000Z",
         items: [item, { ...item, count: null, id: "email", target: { section: "email" } }],
-        unavailable: ["memory", "memory"]
+        unavailable: ["mcp", "mcp"]
       }
     });
     expect(decoded?.attention.items).toHaveLength(2);
     expect(decoded?.attention.items[1]?.target).toEqual({ section: "email" });
-    expect(decoded?.attention.unavailable).toEqual(["memory"]);
+    expect(decoded?.attention.unavailable).toEqual(["mcp"]);
   });
 
   it("accepts pending Assistant listing requests as an Assistants item", () => {

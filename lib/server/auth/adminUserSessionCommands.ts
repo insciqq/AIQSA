@@ -11,7 +11,6 @@ import { adminProvisioningGroupInputs } from "./adminRepositoryInputs";
 import { provisionActiveUser } from "./provisioning";
 import { isServiceAccount } from "./serviceAccounts";
 import { lockActiveAdmins, lockAuthUser } from "./transactionLocks";
-import { purgeLegacyMemoryRowsOfAccount } from "../background/legacyMemoryRows";
 import { archivePersonalMcpServers } from "../mcp/personalArchive";
 import {
   revokeAllInboundMcpGrants,
@@ -133,9 +132,7 @@ export function createAdminUserSessionCommands(
           return "deletion_pending" as const;
         }
 
-        // Until the old Memory tables are dropped, the account's rows there go first: several reference it
-        // through restrictive keys. The Memory note and kept suggestions go with the user's own cascade.
-        await purgeLegacyMemoryRowsOfAccount(tx, user.id);
+        // The memory note, its offers and kept suggestions go with the user's own cascade.
         await clearTelemetryIncidentUser(tx, user.id);
         // Refused sign-ins under the account's emails; those naming the account go with it.
         await deleteSignInRefusalsOfEmails(tx, [
@@ -441,10 +438,8 @@ async function countUserOwnedAppData(
         ownerUserId: userId
       }
     }),
-    // Usage of an old Memory call goes with the account's Memory rows (`purgeLegacyMemoryRowsOfAccount`).
     tx.usageEvent.count({
       where: {
-        memoryExecutionBindingId: null,
         userId
       }
     })
@@ -456,7 +451,6 @@ async function countUserOwnedAppData(
     attachments,
     chats,
     folders,
-    memory: 0,
     mcpGrants,
     mcpOAuthConnections,
     mcpUserServers,

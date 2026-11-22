@@ -1,16 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ModelRunStatus } from "@prisma/client";
 import { afterAll, describe, expect, it } from "vitest";
-import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
+import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memoryClient";
 import { textMessageContent } from "../../domain/content";
 import { workspaceRunOutputDirectory } from "../../domain/workspace";
 import { providerTemplateIds } from "../../domain/providerTemplates";
 import { createPrismaChatRepository } from "../chats/prismaRepository";
 import { clearChatSearch } from "../chatSearch/index/dirty";
-import {
-  MEMORY_TEMPORARY_DELETION_GENERATION,
-  MEMORY_TEMPORARY_DELETION_TARGET_TYPE
-} from "../memory/temporaryRetention";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, type RunRepository } from "../runs/runRepositoryContract";
@@ -115,14 +111,9 @@ async function withMemoryBranchOwner<T>(run: (userId: string) => Promise<T>): Pr
   await prisma.user.create({
     data: { displayName: "Message Branch Memory User", id: userId, status: "active" }
   });
-  await prisma.userMemorySettings.update({
-    data: { learnAutomatically: false, referenceChatHistory: true },
-    where: { userId }
-  });
   try {
     return await run(userId);
   } finally {
-    await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
     await prisma.user.deleteMany({ where: { id: userId } });
   }
 }
@@ -223,9 +214,6 @@ describe("Prisma-backed message branch repository", () => {
       });
       if (runStatus === "preparing") {
         await prisma.user.update({ where: { id: userId }, data: { status: "active" } });
-        await prisma.userMemorySettings.upsert({ where: { userId }, update: {}, create: {
-          userId, useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false
-        } });
         await createPrismaRunRepository(prisma).admitPreparingRun({
           ...createRunInput({
             chatId: sourceChat.id,
@@ -662,24 +650,8 @@ describe("Prisma-backed message branch repository", () => {
           }
         })
       ).resolves.toBe(0);
-      // The deletion marked the chat for past-chat search in its own transaction; the old Memory counters stay put.
+      // The deletion marked the chat for past-chat search in its own transaction.
       await expect(searchState(sourceChat.id)).resolves.toEqual({ dirtyAt: expect.any(Date), userId });
-      await expect(Promise.all([
-        prisma.chat.findUniqueOrThrow({
-          select: {
-            memoryBranchGeneration: true,
-            memorySourceRevision: true
-          },
-          where: { id: sourceChat.id }
-        }),
-        prisma.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        })
-      ])).resolves.toEqual([
-        { memoryBranchGeneration: 0, memorySourceRevision: 0 },
-        { memoryGeneration: 0, memoryRevision: 0 }
-      ]);
     });
   });
 
@@ -1410,33 +1382,17 @@ describe("Prisma-backed message branch repository", () => {
       await expect(
         prisma.chat.findUniqueOrThrow({
           select: {
-            activeLeafMessageId: true,
-            memoryBranchGeneration: true,
-            memorySourceRevision: true
+            activeLeafMessageId: true
           },
           where: {
             id: sourceChat.id
           }
         })
       ).resolves.toEqual({
-        activeLeafMessageId: edited?.id,
-        memoryBranchGeneration: 0,
-        memorySourceRevision: 0
+        activeLeafMessageId: edited?.id
       });
-      // The edit marked the chat for past-chat search in its own transaction, and queued no old Memory work.
+      // The edit marked the chat for past-chat search in its own transaction.
       await expect(searchState(sourceChat.id)).resolves.toEqual({ dirtyAt: expect.any(Date), userId });
-      await expect(Promise.all([
-        prisma.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        }),
-        prisma.memoryJob.findMany({
-          where: { chatId: sourceChat.id, userId }
-        })
-      ])).resolves.toEqual([
-        { memoryGeneration: 0, memoryRevision: 0 },
-        []
-      ]);
       await expect(
         prisma.message.findUniqueOrThrow({
           select: {
@@ -1510,27 +1466,14 @@ describe("Prisma-backed message branch repository", () => {
     await withMemoryBranchOwner(async (userId) => {
       const repository = createPrismaMessageBranchRepository(prisma);
       const deadline = new Date(Date.now() + 3_600_000);
-      const temporaryChat = await prisma.$transaction(async (tx) => {
-        const chat = await tx.chat.create({
-          data: {
-            memoryMode: "TEMPORARY",
-            temporaryRetentionDeadline: deadline,
-            temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
-            title: "Temporary source",
-            userId
-          }
-        });
-        await tx.memoryDeletionOutbox.create({
-          data: {
-            memoryGeneration: MEMORY_TEMPORARY_DELETION_GENERATION,
-            nextAttemptAt: deadline,
-            operation: "TEMPORARY_DELETE",
-            targetId: chat.id,
-            targetType: MEMORY_TEMPORARY_DELETION_TARGET_TYPE,
-            userId
-          }
-        });
-        return chat;
+      const temporaryChat = await prisma.chat.create({
+        data: {
+          memoryMode: "TEMPORARY",
+          temporaryRetentionDeadline: deadline,
+          temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION,
+          title: "Temporary source",
+          userId
+        }
       });
       try {
         const temporaryTurn = await createSettledTurn({
@@ -1546,22 +1489,12 @@ describe("Prisma-backed message branch repository", () => {
         })).resolves.toBeNull();
         await expect(prisma.chat.count({ where: { userId } })).resolves.toBe(1);
       } finally {
-        // A Temporary chat is deleted only through its claimed obligation.
-        await prisma.$transaction(async (tx) => {
-          await tx.memoryDeletionOutbox.updateMany({
-            data: {
-              leaseExpiresAt: new Date(Date.now() + 5 * 60_000),
-              leaseToken: "message-branch-test-cleanup",
-              nextAttemptAt: null,
-              state: "RUNNING"
-            },
-            where: { operation: "TEMPORARY_DELETE", targetId: temporaryChat.id, userId }
-          });
-          await tx.chat.delete({ where: { id: temporaryChat.id } });
-          await tx.memoryDeletionOutbox.deleteMany({
-            where: { operation: "TEMPORARY_DELETE", targetId: temporaryChat.id, userId }
-          });
-        });
+        // A Temporary chat is deleted once its deadline has passed.
+        await prisma.$executeRaw`
+          UPDATE "Chat" SET "createdAt" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '2 days',
+            "temporaryRetentionDeadline" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '1 minute'
+          WHERE "id" = ${temporaryChat.id}`;
+        await prisma.chat.delete({ where: { id: temporaryChat.id } });
       }
     });
   });

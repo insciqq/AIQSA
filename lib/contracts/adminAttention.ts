@@ -3,9 +3,9 @@ import type { ErrorResponse } from "./http";
 /**
  * Control Center "Needs attention" list: the server aggregates every item that
  * needs an administrator decision or action from data it already serves
- * (dashboard, providers, Search, system roles, Memory status, MCP servers,
+ * (dashboard, providers, Search, system roles, MCP servers,
  * email health, usage limits), from thresholds over the
- * content-free health telemetry counters, Memory rebuild and failed-run counts, and from
+ * content-free health telemetry counters and failed-run counts, and from
  * background queue ages.
  * Nothing is persisted; every item carries human copy plus one jump target
  * inside the Control Center.
@@ -25,11 +25,6 @@ export type AdminAttentionCode =
   | "email_not_configured"
   | "logs_dropped"
   | "mcp_server_needs_attention"
-  | "memory_index_rebuild_required"
-  | "memory_index_rebuilds_repeated"
-  | "memory_processing_blocked"
-  | "memory_worker_not_running"
-  | "memory_worker_stalled"
   | "new_error"
   | "operation_timeouts_rising"
   | "process_restarting"
@@ -61,7 +56,6 @@ export const adminAttentionSections = [
   "limits",
   "mcp",
   "providers",
-  "retrieval",
   "roles",
   "search",
   "skills",
@@ -96,7 +90,6 @@ export const adminAttentionSources = [
   "email",
   "health",
   "mcp",
-  "memory",
   "providers",
   "queues",
   "search",
@@ -149,7 +142,6 @@ export const adminHealthAttentionCodes = [
   "discord_setup_incomplete",
   "discord_token_rejected",
   "logs_dropped",
-  "memory_index_rebuilds_repeated",
   "new_error",
   "operation_timeouts_rising",
   "process_restarting",
@@ -167,10 +159,6 @@ const ATTENTION_CODES = new Set<AdminAttentionCode>([
   "email_delivery_failing",
   "email_not_configured",
   "mcp_server_needs_attention",
-  "memory_index_rebuild_required",
-  "memory_processing_blocked",
-  "memory_worker_not_running",
-  "memory_worker_stalled",
   "provider_key_check_failed",
   "provider_catalog_models_available",
   "provider_key_rejected",
@@ -194,7 +182,6 @@ const MAX_ITEMS = 200;
 export function adminAttentionItemSource(item: AdminAttentionItem): AdminAttentionSource {
   if (HEALTH_CODES.has(item.code)) return "health";
   if (item.code === "queue_stalled") return "queues";
-  if (item.code.startsWith("memory_")) return "memory";
   if (item.code.startsWith("system_role_")) return "system_roles";
   if (item.code.startsWith("provider_")) return "providers";
   if (item.code.startsWith("users_")) return "dashboard";

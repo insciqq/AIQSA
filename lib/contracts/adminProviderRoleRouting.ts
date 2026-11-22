@@ -1,4 +1,5 @@
-/** Installation roles that pin one answer deployment and stop when it cannot serve them. */
+/** Installation roles that pin one answer deployment and stop when it cannot serve them. `memory` is legacy: provider
+ * results stored before v0.5.0 may name the retired Memory utility role, and nothing produces it now. */
 export type AdminProviderAssignedRole = "mcp_guard" | "memory" | "research_researcher" | "research_verifier" | "system_model" | "chat_titles" | "vision" | "chat_pdf" | "chat_pdf_native";
 
 export const ADMIN_PROVIDER_ASSIGNED_ROLES: readonly AdminProviderAssignedRole[] = [
