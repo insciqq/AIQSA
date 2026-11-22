@@ -385,6 +385,31 @@ describe("local task ledger command", () => {
     expect(run(root, "check").stderr).toContain("expected exactly one ## Decisions section");
   });
 
+  it("moves tasks without revalidating the archive while check still reports a broken archive file", () => {
+    const root = fixture();
+    const archive = path.join(root, "agent_docs/tasks/archive");
+    writeFileSync(path.join(archive, "20260701120000001-reopened.md"), "Status: in_progress\n");
+    writeFileSync(path.join(archive, "not-a-task.md"), "stray\n");
+    const stem = "20260801120000001-moving";
+    task(root, stem, "backlog");
+
+    for (const command of ["promote", "start", "list", "complete"]) {
+      const result = run(root, command, ...(command === "list" ? [] : [stem]));
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    }
+    expect(existsSync(path.join(archive, `${stem}.md`))).toBe(true);
+
+    const checked = run(root, "check");
+    expect(checked.status).toBe(1);
+    expect(checked.stderr).toContain("20260701120000001-reopened.md: archived task Status must be completed");
+    expect(checked.stderr).toContain("archive/not-a-task.md: archived task filenames must be");
+
+    // Uniqueness against the archive still holds on transitions.
+    task(root, "20260701120000001-reused", "backlog");
+    expect(run(root, "list").stderr).toContain("task id exists in both the open queue and completion archive");
+  });
+
   it("scaffolds only the required sections and keeps the placeholder and Verification gates", () => {
     const root = fixture();
     expect(run(root, "new", "lean-task", "--summary", "Lean slice").status).toBe(0);

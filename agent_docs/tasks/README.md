@@ -34,7 +34,7 @@ One integrating agent owns the ledger, conflicts, review and the combined verifi
 
 `node scripts/task-ledger.mjs new <slug> --summary "<outcome>"` creates the scaffold: metadata `Status`, `Depends on`, `Blocked by`, `Durable rationale`, then the required sections `Goal`, `Context`, `Scope`, `Acceptance Criteria`, `Decisions`, `Verification`. Replace every placeholder before `promote`; use exact task stems in `Depends on`, or `none`.
 
-Add an optional section only when it carries something the required ones do not: `Out Of Scope` for a boundary a worker would otherwise cross, `Plan` for an ordering that matters (checkboxes are not required or checked), `Progress` for a multi-session handoff. A section that is present appears once and is not empty. Older tasks that carry all nine sections stay valid.
+Optional sections, each at most once and never empty: `Out Of Scope` for a boundary a worker would otherwise cross, `Plan` when order matters (checkboxes are optional), `Progress` for a multi-session handoff.
 
 In `Context`, link the code and documents that matter and describe only the intended change; current behavior lives in the code.
 
@@ -46,6 +46,7 @@ Before `complete`: `Verification` lists checked evidence or `Not run: <check> â€
 
 - `park` moves a task to `drafts/` keeping its status; it refuses an `in_progress` task or one another queued task depends on. `restore` moves it back only if the queue stays valid. Drafts are not listed, validated or usable as dependencies. Use `backlog` instead when the task should stay visible to validation and dependencies.
 - `complete` archives with `Status: completed` and removes the stem from other tasks' `Depends on`. The archive only grows: never prune or overwrite it automatically; cleanup needs an explicit operator request naming its scope.
+- Only `check` revalidates archived files; transitions read just their names to keep stems and ids unique.
 
 ## Commands
 

@@ -160,7 +160,7 @@ function groupDirectory(directory, group) {
   return destination;
 }
 
-function discoverNamespace(root, relativeDirectory) {
+function discoverNamespace(root, relativeDirectory, { readBodies = true } = {}) {
   const directory = path.join(root, relativeDirectory);
   const invalidFiles = [];
   const records = [];
@@ -183,7 +183,7 @@ function discoverNamespace(root, relativeDirectory) {
         invalidFiles.push(relativePath);
         continue;
       }
-      const body = readFileSync(absolutePath, "utf8");
+      const body = readBodies ? readFileSync(absolutePath, "utf8") : "";
       records.push({
         blockedBy: field(body, "Blocked by"),
         body,
@@ -220,10 +220,11 @@ function indexRecords(records) {
   return { byId, byStem };
 }
 
-export function readTaskLedger(root = process.cwd()) {
+// Without `archive`, archived tasks are indexed by filename only: enough to keep stems and ids unique.
+export function readTaskLedger(root = process.cwd(), { archive: readArchive = true } = {}) {
   root = path.resolve(root);
   const tasks = discoverNamespace(root, TASK_DIRECTORY);
-  const archive = discoverNamespace(root, TASK_ARCHIVE_DIRECTORY);
+  const archive = discoverNamespace(root, TASK_ARCHIVE_DIRECTORY, { readBodies: readArchive });
   const drafts = discoverNamespace(root, TASK_DRAFT_DIRECTORY);
   const { byId, byStem } = indexRecords(tasks.records);
   const archiveIndex = indexRecords(archive.records);
@@ -370,15 +371,19 @@ function completionReadiness(record, root) {
   return { errors, evidence };
 }
 
-export function validateTaskLedger(root = process.cwd()) {
-  const ledger = readTaskLedger(root);
+// Transitions pass `archive: false`: the archive only grows through `complete`, so revalidating every
+// archived file on each transition costs time without protecting the task being moved. `check` validates it.
+export function validateTaskLedger(root = process.cwd(), { archive: validateArchive = true } = {}) {
+  const ledger = readTaskLedger(root, { archive: validateArchive });
   const errors = [];
   errors.push(...ledger.tasks.invalidFiles.map(
     (filename) => `${filename}: task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   ));
-  errors.push(...ledger.archive.invalidFiles.map(
-    (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
-  ));
+  if (validateArchive) {
+    errors.push(...ledger.archive.invalidFiles.map(
+      (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
+    ));
+  }
 
   for (const [stem, matches] of ledger.byStem) {
     if (matches.length > 1) errors.push(`${stem}: duplicate task stem`);
@@ -387,15 +392,15 @@ export function validateTaskLedger(root = process.cwd()) {
     if (matches.length > 1) errors.push(`${id}: duplicate task id`);
   }
   for (const [stem, matches] of ledger.archive.byStem) {
-    if (matches.length > 1) errors.push(`${stem}: duplicate archived task stem`);
+    if (validateArchive && matches.length > 1) errors.push(`${stem}: duplicate archived task stem`);
     if (ledger.byStem.has(stem)) errors.push(`${stem}: task exists in both the open queue and completion archive`);
   }
   for (const [id, matches] of ledger.archive.byId) {
-    if (matches.length > 1) errors.push(`${id}: duplicate archived task id`);
+    if (validateArchive && matches.length > 1) errors.push(`${id}: duplicate archived task id`);
     if (ledger.byId.has(id)) errors.push(`${id}: task id exists in both the open queue and completion archive`);
   }
 
-  for (const record of ledger.archive.records) {
+  for (const record of validateArchive ? ledger.archive.records : []) {
     if (!isIgnoredTask(ledger.root, record.relativePath)) {
       errors.push(`${record.relativePath}: archived task instances must be ignored and must not be tracked by public Git`);
     }
@@ -455,8 +460,8 @@ export function validateTaskLedger(root = process.cwd()) {
   return { errors, ledger };
 }
 
-function assertValid(root) {
-  const result = validateTaskLedger(root);
+function assertValid(root, { archive = false } = {}) {
+  const result = validateTaskLedger(root, { archive });
   if (result.errors.length) throw new Error(`task ledger is invalid:\n- ${result.errors.join("\n- ")}`);
   return result.ledger;
 }
@@ -605,7 +610,7 @@ export function restoreTask({ root = process.cwd(), reference, group = null }) {
   }
   mkdirSync(path.dirname(destination), { recursive: true });
   renameSync(record.path, destination);
-  const validation = validateTaskLedger(ledger.root);
+  const validation = validateTaskLedger(ledger.root, { archive: false });
   if (validation.errors.length) {
     renameSync(destination, record.path);
     throw new Error(`draft task cannot be restored:\n- ${validation.errors.join("\n- ")}`);
@@ -709,7 +714,7 @@ export function runTaskCli(argv = process.argv.slice(2)) {
   }
   if (command === "check") {
     if (arguments_.length || group !== null) throw new Error("usage: task-ledger check [--root <path>]; check validates every group");
-    assertValid(root);
+    assertValid(root, { archive: true });
     return "Task ledger is valid.";
   }
   if (command === "block") {
