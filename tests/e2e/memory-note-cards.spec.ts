@@ -171,6 +171,7 @@ test("a past-chat source opens its chat at the message", async ({ page }, info) 
     await expectNoHorizontalOverflow(page);
   } });
   await link.click();
-  await expect(page).toHaveURL(new RegExp(`/c/${earlier.id}\\?message=${source.messageId}$`, "u"));
+  // The shell opens the chat at the message the way a search match opens; it may leave the `?message=` hint out of the address.
+  await expect(page).toHaveURL(new RegExp(`/c/${earlier.id}(\\?message=${source.messageId})?$`, "u"));
   await expect(page.locator(`[data-message-id="${source.messageId}"]`)).toBeVisible();
 });
