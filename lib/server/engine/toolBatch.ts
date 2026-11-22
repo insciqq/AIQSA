@@ -276,11 +276,14 @@ type BeforeToolCall =
   | Readonly<{
     /** The run's reserved report, asked for the first time: it does not count against the call budget. */
     exempt?: true;
-    /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it. */
-    retry?: Readonly<{ approval: McpApprovalRequest; approvalAfter: Date; approvedBy?: string }>;
+    /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it (`resolveApproval`). */
+    retry?: RetryApproval;
     kind: "run";
     tool: EngineTool;
   }>;
+
+/** The exact-call approval an unknown-outcome retry needs, valid only if given after the earlier call's attempt (`approvalAfter`). */
+type RetryApproval = Readonly<{ approval: McpApprovalRequest; approvalAfter: Date }>;
 
 function jsonError(call: Pick<ModelToolCall, "id" | "name">, value: Record<string, unknown>): ToolLoopJsonValue {
   return { callId: call.id, content: [{ type: "json", value: value as { [key: string]: ToolLoopJsonValue } }], name: call.name,
@@ -358,10 +361,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     if (unknown) {
       // It may have happened already: the user decides, in the card where the tool has one.
       const approval = tool.retryApproval?.(call);
-      if (approval) {
-        const approvedBy = approved && approved.callId === call.id ? approved.approvalId : undefined;
-        return { kind: "run", retry: { approval, approvalAfter: unknown.after, ...(approvedBy ? { approvedBy } : {}) }, tool };
-      }
+      if (approval) return { kind: "run", retry: { approval, approvalAfter: unknown.after }, tool };
       if (!unknown.userSpokeSince) {
         // The model can do what this asks (check the state with a read-only call), so tools stay open for it.
         return { correctable: true, kind: "refuse", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT, toolName: call.name,
@@ -457,6 +457,29 @@ async function settleCancelledResult(deps: ToolBatchDeps, tool: EngineTool, exec
   }
 }
 
+/**
+ * The approval a call that passed its checks is recorded under, decided in one place, after its links and before its
+ * record: an unknown-outcome retry's exact-call approval (`beforeToolCall`) or the tool's own, the decision that names it,
+ * whether a person already gave it, and else the guard's verdict. `begin` consumes or requests it in the call's recording
+ * transaction; a sub-agent hands back a call that would wait (`approvalHandBack`).
+ */
+async function resolveApproval(deps: ToolBatchDeps, tool: EngineTool, call: ModelToolCall, retry: RetryApproval | undefined,
+  approved: ApprovedToolCall | undefined): Promise<Readonly<{ approval: McpApprovalRequest | undefined; approvalAfter: Date | undefined;
+    approvedBy: string | undefined; humanApproved: boolean }>> {
+  let approval = retry?.approval ?? tool.approval?.(call);
+  const approvalAfter = retry?.approvalAfter;
+  // The user's Allow the continuation names for exactly this call, else the decision admission named (`tool.approvedBy`),
+  // which counts for an unknown-outcome retry too: the exact-call match and `approvalAfter` still refuse a stale or
+  // different decision, so a fresh Always allow on the retry card is honoured.
+  const approvedBy = (approved?.callId === call.id ? approved.approvalId : undefined) ?? (approval ? tool.approvedBy : undefined);
+  // A person's existing approval is honoured before any model check; a retry of an unknown effect never goes to the guard.
+  const humanApproved = Boolean(approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
+    userId: deps.userId, approval, approvalAfter, approvedBy }));
+  if (!retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
+  deps.signal.throwIfAborted();
+  return { approval, approvalAfter, approvedBy, humanApproved };
+}
+
 async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -542,16 +565,8 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
       return notRun({ output: message, refused: { result, toolName: call.name }, settled: { kind: "result", result } });
     }
-    let approval = before.retry?.approval ?? tool.approval?.(call);
-    const approvalAfter = before.retry?.approvalAfter;
-    // The decision admission named (`tool.approvedBy`) counts for an unknown-outcome retry too: the exact-call match and
-    // `approvalAfter` still refuse a stale or different decision, so a fresh Always allow on the retry card is honoured.
-    const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ??
-      (approval ? tool.approvedBy : undefined);
-    const humanApproved = approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
-      userId: deps.userId, approval, approvalAfter, approvedBy });
-    if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
-    deps.signal.throwIfAborted();
+    const { approval, approvalAfter, approvedBy, humanApproved } = await resolveApproval(deps, tool, call, before.retry,
+      input.approved);
     // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
     if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
