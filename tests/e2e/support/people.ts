@@ -3,10 +3,6 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { Browser, BrowserContext, BrowserContextOptions, Page } from "@playwright/test";
 import { hashPassword, normalizeAuthEmail } from "../../../lib/server/auth/password";
 import { provisionActiveUser } from "../../../lib/server/auth/provisioning";
-import {
-  MEMORY_TEMPORARY_DELETION_GENERATION,
-  MEMORY_TEMPORARY_DELETION_TARGET_TYPE
-} from "../../../lib/server/memory/temporaryRetention";
 import { deleteAssistantRows, deleteChatWorkspaces } from "./assistants";
 import { loginWithPassword } from "./workspace";
 
@@ -14,10 +10,10 @@ import { loginWithPassword } from "./workspace";
  * Synthetic users, administrators and groups for multi-user browser specs.
  * Users are provisioned the way the product provisions them (verified
  * password identity, settings row, the full-access group and any extra
- * memberships), so catalog-dependent features work for them. Personal
- * Memory starts off unless a scenario asks for it, so synthetic chats queue
- * no Memory work. Every name carries the fixture's suffix; `cleanup` removes
- * what the fixture created.
+ * memberships), so catalog-dependent features work for them. Memory (the
+ * note, past-chat search and offers) starts off unless a scenario asks for it,
+ * so answers neither read a note nor search past chats. Every name carries the
+ * fixture's suffix; `cleanup` removes what the fixture created.
  */
 
 export type E2EGroup = Readonly<{ id: string; name: string }>;
@@ -36,8 +32,8 @@ export type E2EUserOptions = Readonly<{
   /** Extra groups; the user is always a member of the full-access group. */
   groups?: readonly (E2EGroup | E2EGroupMembership)[];
   /**
-   * Personal Memory as a new account has it (use, recall, learning,
-   * decay). Off by default: chats then create no Memory jobs.
+   * The Memory switches as a new account has them (the note, past-chat
+   * search, offers). Off by default.
    */
   memory?: boolean;
 }>;
@@ -49,9 +45,8 @@ export type PeopleFixture = Readonly<{
   admin(label: string, options?: E2EUserOptions): Promise<E2EUser>;
   /**
    * Closes the fixture's browser contexts, waits until no run of the users
-   * is still preparing or answering (a settling run can still queue work on
-   * its chat), then removes in one transaction: the Memory work and recall
-   * rows that reference the users' chats, the users' personal chats
+   * is still preparing or answering (a settling run still writes to its
+   * chat), then removes in one transaction: the users' personal chats
    * (Temporary ones included), the Assistants they
    * own with their listing requests, publications and Skill links, Assistant
    * and Skill publications to the fixture's groups, the Skills they own,
@@ -133,15 +128,8 @@ export function createPeopleFixture(
         userId: id
       });
       const memory = userOptions.memory ?? false;
-      const memorySettings = {
-        decayEnabled: memory,
-        learnAutomatically: memory,
-        referenceChatHistory: memory,
-        useMemoryFacts: memory
-      };
-      await tx.userMemorySettings.upsert({
-        create: { ...memorySettings, userId: id },
-        update: memorySettings,
+      await tx.userSettings.update({
+        data: { memoryEnabled: memory, memorySuggestionsEnabled: memory, pastChatSearchEnabled: memory },
         where: { userId: id }
       });
     });
@@ -195,30 +183,18 @@ export function createPeopleFixture(
 
 /**
  * Every personal chat of the given users, Temporary chats included (Save &
- * try opens one). The database lets a Temporary chat go only while its
- * deletion obligation is claimed, so the obligations are claimed the way the
- * retention worker claims them, then removed with the users' other
- * deletion records.
+ * try opens one). The database lets a Temporary chat go only once its
+ * retention deadline has passed, so its deadline is moved into the past first
+ * (and its creation before that, as the deadline must follow it).
  */
 async function deleteUserChats(tx: Prisma.TransactionClient, userIds: readonly string[]): Promise<void> {
   const users = [...userIds];
-  await deleteChatMemoryWork(tx, users);
-  await tx.memoryDeletionOutbox.updateMany({
-    data: {
-      leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
-      leaseToken: `e2e-cleanup-${randomUUID()}`,
-      state: "RUNNING"
-    },
-    where: {
-      memoryGeneration: MEMORY_TEMPORARY_DELETION_GENERATION,
-      operation: "TEMPORARY_DELETE",
-      targetType: MEMORY_TEMPORARY_DELETION_TARGET_TYPE,
-      userId: { in: users }
-    }
+  await tx.chat.updateMany({
+    data: { createdAt: new Date(Date.now() - 2 * 86_400_000), temporaryRetentionDeadline: new Date(Date.now() - 60_000) },
+    where: { memoryMode: "TEMPORARY", userId: { in: users } }
   });
   await deleteChatWorkspaces(tx, { userId: { in: users } });
   await tx.chat.deleteMany({ where: { userId: { in: users } } });
-  await tx.memoryDeletionOutbox.deleteMany({ where: { userId: { in: users } } });
 }
 
 /** The Skills of the given users, in the order their restrictive keys require. */
@@ -244,8 +220,8 @@ const UNSETTLED_RUN_STATUSES = ["preparing", "queued", "streaming", "in_progress
 const RUN_SETTLE_TIMEOUT_MS = 60_000;
 
 /**
- * A run settles its chat's Memory sources when it ends, so cleanup starts
- * only once no run of the users is still preparing or answering. Waiting is
+ * A run writes to its chat when it ends, so cleanup starts only once no run
+ * of the users is still preparing or answering. Waiting is
  * bounded; a run that never settles is a finding, not something to retry.
  */
 async function waitForSettledRuns(prisma: PrismaClient, userIds: readonly string[]): Promise<void> {
@@ -258,36 +234,4 @@ async function waitForSettledRuns(prisma: PrismaClient, userIds: readonly string
     if (Date.now() > deadline) throw new Error(`e2e_cleanup_runs_not_settled: ${unsettled}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-}
-
-/**
- * The Memory work and recall rows that reference the users' chats, in the
- * order their restrictive keys require: usage and execution bindings of
- * Memory calls, candidates (their decisions and messages go with them) and
- * any decision still naming a job, the jobs, retrieval attempts (their
- * items go with them), feedback on recall chunks, then the chunks. With
- * Memory off (the fixture's default) these are empty. Learned facts and
- * their events are not handled: a scenario that turns learning on removes
- * them through the product first.
- */
-async function deleteChatMemoryWork(tx: Prisma.TransactionClient, userIds: readonly string[]): Promise<void> {
-  const users = [...userIds];
-  const chats = (await tx.chat.findMany({ select: { id: true }, where: { userId: { in: users } } })).map((chat) => chat.id);
-  if (chats.length === 0) return;
-  const jobs = (await tx.memoryJob.findMany({
-    select: { id: true },
-    where: { chatId: { in: chats }, userId: { in: users } }
-  })).map((job) => job.id);
-  await tx.usageEvent.deleteMany({ where: { memoryExecutionBindingId: { not: null }, userId: { in: users } } });
-  await tx.memoryExecutionBinding.deleteMany({ where: { userId: { in: users } } });
-  await tx.memoryCandidate.deleteMany({ where: { chatId: { in: chats }, userId: { in: users } } });
-  if (jobs.length > 0) {
-    await tx.memoryCandidateDecision.deleteMany({
-      where: { OR: [{ consolidationJobId: { in: jobs } }, { verificationJobId: { in: jobs } }], userId: { in: users } }
-    });
-    await tx.memoryJob.deleteMany({ where: { id: { in: jobs }, userId: { in: users } } });
-  }
-  await tx.memoryRetrievalAttempt.deleteMany({ where: { userId: { in: users } } });
-  await tx.memoryFeedback.deleteMany({ where: { recallChunkId: { not: null }, userId: { in: users } } });
-  await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: chats }, userId: { in: users } } });
 }

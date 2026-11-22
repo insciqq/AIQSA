@@ -23,9 +23,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /** Fields of one immediate role save; absent fields preserve the other roles. */
 export type AdminRolePatch = Readonly<{
-  memoryProviderModelId?: string | null;
-  memoryReasoningEffort?: string | null;
-  memoryRecommendationId?: string;
   /** The image default, always sent with the complete published set. */
   imageProviderModelId?: string | null;
   imageModels?: ReadonlyArray<Readonly<{ providerModelId: string; parameters: ImageGenerationParameters }>>;
@@ -57,7 +54,7 @@ export type AdminRolesController = Readonly<{
   /** Immediate apply for independent roles; `undo` reverts through the same PATCH. */
   assign(patch: AdminRolePatch, undo: AdminRolePatch | null): Promise<boolean>;
   busy: boolean;
-  checkAndAssign(role: "mcp_guard" | "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean>;
+  checkAndAssign(role: "mcp_guard" | "chat_titles" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean>;
   checking: Readonly<{ id: string; role: AdminSystemModelEligibilityRole }> | null;
   error: string | null;
   loading: boolean;
@@ -181,9 +178,7 @@ export function useAdminRolesController({
     if (!current) return false;
     setMutationBusy(true);
     const result = await updateAdminSystemModelPolicy({
-      ...(Object.hasOwn(patch, "memoryProviderModelId")
-        ? { expectedMemoryVersion: current.memoryPolicy.version }
-        : { expectedVersion: current.policy.version }),
+      expectedVersion: current.policy.version,
       ...patch
     });
     setMutationBusy(false);
@@ -226,18 +221,14 @@ export function useAdminRolesController({
     return true;
   }, [invalidateReads, reportError, setPolicy]);
 
-  const checkAndAssign = useCallback(async (role: "mcp_guard" | "chat_titles" | "memory" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean> => {
+  const checkAndAssign = useCallback(async (role: "mcp_guard" | "chat_titles" | "system" | "vision" | "pdf_images" | "direct_pdf", id: string): Promise<boolean> => {
     const previous = policyRef.current?.policy;
-    const previousMemory = policyRef.current?.memoryPolicy;
-    if (!previous || !previousMemory || !await check(role === "mcp_guard" ? "chat_titles" : role === "system" ? "memory" : role === "pdf_images" ? "vision" : role, id)) return false;
+    // The System model is checked with the strict-output role that keeps its `memory` identifier.
+    if (!previous || !await check(role === "mcp_guard" ? "chat_titles" : role === "system" ? "memory" : role === "pdf_images" ? "vision" : role, id)) return false;
     if ((role === "vision" || role === "mcp_guard") && previous.version !== policyRef.current?.policy.version) {
       reportError(adminSystemModelPolicyErrorMessage("system_model_policy_stale"));
       return false;
     }
-    if (role === "memory") return assign(
-      { memoryProviderModelId: id, memoryReasoningEffort: null },
-      { memoryProviderModelId: previousMemory.model?.id ?? null, memoryReasoningEffort: previousMemory.reasoningEffort }
-    );
     if (role === "chat_titles") return assign(
       { chatTitleProviderModelId: id, chatTitleReasoningEffort: initialChatTitleReasoningEffort(
         policyRef.current?.titleCandidates.find((candidate) => candidate.id === id)

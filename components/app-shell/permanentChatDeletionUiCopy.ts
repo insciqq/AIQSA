@@ -12,8 +12,6 @@ const COPY = {
     disclosureCrossChat: "Answers already accepted in other chats stay unchanged, but the source is shown as deleted and cannot be opened.",
     disclosureProvider: "This does not erase data already sent to an AI provider or external tool; their retention policy still applies.",
     dismiss: "Dismiss",
-    forgetHelp: "This additionally forgets explicit saved memories sourced from this chat. Other saved memories are unchanged.",
-    forgetLabel: "Also forget saved memories from this chat",
     noticeAction: "View progress",
     noticeBlocked: "Chat deleted · cleanup needs attention",
     noticePending: "Chat deleted · cleanup is finishing",

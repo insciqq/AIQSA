@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { resetAssistantLibraryStoreForTest, resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetMemorySettingsStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
+import { resetAssistantLibraryStoreForTest, resetComposerControlStoreForTest, resetComposerSessionStoreForTest, resetRunLifecycleStoreForTest, resetRunSurfaceStoreForTest, resetThreadStoreForTest, resetWorkspaceStoreForTest } from "@/tests/support/appShellStores";
 import { useComposerControlStore } from "./composerControlStore";
 import { composerContextConfigurationKey } from "./composerContextConfiguration";
 import {
@@ -25,8 +25,6 @@ import { useWorkspaceStore } from "./workspaceStore";
 import type { ComposerAttachment } from "@/components/app-shell/attachmentContracts";
 import type { Catalog, CatalogModel, ChatDetail, WorkspaceChatSummary } from "./types";
 import type { SavedControlDraft } from "./powerAppShellData";
-import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
-import { useMemorySettingsStore } from "./memorySettingsStore";
 import { boundComposerAssistantFixture } from "@/tests/support/composerAssistantFixtures";
 import { createChatAssistantActions } from "./chatAssistantActions";
 import { createAssistantLibraryActions } from "./assistantLibraryController";
@@ -256,7 +254,6 @@ function useMessageRunActionsForTest(input: {
   editingMessageId?: string | null;
   fetchRun?: (runId: string, chatId: string) => Promise<unknown>;
   model?: CatalogModel | null;
-  openMemorySettings?: () => void;
   pendingChatFolderId?: string | null;
   persistActiveLeaf?: (chatId: string, messageId: string | null) => Promise<unknown>;
   refreshActiveChat?: (
@@ -275,7 +272,6 @@ function useMessageRunActionsForTest(input: {
   resetComposerSessionStoreForTest();
   resetThreadStoreForTest();
   resetWorkspaceStoreForTest();
-  resetMemorySettingsStoreForTest();
   const activeChat = input.activeChat === undefined ? chat() : input.activeChat;
   const activeChatId = input.activeChatId === undefined ? activeChat?.id ?? null : input.activeChatId;
   const activeChatIdRef = { current: activeChatId };
@@ -364,7 +360,6 @@ function useMessageRunActionsForTest(input: {
     currentModel: input.model === null ? undefined : input.model ?? model,
     fetchRun,
     notifyAnswerReady,
-    openMemorySettings: input.openMemorySettings ?? vi.fn(),
     persistActiveLeaf: input.persistActiveLeaf ?? vi.fn(async () => null),
     primeAnswerSound,
     refreshActiveChat,
@@ -625,7 +620,6 @@ describe("message run actions", () => {
     resetComposerSessionStoreForTest();
     resetThreadStoreForTest();
     resetWorkspaceStoreForTest();
-    resetMemorySettingsStoreForTest();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -660,43 +654,6 @@ describe("message run actions", () => {
     const body = JSON.parse(String(request.body));
     expect(body.content).toEqual({ blocks: [{ type: "text", text: "> first fragment\n> second line\n\nfirst comment\n\n> second fragment\n\nsecond comment" }] });
     expect(actions.session(key)).toMatchObject({ draft: "", comments, pendingSend: null });
-  });
-
-  it("routes an ambiguous Memory target to Manage Memories without claiming a mutation", async () => {
-    const openMemorySettings = vi.fn();
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      error: "memory_intent_confirmation_required"
-    }, { status: 409 })));
-    const actions = useMessageRunActionsForTest({
-      attachments: [],
-      draft: "Forget the preference I mentioned.",
-      openMemorySettings
-    });
-    useMemorySettingsStore.setState({
-      data: memoryConsumerSettingsFixture(),
-      error: null,
-      loadState: "ready"
-    });
-
-    await actions.submitComposer();
-
-    expect(actions.setNotice).toHaveBeenCalledWith(expect.objectContaining({
-      action: expect.objectContaining({ label: "Manage Memories" }),
-      kind: "error",
-      persistent: true,
-      text: "Choose the exact saved memory before AIQSA changes anything."
-    }));
-    expect(actions.setNotice).toHaveBeenCalledTimes(1);
-    const notice = actions.setNotice.mock.calls.at(-1)?.[0];
-    expect(notice?.kind).toBe("error");
-    notice?.action?.onClick();
-    expect(openMemorySettings).toHaveBeenCalledOnce();
-    expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
-      draft: "Forget the preference I mentioned.",
-      operationError: null,
-      operationErrorRetryable: false,
-      pendingSend: null
-    });
   });
 
   describe("ambient Workspace", () => {

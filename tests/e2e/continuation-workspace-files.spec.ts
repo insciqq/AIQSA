@@ -34,7 +34,6 @@ test("continues a Workspace chat with its project files and runs in the new chat
   // them all before the fixture connection is deleted.
   const priorRoles = await prisma.systemModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   const priorPolicy = await prisma.modelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
-  const priorMemory = await prisma.memoryUtilityModelPolicy.findUniqueOrThrow({ where: { id: "installation" } });
   // Summary admission uses a real structured-output protocol. Its tiny local
   // provider keeps this ordinary browser test independent of paid services.
   const server = createServer((request, response) => {
@@ -223,7 +222,6 @@ test("continues a Workspace chat with its project files and runs in the new chat
         decisionFeaturesJson: priorRoles.decisionFeaturesJson as Prisma.InputJsonValue,
         imageParamsJson: priorRoles.imageParamsJson as Prisma.InputJsonValue } });
       await tx.modelPolicy.update({ where: { id: "installation" }, data: priorPolicy });
-      await tx.memoryUtilityModelPolicy.update({ where: { id: "installation" }, data: priorMemory });
       if (!ownedConnectionId) return;
       const connectionId = ownedConnectionId;
       await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });

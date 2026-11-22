@@ -61,15 +61,6 @@ import {
 import { calculateAttachmentLimitUsage } from "@/components/app-shell/attachmentLimitUsage";
 import { useComposerControlStore } from "@/components/app-shell/composerControlStore";
 import {
-  openMemoryManager,
-  refreshMemoryList,
-  useMemoryManagerStore
-} from "@/components/app-shell/memoryManagerStore";
-import {
-  refreshMemorySettings,
-  useMemorySettingsStore
-} from "@/components/app-shell/memorySettingsStore";
-import {
   observeMcpSettings,
   useMcpSettingsStore
 } from "@/components/app-shell/mcpSettingsStore";
@@ -145,11 +136,8 @@ import {
   answerIdentityV2,
   previousVisibleAnswersV2
 } from "@/features/answer-outputs-v2/AnswerIdentityV2";
-import { MemoryActionConfirmationV2 } from "@/features/answer-outputs-v2/MemoryActionConfirmationV2";
 import { openScheduledTaskEditorV2 } from "@/features/answer-outputs-v2/ScheduledTaskCardV2";
-import { MemoryCommandStatusV2, memoryCommandIsVisible } from "@/features/answer-outputs-v2/MemoryCommandStatusV2";
 import { researchAnswerViewV2 } from "@/features/answer-outputs-v2/researchAnswerView";
-import { useMemoryCommands } from "@/components/app-shell/useMemoryCommands";
 import {
   ReadingRoomShellV2,
   type NavigationChatRowState,
@@ -171,7 +159,7 @@ import {
   type InterruptedRunV2
 } from "@/features/workspace-v2/runTransportPresentation";
 import { importedFromLabel } from "@/features/chat-import/importLabels";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 import { attachmentItemsForV2, uploadProgressBytes } from "@/features/attachments-v2/attachmentPresentation";
 import { SentAttachmentsV2 } from "@/features/attachments-v2/SentAttachmentsV2";
 import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
@@ -639,11 +627,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
   const navigationFolders = useWorkspaceStore((state) => state.navigationFolders);
   // Dictation is an account feature: the personal catalog decides it.
   const dictation = useWorkspaceStore((state) => state.catalog?.dictation ?? null);
-  // Server-verified capability gate for the direct "Delete…" entries; the
-  // deletion confirm surface and its semantics stay unchanged.
-  const permanentChatDeletionAvailable = useMemorySettingsStore(
-    (state) => Boolean(state.data?.capabilities.permanentChatDeletion)
-  );
   const composerDockRef = useRef<HTMLDivElement>(null);
   const setComposerDockRef = useCallback((dock: HTMLDivElement | null) => {
     composerDockRef.current = dock;
@@ -710,16 +693,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     selectNavigationChatV2(target.chatId, workspace.pane.actions);
     openSubagentThread(target, "replace");
   };
-  // A new chat exists on the server only once its first send is accepted; until then nothing of it can be read.
-  const activeChatUnsaved = useWorkspaceStore(state => Boolean(session.activeChatId &&
-    state.chats.find((chat) => chat.id === session.activeChatId)?.pendingPersonalDraft));
-  const memoryCommands = useMemoryCommands({
-    accountId: session.accountId,
-    chatId: session.activeChatId,
-    enabled: composer.memory.mode === "NORMAL" && !activeChatUnsaved,
-    messageKey: thread.visibleMessages.filter((message) => message.role === "user")
-      .map((message) => message.id).join(",")
-  });
   const artifactPanelAllowed = composer.memory.mode !== "TEMPORARY" && !libraryOpen;
   const visibleArtifactPanel = artifactPanelAllowed && artifactPanel?.chatId === session.activeChatId ? artifactPanel : null;
   useEffect(() => {
@@ -895,14 +868,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     observer.observe(titleNode, { characterData: true, childList: true, subtree: true });
     return () => observer.disconnect();
   }, [libraryOpen, routeChatId, session.activeChatId, session.activeChatTitle]);
-  useEffect(() => {
-    if (!personalMemoryOpen) return;
-    const bound = useMemoryManagerStore.getState().accountId === session.accountId;
-    void Promise.all([
-      refreshMemorySettings().catch(() => null),
-      (bound ? refreshMemoryList() : openMemoryManager(session.accountId)).catch(() => undefined)
-    ]);
-  }, [personalMemoryOpen, session.accountId]);
 
   const config = useMemo<ComposerConfig | null>(() => composer.catalog ? ({
     assistants: composer.assistant.pickerItems,
@@ -1396,29 +1361,13 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     const settled = settledRunPresentationV2(presentation);
     const identity = answerIdentityV2(source, previousAnswerById.get(source.id) ?? null);
     // Answer anatomy: identity leads where the Assistant changes; the process
-    // fold (Thinking → Steps → Memory) sits above the text with the
-    // memory-saved notice under it; the actions row below carries the pager,
-    // the Sources chip and the verbs.
+    // fold (Thinking → Steps → Past chats) sits above the text; the actions
+    // row below carries the pager, the Sources chip and the verbs.
     const leadingSlot = activeChatSummary?.hasContinuationSource && !source.runId &&
       source.parentMessageId === thread.visibleMessages[0]?.id && thread.visibleMessages[0]?.parentMessageId === null ? (
       <a className="v2-chat-continuation-source v2-focusable"
         href={`/api/chats/${encodeURIComponent(activeChatSummary.id)}/continuation-source`}>Previous chat</a>
     ) : identity ? <AnswerIdentityChipV2 identity={identity} /> : null;
-    const command = source.parentMessageId ? memoryCommands.get(source.parentMessageId) : undefined;
-    // A background command owns the notice slot; apart from a save that
-    // committed nothing, its failed, unknown, stale and rejected outcomes stay
-    // silent instead of reviving older feedback.
-    const noticeSlot = command && memoryCommandIsVisible(command) ? (
-      <MemoryCommandStatusV2 command={command} onOpenMemory={settings.openMemory} />
-    ) : command && (command.operation !== "UNKNOWN" ||
-      ["FAILED", "UNKNOWN", "STALE"].includes(command.status)) ? null
-    : settled && artifact?.memoryAction ? (
-      <MemoryActionConfirmationV2
-        action={artifact.memoryAction}
-        onOpenMemoryReset={settings.openMemory}
-        onOpenMemorySettings={settings.openMemory}
-      />
-    ) : null;
     // The persisted work duration wins once the run settles; while it streams
     // the client clock (send → first token) fills the same slot.
     const workDurationMs = artifact?.workDurationMs ??
@@ -1492,7 +1441,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
         // Links in a research report below the summary still mark sources as cited.
         answerText={answerText}
         leadingSlot={leadingSlot}
-        noticeSlot={noticeSlot}
         onRefresh={transportLost ? () => thread.refreshInterruptedRun() : undefined}
         onContinue={source.id !== latestMessage?.id || !thread.sendContinueTurn ? undefined : thread.sendContinueTurn}
         onRegenerate={() => thread.handleRegenerateMessage(source.id)}
@@ -1553,9 +1501,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
     else void workspace.pane.actions.retry();
   };
   const temporarySession = composer.memory.mode === "TEMPORARY";
-  const deleteActiveChatPermanently = permanentChatDeletionAvailable
-    ? withActiveChat((full) => void workspace.pane.actions.deleteChatPermanently(full))
-    : null;
+  const deleteActiveChatPermanently = withActiveChat((full) => void workspace.pane.actions.deleteChatPermanently(full));
   const workspaceStarted = composer.workspace.sessionState !== null &&
     composer.workspace.sessionState !== "not_started";
   // Files carried from a previous chat that were never restored can block the
@@ -1643,11 +1589,11 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
             if (full) void thread.copyVisibleThread(full);
           }}
           onCreateFolder={(parentId, name) => workspace.pane.actions.createFolder(parentId, name)}
-          onDelete={permanentChatDeletionAvailable ? (chat) => {
+          onDelete={(chat) => {
             const full = currentWorkspaceChat(chat.id);
             if (full) void workspace.pane.actions.deleteChatPermanently(full);
             else void workspace.pane.actions.retry();
-          } : undefined}
+          }}
           onDeleteFolder={(folder: ChatNavigationFolderWire) => {
             const full = currentWorkspaceFolder(folder.id);
             if (full) void workspace.pane.actions.deleteFolder(full);
@@ -1752,7 +1698,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
                 ? `${importedFromLabel(activeChatSummary.importSource)} (${activeChatSummary.importSourceModel})`
                 : undefined}
               memoryLockedReason={activeChatSummary?.importSource
-                ? resolveMemoryCopy("imported.unavailable")
+                ? chatMemoryModeCopy("imported.unavailable")
                 : null}
               memoryUsed={!session.activeChatId
                 ? null

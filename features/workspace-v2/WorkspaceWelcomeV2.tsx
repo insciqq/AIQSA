@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { navigateChatRoute } from "@/components/app-shell/chatRoute";
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
 import { MEMORY_NOTE_COPY } from "@/components/app-shell/memoryNoteUiCopy";
@@ -45,7 +44,7 @@ import { WorkspaceSecretsPanel } from "@/features/settings-v2/WorkspaceSecretsPa
 import { SubagentsPanelV2 } from "@/features/library-v2/subagents/SubagentsPanelV2";
 import { ScheduledTasksPanel } from "@/features/scheduled-tasks/ScheduledTasksPanel";
 import { requestBrowserSignIn } from "@/features/workspace-v2/browserSignInRequest";
-import { scheduledTaskMemoryAvailability, scheduledTaskWorkspaceAvailability } from "@/features/scheduled-tasks/scheduledTaskDraft";
+import { scheduledTaskWorkspaceAvailability } from "@/features/scheduled-tasks/scheduledTaskDraft";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
 import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
 import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
@@ -85,7 +84,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   initialTab?: LibraryTabIdV2;
 }>) {
   const { session, settings } = props;
-  const memoryData = useMemorySettingsStore((state) => state.data);
   const fileData = useFileLibraryStore((state) => state.data);
   const fileLoadState = useFileLibraryStore((state) => state.loadState);
   const fileMutations = useFileLibraryStore((state) => state.mutations);
@@ -268,7 +266,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     { id: "secrets", label: "Secrets", content: <WorkspaceSecretsPanel key={session.accountId} onBusyChange={setFormBusy}
       onSignInAgain={(host) => signInAgain(null, host)} /> },
     { id: "subagents", label: "Sub-agents", content: <SubagentsPanelV2 key={`${session.accountId}:${formKey}`} onDirtyChange={setFormDirty} onBusyChange={setFormBusy} /> },
-    { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} memory={scheduledTaskMemoryAvailability(memoryData)} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} onSignInAgain={signInAgain} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
+    { id: "scheduled", label: "Automations", content: <ScheduledTasksPanel key={session.accountId} accountId={session.accountId} catalog={composer.catalog} onBusyChange={setFormBusy} onOpenChat={openArtifactChat} onSignInAgain={signInAgain} workspace={scheduledTaskWorkspaceAvailability(composer.workspace)} /> },
     {
       id: "mcp",
       label: "MCP servers",

@@ -49,17 +49,15 @@ export async function openPersonalChatMessage(input: Readonly<{
   }
 }
 
-/** Which deep link could not be opened: the one-shot Memory source marker,
- * an addressed chat message, or the version of the chat that holds it. */
-export type PersonalChatDeepLinkTarget = "memory_source" | "message" | "message_version";
+/** Which deep link could not be opened: an addressed chat message, or the version of the chat that holds it. */
+export type PersonalChatDeepLinkTarget = "message" | "message_version";
 
 /** A linked message is shown, gone, or held by a version of the chat that could not be shown. */
 export type PersonalChatDeepLinkReveal = boolean | "version_unavailable";
 
 /**
  * Anchors `/c/<chat>?message=<id>` once the route owner has opened that
- * personal chat and loaded its thread, and consumes the one-shot
- * `?memorySource=unavailable` marker. `revealMessage` shows the version of
+ * personal chat and loaded its thread. `revealMessage` shows the version of
  * the chat that holds the message. A message that cannot be revealed is
  * dropped from the address; the caller chooses the privacy-neutral response.
  */
@@ -83,12 +81,6 @@ export function usePersonalChatDeepLink({
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    if (url.searchParams.get("memorySource") === "unavailable") {
-      url.searchParams.delete("memorySource");
-      replaceCurrentUrl(url);
-      onUnavailable("memory_source");
-      return;
-    }
     const rawMessageId = url.searchParams.get("message");
     const route = parseChatRoutePath(url.pathname);
     if (!route?.chatId || activeChatId !== route.chatId) {

@@ -3,7 +3,6 @@ import { FETCH_URL_PROXY_FAILURE_CODES } from "@/lib/contracts/fetchUrlActivity"
 import type { RunEventView } from "@/lib/contracts/runs";
 import { MCP_AUTO_DISCOVERY_UNAVAILABLE_CODE, RUN_INTERRUPTED_FAILURE, RUN_PREPARATION_FAILURE_MESSAGE, RUN_TIME_LIMIT_FAILURE, TOOL_SYNTHESIS_FAILURE } from "@/lib/contracts/runs";
 import { CHAT_PDF_READER_OUTPUT_LIMIT } from "@/lib/contracts/chatPdfPreparation";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { ThreadToolActivity } from "@/lib/contracts/chats";
 import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import {
@@ -564,7 +563,7 @@ describe("run lifecycle v2 presentation", () => {
     // Specific work keeps its own words; settled answers keep their factual line.
     expect(presentRunLifecycleV2(state({ events: [summary({ stage: "files", status: "running" })], runId: runIds[0]!,
       status: "streaming" })).activity?.label).toBe("Reading files…");
-    expect(answerProcessLabelV2({ hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000 })).toBe("Thought for 12s");
+    expect(answerProcessLabelV2({ hasReasoning: true, stepCount: 0, workDurationMs: 12_000 })).toBe("Thought for 12s");
   });
 
   it.each([
@@ -963,7 +962,6 @@ describe("run lifecycle v2 presentation", () => {
   });
 
   it("shows the server-written neutral text exactly as the live neutralization does", () => {
-    expect(memoryUiCopy("answer.preparationFailed")).toBe(RUN_PREPARATION_FAILURE_MESSAGE);
     const persisted = presentRunLifecycleV2(state({
       failure: { message: RUN_PREPARATION_FAILURE_MESSAGE }, status: "error"
     }));
@@ -998,28 +996,25 @@ describe("answer process label", () => {
 
   it("names only the facts that exist and never counts tool calls", () => {
     expect(answerProcessLabelV2({
-      hasReasoning: false, memoryCount: 0, stepCount: 0, workDurationMs: 8_000
+      hasReasoning: false, stepCount: 0, workDurationMs: 8_000
     })).toBeNull();
     expect(answerProcessLabelV2({
-      hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: 12_000
+      hasReasoning: true, stepCount: 0, workDurationMs: 12_000
     })).toBe("Thought for 12s");
     expect(answerProcessLabelV2({
-      hasReasoning: true, memoryCount: 2, stepCount: 3, workDurationMs: 8_000
+      hasReasoning: true, stepCount: 3, workDurationMs: 8_000
     })).toBe("Worked for 8s");
     expect(answerProcessLabelV2({
-      hasReasoning: true, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: null
+      hasReasoning: true, pastChatCount: 1, stepCount: 0, workDurationMs: null
     })).toBe("Thought process");
     expect(answerProcessLabelV2({
-      hasReasoning: false, memoryCount: 2, pastChatCount: 1, stepCount: 0, workDurationMs: 8_000
-    })).toBe("Past chats · 1 · Memory · 2");
+      hasReasoning: false, pastChatCount: 2, stepCount: 0, workDurationMs: 8_000
+    })).toBe("Past chats · 2");
     expect(answerProcessLabelV2({
-      hasReasoning: false, memoryCount: 1, stepCount: 0, workDurationMs: null
-    })).toBe("Memory · 1");
-    expect(answerProcessLabelV2({
-      hasReasoning: false, memoryCount: 0, stepCount: 2, workDurationMs: null
+      hasReasoning: false, stepCount: 2, workDurationMs: null
     })).toBe("Steps");
     expect(answerProcessLabelV2({
-      hasReasoning: true, memoryCount: 0, stepCount: 0, workDurationMs: null
+      hasReasoning: true, stepCount: 0, workDurationMs: null
     })).toBe("Thought process");
   });
 

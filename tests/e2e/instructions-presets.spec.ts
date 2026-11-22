@@ -26,9 +26,8 @@ for (const viewport of [{ width: 1280, height: 800, theme: "dark" }, { width: 39
     } } } });
     await prisma.$transaction(tx => provisionActiveUser(tx, { userId }));
     await prisma.accessGrant.create({ data: { userId, providerModelId: providerTemplateIds.fakeModel } });
-    await prisma.userMemorySettings.update({ where: { userId }, data: { useMemoryFacts: false, referenceChatHistory: false, learnAutomatically: false } });
     // The Fake QSA window cannot hold the Workspace context a Workspace default adds to the first message.
-    await prisma.userSettings.update({ where: { userId }, data: { defaultWorkspaceEnabled: false } });
+    await prisma.userSettings.update({ where: { userId }, data: { defaultWorkspaceEnabled: false, memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false } });
     let pageErrors = 0; page.on("pageerror", () => pageErrors++);
     try {
       await page.setViewportSize(viewport);

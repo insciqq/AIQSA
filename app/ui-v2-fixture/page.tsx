@@ -133,7 +133,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
         "complete",
         "computer",
         "empty",
-        "memory",
+        "past-chats",
         "reasoning",
         "research"
       ] as const,
@@ -154,7 +154,7 @@ async function renderFixture(query: UiV2FixtureQuery) {
   if (query.fixture === "library") {
     const state = fixtureState(
       query.state,
-      ["all-sections", "assistants", "dirty", "files", "memory", "memory-disabled", "skills"] as const,
+      ["all-sections", "assistants", "dirty", "files", "memory", "skills"] as const,
       "assistants"
     );
     const { LibraryV2Gallery } = await import("./_fixtures/LibraryV2Gallery");

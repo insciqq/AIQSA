@@ -9,11 +9,13 @@ import { SectionHeading } from "@/features/library-v2/LibraryV2";
 import { useSettingsEscapeStep } from "@/features/library-v2/settingsEscape";
 import type { Catalog } from "@/lib/contracts/catalog";
 import { scheduledTaskSignInHost, type ScheduledTask, type ScheduledTaskRun } from "@/lib/contracts/scheduledTasks";
+import { readMemorySwitches } from "@/features/settings-v2/memoryNoteApi";
 import { ScheduledTaskSheet, type ScheduledTaskRecentRuns } from "./ScheduledTaskSheet";
 import {
   blankScheduledTaskDraft,
   scheduledTaskCreateRequest,
   scheduledTaskDraftFromTask,
+  scheduledTaskMemoryAvailability,
   scheduledTaskUpdateRequest,
   validateScheduledTaskDraft,
   type ScheduledTaskEditorDraft,
@@ -148,7 +150,6 @@ function webhookTurnedOn(saved: ScheduledTask, original: ScheduledTask | null): 
 export function ScheduledTasksPanel({
   accountId,
   catalog,
-  memory = "unknown",
   onBusyChange,
   onOpenChat,
   onSignInAgain,
@@ -156,8 +157,6 @@ export function ScheduledTasksPanel({
 }: Readonly<{
   accountId: string;
   catalog: Catalog | null;
-  /** Whether the owner's Memory lets runs read anything, from the shell's own Memory settings read. */
-  memory?: ScheduledTaskMemoryAvailability;
   onBusyChange?(busy: boolean): void;
   onOpenChat(chatId: string): Promise<void> | void;
   /**
@@ -185,6 +184,9 @@ export function ScheduledTasksPanel({
   const setNotice = (text: string | null, runningTaskId: string | null = null) =>
     setNoticeState(text === null ? null : { runningTaskId, text });
   const [retrying, setRetrying] = useState(false);
+  // Whether the owner's Memory lets runs read anything; read each time the panel opens, so a switch changed in
+  // Settings › Memory shows here. A failed read says nothing beyond the task's own switch.
+  const [memory, setMemory] = useState<ScheduledTaskMemoryAvailability>("unknown");
   const pending = useRef(false);
   const active = useRef(true);
   const editorEpoch = useRef(0);
@@ -205,7 +207,11 @@ export function ScheduledTasksPanel({
     active.current = true;
     activateScheduledTasksAccount(accountId);
     void refreshScheduledTasks();
-    return () => { active.current = false; };
+    const controller = new AbortController();
+    readMemorySwitches(controller.signal).then((switches) => {
+      if (!controller.signal.aborted) setMemory(scheduledTaskMemoryAvailability(switches));
+    }, () => undefined);
+    return () => { active.current = false; controller.abort(); };
   }, [accountId]);
   useEffect(() => { onBusyChange?.(busy); return () => onBusyChange?.(false); }, [busy, onBusyChange]);
   useEffect(() => {

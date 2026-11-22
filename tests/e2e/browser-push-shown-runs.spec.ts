@@ -76,8 +76,7 @@ test("an answer completed on screen skips this device's push; one completed whil
     settings: { create: { browserNotificationsEnabled: true, defaultProviderModelId: fakeModel.id, defaultMcpMode: "off",
       defaultSearchPlan: { mode: "all_selected", optionIds: [] }, defaultSkillsMode: "off", defaultWorkspaceEnabled: false } }
   } });
-  await prisma.userMemorySettings.update({ where: { userId: user.id }, data: {
-    learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false } });
+  await prisma.userSettings.update({ where: { userId: user.id }, data: { memoryEnabled: false, memorySuggestionsEnabled: false, pastChatSearchEnabled: false } });
   const ecdh = createECDH("prime256v1");
   ecdh.generateKeys();
   const endpoint = `https://push.invalid/aiqsa-e2e-${id}`;

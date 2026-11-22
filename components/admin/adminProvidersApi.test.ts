@@ -196,12 +196,20 @@ describe("admin provider browser API", () => {
     })).toContain("utility model role: 1");
   });
 
+  it("leaves the old Memory role of a stored result unnamed", () => {
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
+      roles: [{ role: "memory", missingParameters: [] }, { role: "system_model", missingParameters: [] }] }))
+      .toBe("Its check failed, so System model is paused until a check passes. Restore the previous settings or run the check again.");
+    expect(adminProviderErrorMessage({ blockers: [], code: "provider_model_check_failed_roles", resourceIds: [],
+      roles: [{ role: "memory", missingParameters: [] }] })).not.toMatch(/Memory|undefined/u);
+  });
+
   it("names the installation roles a refused routing change or failed check affects", () => {
     expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_incompatible", resourceIds: [],
-      roles: [{ role: "memory", missingParameters: ["response_format", "structured_outputs"] },
+      roles: [{ role: "chat_titles", missingParameters: ["response_format", "structured_outputs"] },
         { role: "system_model", missingParameters: ["tools"] }] }))
-      .toBe("Memory and System model use this model and need structured output and tool calling, which the selected providers do not support. " +
-        "Choose Automatic or providers that support it, or assign Memory and System model to another model first.");
+      .toBe("Chat titles and System model use this model and need structured output and tool calling, which the selected providers do not support. " +
+        "Choose Automatic or providers that support it, or assign Chat titles and System model to another model first.");
     expect(adminProviderErrorMessage({ blockers: [], code: "provider_routing_role_unverified", resourceIds: [],
       roles: [{ role: "chat_titles", missingParameters: [] }] }))
       .toBe("Chat titles uses this model, and OpenRouter could not confirm that the selected providers support it. Check the default key and try again, or choose Automatic.");

@@ -16,8 +16,7 @@ describe("MemoryResumeConfirmationDialog", () => {
     );
 
     const dialog = screen.getByRole("dialog", { name: "Resume Memory for Planning notes" });
-    expect(dialog).toHaveTextContent("Only new messages sent after you resume");
-    expect(dialog).toHaveTextContent("Earlier excluded messages are not added back");
+    expect(dialog).toHaveTextContent("Past-chat search can find this chat again");
     expect(onConfirm).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole("button", { name: "Keep excluded" })).toHaveFocus());
 

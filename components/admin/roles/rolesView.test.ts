@@ -24,7 +24,6 @@ const fallback = { ...reranker, displayName: "Cohere 4 Pro", id: "cohere" };
 
 function catalog(overrides: Partial<AdminSystemModelPolicyCatalog["policy"]> = {}): AdminSystemModelPolicyCatalog {
   return {
-    memoryPolicy: { assignmentSource: "unassigned", model: null, reasoningEffort: null, version: 1 },
     candidates: [ready],
     titleCandidates: [], documentCandidates: [],
     ineligible: { chat_titles: [],
@@ -70,7 +69,7 @@ describe("rolesView", () => {
     expect(swapped(checks)).toBe(label(checks));
   });
 
-  it("groups Memory candidates from the server's eligibility lists without client guesses", () => {
+  it("groups System model candidates from the server's eligibility lists without client guesses", () => {
     expect(generativeRoleItems(catalog(), "memory")).toMatchObject([
       { group: "ready", id: "luna", label: "OpenAI / GPT Luna" },
       { group: "check", id: "terra", label: "OpenAI / GPT Terra" },

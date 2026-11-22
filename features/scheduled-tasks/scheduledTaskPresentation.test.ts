@@ -478,13 +478,10 @@ describe("scheduled task Memory in drafts", () => {
       catalog, null, now)).toEqual({});
   });
 
-  it("reads the owner's Memory state from the shell's settings", () => {
+  it("reads the owner's Memory state from the Memory switches", () => {
     expect(scheduledTaskMemoryAvailability(null)).toBe("unknown");
-    expect(scheduledTaskMemoryAvailability({ status: "PAUSED" })).toBe("paused");
-    expect(scheduledTaskMemoryAvailability({ status: "NEEDS_ADMIN_SETUP" })).toBe("needs_setup");
-    for (const status of ["ON", "PREPARING", "UNAVAILABLE"] as const) {
-      expect(scheduledTaskMemoryAvailability({ status })).toBe("available");
-    }
+    expect(scheduledTaskMemoryAvailability({ memoryEnabled: false })).toBe("off");
+    expect(scheduledTaskMemoryAvailability({ memoryEnabled: true })).toBe("available");
   });
 });
 

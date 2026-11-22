@@ -1,9 +1,8 @@
-import { decodePreparingRunAdmission } from "@/lib/contracts/runs";
+import { decodePreparingRunAdmission, RUN_PREPARATION_FAILURE_MESSAGE } from "@/lib/contracts/runs";
 import {
   errorMessage,
   responseErrorMessageDetails
 } from "@/components/app-shell/shellFormatting";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import { useRunLifecycleStore } from "@/components/app-shell/runLifecycleStore";
 import { useRunSurfaceStore } from "@/components/app-shell/runSurfaceStore";
 import { useThreadStore } from "@/components/app-shell/threadStore";
@@ -266,7 +265,7 @@ export async function executeMessageRunLifecycle({
       // A Memory admission refusal keeps its code for reconciliation, but the
       // user sees neutral copy instead of a raw `memory_` code.
       const message = details.code?.startsWith("memory_")
-        ? memoryUiCopy("answer.preparationFailed")
+        ? RUN_PREPARATION_FAILURE_MESSAGE
         : details.message;
       rejectionMessage = message;
       userFacingFailureMessage = details.preserveForComposer ? message : null;

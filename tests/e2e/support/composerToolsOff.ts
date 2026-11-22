@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { expect, type Page } from "@playwright/test";
 import { chooseSearchStrategy, engageComposer } from "../shell/composer";
@@ -7,7 +6,7 @@ import { disableMemoryRecall } from "./workspace";
 /**
  * A composer turn with as few tools as the composer offers, chosen through
  * its own chips: MCP off, Skills off and Search off (when the installation
- * offers Search), with Memory recall off. Workspace has no switch any more
+ * offers Search), with Memory off. Workspace has no switch any more
  * (ambient since 2026-10-20): it joins every turn of a tool-calling model
  * while the installation offers it. On a real model this keeps a bounded
  * paid turn to one plain answer.
@@ -36,13 +35,12 @@ export async function turnComposerToolsOff(page: Page): Promise<void> {
   if (await search.isVisible() && await search.getAttribute("data-quiet") === null) await chooseSearchStrategy(page, "Off");
 }
 
-/** Reads the account's chat defaults (model included) and Memory recall; the returned function restores them. */
+/** Reads the account's chat defaults (model included) and Memory switches; the returned function restores them. */
 export async function snapshotComposerDefaults(prisma: PrismaClient, userId: string): Promise<() => Promise<void>> {
+  // The Memory switches are plain columns of the same row, restored with the defaults.
   const settings = await prisma.userSettings.findUnique({ where: { userId }, select: {
-    defaultMcpMode: true, defaultProviderModelId: true, defaultSearchPlan: true, defaultSkillsMode: true, defaultWorkspaceEnabled: true
-  } });
-  const memory = await prisma.userMemorySettings.findUnique({ where: { userId }, select: {
-    learnAutomatically: true, referenceChatHistory: true, useMemoryFacts: true
+    defaultMcpMode: true, defaultProviderModelId: true, defaultSearchPlan: true, defaultSkillsMode: true, defaultWorkspaceEnabled: true,
+    memoryEnabled: true, memorySuggestionsEnabled: true, pastChatSearchEnabled: true
   } });
   return async () => {
     if (settings) {
@@ -51,17 +49,5 @@ export async function snapshotComposerDefaults(prisma: PrismaClient, userId: str
         defaultSearchPlan: settings.defaultSearchPlan === null ? Prisma.DbNull : settings.defaultSearchPlan as Prisma.InputJsonValue
       } });
     }
-    if (memory) restoreMemoryToggles(userId, memory);
   };
-}
-
-type MemoryToggles = Readonly<{ learnAutomatically: boolean; referenceChatHistory: boolean; useMemoryFacts: boolean }>;
-
-/** Through the product's settings repository, as the settings route patches
- * them: a resumed toggle closes its open MemoryPauseInterval, which a raw row
- * update would leave open and make the next pause fail its unique scope. The
- * repository runs in its own `tsx` process (`./restoreMemoryToggles.ts`). */
-function restoreMemoryToggles(userId: string, memory: MemoryToggles): void {
-  execFileSync(process.execPath, ["--import", "tsx", "tests/e2e/support/restoreMemoryToggles.ts", userId, JSON.stringify(memory)],
-    { stdio: "pipe" });
 }

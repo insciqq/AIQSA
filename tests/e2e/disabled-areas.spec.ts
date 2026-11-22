@@ -134,16 +134,15 @@ test.describe("desktop", () => {
     await shot(page, testInfo, "settings-chat-defaults-desktop");
   });
 
-  test("Control Center offers the native Anthropic tile and names its retrieval page Memory", async ({ page }, testInfo) => {
+  test("Control Center offers the native Anthropic tile and has no Knowledge or old Memory page", async ({ page }, testInfo) => {
     await signInWithLocalToken(page);
     await page.goto("/admin?section=providers");
     await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers", { timeout: 30_000 });
 
-    const retrieval = page.getByTestId("admin-nav-retrieval");
-    await expect(retrieval).toBeVisible();
-    await expect(retrieval).toContainText("Memory");
-    await expect(retrieval).not.toContainText("Knowledge");
-    await expect(page.getByTestId("admin-section-index").getByRole("link", { name: /Knowledge/u })).toHaveCount(0);
+    await expect(page.getByTestId("admin-nav-providers")).toBeVisible();
+    // The old Memory page went with the old Memory; its address opens Defaults & roles.
+    await expect(page.getByTestId("admin-nav-retrieval")).toHaveCount(0);
+    await expect(page.getByTestId("admin-section-index").getByRole("link", { name: /Knowledge|^Memory$/u })).toHaveCount(0);
 
     await page.getByTestId("provider-add").click();
     const sheet = page.getByRole("dialog", { name: "Add provider" });

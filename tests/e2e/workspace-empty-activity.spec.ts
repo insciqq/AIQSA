@@ -22,7 +22,7 @@ for (const viewport of [
   { width: 390, height: 844, theme: "light" },
   { width: 844, height: 390, theme: "dark" }
 ] as const) {
-  test(`empty Workspace settlement preserves ordinary Memory disclosure at ${viewport.width}px`, async ({ page, context }, testInfo) => {
+  test(`empty Workspace settlement preserves the ordinary Past chats disclosure at ${viewport.width}px`, async ({ page, context }, testInfo) => {
     await page.setViewportSize(viewport);
     await context.addCookies([{ name: "aiqsa.theme", value: viewport.theme, url: testInfo.project.use.baseURL! }]);
     await installMatrixCatalogFixture(page, { folders: [], chats: [chat] });
@@ -56,14 +56,9 @@ for (const viewport of [
         createdAt: timestamp, content: "Here is the concise answer.", errorMessage: null,
         citationMessageId: null, modelId: "gpt-5.5", modelRunId: runId, provider: "openai",
         workspaceActivity: { entries: [closed], outputStatus: { state: "complete", revision: timestamp } },
-        artifactSummary: { citations: [], sources: [], reasoningText: [], memorySources: [{
-          actions: ["CORRECT", "FORGET", "NOT_RELEVANT"], date: timestamp,
-          memoryRef: "opaque-fixture-fact", sourceAvailable: true, sourceType: "SAVED_MEMORY",
-          text: "Prefer concise answers."
-        }, {
-          actions: ["CORRECT", "FORGET", "NOT_RELEVANT", "OPEN_SOURCE"], date: timestamp,
-          memoryRef: "opaque-fixture-history", sourceAvailable: true, sourceType: "PAST_CHAT",
-          chatGroup: "chat-1", origin: "Earlier discussion", text: "User: Keep the explanation brief."
+        artifactSummary: { citations: [], sources: [], reasoningText: [], pastChatSources: [{
+          chatId: "chat-1", chatTitle: "Earlier discussion", date: timestamp,
+          excerpt: "Keep the explanation brief.", messageId: "earlier-message"
         }] }
       }]
     }] });
@@ -72,14 +67,13 @@ for (const viewport of [
     await page.reload();
     const process = page.getByTestId("tool-activity-disclosure");
     const summary = process.locator(":scope > summary");
-    await expect(summary).toContainText("Past chats · 1 · Memory · 1");
+    await expect(summary).toHaveText("Past chats · 1");
     await expect(page.getByTestId("workspace-activity-section")).toHaveCount(0);
     await expect(page.getByText(/Worked in Workspace|Workspace execution ended/)).toHaveCount(0);
     await summary.focus();
     await page.keyboard.press("Enter");
     await expect(process).toHaveAttribute("open");
-    await expect(page.getByTestId("memories-disclosure")).toBeVisible();
-    await expect(page.getByTestId("past-chats-disclosure")).toBeVisible();
+    await expect(page.getByTestId("past-chat-sources")).toBeVisible();
     await expectNoHorizontalOverflow(page);
     await page.locator(".v2-conversation-scroll").evaluate(node => node.scrollTo({ top: 0 }));
     await page.screenshot({ path: testInfo.outputPath("unused-workspace-reloaded.png") });

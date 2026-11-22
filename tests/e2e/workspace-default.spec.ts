@@ -54,7 +54,7 @@ test("uses Workspace in interactive chats even when the saved default and the ch
     await page.screenshot({ path: testInfo.outputPath("workspace-ambient.png") });
     expect(pageErrors).toEqual([]);
   } finally {
-    // Deferred Memory source guards must observe the complete fixture deletion.
+    // The fixture rows go in the order their keys require.
     await prisma.$transaction([
       prisma.modelRun.deleteMany({ where: { userId: { in: userIds } } }),
       prisma.chat.updateMany({ where: { userId: { in: userIds } }, data: { activeLeafMessageId: null } }),

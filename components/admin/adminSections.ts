@@ -37,7 +37,6 @@ export type AdminSectionId =
   | "overview"
   | "providers"
   | "proxies"
-  | "retrieval"
   | "roles"
   | "search"
   | "sign-in"
@@ -70,7 +69,6 @@ export const adminSections = [
   { Icon: Boxes, group: "models", id: "providers", label: "Providers" },
   { Icon: Sparkles, group: "models", id: "roles", label: "Defaults & roles" },
   { Icon: Search, group: "models", id: "search", label: "Search" },
-  { Icon: BookOpenText, group: "models", id: "retrieval", label: "Memory" },
   { Icon: Users, group: "people", id: "users", label: "Users" },
   { Icon: Layers, group: "people", id: "groups", label: "Groups" },
   { Icon: Wallet, group: "people", id: "limits", label: "Budgets & limits" },
@@ -89,12 +87,16 @@ export const adminSections = [
   { Icon: BarChart3, group: "platform", id: "usage", label: "Usage" }
 ] as const satisfies readonly AdminSection[];
 
-/** Section ids that existed before the Control Center redesign; links from chat and bookmarks still use them. */
+/**
+ * Section ids that existed before; links from chat and bookmarks still use them. The Memory page (`retrieval`) went
+ * with the old Memory: the past-chat embedding role it pointed to lives in Defaults & roles.
+ */
 const legacyAdminSections: Readonly<Record<string, AdminSectionId>> = {
   access: "groups",
   invites: "users",
-  knowledge: "retrieval",
-  memory: "retrieval",
+  knowledge: "roles",
+  memory: "roles",
+  retrieval: "roles",
   safety: "users",
   "system-models": "roles"
 };

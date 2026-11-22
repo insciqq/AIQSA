@@ -18,7 +18,6 @@ import { AdminMcpSection } from "@/components/admin/mcp/AdminMcpSection";
 import { AdminSkillsSection } from "@/components/admin/skills/AdminSkillsSection";
 import { AdminOverviewSection } from "@/components/admin/AdminOverviewSection";
 import { AdminProvidersSection } from "@/components/admin/providers/AdminProvidersSection";
-import { AdminRetrievalSection } from "@/components/admin/retrieval/AdminRetrievalSection";
 import { AdminRolesSection } from "@/components/admin/roles/AdminRolesSection";
 import { AdminSearchSection } from "@/components/admin/search/AdminSearchSection";
 import { AdminSignInSection } from "@/components/admin/signIn/AdminSignInSection";
@@ -35,7 +34,7 @@ import { AdminSignupRulesSection } from "@/components/admin/users/AdminSignupRul
 import { AdminWorkspaceSection } from "@/components/admin/AdminWorkspaceSection";
 import { AdminConnectSection } from "@/components/admin/AdminConnectSection";
 import { AdminProxiesSection } from "@/components/admin/AdminProxiesSection";
-import type { AdminSectionId } from "@/components/admin/adminSections";
+import { resolveAdminSectionId, type AdminSectionId } from "@/components/admin/adminSections";
 import { useAdminAccessRulesController, type AdminAccessRulesController } from "@/components/admin/useAdminAccessRulesController";
 import { useAdminActionRunner } from "@/components/admin/useAdminActionRunner";
 import { useAdminAttention } from "@/components/admin/useAdminAttention";
@@ -183,13 +182,6 @@ function AdminSectionContent({
           onSelectResource={navigation.selectResource}
           requestConfirmation={requestConfirmation}
           resource={navigation.activeResource}
-        />
-      );
-    case "retrieval":
-      return (
-        <AdminRetrievalSection
-          reportNotice={reportNotice}
-          requestConfirmation={requestConfirmation}
         />
       );
     case "users":
@@ -376,8 +368,9 @@ export function AdminPanel({ accountLabel, adminEmail, adminUserId, returnPath =
     const hasResourcePages = target.section === "providers" || target.section === "search" ||
       target.section === "users" || target.section === "groups" || target.section === "mcp" || target.section === "roles" ||
       target.section === "skills" || target.section === "assistants";
+    // A target naming a section that no longer exists lands where its content moved.
     selectSection(
-      target.section,
+      resolveAdminSectionId(target.section),
       hasResourcePages ? target.resource ?? null : null,
       target.section === "users" || target.section === "skills" || target.section === "assistants" ? target.filter ?? null : null
     );

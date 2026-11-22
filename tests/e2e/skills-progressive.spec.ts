@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
-import { memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction } from "./shell/page";
 import { e2eAssistantRows } from "./support/assistants";
@@ -192,7 +191,6 @@ test("a settled load can pin an authorized Skill for the next turn without chang
     await installMatrixCatalogFixture(page, { folders: [], chats: [{ id: chatId, title: "Progressive Skills activity", messages,
       activeLeafMessageId: "skill-answer", createdAt: timestamp, updatedAt: timestamp, defaultModelId: "gpt-5.5",
       defaultProvider: "openai", folderId: null, pinned: false, messageCount: messages.length, usageStats: null }] });
-    await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture() }));
     await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [] } }));
     await page.goto(`/c/${chatId}`);
     await page.getByRole("button", { name: "Change Skills mode" }).click();

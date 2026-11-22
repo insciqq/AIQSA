@@ -26,16 +26,12 @@ function permissionCopy(app: MemoryMcpConnectedApp) {
     label: "MCP Hub", retained: "MCP connections retained",
     revoked: "MCP Hub access revoked. Your MCP connections were kept."
   };
-  if (app.capability === "skills:store") return {
+  return {
     label: app.scopes?.includes("skills:write")
       ? "Skills · read, download, create, update, and delete"
       : "Skills · read and download",
     retained: "Stored Skills and local copies retained",
     revoked: "Skills access revoked. Your stored Skills and downloaded copies were kept."
-  };
-  return {
-    label: "Personal Memory", retained: "Memory retained",
-    revoked: "Personal Memory access revoked. Stored Memory facts were kept."
   };
 }
 
@@ -99,7 +95,7 @@ export function ConnectedAppsSection({
         <div className="mt-4 text-xs leading-5 text-ink-secondary">
           <p className="flex items-start gap-2">
             <ShieldCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-            <span>Revoking access stops future calls. Your stored Skills, MCP connections, and Memory facts remain. Downloaded Skills stay on the agent&apos;s device.</span>
+            <span>Revoking access stops future calls. Your stored Skills and MCP connections remain. Downloaded Skills stay on the agent&apos;s device.</span>
           </p>
         </div>
 

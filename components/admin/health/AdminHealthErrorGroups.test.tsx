@@ -5,8 +5,8 @@ import { AdminHealthErrorGroups } from "./AdminHealthErrorGroups";
 
 function group(overrides: Partial<AdminHealthErrorGroup> = {}): AdminHealthErrorGroup {
   return {
-    fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/memory/coordinator/workerProcess.ts:51", count: 12,
-    events: ["job_attempt"], roles: ["memory_coordinator"], codes: ["memory_job_failed"],
+    fingerprint: "0123456789ab", errorClass: "TypeError", site: "lib/server/background/worker.ts:51", count: 12,
+    events: ["job_attempt"], roles: ["workspace_runner"], codes: ["job_failed"],
     lastSeenAt: "2026-10-07T12:00:00.000Z", firstSeenAt: "2026-10-07T11:00:00.000Z", isNew: true,
     usersAtLeast: 40, runsAtLeast: 3,
     ...overrides
@@ -24,8 +24,8 @@ describe("AdminHealthErrorGroups", () => {
     expect(cards).toHaveLength(2);
     expect(within(cards[0]!).getByText("TypeError")).toBeVisible();
     expect(within(cards[0]!).getByText("New")).toBeVisible();
-    expect(within(cards[0]!).getByText("lib/server/memory/coordinator/workerProcess.ts:51")).toBeVisible();
-    expect(within(cards[0]!).getByText("job_attempt · memory_job_failed")).toBeVisible();
+    expect(within(cards[0]!).getByText("lib/server/background/worker.ts:51")).toBeVisible();
+    expect(within(cards[0]!).getByText("job_attempt · job_failed")).toBeVisible();
     expect(within(cards[1]!).queryByText("New")).toBeNull();
     expect(within(cards[1]!).getByText("Outside application code")).toBeVisible();
     expect(screen.getAllByTestId("admin-health-error-group-row")).toHaveLength(2);

@@ -10,8 +10,7 @@ type ConnectionState = { status: "loading" } | { status: "error" } | { status: "
 
 const CONNECTIONS = {
   hub: { label: "MCP Hub", description: "Find and use your enabled tools. Permitted tools may change data in connected services." },
-  skills: { label: "Personal Skills", description: "Download and install your Skills locally. You can separately allow creating, updating, and deleting your Skills." },
-  memory: { label: "Personal Memory", description: "Optional access to read, add, change, and delete your Memory facts. Your chat history is not shared." }
+  skills: { label: "Personal Skills", description: "Download and install your Skills locally. You can separately allow creating, updating, and deleting your Skills." }
 } as const;
 
 export function McpHubConnection({ expanded = false }: Readonly<{ expanded?: boolean }>) {
@@ -101,7 +100,6 @@ export function McpHubConnection({ expanded = false }: Readonly<{ expanded?: boo
                   <select className="v2-settings-input" value={connection} onChange={(event) => setConnection(event.target.value as AgentConnection)}>
                     {state.hubEnabled ? <option value="hub">MCP Hub</option> : null}
                     <option value="skills">Personal Skills</option>
-                    <option value="memory">Personal Memory (optional)</option>
                   </select>
                 </label>
                 <p>Keep existing connections. Run these commands in your terminal if this AIQSA address is not already configured.</p>
@@ -111,8 +109,7 @@ export function McpHubConnection({ expanded = false }: Readonly<{ expanded?: boo
                   : "Complete sign-in in your browser, then start a new Codex session to discover its tools. Adding a connection may start sign-in automatically."}</p>
                 <p className="v2-agent-endpoint">HTTP MCP address: <code>{state.origin}{AGENT_CONNECTION_PATHS[connection]}</code></p>
                 {connection === "skills" ? <p>Read access is enough to install a Skill. The connection guide explains how to allow changes and transfer complete packages.</p>
-                  : connection === "hub" ? <p>Ask the agent to find a tool for your goal and use an appropriate returned tool. Available tools follow your current permissions and enabled connections.</p>
-                    : <p>Memory has its own permission; it is not needed for MCP Hub or Skills.</p>}
+                  : <p>Ask the agent to find a tool for your goal and use an appropriate returned tool. Available tools follow your current permissions and enabled connections.</p>}
               </div>
             </details>
           </>

@@ -54,13 +54,14 @@ describe("Agent onboarding", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Select and copy the address above."));
   });
 
-  it("offers Skills and optional Memory when the administrator disabled Hub", async () => {
+  it("offers only Skills when the administrator disabled Hub", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ origin: "https://canonical.example", hubEnabled: false })));
     render(<McpHubConnection expanded />);
     await screen.findByLabelText("Agent instructions");
     fireEvent.click(screen.getByText("Set up manually"));
     expect(screen.getByRole("combobox", { name: "Connection" })).toHaveValue("skills");
     expect(screen.queryByRole("option", { name: "MCP Hub" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Personal Skills"]);
     expect(screen.getByText(/claude mcp add/)).toHaveTextContent("/mcp/skills");
   });
 });

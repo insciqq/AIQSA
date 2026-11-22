@@ -220,7 +220,7 @@ export async function connectionSearchSource(
   return integration!;
 }
 
-/** A new chat outside Memory, so no Memory work follows the paid turn. */
+/** A new chat outside Memory, so past-chat search never indexes the paid turn. */
 export async function newExcludedChat(request: APIRequestContext, title: string): Promise<string> {
   const created = await request.post("/api/chats", { data: { title } });
   expect(created.ok()).toBe(true);

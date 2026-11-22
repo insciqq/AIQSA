@@ -50,10 +50,6 @@ import type {
   Notice,
   ThreadMessage
 } from "@/components/app-shell/types";
-import {
-  refreshMemorySettings
-} from "@/components/app-shell/memorySettingsStore";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
 import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData";
 import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
@@ -151,7 +147,6 @@ type MessageRunActionsInput = {
   currentModel: CatalogModel | undefined;
   fetchRun(runId: string, chatId: string, options?: { producer?: string }): Promise<unknown>;
   notifyAnswerReady(): Promise<void>;
-  openMemorySettings(): void;
   persistActiveLeaf(chatId: string, messageId: string | null): Promise<unknown>;
   primeAnswerSound(): Promise<void>;
   refreshActiveChat(
@@ -368,7 +363,6 @@ export function useMessageRunActions({
   currentModel,
   fetchRun,
   notifyAnswerReady,
-  openMemorySettings,
   persistActiveLeaf,
   primeAnswerSound,
   refreshActiveChat,
@@ -385,23 +379,6 @@ export function useMessageRunActions({
     if (code === "workspace_runtime_unavailable" || code === "workspace_disabled") {
       refreshWorkspaceAvailability?.();
     }
-  }
-
-  async function showMemoryTargetSelection(): Promise<void> {
-    try {
-      await refreshMemorySettings();
-    } catch {
-      // Copy is local and complete even when the settings refresh fails.
-    }
-    setNotice({
-      action: {
-        label: memoryUiCopy("action.manage"),
-        onClick: openMemorySettings
-      },
-      kind: "error",
-      persistent: true,
-      text: memoryUiCopy("action.ambiguous")
-    });
   }
 
   /** `withoutWorkspace` sends this one run without Workspace, after the user chose so on a refusal. */
@@ -786,9 +763,6 @@ export function useMessageRunActions({
     });
     await reconcileBranchConflict(chatId, result.failureCode);
     refreshWorkspaceAfterRefusal(result.failureCode);
-    if (result.failureCode === "memory_intent_confirmation_required") {
-      await showMemoryTargetSelection();
-    }
     if (isTemporaryChat(chatId)) {
       await reconcileTemporaryAdmission(chatId);
     }
@@ -1171,7 +1145,6 @@ export function useMessageRunActions({
     let sendFailureCode: string | null = null;
     let sendFailureMessage: string | null = null;
     let sendFailureLive = true;
-    let sendFailureHandled = false;
     let sendRejectionMessage: string | null = null;
     let sendRecoveries: ComposerOperationRecovery[] = [];
     let sendRunId: string | null = null;
@@ -1393,16 +1366,12 @@ export function useMessageRunActions({
         sendRejectionMessage = computerRefusal.copy;
         sendRecoveries = computerRefusal.recoveries;
       }
-      if (result.failureCode === "memory_intent_confirmation_required") {
-        sendFailureHandled = true;
-        await showMemoryTargetSelection();
-      }
       if (temporaryRun) {
         await reconcileTemporaryAdmission(chatIdForSend);
       }
     } catch (error) {
       const message = errorMessage(error);
-      if (sendOutcome === "failed" && sendRunId === null && !sendFailureHandled) {
+      if (sendOutcome === "failed" && sendRunId === null) {
         sendFailureMessage = message;
       } else {
         setNotice({ kind: "error", text: message });
@@ -1414,7 +1383,7 @@ export function useMessageRunActions({
       useComposerSessionStore.getState().finishSend(
         sendToken,
         sendOutcome,
-        sendOutcome === "failed" && !sendFailureHandled
+        sendOutcome === "failed"
           ? sendRejectionMessage ?? sendFailureMessage ?? refusedCopy
           : null,
         sendFailureLive,
@@ -1644,11 +1613,7 @@ export function useMessageRunActions({
       });
       await reconcileBranchConflict(chatIdForSend, result.failureCode);
       refreshWorkspaceAfterRefusal(result.failureCode);
-      if (result.failureCode === "memory_intent_confirmation_required") {
-        await showMemoryTargetSelection();
-      } else {
-        noticeRejectedRun(chatIdForSend, result);
-      }
+      noticeRejectedRun(chatIdForSend, result);
       if (temporaryRun) {
         await reconcileTemporaryAdmission(chatIdForSend);
       }
@@ -1967,11 +1932,7 @@ export function useMessageRunActions({
     });
     await reconcileBranchConflict(chatIdForRegenerate, result.failureCode);
     refreshWorkspaceAfterRefusal(result.failureCode);
-    if (result.failureCode === "memory_intent_confirmation_required") {
-      await showMemoryTargetSelection();
-    } else {
-      noticeRejectedRun(chatIdForRegenerate, result);
-    }
+    noticeRejectedRun(chatIdForRegenerate, result);
     if (isTemporaryChat(chatIdForRegenerate)) {
       await reconcileTemporaryAdmission(chatIdForRegenerate);
     }

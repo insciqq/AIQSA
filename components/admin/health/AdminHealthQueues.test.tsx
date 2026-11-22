@@ -15,7 +15,7 @@ function row(overrides: Partial<AdminHealthQueueRow>): AdminHealthQueueRow {
 const rows: AdminHealthQueueRow[] = [
   row({ queue: "attachment_processing", state: "stalled", waiting: 12, running: 1, oldestSeconds: 3 * 3_600 + 5 * 60, failed24h: 2 }),
   row({ queue: "chat_titles", state: "slow", waiting: 3, oldestSeconds: 11 * 60 }),
-  row({ queue: "memory", state: "ok", waiting: 0, oldestSeconds: null, failed24h: null, slowAfterSeconds: 900, stalledAfterSeconds: 3_600 }),
+  row({ queue: "scheduled_tasks", state: "ok", waiting: 0, oldestSeconds: null, failed24h: null, slowAfterSeconds: 900, stalledAfterSeconds: 3_600 }),
   row({ queue: "file_deletion", state: "unavailable", waiting: null, running: null, failed24h: null })
 ];
 
@@ -29,7 +29,7 @@ describe("AdminHealthQueues", () => {
   it("shows every queue with its plain-English name, state, counts and oldest age", () => {
     render(<AdminHealthQueues controller={controller()} />);
     const cards = screen.getAllByTestId("admin-health-queue-card");
-    expect(cards.map((card) => card.getAttribute("data-queue"))).toEqual(["attachment_processing", "chat_titles", "memory", "file_deletion"]);
+    expect(cards.map((card) => card.getAttribute("data-queue"))).toEqual(["attachment_processing", "chat_titles", "scheduled_tasks", "file_deletion"]);
 
     const stalled = within(cards[0]!);
     expect(stalled.getByText("Chat file processing")).toBeVisible();

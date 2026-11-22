@@ -41,7 +41,7 @@ const viewports = [
 ] as const;
 
 type SnapshotTool = { definitionHash: string; originalName: string; serverId: string };
-type MemoryRecall = Record<"learnAutomatically" | "referenceChatHistory" | "useMemoryFacts", boolean>;
+type MemoryRecall = Record<"memoryEnabled" | "memorySuggestionsEnabled" | "pastChatSearchEnabled", boolean>;
 
 /** Sends one Load all message; returns the accepted run's chat and its frozen tools of one server. */
 async function sendWithLoadAll(page: Page, userId: string, serverId: string, question: string) {
@@ -112,15 +112,15 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
     await signInWithLocalToken(page);
     // Load all is chosen for these chats only, not as the account's default.
     await keepAccountMcpDefault(page);
-    // Recalled past chats would also count against the 8k fake model. Memory is
-    // not under test; the account's recall settings are restored afterwards.
-    const memory = await page.request.get("/api/me/memory/settings");
+    // A note or found past chats would also count against the 8k fake model. Memory is
+    // not under test; the account's Memory switches are restored afterwards.
+    const memory = await page.request.get("/api/me/memory/preferences");
     if (memory.ok()) {
-      const { settings } = await memory.json() as { settings: MemoryRecall };
+      const switches = await memory.json() as MemoryRecall;
       memoryRecall = {
-        learnAutomatically: settings.learnAutomatically,
-        referenceChatHistory: settings.referenceChatHistory,
-        useMemoryFacts: settings.useMemoryFacts
+        memoryEnabled: switches.memoryEnabled,
+        memorySuggestionsEnabled: switches.memorySuggestionsEnabled,
+        pastChatSearchEnabled: switches.pastChatSearchEnabled
       };
     }
     await disableMemoryRecall(page);
@@ -263,7 +263,7 @@ test("MCP tools changed on the server stay unavailable with a reason until Test 
     await page.goto("about:blank").catch(() => undefined);
     for (const chatId of chatIds) await deleteOwnedChatPermanently(page.request, chatId).catch(() => undefined);
     if (serverId) await page.request.delete(`/api/admin/mcp/${serverId}`).catch(() => undefined);
-    if (memoryRecall) await page.request.patch("/api/me/memory/settings", { data: memoryRecall }).catch(() => undefined);
+    if (memoryRecall) await page.request.patch("/api/me/memory/preferences", { data: memoryRecall }).catch(() => undefined);
     await endpoint.close();
   }
 });

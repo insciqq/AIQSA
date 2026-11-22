@@ -21,6 +21,8 @@ vi.mock("./adminProvidersApi", () => ({
   createAdminProviderModel: api.createModel,
   discoverAdminCompatibleModels: api.discoverCompatibleModels,
   getAdminProviderConnections: api.getConnections,
+  // As the real one: a stored legacy role without a name is left out.
+  namedAssignedRoles: <T extends { role: string }>(roles: readonly T[]) => roles.filter(({ role }) => role !== "memory"),
   renameAdminProviderModel: api.renameModel,
   saveAdminProviderModelMetadata: api.saveModelMetadata,
   runAdminProviderConnectionAction: api.runConnectionAction
@@ -167,13 +169,13 @@ describe("useAdminProvidersController", () => {
     const original = connection("connection-a", "Provider A");
     api.getConnections.mockResolvedValue({ ok: true, data: [original] });
     api.createModel.mockResolvedValue({ ok: true, data: { connectionId: original.id, modelId: "model-1", displayName: "M",
-      draftVersion: 1, saved: "configuration", publication: "active", checks: "failed", affectedRoles: ["memory"] } });
+      draftVersion: 1, saved: "configuration", publication: "active", checks: "failed", affectedRoles: ["system_model"] } });
     const { result } = renderHook(() => useAdminProvidersController(true));
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     await act(async () => {
       await expect(result.current.actions.saveModel(original.id, null, { configuration: { upstreamModelId: "m" }, displayName: "M" }))
         .resolves.toMatchObject({ ok: false, error: { code: "provider_model_check_failed_roles",
-          roles: [{ role: "memory", missingParameters: [] }] }, persistence: { receipt: { checks: "failed" } } });
+          roles: [{ role: "system_model", missingParameters: [] }] }, persistence: { receipt: { checks: "failed" } } });
     });
   });
 

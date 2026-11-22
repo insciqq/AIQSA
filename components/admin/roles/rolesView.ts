@@ -49,7 +49,6 @@ export function deploymentLabeller(
         ...(catalog.decisionCandidates ?? []),
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
-        ...(catalog.memoryPolicy.model ? [catalog.memoryPolicy.model] : []),
         ...(catalog.policy.chatTitleModel ? [catalog.policy.chatTitleModel] : []),
         ...(catalog.policy.researchResearcherModel ? [catalog.policy.researchResearcherModel] : []),
         ...(catalog.policy.researchVerifierModel ? [catalog.policy.researchVerifierModel] : []),

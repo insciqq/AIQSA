@@ -8,7 +8,7 @@ import { textMessageContent } from "../../lib/domain/content";
  * The Usage management view over a realistic synthetic installation: several
  * users and groups, a few models, daily chat and scheduled runs over two
  * months (so the previous window has data) and system work beside them: chat
- * titles and Memory processing with known prices, Memory search and Knowledge
+ * titles and Memory processing with known prices, past-chat search and Knowledge
  * indexing embeddings without one (Knowledge indexing is history from before
  * Knowledge was removed, which keeps its label). Screenshots cover every
  * layout and theme.
@@ -92,7 +92,7 @@ async function seed(): Promise<void> {
           provider: embeddingModel.provider, purpose: "knowledge_indexing", totalTokens: inputTokens, usageCompleteness: "PARTIAL",
           userId: person.id });
       }
-      // System work beside the answers: Memory search embeddings without a price, priced Memory processing and titles.
+      // System work beside the answers: past-chat search embeddings without a price, priced Memory processing and titles.
       if (count > 0) {
         const inputTokens = Math.round(200 + next() * 800);
         usage.push({ chatId, createdAt: new Date(now - day * DAY_MS - 2 * 60 * 60 * 1000), inputTokens,
@@ -173,7 +173,7 @@ test("usage analytics endpoint and CSV describe the seeded period", async ({ pag
   expect(usage.bySystemFunction.map((row) => row.purpose)).toEqual(
     expect.arrayContaining(["chat_title", "knowledge_indexing", "memory_processing", "memory_retrieval"]));
   const embedding = usage.bySystemModel.find((row) => row.purposes.includes("knowledge_indexing") && row.purposes.includes("memory_retrieval"));
-  expect(embedding, "the embedding model serves Knowledge indexing and Memory search").toBeDefined();
+  expect(embedding, "the embedding model serves Knowledge indexing and past-chat search").toBeDefined();
   // System models stay out of the models people chose; the answer models stay in.
   expect(usage.byModel.some((row) => row.provider === embedding!.provider && row.modelId === embedding!.modelId)).toBe(false);
   expect(usage.byModel.length).toBeGreaterThanOrEqual(models.length);
@@ -229,7 +229,7 @@ for (const viewport of [
       const system = section.getByTestId("admin-usage-system");
       const functions = system.getByTestId("admin-usage-system-functions");
       await functions.scrollIntoViewIfNeeded();
-      for (const label of ["Memory processing", "Chat titles", "Memory search", "Knowledge indexing"]) {
+      for (const label of ["Memory processing", "Chat titles", "Past-chat search", "Knowledge indexing"]) {
         await expect(functions.getByText(label, { exact: true })).toBeVisible();
       }
       await page.screenshot({ path: testInfo.outputPath("05-system-functions.png") });

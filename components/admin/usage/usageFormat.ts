@@ -42,7 +42,7 @@ export const USAGE_CATEGORY_META: Record<AdminUsageCategory, Readonly<{
   system: {
     color: "var(--v2-chart-4)",
     label: "System",
-    meaning: "Titles, summaries, Memory and checks by system models"
+    meaning: "Titles, summaries, past-chat search and checks by system models"
   }
 };
 
@@ -55,9 +55,11 @@ export const USAGE_SYSTEM_PURPOSE_LABELS: Record<AdminUsageSystemPurpose, string
   chat_vision: "Image analysis",
   chat_pdf: "PDF reading",
   skill_selection: "Skill selection",
+  // The old Memory's background work; kept readable for earlier usage.
   memory_processing: "Memory processing",
-  memory_indexing: "Memory indexing",
-  memory_retrieval: "Memory search",
+  // These purposes continue as past-chat search (operator decision 2026-11-22), so their history stays one line.
+  memory_indexing: "Past-chat search indexing",
+  memory_retrieval: "Past-chat search",
   knowledge_indexing: "Knowledge indexing",
   knowledge_retrieval: "Knowledge search",
   model_check: "Model checks",

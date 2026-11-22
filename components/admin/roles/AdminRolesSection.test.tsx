@@ -22,7 +22,6 @@ const cohere = { ...voyage, displayName: "Cohere 4 Pro", id: "cohere" };
 
 function rolesCatalog(): AdminSystemModelPolicyCatalog {
   return {
-    memoryPolicy: { assignmentSource: "inherited", model: { ...luna, available: true }, reasoningEffort: null, version: 7 },
     candidates: [luna],
     titleCandidates: [titleModel], documentCandidates: [],
     ineligible: { chat_titles: [],
@@ -92,19 +91,6 @@ function server(initialRoles = rolesCatalog(), initialModel = modelCatalog()) {
         };
       }
       if (method === "PATCH" && body) {
-        if (Object.hasOwn(body, "memoryProviderModelId")) {
-          if (body.expectedMemoryVersion !== roles.memoryPolicy.version) {
-            return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
-          }
-          const model = [...roles.candidates, ...roles.verificationCandidates].find((item) => item.id === body.memoryProviderModelId);
-          roles = { ...roles, memoryPolicy: {
-            ...roles.memoryPolicy,
-            assignmentSource: "operator", version: roles.memoryPolicy.version + 1,
-            model: model ? { ...model, available: true } : null,
-            reasoningEffort: body.memoryReasoningEffort as string | null
-          } };
-          return Response.json({ systemModelPolicy: roles });
-        }
         if (body.expectedVersion !== roles.policy.version) {
           return Response.json({ error: "system_model_policy_stale" }, { status: 409 });
         }
@@ -285,97 +271,21 @@ describe("AdminRolesSection", () => {
     await waitFor(() => expect(within(row).getByTestId("admin-role-vision-status")).toHaveTextContent("Not assigned"));
     expect(screen.getByTestId("admin-role-chat-pdf-status")).toHaveTextContent("Fallback ready");
   });
-  it("previews the qualified model and effort, applies only Memory and restores the previous choice with Undo", async () => {
-    const catalog = rolesCatalog();
-    catalog.memoryPolicy.recommendations = [{ id: "terra-low-memory-v1", modelName: "GPT Terra", displayName: "GPT Terra",
-      providerModelId: "terra", connectionId: "openai", reasoningEffort: "low", unavailableReason: null,
-      evidence: { revision: "working-cases", passedCases: 5, totalCases: 5, latencyP50Ms: 3300, latencyP95Ms: 13500 } }];
-    catalog.candidates.push({ ...terra, forcedToolCall: "verified", structuredOutput: "verified" });
-    const calls = server(catalog);
-    const { requestConfirmation, reportNotice } = renderSection();
-    const disclosure = await screen.findByText("Recommended models", { selector: "summary" });
-    expect(screen.getByRole("button", { name: "Use recommended" })).not.toBeVisible();
-    fireEvent.click(disclosure);
-    fireEvent.click(screen.getByRole("button", { name: "Use recommended" }));
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
-    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
-    expect(confirmation.body).toMatch(/GPT Terra with low reasoning/);
-    await act(async () => confirmation.onConfirm());
-    await screen.findByRole("button", { name: "Recommended setting active" });
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
-      { expectedMemoryVersion: 7, memoryProviderModelId: "terra", memoryReasoningEffort: "low", memoryRecommendationId: "terra-low-memory-v1" }
-    ]);
-    expect(screen.getByRole("button", { name: "System model deployment" })).toHaveTextContent("GPT Luna");
-    const undo = reportNotice.mock.calls.at(-1)?.[1];
-    await act(async () => undo?.onSelect());
-    await screen.findByRole("button", { name: "Use recommended" });
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy").at(-1)).toEqual({
-      expectedMemoryVersion: 8, memoryProviderModelId: "luna", memoryReasoningEffort: null
-    });
-  });
-
-  it("explains an unavailable recommendation without an apply action", async () => {
-    const catalog = rolesCatalog();
-    catalog.memoryPolicy.recommendations = [{ id: "terra-low-memory-v1", modelName: "GPT Terra", displayName: "GPT Terra",
-      providerModelId: "terra", connectionId: "openai", reasoningEffort: "low", unavailableReason: "budget_too_small",
-      evidence: { revision: "working-cases", passedCases: 5, totalCases: 5, latencyP50Ms: 3300, latencyP95Ms: 13500 } }];
-    server(catalog); renderSection();
-    fireEvent.click(await screen.findByText("Recommended models", { selector: "summary" }));
-    expect(await screen.findByText(/Increase this deployment’s output budget/)).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Use recommended" })).not.toBeInTheDocument();
-  });
-
-  it("shows multiple recommendations and applies the selected Flash deployment with none and Undo", async () => {
-    const catalog = rolesCatalog();
-    const flash = { ...luna, id: "flash", displayName: "Flash native", connectionId: "deepseek",
-      connectionDisplayName: "DeepSeek", defaultReasoningEffort: "high", reasoningEfforts: ["none", "low", "high"] };
-    catalog.candidates.push({ ...terra, forcedToolCall: "verified", structuredOutput: "verified" }, flash);
-    catalog.memoryPolicy.recommendations = [
-      { id: "terra-low-memory-v1", modelName: "GPT Terra", displayName: "GPT Terra", providerModelId: "terra", connectionId: "openai",
-        reasoningEffort: "low", unavailableReason: null, evidence: { revision: "test", passedCases: 5, totalCases: 5, latencyP50Ms: 3300, latencyP95Ms: 13500 } },
-      { id: "deepseek-flash-none-memory-v1", modelName: "DeepSeek V4.1 Flash (DeepSeek API)", displayName: flash.displayName,
-        providerModelId: flash.id, connectionId: flash.connectionId, reasoningEffort: "none", unavailableReason: null,
-        evidence: { revision: "test", passedCases: 22, totalCases: 23, latencyP50Ms: 1320, latencyP95Ms: 2731 } }
-    ];
-    const calls = server(catalog);
-    const { requestConfirmation, reportNotice } = renderSection();
-    fireEvent.click(await screen.findByText("Recommended models", { selector: "summary" }));
-    const choice = await screen.findByRole("group", { name: /DeepSeek V4.1 Flash.*Flash native/ });
-    expect(within(choice).getByText(/22\/23 working-case attempts passed/)).toBeVisible();
-    expect(screen.getAllByRole("button", { name: "Use recommended" })).toHaveLength(2);
-    fireEvent.click(within(choice).getByRole("button", { name: "Use recommended" }));
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([]);
-    const confirmation = requestConfirmation.mock.calls.at(-1)![0];
-    expect(confirmation.body).toMatch(/Flash native with none reasoning/);
-    await act(async () => confirmation.onConfirm());
-    expect(await within(choice).findByRole("button", { name: "Recommended setting active" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Use recommended" })).toBeEnabled();
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
-      { expectedMemoryVersion: 7, memoryProviderModelId: "flash", memoryReasoningEffort: "none", memoryRecommendationId: "deepseek-flash-none-memory-v1" }
-    ]);
-    expect(screen.getByRole("button", { name: "System model deployment" })).toHaveTextContent("GPT Luna");
-    const undo = reportNotice.mock.calls.at(-1)?.[1];
-    await act(async () => undo?.onSelect());
-    await within(choice).findByRole("button", { name: "Use recommended" });
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy").at(-1)).toEqual({
-      expectedMemoryVersion: 8, memoryProviderModelId: "luna", memoryReasoningEffort: null
-    });
-  });
-  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["memory", "memory"], ["decisions", "decisions"],
+  it.each([["reranker", "reranker"], ["chat_titles", "chat-titles"], ["system", "system"], ["decisions", "decisions"],
     ["research_researcher", "research-researcher"], ["research_verifier", "research-verifier"]])("focuses the %s system role from an Overview target", async (resource, row) => {
     server();
     renderSection(groups, resource);
     await waitFor(() => expect(screen.getByTestId(`admin-role-${row}`)).toHaveFocus());
   });
 
-  it("assigns and disables optional relevance checks without changing Memory, with Undo", async () => {
+  it("assigns and disables optional relevance checks without changing the System model, with Undo", async () => {
     const catalog = rolesCatalog();
     catalog.decisionCandidates = [{ ...voyage, id: "jev", displayName: "Jev" }];
     const calls = server(catalog);
     const { reportNotice } = renderSection();
     const picker = await screen.findByRole("button", { name: "Relevance checks deployment" });
     expect(screen.getByTestId("admin-role-decisions")).toHaveTextContent(
-      "screen the current message for possible Memory commands"
+      "evaluate which Skills fit the current message"
     );
     expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Off");
     fireEvent.click(picker);
@@ -385,41 +295,13 @@ describe("AdminRolesSection", () => {
     fireEvent.click(screen.getByRole("button", { name: "Relevance checks actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Turn off relevance checks" }));
     await waitFor(() => expect(screen.getByTestId("admin-role-decisions-status")).toHaveTextContent("Off"));
-    expect(screen.getByRole("button", { name: "Memory model deployment" })).toHaveTextContent("GPT Luna");
+    expect(screen.getByRole("button", { name: "System model deployment" })).toHaveTextContent("GPT Luna");
+    expect(screen.queryByTestId("admin-role-memory")).not.toBeInTheDocument();
     await act(async () => reportNotice.mock.calls.at(-1)?.[1]?.onSelect());
     await waitFor(() => expect(picker).toHaveTextContent("Jev"));
     expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
       { expectedVersion: 1, decisionProviderModelId: "jev" }, { expectedVersion: 2, decisionProviderModelId: null },
       { expectedVersion: 3, decisionProviderModelId: "jev" }
-    ]);
-  });
-
-  it("changes and clears Memory independently with its own version and Undo", async () => {
-    const calls = server();
-    const { reportNotice } = renderSection();
-    const memory = await screen.findByRole("button", { name: "Memory model deployment" });
-    const system = screen.getByRole("button", { name: "System model deployment" });
-    fireEvent.click(within(screen.getByTestId("admin-role-memory")).getByText("Advanced"));
-    const reasoning = screen.getByRole("combobox", { name: "Memory reasoning" });
-    fireEvent.change(reasoning, { target: { value: "low" } });
-    await waitFor(() => expect(reasoning).toBeEnabled());
-    expect(reasoning).toHaveValue("low");
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
-      { expectedMemoryVersion: 7, memoryProviderModelId: "luna", memoryReasoningEffort: "low" }
-    ]);
-    fireEvent.click(screen.getByRole("button", { name: "Memory utility model actions" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Clear assignment" }));
-    await waitFor(() => expect(screen.getByTestId("admin-role-memory-status")).toHaveTextContent("Not assigned"));
-    expect(system).toHaveTextContent("GPT Luna");
-    expect(screen.getByTestId("admin-role-system-status")).toHaveTextContent("Working");
-    const action = reportNotice.mock.calls.at(-1)?.[1];
-    expect(action?.label).toBe("Undo");
-    await act(async () => { action?.onSelect(); });
-    await waitFor(() => expect(memory).toHaveTextContent("GPT Luna"));
-    expect(patchesTo(calls, "/api/admin/providers/system-model-policy")).toEqual([
-      { expectedMemoryVersion: 7, memoryProviderModelId: "luna", memoryReasoningEffort: "low" },
-      { expectedMemoryVersion: 8, memoryProviderModelId: null, memoryReasoningEffort: null },
-      { expectedMemoryVersion: 9, memoryProviderModelId: "luna", memoryReasoningEffort: "low" }
     ]);
   });
 

@@ -1,7 +1,7 @@
 import { createPortal } from "react-dom";
 import { useModalLayerV2 } from "@/components/ui-v2/useModalLayerV2";
 import { AlertTriangle, Archive, Check, RotateCcw, Trash2, X } from "lucide-react";
-import { resolveMemoryCopy } from "@/lib/contracts/memoryCopy";
+import { chatMemoryModeCopy } from "@/components/app-shell/chatMemoryModeCopy";
 import { useDialogFocus } from "./useDialogFocus";
 
 type ConfirmationTone = "destructive" | "warning";
@@ -133,8 +133,8 @@ export function MemoryResumeConfirmationDialog({
   return (
     <ConfirmationDialog
       cancelLabel="Keep excluded"
-      confirmAriaLabel={resolveMemoryCopy("resume.action")}
-      confirmLabel={resolveMemoryCopy("resume.action")}
+      confirmAriaLabel={chatMemoryModeCopy("resume.action")}
+      confirmLabel={chatMemoryModeCopy("resume.action")}
       dialogLabel={`Resume Memory for ${chatTitle}`}
       icon="resume"
       onCancel={onCancel}
@@ -143,7 +143,7 @@ export function MemoryResumeConfirmationDialog({
       title="Resume Memory for this chat?"
       tone="warning"
     >
-      {resolveMemoryCopy("resume.explanation")}
+      {chatMemoryModeCopy("resume.explanation")}
     </ConfirmationDialog>
   );
 }
@@ -161,7 +161,7 @@ export function ChatDeleteConfirmationDialog({
     <ConfirmationDialog
       cancelLabel="Cancel"
       confirmAriaLabel="Confirm archive"
-      confirmLabel={resolveMemoryCopy("archive.action")}
+      confirmLabel={chatMemoryModeCopy("archive.action")}
       dialogLabel={`Archive chat ${chatTitle}`}
       icon="archive"
       onCancel={onCancel}
@@ -170,7 +170,7 @@ export function ChatDeleteConfirmationDialog({
       title="Archive chat?"
       tone="warning"
     >
-      {`${resolveMemoryCopy("archive.explanation")} “${chatTitle}”`}
+      {`${chatMemoryModeCopy("archive.explanation")} “${chatTitle}”`}
     </ConfirmationDialog>
   );
 }

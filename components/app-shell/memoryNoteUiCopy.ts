@@ -2,7 +2,7 @@ import { MEMORY_NOTE_MAX_CHARACTERS } from "@/lib/contracts/memoryNote";
 
 /**
  * The words of the memory note: Settings › Memory, its answer cards and the past-chat sources under an answer. English
- * only (`agent_docs/FRONTEND.md`); `memoryUiCopy.ts` beside it holds the old Memory's words until that is removed.
+ * only (`agent_docs/FRONTEND.md`); a chat's Memory mode has its words in `chatMemoryModeCopy.ts` beside it.
  */
 export const MEMORY_NOTE_COPY = Object.freeze({
   heading: "Memory",

@@ -259,9 +259,6 @@ async function sharedAnswerModel(page: Page, stand: Stand): Promise<PaidAnswerMo
   return answerModel;
 }
 
-const MEMORY_TOGGLES = { learnAutomatically: true, referenceChatHistory: true, useMemoryFacts: true } satisfies Prisma.UserMemorySettingsSelect;
-type MemoryToggles = Prisma.UserMemorySettingsGetPayload<{ select: typeof MEMORY_TOGGLES }>;
-
 /** A content-free failure code: a stable error code (Prisma's or the product's) or the error class, never the message. */
 function failureCode(error: unknown): string {
   if (error && typeof error === "object") {
@@ -286,14 +283,12 @@ async function withStand(page: Page, testInfo: TestInfo, label: string, body: (s
   const cleanup: (() => Promise<unknown>)[] = [];
   const summary: Record<string, unknown> = { scenario: label };
   let restoreDefaults: (() => Promise<void>) | null = null;
-  let memoryToggles: MemoryToggles | null = null;
   try {
     // A cold `next dev` compiles the shell on the first visit.
     await page.goto("/", { timeout: WARMUP_TIMEOUT_MS });
     await authenticateWithLocalToken(page.request);
     const userId = ((await (await page.request.get("/api/me")).json()) as { user: { id: string } }).user.id;
     restoreDefaults = await snapshotComposerDefaults(prisma, userId);
-    memoryToggles = await prisma.userMemorySettings.findUnique({ select: MEMORY_TOGGLES, where: { userId } });
     await keepAccountMcpDefault(page);
     await disableMemoryRecall(page);
     await body({ chatIds, cleanup, summary, userId });
@@ -306,12 +301,7 @@ async function withStand(page: Page, testInfo: TestInfo, label: string, body: (s
     await page.goto("about:blank").catch(() => undefined);
     for (const chatId of chatIds) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 60_000 }).catch(() => undefined);
     for (const step of cleanup.reverse()) await step().catch(() => { summary.cleanup = "failed"; });
-    // Memory toggles go back through the product's own settings route first, as the user would switch them, so the
-    // shared restore below finds them unchanged; it then restores the composer defaults.
-    if (memoryToggles) {
-      summary.memoryTogglesRestore = await page.request.patch("/api/me/memory/settings", { data: memoryToggles })
-        .then((response) => response.status()).catch((error: unknown) => failureCode(error));
-    }
+    // The shared restore brings back the composer defaults and the Memory switches.
     await restoreDefaults?.().catch((error: unknown) => { summary.composerDefaultsRestore = { code: failureCode(error), failed: true }; });
     await testInfo.attach(`${label}-summary.json`, { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
     console.log(`native_scenarios_paid_summary ${label} ${JSON.stringify(summary)}`);

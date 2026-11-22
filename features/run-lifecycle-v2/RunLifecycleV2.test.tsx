@@ -426,14 +426,8 @@ describe("Run lifecycle v2", () => {
       <RunAnswerV2
         artifact={{
           citations: [],
-          memorySources: [{
-            actions: ["CORRECT", "FORGET", "NOT_RELEVANT"],
-            date: "2026-08-21T05:00:00.000Z",
-            memoryRef: "opaque-memory-ref",
-            sourceAvailable: true,
-            sourceType: "SAVED_MEMORY",
-            text: "I prefer concise answers."
-          }],
+          pastChatSources: [{ chatId: "chat_1", chatTitle: "Rollback plan", date: "2026-11-02T09:30:00.000Z",
+            excerpt: "Keep the previous image tagged.", messageId: "msg_1" }],
           reasoningText: [],
           sources: [],
           workDurationMs: 64_000
@@ -447,7 +441,7 @@ describe("Run lifecycle v2", () => {
     const fold = screen.getByTestId("tool-activity-disclosure");
     // The line says only the work time; the count stays in the fold's own disclosure.
     expect(fold.querySelector(":scope > summary")).toHaveTextContent(/^Worked for 1m 4s$/u);
-    expect(screen.getByTestId("memories-disclosure").querySelector("summary")).toHaveTextContent("Memory · 1");
+    expect(screen.getByTestId("past-chat-sources").querySelector("summary")).toHaveTextContent("Past chats · 1");
   });
 
   it("lists the settled answer's past-chat sources and opens one in the shell", () => {

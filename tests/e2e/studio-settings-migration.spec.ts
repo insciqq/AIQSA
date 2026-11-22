@@ -1,6 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { UserMcpServer } from "../../lib/contracts/mcp";
-import { memoryConsumerItemFixture, memoryConsumerListFixture, memoryConsumerSettingsFixture } from "../support/memoryFixtures";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction, showSettingsSection } from "./shell/page";
@@ -34,12 +33,13 @@ async function prepare(page: Page) {
     instructions: { activePresetId: null, selectionVersion: 1, presets: [] }
   } }));
   await page.route("**/api/me/mcp", route => route.fulfill({ json: { servers: [server] } }));
-  await page.route("**/api/me/memory/settings", route => route.fulfill({ json: memoryConsumerSettingsFixture({
-    status: "ON", settings: { useMemoryFacts: true, learnAutomatically: true, referenceChatHistory: true }
-  }) }));
-  await page.route("**/api/me/memories?*", route => route.fulfill({ json: memoryConsumerListFixture([
-    memoryConsumerItemFixture({ statement: "I prefer source-backed explanations." })
-  ]) }));
+  // Settings › Memory: a saved note, its switches and no earlier memories.
+  await page.route("**/api/me/memory/note", route => route.fulfill({ json: {
+    text: "I prefer source-backed explanations.", revision: 1, lastChangedBy: "user", updatedAt: timestamp
+  } }));
+  await page.route("**/api/me/memory/preferences", route => route.fulfill({
+    json: { memoryEnabled: true, pastChatSearchEnabled: true, memorySuggestionsEnabled: true } }));
+  await page.route(/\/api\/me\/memory\/legacy(?:\?.*)?$/u, route => route.fulfill({ json: { suggestions: [], nextCursor: null } }));
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeVisible();
 }
@@ -166,21 +166,11 @@ for (const theme of ["dark", "light"] as const) {
         .toHaveAttribute("aria-selected", "true");
       await expect(library).toHaveAttribute("data-view", "section");
       await showSettingsSection(page, "Memory");
-      const card = page.getByRole("complementary", { name: "How Memory works" });
-      const disclosure = card.getByRole("button", { name: /^How Memory works/ });
-      if (size.width === 1440) {
-        await expect(disclosure).toBeHidden();
-        const cardBox = await card.boundingBox();
-        expect(cardBox?.width).toBe(320);
-        const switchBox = await card.getByRole("switch").first().boundingBox();
-        expect(switchBox!.x).toBeGreaterThan(cardBox!.x + cardBox!.width - 70);
-      } else {
-        await expect(disclosure).toHaveAttribute("aria-expanded", "false");
-        await expect(disclosure).toContainText("Memory is on");
-        await disclosure.click();
-      }
-      await expect(card.getByRole("switch")).toHaveCount(4);
-      await expect(library.getByText(/Temporary chats never read or write Memory/)).toHaveCount(1);
+      const memory = library.getByTestId("settings-memory");
+      await expect(memory.getByRole("textbox", { name: "Memory note", exact: true })).toHaveValue("I prefer source-backed explanations.");
+      await expect(memory.getByRole("switch")).toHaveCount(3);
+      await expectWithinViewport(page, memory.getByRole("switch", { name: "Use Memory in answers" }));
+      await expect(library.getByText("Temporary chats neither read nor change the note.", { exact: true })).toHaveCount(1);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`memory-${theme}-${size.width}x${size.height}.png`) });
       // The list of sections: beside the section from 1024px, in its place below (Back to Settings).
@@ -207,36 +197,13 @@ for (const theme of ["dark", "light"] as const) {
         // A section from the list shows it alone again.
         await library.getByRole("tab", { name: "Memory", exact: true }).click();
         await expect(library).toHaveAttribute("data-view", "section");
-        await expect(card).toBeVisible();
+        await expect(memory).toBeVisible();
       }
       await library.getByRole("button", { name: "Back to chat", exact: true }).click();
       await expect(library).toHaveCount(0);
     }
   });
 }
-
-test("Memory retains focused controls when its own container crosses 1000px", async ({ page }) => {
-  await page.setViewportSize(sizes[0]);
-  await prepare(page);
-  await runAccountMenuAction(page, "Memory");
-  const panel = page.getByRole("tabpanel");
-  const contentWidth = await panel.evaluate(node => {
-    const style = getComputedStyle(node);
-    return node.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-  });
-  const width = 1440 + 1000 - contentWidth;
-  await page.setViewportSize({ width, height: 900 });
-  const card = page.getByRole("complementary", { name: "How Memory works" });
-  const disclosure = card.getByRole("button", { name: /^How Memory works/ });
-  await expect(disclosure).toBeHidden();
-  const first = card.getByRole("switch").first();
-  await first.focus();
-  await page.setViewportSize({ width: width - 1, height: 900 });
-  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-  await expect(first).toBeFocused();
-  await expect(first).toBeVisible();
-  await expectNoHorizontalOverflow(page);
-});
 
 test("OAuth is blocked by personal drafts and promptly recovers from a failed start", async ({ page }) => {
   await prepare(page);
@@ -267,74 +234,6 @@ test("OAuth is blocked by personal drafts and promptly recovers from a failed st
   await expect(button).not.toHaveAttribute("aria-disabled");
   expect(starts).toEqual(["POST"]);
   expect(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.includes("studio-mcp")))).toEqual([]);
-});
-
-test("Memory reset removes the draft and search and fences an older search response", async ({ page }, info) => {
-  await page.setViewportSize(sizes[0]);
-  await prepare(page);
-  let release!: () => void;
-  let searchRequested = false;
-  const pending = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/me/memories/search", async route => {
-    searchRequested = true;
-    await pending;
-    await route.fulfill({ json: memoryConsumerListFixture([memoryConsumerItemFixture({ statement: "Stale search result" })]) });
-  });
-  await page.route("**/api/me/memory/reset", async route => {
-    await page.route("**/api/me/memories?*", read => read.fulfill({ json: memoryConsumerListFixture([]) }));
-    await route.fulfill({ json: { status: "COMPLETE" } });
-  });
-  await runAccountMenuAction(page, "Memory");
-  const library = page.getByTestId("library-v2");
-  const search = library.getByRole("searchbox", { name: "Search memories" });
-  await search.fill("old");
-  await search.press("Enter");
-  await expect.poll(() => searchRequested).toBe(true);
-  await library.getByRole("button", { name: "Forget everything…" }).click();
-  await page.getByRole("alertdialog", { name: "Forget everything?" }).getByRole("button", { name: "Forget everything", exact: true }).click();
-  await expect(library.getByText("Personal Memory was reset.", { exact: true })).toBeVisible();
-  const lateResponse = page.waitForResponse(response => new URL(response.url()).pathname === "/api/me/memories/search");
-  release();
-  await (await lateResponse).finished();
-  await expect(search).toHaveValue("");
-  await expect(library.getByText("Stale search result", { exact: true })).toHaveCount(0);
-  await library.getByRole("button", { name: "Add memory", exact: true }).first().click();
-  await library.getByRole("textbox", { name: "New memory", exact: true }).fill("Discard this reset draft");
-  await library.getByRole("button", { name: "Forget everything…" }).click();
-  await page.getByRole("alertdialog", { name: "Forget everything?" }).getByRole("button", { name: "Forget everything", exact: true }).click();
-  await expect(library.getByRole("textbox", { name: "New memory", exact: true })).toHaveCount(0);
-  await expect(search).toHaveValue("");
-  await expect(library.getByRole("button", { name: "Add memory", exact: true }).first()).toBeEnabled();
-  await page.screenshot({ path: info.outputPath("memory-reset-cleared.png") });
-  await library.getByRole("button", { name: "Back to chat" }).click();
-  await expect(page.getByTestId("discard-changes-confirmation")).toHaveCount(0);
-});
-
-test("an unconfirmed Memory reset reloads the actual list and unlocks its controls", async ({ page }) => {
-  await page.setViewportSize(sizes[0]);
-  await prepare(page);
-  let reads = 0;
-  await page.route("**/api/me/memories?*", route => {
-    reads += 1;
-    return route.fulfill({ json: memoryConsumerListFixture([
-      memoryConsumerItemFixture({ statement: reads === 1 ? "Before reset" : "Still saved on the server" })
-    ]) });
-  });
-  await page.route("**/api/me/memory/reset", route => route.fulfill({ status: 503, json: { error: "temporarily_unavailable" } }));
-  await runAccountMenuAction(page, "Memory");
-  const library = page.getByTestId("library-v2");
-  await expect(library.getByText("Before reset", { exact: true })).toBeVisible();
-  await library.getByRole("button", { name: "Forget everything…" }).click();
-  const confirmation = page.getByRole("alertdialog", { name: "Forget everything?" });
-  await confirmation.getByRole("button", { name: "Forget everything", exact: true }).click();
-  await expect(library.getByText("Still saved on the server", { exact: true })).toBeVisible();
-  // The unconfirmed reset shows no message; the confirmation stays usable.
-  await expect(library.getByRole("alert")).toHaveCount(0);
-  await expect(library.getByText(/could not be confirmed/u)).toHaveCount(0);
-  await expect(confirmation.getByRole("button", { name: "Forget everything", exact: true })).toBeEnabled();
-  await confirmation.getByRole("button", { name: "Keep my memories", exact: true }).click();
-  await expect(library.getByRole("button", { name: "Add memory", exact: true }).first()).toBeEnabled();
-  await expect(library.getByText("Before reset", { exact: true })).toHaveCount(0);
 });
 
 test("Account guards reverted and unsaved fields and blocks leaving Settings during a save", async ({ page }, info) => {
@@ -405,10 +304,10 @@ test.describe("touch controls", () => {
       for (const radio of await library.getByRole("radio").all()) await expectTouchSafe(radio);
       await page.screenshot({ path: info.outputPath(`defaults-touch-${size.width}x${size.height}.png`) });
       await showSettingsSection(page, "Memory");
-      const card = page.getByRole("complementary", { name: "How Memory works" });
-      await expectTouchSafe(card.getByRole("button", { name: /^How Memory works/ }));
-      await card.getByRole("button", { name: /^How Memory works/ }).click();
-      for (const control of await card.getByRole("switch").all()) await expectTouchSafe(control);
+      const memory = library.getByTestId("settings-memory");
+      await expect(memory.getByRole("switch")).toHaveCount(3);
+      for (const control of await memory.getByRole("switch").all()) await expectTouchSafe(control);
+      await expectTouchSafe(memory.getByRole("button", { name: "Save", exact: true }));
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: info.outputPath(`memory-touch-${size.width}x${size.height}.png`) });
       await library.getByRole("button", { name: "Back to chat" }).click();

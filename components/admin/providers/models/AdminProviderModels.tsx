@@ -59,7 +59,7 @@ const chipTone: Record<ModelChip["tone"], string> = {
 
 function Chip({ chip }: Readonly<{ chip: ModelChip }>) {
   const description = chip.key === "tools"
-    ? "Ordinary function calling. Strict Memory calls are checked separately in Defaults & roles."
+    ? "Ordinary function calling. Required tool results are checked separately in Defaults & roles."
     : chip.key === "json" ? "Structured responses using a strict JSON Schema." : undefined;
   const help = [chip.help, description].filter(Boolean).join(" ") || undefined;
   return (

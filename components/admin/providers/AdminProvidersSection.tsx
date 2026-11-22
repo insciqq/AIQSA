@@ -3,7 +3,6 @@
 import { adminSectionPath, type AdminSectionId } from "@/components/admin/adminSections";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import { AdminProviderAddSheet } from "@/components/admin/providers/add/AdminProviderAddSheet";
-import { systemModelPolicyAssignsMemory } from "@/components/admin/providers/add/AdminProviderSetupResults";
 import { AdminProviderPage } from "@/components/admin/providers/AdminProviderPage";
 import { AdminProvidersList } from "@/components/admin/providers/AdminProvidersList";
 import { describeDeleteBlockers } from "@/components/admin/providers/providerBlockers";
@@ -94,7 +93,6 @@ export function AdminProvidersSection({
   );
   const { refresh } = controller.actions;
 
-  const openMemoryRole = useCallback(() => onNavigateSection("roles", "memory"), [onNavigateSection]);
 
   const backToList = useCallback(() => {
     setAdding(false);
@@ -221,7 +219,6 @@ export function AdminProvidersSection({
         onCloseSettings={() => setSettingsOpen(false)}
         onError={feedback.reportError}
         onNotice={feedback.reportNotice}
-        onOpenMemoryRole={openMemoryRole}
         onOpenSettings={() => setSettingsOpen(true)}
         requestConfirmation={requestConfirmation}
         settingsOpen={settingsOpen}
@@ -244,10 +241,8 @@ export function AdminProvidersSection({
       />
       <AdminProviderAddSheet
         connections={connections}
-        memoryAssigned={systemModelPolicyAssignsMemory(usageSources.systemModelPolicy)}
         onClose={() => setAdding(false)}
         onCreated={openCreated}
-        onOpenMemoryRole={openMemoryRole}
         open={adding}
       />
     </div>

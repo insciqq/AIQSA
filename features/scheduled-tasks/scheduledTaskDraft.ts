@@ -1,5 +1,5 @@
 import type { Catalog, CatalogModel } from "@/lib/contracts/catalog";
-import type { MemoryConsumerSettingsResponse } from "@/lib/contracts/memoryConsumer";
+import type { MemorySwitches } from "@/lib/contracts/memoryNote";
 import type { WorkspaceUnavailableReason } from "@/lib/contracts/workspace";
 import {
   SCHEDULED_TASK_DEFAULT_HISTORY_RETENTION_DAYS,
@@ -76,18 +76,18 @@ export function scheduledTaskWorkspaceAvailability(workspace: Readonly<{
 }
 
 /**
- * Whether the owner's Memory lets a task's runs read anything, as the shell's
- * Memory settings read reports it: `paused` when the owner turned Memory off,
- * `needs_setup` before the administrator set it up, `unknown` while it loads.
- * The task keeps its own switch either way.
+ * Whether the owner's Memory lets a task's runs read anything, from the
+ * owner's Memory switches: `off` when the owner turned Memory off, `unknown`
+ * while they load or when they could not be read. The task keeps its own
+ * switch either way.
  */
-export type ScheduledTaskMemoryAvailability = "available" | "paused" | "needs_setup" | "unknown";
+export type ScheduledTaskMemoryAvailability = "available" | "off" | "unknown";
 
 export function scheduledTaskMemoryAvailability(
-  memory: Pick<MemoryConsumerSettingsResponse, "status"> | null
+  switches: Pick<MemorySwitches, "memoryEnabled"> | null
 ): ScheduledTaskMemoryAvailability {
-  if (!memory) return "unknown";
-  return memory.status === "PAUSED" ? "paused" : memory.status === "NEEDS_ADMIN_SETUP" ? "needs_setup" : "available";
+  if (!switches) return "unknown";
+  return switches.memoryEnabled ? "available" : "off";
 }
 
 /** An hourly schedule runs all day, or from a start time until an optional end time. */

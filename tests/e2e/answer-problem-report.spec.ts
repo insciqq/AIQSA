@@ -35,11 +35,6 @@ test.afterAll(async () => {
     // Removing the chats removes their reports with their messages.
     await prisma.$transaction(async (tx) => {
       await tx.modelRun.deleteMany({ where: { chatId: { in: ids } } });
-      await tx.memoryJob.deleteMany({ where: { chatId: { in: ids }, userId } });
-      await tx.memoryRetrievalAttempt.deleteMany({ where: { chatId: { in: ids }, userId } });
-      await tx.memoryRecallChunk.deleteMany({ where: { chatId: { in: ids }, userId } });
-      await tx.chatMemoryCheckpointMessage.deleteMany({ where: { chatId: { in: ids } } });
-      await tx.chatMemoryCheckpoint.deleteMany({ where: { chatId: { in: ids } } });
       await tx.workspaceSession.deleteMany({ where: { chatId: { in: ids } } });
       await tx.chat.deleteMany({ where: { id: { in: ids }, userId } });
     });

@@ -1,37 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMORY_CONFIRMATION_COPY_VERSION } from "@/lib/contracts/memoryClient";
-import { memoryConsumerSettingsFixture } from "@/tests/support/memoryFixtures";
-import {
-  resetMemorySettingsStoreForTest,
-  resetPermanentChatDeletionStoreForTest
-} from "@/tests/support/appShellStores";
-import { useMemorySettingsStore } from "./memorySettingsStore";
+import { resetPermanentChatDeletionStoreForTest } from "@/tests/support/appShellStores";
 import {
   activatePermanentChatDeletionAccount,
   confirmPermanentChatDeletion,
   deactivatePermanentChatDeletionAccount,
   openPermanentChatDeletion,
   permanentChatDeletionFocusReturnTarget,
-  setPermanentChatDeletionOriginForget,
   usePermanentChatDeletionStore
 } from "./permanentChatDeletionStore";
 
 beforeEach(() => {
   resetPermanentChatDeletionStoreForTest();
-  resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
-  useMemorySettingsStore.setState({
-    data: memoryConsumerSettingsFixture({
-      capabilities: { permanentChatDeletion: true }
-    }),
-    error: null,
-    loadState: "ready"
-  });
 });
 
 afterEach(() => {
   resetPermanentChatDeletionStoreForTest();
-  resetMemorySettingsStoreForTest();
   window.sessionStorage.clear();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -62,15 +47,15 @@ describe("permanent chat deletion store", () => {
       location: "WORKSPACE",
       title: "Private chat"
     });
-    setPermanentChatDeletionOriginForget(true);
     await confirmPermanentChatDeletion();
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const confirmation = JSON.parse(
       String(fetchMock.mock.calls[0]?.[1]?.body)
     ) as Record<string, unknown>;
+    // Saved memories no longer exist: the request never asks to forget any.
     expect(confirmation).toEqual({
-      alsoForgetOriginMemories: true,
+      alsoForgetOriginMemories: false,
       confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
       requestId: expect.any(String)
     });
@@ -227,21 +212,6 @@ describe("permanent chat deletion store", () => {
       statusOpen: true,
       target: null
     });
-  });
-
-  it("keeps the workflow unavailable when the server capability is dark", async () => {
-    useMemorySettingsStore.setState({
-      data: memoryConsumerSettingsFixture({
-        capabilities: { permanentChatDeletion: false }
-      })
-    });
-    await activatePermanentChatDeletionAccount("account-a");
-    openPermanentChatDeletion({
-      chatId: "chat-1",
-      location: "WORKSPACE",
-      title: "Private chat"
-    });
-    expect(usePermanentChatDeletionStore.getState().target).toBeNull();
   });
 
   it("resolves a connected fallback after deletion removes the originating control", async () => {

@@ -78,13 +78,13 @@ test.describe("inbound MCP consent under the production CSP", () => {
           code_challenge: pkceChallenge(),
           code_challenge_method: "S256",
           redirect_uri: redirectUri,
-          resource: `${appOrigin}/mcp`,
+          resource: `${appOrigin}/mcp/skills`,
           response_type: "code",
           state
         }).toString();
         const consent = await page.goto(authorize.toString());
         expect(consent?.headers()["content-security-policy"]).toContain("form-action 'self'");
-        await expect(page.getByRole("heading", { name: "Connect Personal Memory?" })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "Connect Skills?" })).toBeVisible();
         // The injected policy is really enforced in this document.
         const probeBlocked = await page.evaluate(async (probe) => {
           try {

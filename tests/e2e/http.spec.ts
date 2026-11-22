@@ -31,10 +31,10 @@ test("chat actions and Workspace secrets work on a real insecure HTTP origin", a
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
   const memorySettingsStatus = await page.evaluate(async () => {
-    const response = await fetch("/api/me/memory/settings", {
+    const response = await fetch("/api/me/memory/preferences", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ learnAutomatically: false, referenceChatHistory: false, useMemoryFacts: false })
+      body: JSON.stringify({ memoryEnabled: false })
     });
     return response.status;
   });
