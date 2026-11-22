@@ -112,14 +112,17 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
 
     async wordHits(scope: PastChatScope, units: readonly PastChatWordUnit[], limit: number): Promise<PastChatWordHit[]> {
       if (units.length === 0) return [];
-      const rows = await db.$queryRaw<Array<{ id: string; chatId: string; userMessageId: string; turnAt: Date; pinned: boolean; terms: string[] }>>(Prisma.sql`
+      const rows = await db.$queryRaw<Array<{ id: string; chatId: string; userMessageId: string; turnAt: Date; pinned: boolean; terms: string[];
+        score: number }>>(Prisma.sql`
         WITH units AS MATERIALIZED (
-          SELECT u.term, u.query::tsquery AS q, u.weight, u.pin
+          SELECT u.term, u.query::tsquery AS q, u.weight, u.pin, u.admits
           FROM unnest(${units.map((unit) => unit.term)}::text[], ${units.map((unit) => unit.query)}::text[],
-            ${units.map((unit) => unit.weight)}::float8[], ${units.map((unit) => unit.pin)}::boolean[]) AS u(term, query, weight, pin)
+            ${units.map((unit) => unit.weight)}::float8[], ${units.map((unit) => unit.pin)}::boolean[],
+            ${units.map((unit) => unit.admits)}::boolean[]) AS u(term, query, weight, pin, admits)
         ),
         matches AS MATERIALIZED (
-          SELECT p."id", p."chatId", p."userMessageId", p."turnAt", u.term, MAX(u.weight) AS weight, bool_or(u.pin) AS pin
+          SELECT p."id", p."chatId", p."userMessageId", p."turnAt", u.term, MAX(u.weight) AS weight, bool_or(u.pin) AS pin,
+            bool_or(u.admits) AS admits
           FROM units u
           JOIN "ChatSearchPassage" p ON p."searchVectorSimple" @@ u.q
           JOIN "Chat" c ON c."id" = p."chatId"
@@ -127,12 +130,14 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
           GROUP BY p."id", p."chatId", p."userMessageId", p."turnAt", u.term
         )
         SELECT m."id", m."chatId", m."userMessageId", m."turnAt", bool_or(m.pin) AS pinned,
-          array_agg(m.term ORDER BY m.weight DESC, m.term) AS terms
+          array_agg(m.term ORDER BY m.weight DESC, m.term) AS terms, SUM(m.weight)::float8 AS score
         FROM matches m
         GROUP BY m."id", m."chatId", m."userMessageId", m."turnAt"
+        -- A common unit only adds weight to a passage another unit brought in (query.ts).
+        HAVING bool_or(m.admits)
         ORDER BY bool_or(m.pin) DESC, SUM(m.weight) DESC, m."turnAt" DESC, m."id"
         LIMIT ${limit}`);
-      return rows.map((row) => ({ chatId: row.chatId, id: row.id, pinned: row.pinned === true, terms: row.terms ?? [],
+      return rows.map((row) => ({ chatId: row.chatId, id: row.id, pinned: row.pinned === true, score: Number(row.score), terms: row.terms ?? [],
         turnAt: row.turnAt, userMessageId: row.userMessageId }));
     },
 

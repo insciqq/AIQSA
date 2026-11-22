@@ -54,7 +54,8 @@ function fillerText(seed: number): string {
     state = (state * 1103515245 + 12345) % 2147483648;
     words.push(fillerWord(state));
   }
-  return words.join(" ");
+  // Every filler passage holds "the", so it is a common word of the owner's (`query.ts`).
+  return `the ${words.join(" ")}`;
 }
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -260,6 +261,15 @@ describe("past-chat search SQL", () => {
     for (const hits of [ticket, common, await wordSearch("campaign_42 отчёт report_2026-11-12.xlsx")]) {
       expect(hits.every((hit) => fixture.eligible.has(hit.chatId))).toBe(true);
     }
+  });
+
+  it("lets a common word add weight but never bring a passage in alone, unless the query has nothing else", async () => {
+    const both = await timed("words_with_common", () => wordSearch("the ABC-1234"));
+    expect(both[0]).toMatchObject({ chatId: fixture.chat.ticket, pinned: true });
+    expect(both.every((hit) => hit.terms.some((term) => term !== "w:the"))).toBe(true);
+    expect(both.length).toBeLessThan(10);
+    // A query of common words only still finds the passages that hold them.
+    expect(await wordSearch("the")).toHaveLength(50);
   });
 
   it("binds every query as data, whatever punctuation it holds", async () => {
