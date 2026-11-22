@@ -112,13 +112,23 @@ function isGitRepository(root) {
   return existsSync(path.join(root, ".git"));
 }
 
-function isIgnoredTask(root, relativePath) {
-  if (!isGitRepository(root)) return true;
-  const result = spawnSync("git", ["--work-tree", root, "check-ignore", "-q", "--", portable(relativePath)], {
+// One git process for the whole ledger; a tracked file is never reported as ignored.
+function ignoredTaskPaths(root, relativePaths) {
+  const paths = relativePaths.map(portable);
+  if (!isGitRepository(root)) return new Set(paths);
+  if (!paths.length) return new Set();
+  const result = spawnSync("git", ["--work-tree", root, "check-ignore", "--stdin", "-z"], {
     cwd: root,
-    encoding: "utf8"
+    encoding: "utf8",
+    input: `${paths.join("\0")}\0`,
+    maxBuffer: 64 * 1024 * 1024
   });
-  return result.status === 0;
+  if (result.status !== 0 && result.status !== 1) return new Set();
+  return new Set(result.stdout.split("\0").filter(Boolean));
+}
+
+function isIgnoredTask(root, relativePath) {
+  return ignoredTaskPaths(root, [relativePath]).has(portable(relativePath));
 }
 
 export function parseDependencies(value) {
@@ -400,8 +410,13 @@ export function validateTaskLedger(root = process.cwd(), { archive: validateArch
     if (ledger.byId.has(id)) errors.push(`${id}: task id exists in both the open queue and completion archive`);
   }
 
-  for (const record of validateArchive ? ledger.archive.records : []) {
-    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+  const archiveRecords = validateArchive ? ledger.archive.records : [];
+  const ignored = ignoredTaskPaths(
+    ledger.root,
+    [...archiveRecords, ...ledger.tasks.records].map((record) => record.relativePath)
+  );
+  for (const record of archiveRecords) {
+    if (!ignored.has(record.relativePath)) {
       errors.push(`${record.relativePath}: archived task instances must be ignored and must not be tracked by public Git`);
     }
     if (!validTimestampId(record.id)) {
@@ -413,7 +428,7 @@ export function validateTaskLedger(root = process.cwd(), { archive: validateArch
   }
 
   for (const record of ledger.tasks.records) {
-    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+    if (!ignored.has(record.relativePath)) {
       errors.push(`${record.relativePath}: task instances must be ignored and must not be tracked by public Git`);
     }
     if (!validTimestampId(record.id)) {

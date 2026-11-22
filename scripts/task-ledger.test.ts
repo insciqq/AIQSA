@@ -188,6 +188,27 @@ describe("local task ledger command", () => {
     expect(readdirSync(target)).toEqual([]);
   });
 
+  it("reports tracked task files in the queue and the archive", () => {
+    const root = fixture();
+    const queued = "20260801120000001-tracked";
+    const archived = "20260701120000001-tracked-prior";
+    const untracked = "20260801120000002-untracked";
+    task(root, queued, "backlog");
+    task(root, untracked, "backlog");
+    archivedTask(root, archived);
+    expect(run(root, "check").status).toBe(0);
+    const added = spawnSync("git", ["add", "-f", `agent_docs/tasks/queue/${queued}.md`, `agent_docs/tasks/archive/${archived}.md`], {
+      cwd: root,
+      encoding: "utf8"
+    });
+    expect(added.status).toBe(0);
+    const result = run(root, "check");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`queue/${queued}.md: task instances must be ignored`);
+    expect(result.stderr).toContain(`archive/${archived}.md: archived task instances must be ignored`);
+    expect(result.stderr).not.toContain(untracked);
+  });
+
   it("keeps task identifiers globally unique across named queues and their archives", () => {
     const root = fixture();
     task(root, "20260801120000001-ordinary", "backlog");
