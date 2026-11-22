@@ -27,6 +27,14 @@ const service = createPermanentChatDeletionService({
   capability: { enabled: true }, repository: createPrismaPermanentChatDeletionRepository(prisma)
 });
 
+/** Synthetic storage keys this file creates: deletions stage object jobs for them, which must not outlive the test. */
+const storageKeys: string[] = [];
+function syntheticKey(): string {
+  const key = `test/${randomUUID()}`;
+  storageKeys.push(key);
+  return key;
+}
+
 async function owner(): Promise<string> {
   const id = `background-deletion-test-${randomUUID()}`;
   await prisma.user.create({ data: { displayName: "Synthetic deletion owner", email: `${id}@example.test`, id, status: "active" } });
@@ -60,6 +68,8 @@ afterEach(async () => {
   await prisma.attachment.deleteMany({ where: { userId: { in: ids } } });
   await prisma.chat.deleteMany({ where: { userId: { in: ids } } });
   await prisma.user.deleteMany({ where: { id: { in: ids } } });
+  // Object jobs the deletions staged for this file's synthetic keys, so a later pruner never claims them.
+  await prisma.attachmentDeletionJob.deleteMany({ where: { storageKey: { in: storageKeys.splice(0) } } });
 });
 afterAll(() => prisma.$disconnect());
 
@@ -114,8 +124,8 @@ describe("chat deletion on the background worker", () => {
   it("resumes a permanent deletion interrupted between the database and object storage", async () => {
     const userId = await owner();
     const storage = createMemoryStorageAdapter();
-    const exclusiveKey = `test/${randomUUID()}`;
-    const sharedKey = `test/${randomUUID()}`;
+    const exclusiveKey = syntheticKey();
+    const sharedKey = syntheticKey();
     const chat = await chatWithFile(userId, exclusiveKey);
     const kept = await chatWithFile(userId, sharedKey);
     await prisma.attachment.create({ data: {
@@ -163,7 +173,7 @@ describe("chat deletion on the background worker", () => {
 
   it("keeps the fence immutable and refuses a Temporary chat for permanent deletion", async () => {
     const userId = await owner();
-    const chat = await chatWithFile(userId, `test/${randomUUID()}`);
+    const chat = await chatWithFile(userId, syntheticKey());
     await service.confirm(userId, chat.id, {
       alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
     });
@@ -174,14 +184,14 @@ describe("chat deletion on the background worker", () => {
 
   it("deletes a Temporary chat only once its deadline has passed", async () => {
     const userId = await owner();
-    const storageKey = `test/${randomUUID()}`;
+    const storageKey = syntheticKey();
     const now = new Date();
     const temporary = {
       createdAt: new Date(now.getTime() - 120_000), memoryMode: "TEMPORARY" as const,
       temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
     };
     const due = await chatWithFile(userId, storageKey, { ...temporary, temporaryRetentionDeadline: new Date(now.getTime() - 1_000), title: "Due", userId });
-    const later = await chatWithFile(userId, `test/${randomUUID()}`, {
+    const later = await chatWithFile(userId, syntheticKey(), {
       ...temporary, temporaryRetentionDeadline: new Date(now.getTime() + 3_600_000), title: "Later", userId
     });
     // Nothing deletes a Temporary chat before its deadline, the database included.
@@ -198,9 +208,9 @@ describe("chat deletion on the background worker", () => {
 
   it("strands no object when two chats sharing it are purged at the same time", async () => {
     const userId = await owner();
-    const sharedKey = `test/${randomUUID()}`;
-    const exclusiveA = `test/${randomUUID()}`;
-    const exclusiveB = `test/${randomUUID()}`;
+    const sharedKey = syntheticKey();
+    const exclusiveA = syntheticKey();
+    const exclusiveB = syntheticKey();
     const first = await chatWithFile(userId, exclusiveA);
     const second = await chatWithFile(userId, exclusiveB);
     for (const chat of [first, second]) {
