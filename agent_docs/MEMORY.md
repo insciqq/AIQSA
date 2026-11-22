@@ -5,7 +5,7 @@ paths:
 ---
 # Memory
 
-Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. Memory is kept but frozen (root `AGENTS.md`): changes only simplify or stabilize it.
+Personal Memory: what it may learn, who may change it, how it is retrieved and forgotten. Code: `lib/server/memory/`, inbound MCP access in `lib/server/memoryMcp/`. Memory is being replaced (operator decision 2026-11-22, root `AGENTS.md`): this document describes the subsystem that the replacement removes, so do not extend it.
 
 ## Who may change Memory
 
