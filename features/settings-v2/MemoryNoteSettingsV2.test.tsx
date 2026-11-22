@@ -197,6 +197,14 @@ describe("MemoryNoteSettingsV2: earlier automatic memories", () => {
     expect(await within(screen.getByTestId("memory-legacy-row")).findByRole("alert")).toHaveTextContent("no room in your note");
   });
 
+  it("says a suggestion holding a credential can only be removed", async () => {
+    respond({ [`GET ${NOTE}`]: saved("Note", 1), [`GET ${PREFERENCES}`]: ON, [`GET ${LEGACY}`]: page([suggestion("s1", "Fact")]),
+      [`POST ${LEGACY}/s1`]: refusal("memory_note_invalid", 400) });
+    render(<MemoryNoteSettingsV2 />);
+    fireEvent.click(await screen.findByRole("button", { name: "Keep in note: Fact" }));
+    expect(await within(screen.getByTestId("memory-legacy-row")).findByRole("alert")).toHaveTextContent("Remove it instead");
+  });
+
   it("removes all after a confirmation", async () => {
     const fetchMock = respond({ [`GET ${NOTE}`]: saved("", 1), [`GET ${PREFERENCES}`]: ON,
       [`GET ${LEGACY}`]: page([suggestion("s1", "One")], "cursor-2"), [`DELETE ${LEGACY}`]: new Response(null, { status: 204 }) });

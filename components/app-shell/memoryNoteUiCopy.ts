@@ -45,6 +45,7 @@ export const MEMORY_NOTE_COPY = Object.freeze({
   legacyRemoveLabel: (text: string) => `Remove: ${text}`,
   legacyTooLong: "There is no room in your note for this. Shorten the note first.",
   legacyFailed: "That did not work. Try again.",
+  legacyInvalid: "This suggestion holds something that cannot be kept, such as a password or key. Remove it instead.",
   legacyLoadFailed: "Earlier automatic memories could not be loaded.",
   legacyRemoveAllTitle: "Remove all earlier memories?",
   legacyRemoveAllBody: "Every earlier automatic memory is deleted. Your note and your chats stay as they are. This cannot be undone.",

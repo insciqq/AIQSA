@@ -220,6 +220,7 @@ export function MemoryNoteSettingsV2({ onBusyChange, onDirtyChange }: Readonly<{
       const code = failure instanceof MemoryNoteApiError ? failure.code : null;
       if (code === "memory_legacy_suggestion_not_found") dropLegacy(item.id);
       else setLegacyError({ id: item.id, message: code === "memory_note_too_long" ? copy.legacyTooLong
+        : code === "memory_note_invalid" ? copy.legacyInvalid
         : code === "memory_disabled" ? copy.changeMemoryOff : copy.legacyFailed });
     }).finally(() => { if (alive.current) setLegacyBusy(null); });
   }
