@@ -6,16 +6,13 @@ import { defaultBackgroundPassRegistry } from "../lib/server/background/passes";
 import { runBackgroundWorkerProcess } from "../lib/server/background/process";
 import { createBackgroundWorker } from "../lib/server/background/worker";
 import { startTelemetryRecorder } from "../lib/server/telemetry/recorder";
-// Until the Memory removal deletes them: the old coordinator, for the Memory job kinds that remain. Deletion
-// does not depend on it; this process keeps deleting chats when its start is blocked.
-import { startDefaultMemoryCoordinatorFeatureLocally } from "../lib/server/memory/coordinator/startup";
-import { stopDefaultMemoryCoordinator } from "../lib/server/memory/coordinator/defaultCoordinator";
-import { defaultMemoryWorkerHeartbeat } from "../lib/server/memory/coordinator/workerHeartbeat";
 
 /**
  * The background worker: the `memory-worker` Compose service runs it (`scripts/memory-coordinator.ts`, the
- * previous entry point, starts the same worker). Further duties register their passes before it starts, with
- * `registerBackgroundPass` from `lib/server/background/passes.ts`.
+ * previous entry point, starts the same worker). It runs the chat deletion duties and the past-chat search index
+ * (`lib/server/background/defaultPasses.ts`); the old Memory coordinator is no longer started, since its job kinds
+ * ended with the cutover to the note and past-chat search. Further duties register their passes before it starts,
+ * with `registerBackgroundPass` from `lib/server/background/passes.ts`.
  */
 if (process.env.AIQSA_RELEASE_DEPENDENCY_CHECK !== "1") {
   const telemetry = startTelemetryRecorder({ prisma });
@@ -28,15 +25,6 @@ if (process.env.AIQSA_RELEASE_DEPENDENCY_CHECK !== "1") {
       await prisma.$disconnect();
     },
     heartbeat: createPrismaBackgroundWorkerHeartbeat(prisma),
-    legacy: {
-      async start() {
-        return (await startDefaultMemoryCoordinatorFeatureLocally()).status;
-      },
-      async stop() {
-        await stopDefaultMemoryCoordinator();
-        await defaultMemoryWorkerHeartbeat.stop();
-      }
-    },
     signals: process
   }).then((exitCode) => {
     process.exitCode = exitCode;

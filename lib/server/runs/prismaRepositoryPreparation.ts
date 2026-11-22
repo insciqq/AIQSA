@@ -7,6 +7,8 @@ import { admittedFollowupFields, insertAdmittedRunFollowups } from "./prismaRepo
 import { claimSubagentCallbacksForRun } from "./subagentBackground/store";
 import { assertChatPdfClaim, insertChatPdfAdmissions, storeChatPdfAdmissionResult } from "../uploads/chatPdfPersistence";
 import { ChatPdfPreparationError } from "../uploads/chatPdfCore";
+import { markChatSearchDirty } from "../chatSearch/index/dirty";
+import { temporaryChatRetentionDeadline } from "../chats/temporaryRetention";
 import {
   assertWorkspaceFollowupClaim, predecessorReleasesSuccessor, prepareWorkspaceFollowupAdmission,
   storeWorkspaceFollowupAdmission, WorkspaceFollowupError
@@ -72,8 +74,6 @@ import {
 } from "../memory/persistence/transaction";
 import {
   applyMemorySourceMutations,
-  lockMemorySourceChat,
-  MemorySourceStateConflictError,
   type LockedMemorySourceChat,
   type MemorySourceMutationHooks,
   type MemorySourceSnapshot
@@ -3508,45 +3508,56 @@ export type PreparingSettlementInput = Readonly<{
   userId: string;
 }>;
 
-export async function settleTerminalMemorySource(
+export type TerminalChatSourceInput = Readonly<{
+  assistantMessageId: string | null;
+  chatId: string;
+  runId: string;
+  status: "cancelled" | "complete" | "error";
+  userId: string;
+}>;
+
+/**
+ * A run's terminal write to its chat, inside the transaction that settles the run: the chat moves to the top of the
+ * chat list (a monitoring check keeps its place, `chatListTime.ts`), a Temporary chat's deletion deadline moves to a
+ * day after this answer, and a main-agent answer marks the chat for past-chat search, whatever its outcome, since the
+ * pass reconciles the passages with the active branch (`lib/server/chatSearch/index/dirty.ts`). The chat row is
+ * locked before the mark, in the order the index pass takes it. A chat that is gone, fenced for permanent deletion or
+ * has no personal owner (a legacy Project chat) is left alone; its runs still settle.
+ */
+export async function settleTerminalChatSource(
   tx: Prisma.TransactionClient,
-  input: Readonly<{
-    assistantMessageId: string | null;
-    chatId: string;
-    runId: string;
-    status: "cancelled" | "complete" | "error";
-    userId: string;
-  }>,
-  memorySourceHooks?: MemorySourceMutationHooks
+  input: TerminalChatSourceInput
 ): Promise<void> {
-  const ownership = await tx.chat.findUnique({
-    select: { userId: true },
+  const [chat] = await tx.$queryRaw<Array<{ memoryMode: string }>>(Prisma.sql`
+    SELECT "memoryMode"::text AS "memoryMode"
+    FROM "Chat"
+    WHERE "id" = ${input.chatId} AND "userId" = ${input.userId} AND "permanentDeletionAt" IS NULL
+    FOR UPDATE
+  `);
+  if (!chat) return;
+  const keptChatTime = await monitoringCheckChatTime(tx, { chatId: input.chatId, runId: input.runId });
+  const now = new Date();
+  await tx.chat.update({
+    data: chat.memoryMode === "TEMPORARY"
+      ? { temporaryRetentionDeadline: temporaryChatRetentionDeadline(now), updatedAt: now }
+      : { updatedAt: now },
+    select: { id: true },
     where: { id: input.chatId }
   });
-  if (ownership && ownership.userId === null) {
-    // A legacy Project chat has no personal owner and never enters the
-    // personal Memory source state machine; its runs still settle.
-    return;
-  }
-  const chat = await lockMemorySourceChat(tx, {
-    chatId: input.chatId,
-    lock: "UPDATE",
-    userId: input.userId
-  });
-  if (!chat) throw new MemorySourceStateConflictError();
-  // A monitoring check's terminal write keeps its chat's place in the chat list (`chatListTime.ts`).
-  const keptChatTime = await monitoringCheckChatTime(tx, { chatId: input.chatId, runId: input.runId });
-  await applyMemorySourceMutations(tx, {
-    chat,
-    hooks: memorySourceHooks,
-    mutations: ["TERMINAL_SETTLEMENT"],
-    terminalSettlement: {
-      assistantMessageId: input.assistantMessageId,
-      runId: input.runId,
-      status: input.status
-    }
-  });
   if (keptChatTime) await keepChatListTime(tx, input.chatId, keptChatTime);
+  if (input.assistantMessageId) await markChatSearchDirty(tx, { chatId: input.chatId, userId: input.userId });
+}
+
+/**
+ * The name the run side's settlement paths still call, with the old Memory hooks they still pass; the hooks are
+ * ignored. Use {@link settleTerminalChatSource}.
+ */
+export async function settleTerminalMemorySource(
+  tx: Prisma.TransactionClient,
+  input: TerminalChatSourceInput,
+  _retiredMemoryHooks?: unknown
+): Promise<void> {
+  await settleTerminalChatSource(tx, input);
 }
 
 export async function settlePreparingRunInTransaction(

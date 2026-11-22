@@ -148,19 +148,22 @@ import { acceptedMcpCallIdentity } from "../mcp/callDetailsAuthority";
 import { decodeFrozenSkillManifest } from "../skills/runManifest";
 import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadDeepResearchMarks } from "./deepResearchProjection";
-import {
-  applyMemoryScopedTargetOwnerLifecycle,
-  applyMemorySourceMutations,
-  type LockedMemorySourceChat,
-  type MemorySourceMutation,
-  type MemorySourceMutationHooks
-} from "../memory/sourceState";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import { lockMemorySettings } from "../memory/persistence/transaction";
-import {
-  loadMemorySuppressionKeyring,
-  preflightMemorySuppressionKeys
-} from "../memory/suppressionKeyring";
+import { clearChatSearch, markChatSearchDirty } from "../chatSearch/index/dirty";
+
+/**
+ * A chat row its lifecycle writers lock `FOR UPDATE` before they change it. `memorySourceRevision` is no longer
+ * written (the old Memory source counters stopped with the cutover to past-chat search); it is read only as the
+ * revision the browser echoes, until its readers go with the column.
+ */
+type LockedChatRow = Readonly<{
+  activeLeafMessageId: string | null;
+  archived: boolean;
+  folderId: string | null;
+  id: string;
+  memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+  memorySourceRevision: number;
+  userId: string;
+}>;
 
 /** What every tool activity read selects of a call's sub-agent: a foreground sub-agent's calls nest under their turn's step. */
 export const toolCallSubagentSelect = {
@@ -1255,23 +1258,6 @@ function serializeArchivedChatDetail(input: {
   };
 }
 
-async function defaultResumeSuppressionPreflight(
-  tx: Prisma.TransactionClient,
-  userId: string
-): Promise<boolean> {
-  const required = await tx.memorySuppression.findMany({
-    distinct: ["fingerprintKeyVersion"],
-    orderBy: { fingerprintKeyVersion: "asc" },
-    select: { fingerprintKeyVersion: true },
-    where: { userId }
-  });
-  return preflightMemorySuppressionKeys(
-    loadMemorySuppressionKeyring(),
-    required.map((row) => row.fingerprintKeyVersion),
-    "resume"
-  ).status === "ready";
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1886,17 +1872,9 @@ export function createPrismaChatRepository(
   options: Readonly<{
     /** Catalog that chat Assistant overrides are validated and projected against. */
     loadCatalogData?: (userId: string) => Promise<CatalogData | null>;
-    memorySourceHooks?: MemorySourceMutationHooks;
-    resumeSuppressionPreflight?: (
-      tx: Prisma.TransactionClient,
-      userId: string
-    ) => Promise<boolean>;
     workspaceAvailability?: WorkspaceAvailabilityService;
   }> = {}
 ): ChatRepository & ChatLifecycleRepository {
-  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
-  const resumeSuppressionPreflight = options.resumeSuppressionPreflight ??
-    defaultResumeSuppressionPreflight;
   const workspaceAvailability = options.workspaceAvailability ??
     defaultWorkspaceAvailabilityService;
   const loadCatalogData = options.loadCatalogData ??
@@ -1904,11 +1882,10 @@ export function createPrismaChatRepository(
   return {
     archiveChat: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
+        const chats = await tx.$queryRaw<LockedChatRow[]>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+            "memoryMode", "memorySourceRevision"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1921,12 +1898,8 @@ export function createPrismaChatRepository(
 
         await assertChatHasNoActiveRuns(tx, chatId);
 
-        await applyMemorySourceMutations(tx, {
-          chat: chats[0],
-          hooks: memorySourceHooks,
-          mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
-          patch: { archived: true }
-        });
+        // Archiving changes neither what the chat says nor whether past-chat search may read it.
+        await tx.chat.update({ data: { archived: true }, select: { id: true }, where: { id: chatId } });
         return true;
       });
     },
@@ -1935,11 +1908,10 @@ export function createPrismaChatRepository(
         return { kind: "stale" };
       }
       return prismaClient.$transaction(async (tx): Promise<ChatLifecycleMutationResult> => {
-        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { updatedAt: Date }>>`
+        const chats = await tx.$queryRaw<LockedChatRow[]>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline", "updatedAt"
+            "memoryMode", "memorySourceRevision"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -1955,27 +1927,19 @@ export function createPrismaChatRepository(
 
         await assertChatHasNoActiveRuns(tx, chatId);
 
-        const snapshot = await applyMemorySourceMutations(tx, {
-          chat,
-          hooks: memorySourceHooks,
-          mutations: ["CHAT_ARCHIVE_OR_RESTORE"],
-          patch: { archived }
-        });
-        // The owner's restore keeps the chat from a scheduled task's history retention.
-        if (!archived) await tx.chat.update({ data: { ownerKeptAt: new Date() }, where: { id: chatId } });
-        const updated = await tx.chat.findUniqueOrThrow({
+        // The owner's restore also keeps the chat from a scheduled task's history retention. Archiving changes
+        // neither what the chat says nor whether past-chat search may read it.
+        const updated = await tx.chat.update({
+          data: { archived, ...(archived ? {} : { ownerKeptAt: new Date() }) },
           select: { updatedAt: true },
           where: { id: chatId }
         });
-        if (snapshot.memoryMode === "TEMPORARY") {
-          throw new Error("chat_lifecycle_integrity_invalid");
-        }
         return {
           chat: {
-            archived: snapshot.archived,
-            id: snapshot.id,
-            memoryMode: snapshot.memoryMode,
-            sourceRevision: snapshot.memorySourceRevision,
+            archived,
+            id: chat.id,
+            memoryMode: chat.memoryMode,
+            sourceRevision: chat.memorySourceRevision,
             updatedAt: updated.updatedAt
           },
           kind: "ok"
@@ -2068,11 +2032,10 @@ export function createPrismaChatRepository(
           FOR UPDATE
         `;
         if (!folders[0]) return false;
-        const chats = await tx.$queryRaw<LockedMemorySourceChat[]>`
-          SELECT
-            "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline"
+        // In id order, as every writer that locks several chats takes them. A folder is no part of what past-chat
+        // search indexes, so the moved chats keep their passages.
+        const chats = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id"
           FROM "Chat"
           WHERE "userId" = ${userId}
             AND "folderId" = ${folderId}
@@ -2080,21 +2043,12 @@ export function createPrismaChatRepository(
           ORDER BY "id"
           FOR UPDATE
         `;
-        const movedSources = [];
-        for (const chat of chats) {
-          movedSources.push(await applyMemorySourceMutations(tx, {
-            chat,
-            hooks: memorySourceHooks,
-            mutations: ["FOLDER_MOVE"],
-            patch: { folderId: null }
-          }));
+        if (chats.length > 0) {
+          await tx.chat.updateMany({
+            data: { folderId: null },
+            where: { folderId, id: { in: chats.map(({ id }) => id) }, userId }
+          });
         }
-        await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
-          kind: "FOLDER_DELETE",
-          sourceSnapshots: movedSources,
-          targetId: folderId,
-          userId
-        });
         const result = await tx.folder.deleteMany({
           where: { id: folderId, userId }
         });
@@ -2635,11 +2589,10 @@ export function createPrismaChatRepository(
         (mode === "EXCLUDED" && resumeDisclosureCopyVersion !== undefined)
       ) return { kind: "contract_invalid" as const };
       return prismaClient.$transaction(async (tx) => {
-        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { importSource: string | null }>>`
+        const chats = await tx.$queryRaw<Array<LockedChatRow & { importSource: string | null }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
+            "memoryMode", "memorySourceRevision",
             "importSource"::text AS "importSource"
           FROM "Chat"
           WHERE "id" = ${chatId}
@@ -2658,32 +2611,29 @@ export function createPrismaChatRepository(
           chat.memoryMode === mode
         ) return { kind: "source_stale" as const };
 
-        const settings = await lockMemorySettings(tx, userId, false);
-        if (hasMemoryFence && settings.memoryRevision !== expectedMemoryRevision) {
-          return { kind: "memory_stale" as const };
-        }
-        if (mode === "NORMAL" && !(await resumeSuppressionPreflight(tx, userId))) {
-          return { kind: "resume_blocked" as const };
-        }
-
-        const snapshot = await applyMemorySourceMutations(tx, {
-          chat,
-          hooks: memorySourceHooks,
-          mutations: [mode === "EXCLUDED" ? "SOURCE_EXCLUDE" : "SOURCE_RESUME"],
-          patch: { memoryMode: mode }
-        });
-        const advanced = await tx.userMemorySettings.findUniqueOrThrow({
+        // The old Memory counters no longer move with a chat's mode; the fence and the response still carry them
+        // until their contract goes with the old Memory tables. Nothing learns from a resumed chat, so resuming
+        // needs no Memory preflight.
+        const counters = await tx.userMemorySettings.findUniqueOrThrow({
           select: { memoryGeneration: true, memoryRevision: true },
           where: { userId }
         });
+        if (hasMemoryFence && counters.memoryRevision !== expectedMemoryRevision) {
+          return { kind: "memory_stale" as const };
+        }
+
+        await tx.chat.update({ data: { memoryMode: mode }, select: { id: true }, where: { id: chat.id } });
+        // An Excluded chat leaves past-chat search at once; a resumed one is indexed again by the pass.
+        if (mode === "EXCLUDED") await clearChatSearch(tx, { chatId: chat.id });
+        else await markChatSearchDirty(tx, { chatId: chat.id, userId });
         return {
           kind: "ok" as const,
           response: {
-            chatId: snapshot.id,
-            memoryGeneration: advanced.memoryGeneration,
-            memoryRevision: advanced.memoryRevision,
-            mode: snapshot.memoryMode,
-            sourceRevision: snapshot.memorySourceRevision
+            chatId: chat.id,
+            memoryGeneration: counters.memoryGeneration,
+            memoryRevision: counters.memoryRevision,
+            mode,
+            sourceRevision: chat.memorySourceRevision
           }
         };
       });
@@ -2722,12 +2672,10 @@ export function createPrismaChatRepository(
             return null;
           }
         }
-        const chats = await tx.$queryRaw<Array<LockedMemorySourceChat & { updatedAt: Date }>>`
+        const chats = await tx.$queryRaw<Array<LockedChatRow & { title: string; updatedAt: Date }>>`
           SELECT
             "id", "userId", "activeLeafMessageId", "archived", "folderId",
-            "memoryMode", "memoryBranchGeneration", "memorySourceRevision",
-            "temporaryRetentionPolicyVersion", "temporaryRetentionDeadline",
-            "updatedAt"
+            "memoryMode", "memorySourceRevision", "title", "updatedAt"
           FROM "Chat"
           WHERE "id" = ${chatId}
             AND "userId" = ${userId}
@@ -2782,25 +2730,17 @@ export function createPrismaChatRepository(
           scope: { kind: "personal", userId }
         });
 
-        const mutations: MemorySourceMutation[] = [];
-        if (
-          activeLeafMessageId !== undefined &&
-          activeLeafMessageId !== chats[0].activeLeafMessageId
-        ) {
-          mutations.push("BRANCH_PATH_CHANGE");
-        }
-        if (folderId !== undefined && folderId !== chats[0].folderId) {
-          mutations.push("FOLDER_MOVE");
-        }
-        if (mutations.length > 0) {
-          await applyMemorySourceMutations(tx, {
-            chat: chats[0],
-            hooks: memorySourceHooks,
-            mutations,
-            patch: {
-              ...(activeLeafMessageId !== undefined ? { activeLeafMessageId } : {}),
-              ...(folderId !== undefined ? { folderId } : {})
-            }
+        const branchSwitched = activeLeafMessageId !== undefined &&
+          activeLeafMessageId !== chats[0].activeLeafMessageId;
+        const folderMoved = folderId !== undefined && folderId !== chats[0].folderId;
+        if (branchSwitched || folderMoved) {
+          await tx.chat.update({
+            data: {
+              ...(branchSwitched ? { activeLeafMessageId } : {}),
+              ...(folderMoved ? { folderId } : {})
+            },
+            select: { id: true },
+            where: { id: chatId }
           });
         }
 
@@ -2832,6 +2772,10 @@ export function createPrismaChatRepository(
               select: chatSummarySelect,
               where: { id: chatId }
             });
+        // Past-chat search reads the active branch, and every passage carries the title; a folder is no part of it.
+        if (branchSwitched || (title && title.trim() !== chats[0].title)) {
+          await markChatSearchDirty(tx, { chatId, userId });
+        }
 
         return serializeChatSummary(updated, workspaceAvailability, workspaceSnapshot);
       });

@@ -1,7 +1,9 @@
+import { createChatSearchEmbedder } from "../chatSearch/embedderPrisma";
 import { prisma } from "../prisma";
 import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceRuntime } from "../workspace/defaultServices";
 import { createPermanentChatDeletionPass, createTemporaryChatDeletionPass } from "./chatDeletionPasses";
+import { createChatSearchBackfillPass, createChatSearchIndexPass } from "./chatSearchPasses";
 import {
   BACKGROUND_WORKER_HEARTBEAT_INTERVAL_MS,
   createPrismaBackgroundWorkerHeartbeat,
@@ -15,7 +17,10 @@ type DefaultsGlobal = typeof globalThis & {
   __aiqsaBackgroundLocalWorker?: Readonly<{ heartbeat: BackgroundWorkerHeartbeat; worker: BackgroundWorker }>;
 };
 
-/** The deletion duties: Temporary chats past their deadline and chats fenced for permanent deletion. */
+/**
+ * The deletion duties (Temporary chats past their deadline, chats fenced for permanent deletion) and the past-chat
+ * search index with its backfill.
+ */
 export function registerDefaultBackgroundPasses(
   registry: BackgroundPassRegistry = defaultBackgroundPassRegistry
 ): void {
@@ -24,6 +29,9 @@ export function registerDefaultBackgroundPasses(
   const dependencies = { client: prisma, storage: createS3StorageAdapter(), workspaceRuntime };
   registry.register(createTemporaryChatDeletionPass(dependencies));
   registry.register(createPermanentChatDeletionPass(dependencies));
+  const chatSearch = { db: prisma, embedder: createChatSearchEmbedder(prisma) };
+  registry.register(createChatSearchIndexPass(chatSearch));
+  registry.register(createChatSearchBackfillPass(chatSearch));
   if (registry === defaultBackgroundPassRegistry) scope.__aiqsaBackgroundDefaultsRegistered = true;
 }
 

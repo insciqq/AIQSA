@@ -17,10 +17,8 @@ function fixture() {
     ] }
   };
   const chat = {
-    id: "chat", userId,
-    archived: false, activeLeafMessageId: original.id, folderId: null,
-    memoryMode: "TEMPORARY", memoryBranchGeneration: 0, memorySourceRevision: 0,
-    temporaryRetentionPolicyVersion: 1, temporaryRetentionDeadline: null
+    id: "chat", userId, activeLeafMessageId: original.id, defaultProviderModelId: null, folderId: null,
+    importSource: null, importSourceModel: null, memoryMode: "TEMPORARY", title: "Files"
   };
   const attachments = ["document", "image"].map((id) => ({
     id, chatId: chat.id, messageId: original.id, userId: chat.userId,
@@ -32,6 +30,7 @@ function fixture() {
     status: id === "image" ? "ready" : "processing", storageKey: `private/${id}`
   }));
   const tx = {
+    $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async () => [chat]),
     message: {
       findFirst: vi.fn(async () => original),
@@ -93,6 +92,11 @@ describe("edited message attachments", () => {
       create: { ownerUserId: userId }
     });
     expect(tx.attachment.create.mock.calls[1][0].data.processingJob).toBeUndefined();
+    expect(tx.chat.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { activeLeafMessageId: "edited" }, where: { id: "chat" }
+    }));
+    // The past-chat search mark of the new branch, in the edit's own transaction.
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
     expect({ attachments, original }).toEqual(before);
   });
 
@@ -107,6 +111,7 @@ describe("edited message attachments", () => {
     })).toBeNull();
     expect(tx.message.create).not.toHaveBeenCalled();
     expect(tx.attachment.create).not.toHaveBeenCalled();
-    expect(tx.chat.updateMany).not.toHaveBeenCalled();
+    expect(tx.chat.update).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { createHash, randomUUID } from "node:crypto";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   boundedChatBranchPreview,
   CHAT_TITLE_MAX_LENGTH,
@@ -9,7 +9,6 @@ import { MEMORY_CONFIRMATION_COPY_VERSION } from "../../contracts/memory";
 import { textMessageContent } from "../../domain/content";
 import { estimateApproxTokens } from "../../domain/contextBudget";
 import { prisma } from "../prisma";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { ActiveLeafConflictError, ActiveRunConflictError } from "../runs/runRepositoryContract";
 import { createPrismaChatRepository } from "./prismaRepository";
@@ -433,125 +432,62 @@ describe("Prisma-backed chat repository", () => {
     });
   });
 
-  it("moves an unfiled retained chat with the production Memory hooks", async () => {
+  it("moves chats between folders and out of a deleted folder, leaving past-chat search alone", async () => {
     await withFolderUser(async ({ fakeProviderModelId, userId }) => {
-      const repository = createPrismaChatRepository(prisma, {
-        memorySourceHooks: defaultMemorySourceMutationHooks
-      });
-      const folder = await repository.createFolder({ name: "Filed source", userId });
-      const chat = await prisma.chat.create({
-        data: { defaultProviderModelId: fakeProviderModelId, title: "Unfiled source", userId }
-      });
-      const message = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Retained source"),
-          role: "user",
-          status: "complete"
-        }
-      });
-      await prisma.chat.update({
-        data: { activeLeafMessageId: message.id }, where: { id: chat.id }
-      });
-
-      await expect(repository.updateChat({
-        chatId: chat.id, folderId: folder!.id, userId
-      })).resolves.toMatchObject({ folderId: folder!.id });
-      await expect(prisma.chat.findUniqueOrThrow({
-        select: { activeLeafMessageId: true, memoryBranchGeneration: true, memorySourceRevision: true },
-        where: { id: chat.id }
-      })).resolves.toEqual({
-        activeLeafMessageId: message.id, memoryBranchGeneration: 0, memorySourceRevision: 1
-      });
-      await expect(prisma.message.count({ where: { chatId: chat.id } })).resolves.toBe(1);
-    });
-  });
-
-  it("routes chat moves and folder deletion through source metadata fencing", async () => {
-    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
-      const ownerLifecycle = vi.fn(async () => undefined);
-      const repository = createPrismaChatRepository(prisma, {
-        memorySourceHooks: { onScopedTargetOwnerLifecycle: ownerLifecycle }
-      });
+      const repository = createPrismaChatRepository(prisma);
       const [folderA, folderB] = await Promise.all([
         repository.createFolder({ name: "Source A", userId }),
         repository.createFolder({ name: "Source B", userId })
       ]);
       const chat = await prisma.chat.create({
-        data: {
-          defaultProviderModelId: fakeProviderModelId,
-          folderId: folderA?.id,
-          title: "Movable source",
-          userId
-        }
+        data: { defaultProviderModelId: fakeProviderModelId, folderId: folderA?.id, title: "Movable source", userId }
       });
       const message = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Retained source"),
-          role: "user",
-          status: "complete"
-        }
+        data: { chatId: chat.id, content: textMessageContent("Retained source"), role: "user", status: "complete" }
       });
-      await prisma.chat.update({
-        data: { activeLeafMessageId: message.id },
+      await prisma.chat.update({ data: { activeLeafMessageId: message.id }, where: { id: chat.id } });
+      const moved = () => prisma.chat.findUniqueOrThrow({
+        select: { activeLeafMessageId: true, folderId: true, memoryBranchGeneration: true, memorySourceRevision: true },
         where: { id: chat.id }
       });
 
-      await expect(repository.updateChat({
-        chatId: chat.id,
-        folderId: folderB?.id,
-        userId
-      })).resolves.toMatchObject({ folderId: folderB?.id });
-      await expect(Promise.all([
-        prisma.chat.findUniqueOrThrow({
-          select: {
-            folderId: true,
-            memoryBranchGeneration: true,
-            memorySourceRevision: true
-          },
-          where: { id: chat.id }
-        }),
-        prisma.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        })
-      ])).resolves.toEqual([
-        {
-          folderId: folderB?.id,
-          memoryBranchGeneration: 0,
-          memorySourceRevision: 1
-        },
-        { memoryGeneration: 0, memoryRevision: 1 }
-      ]);
+      await expect(repository.updateChat({ chatId: chat.id, folderId: folderB?.id, userId }))
+        .resolves.toMatchObject({ folderId: folderB?.id });
+      await expect(moved()).resolves.toEqual({
+        activeLeafMessageId: message.id, folderId: folderB?.id, memoryBranchGeneration: 0, memorySourceRevision: 0
+      });
 
-      await expect(repository.deleteFolder({
-        folderId: folderB?.id ?? "",
-        userId
-      })).resolves.toBe(true);
-      expect(ownerLifecycle).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
-        kind: "FOLDER_DELETE",
-        sourceSnapshots: [expect.objectContaining({ id: chat.id, folderId: null })],
-        targetId: folderB?.id,
-        userId
-      }));
-      await expect(Promise.all([
-        prisma.chat.findUniqueOrThrow({
-          select: {
-            folderId: true,
-            memoryBranchGeneration: true,
-            memorySourceRevision: true
-          },
-          where: { id: chat.id }
-        }),
-        prisma.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        })
-      ])).resolves.toEqual([
-        { folderId: null, memoryBranchGeneration: 0, memorySourceRevision: 2 },
-        { memoryGeneration: 0, memoryRevision: 2 }
-      ]);
+      await expect(repository.deleteFolder({ folderId: folderB?.id ?? "", userId })).resolves.toBe(true);
+      await expect(moved()).resolves.toEqual({
+        activeLeafMessageId: message.id, folderId: null, memoryBranchGeneration: 0, memorySourceRevision: 0
+      });
+      // A folder is no part of the passages, so neither move marked the chat.
+      await expect(prisma.chatSearchState.findUnique({ where: { chatId: chat.id } })).resolves.toBeNull();
+      await expect(prisma.message.count({ where: { chatId: chat.id } })).resolves.toBe(1);
+    });
+  });
+
+  it("marks a branch switch and a rename for past-chat search, in the writing transaction", async () => {
+    await withFolderUser(async ({ fakeProviderModelId, userId }) => {
+      const repository = createPrismaChatRepository(prisma);
+      const chat = await prisma.chat.create({ data: { defaultProviderModelId: fakeProviderModelId, title: "Trip", userId } });
+      const first = await prisma.message.create({
+        data: { chatId: chat.id, content: textMessageContent("First"), role: "user", status: "complete" }
+      });
+      const second = await prisma.message.create({
+        data: { chatId: chat.id, content: textMessageContent("Second"), role: "user", status: "complete" }
+      });
+      await prisma.chat.update({ data: { activeLeafMessageId: first.id }, where: { id: chat.id } });
+      const state = () => prisma.chatSearchState.findUnique({ select: { dirtyAt: true }, where: { chatId: chat.id } });
+
+      await repository.updateChat({ activeLeafMessageId: second.id, chatId: chat.id, userId });
+      const switched = await state();
+      expect(switched?.dirtyAt).toBeInstanceOf(Date);
+
+      await repository.updateChat({ chatId: chat.id, title: "Lisbon in May", userId });
+      const renamed = await state();
+      // A mark always moves the chat's version forward.
+      expect(renamed!.dirtyAt!.getTime()).toBeGreaterThan(switched!.dirtyAt!.getTime());
     });
   });
 
@@ -1210,138 +1146,64 @@ describe("Prisma-backed chat repository", () => {
     });
   });
 
-  it("fences Exclude synchronously and resumes without crossing suppression or source cutoffs", async () => {
+  it("excludes a chat from past-chat search at once and marks it again on resume", async () => {
     await withFolderUser(async ({ fakeProviderModelId, userId }) => {
-      const preflight = vi.fn(async () => true);
-      const repository = createPrismaChatRepository(prisma, {
-        resumeSuppressionPreflight: preflight
-      });
+      const repository = createPrismaChatRepository(prisma);
       const chat = await prisma.chat.create({
-        data: { defaultProviderModelId: fakeProviderModelId, title: "Memory source", userId }
+        data: { defaultProviderModelId: fakeProviderModelId, title: "Searchable chat", userId }
       });
-      const message = await prisma.message.create({
-        data: {
-          chatId: chat.id,
-          content: textMessageContent("Remember only eligible evidence"),
-          role: "user",
-          status: "complete"
-        }
+      const question = await prisma.message.create({
+        data: { chatId: chat.id, content: textMessageContent("Where to?"), role: "user", status: "complete" }
       });
-      await prisma.chat.update({
-        data: { activeLeafMessageId: message.id },
-        where: { id: chat.id }
+      const answer = await prisma.message.create({
+        data: { chatId: chat.id, content: textMessageContent("Lisbon."), parentMessageId: question.id, role: "assistant",
+          status: "complete" }
       });
-      const barrier = await prisma.memorySourceBarrier.create({
-        data: {
-          kind: "ALL_REUSABLE",
-          memoryGeneration: 0,
-          sourceCreatedAtCutoff: new Date("2026-08-09T00:00:00.000Z"),
-          userId
-        }
-      });
-      const suppression = await prisma.memorySuppression.create({
-        data: {
-          deletionGeneration: 0,
-          fingerprintKeyVersion: "v1",
-          normalizationVersion: "memory-normalization-v1",
-          scope: "ALL",
-          userId
-        }
+      await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
+      // An indexed chat: its state and one passage, as the index pass leaves them.
+      const text = "Chat: Searchable chat\n\nUser: Where to?\n\nAssistant: Lisbon.";
+      await prisma.$executeRaw`
+        INSERT INTO "ChatSearchState" ("chatId", "userId", "indexedLeafMessageId", "updatedAt")
+        VALUES (${chat.id}, ${userId}, ${answer.id}, CURRENT_TIMESTAMP)`;
+      await prisma.$executeRaw`
+        INSERT INTO "ChatSearchPassage" ("id", "userId", "chatId", "userMessageId", "assistantMessageId", "turnAt",
+          "ordinal", "text", "contentHash")
+        VALUES (${randomUUID()}, ${userId}, ${chat.id}, ${question.id}, ${answer.id}, ${question.createdAt}, 0, ${text},
+          ${createHash("sha256").update(text).digest("hex")})`;
+      const index = async () => ({
+        passages: await prisma.chatSearchPassage.count({ where: { chatId: chat.id } }),
+        state: await prisma.chatSearchState.findUnique({ select: { dirtyAt: true }, where: { chatId: chat.id } })
       });
 
       await expect(repository.setMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: 0,
-        expectedMemoryRevision: 0,
-        mode: "EXCLUDED",
-        userId
+        chatId: chat.id, expectedChatRevision: 0, expectedMemoryRevision: 0, mode: "EXCLUDED", userId
       })).resolves.toEqual({
         kind: "ok",
-        response: {
-          chatId: chat.id,
-          memoryGeneration: 1,
-          memoryRevision: 1,
-          mode: "EXCLUDED",
-          sourceRevision: 1
-        }
+        response: { chatId: chat.id, memoryGeneration: 0, memoryRevision: 0, mode: "EXCLUDED", sourceRevision: 0 }
       });
+      await expect(index()).resolves.toEqual({ passages: 0, state: null });
       await expect(prisma.chat.findUniqueOrThrow({
         select: { archived: true, memoryMode: true, memorySourceRevision: true },
         where: { id: chat.id }
-      })).resolves.toEqual({
-        archived: false,
-        memoryMode: "EXCLUDED",
-        memorySourceRevision: 1
-      });
+      })).resolves.toEqual({ archived: false, memoryMode: "EXCLUDED", memorySourceRevision: 0 });
       await expect(repository.setMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: 1,
-        expectedMemoryRevision: 1,
-        mode: "EXCLUDED",
-        userId
+        chatId: chat.id, expectedChatRevision: 0, expectedMemoryRevision: 0, mode: "EXCLUDED", userId
       })).resolves.toEqual({ kind: "source_stale" });
+      await expect(repository.setMemoryMode({
+        chatId: chat.id, expectedChatRevision: 0, expectedMemoryRevision: 7, mode: "NORMAL",
+        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, userId
+      })).resolves.toEqual({ kind: "memory_stale" });
 
       await expect(repository.setMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: 1,
-        expectedMemoryRevision: 1,
-        mode: "NORMAL",
-        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        userId
-      })).resolves.toEqual({
-        kind: "ok",
-        response: {
-          chatId: chat.id,
-          memoryGeneration: 1,
-          memoryRevision: 2,
-          mode: "NORMAL",
-          sourceRevision: 2
-        }
-      });
-      expect(preflight).toHaveBeenCalledWith(expect.anything(), userId);
-      // Exclude and Resume are synchronous visibility boundaries. Resume is
-      // forward-only: retained messages are not reconciled, re-indexed, or
-      // re-extracted until a new assistant turn settles in this chat.
-      await expect(prisma.memoryJob.findMany({
-        where: { chatId: chat.id, userId }
-      })).resolves.toEqual([]);
-      await expect(prisma.memorySourceBarrier.findUnique({
-        where: { userId_id: { id: barrier.id, userId } }
-      })).resolves.toMatchObject({
-        explicitOverrideAllowed: false,
-        id: barrier.id,
-        sourceCreatedAtCutoff: barrier.sourceCreatedAtCutoff
-      });
-      await expect(prisma.memorySuppression.findUnique({
-        where: { userId_id: { id: suppression.id, userId } }
-      })).resolves.toMatchObject({ explicitOverrideAllowed: false, id: suppression.id });
-
-      await repository.setMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: 2,
-        expectedMemoryRevision: 2,
-        mode: "EXCLUDED",
-        userId
-      });
-      const blockedRepository = createPrismaChatRepository(prisma, {
-        resumeSuppressionPreflight: async () => false
-      });
-      await expect(blockedRepository.setMemoryMode({
-        chatId: chat.id,
-        expectedChatRevision: 3,
-        expectedMemoryRevision: 3,
-        mode: "NORMAL",
-        resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
-        userId
-      })).resolves.toEqual({ kind: "resume_blocked" });
-      await expect(prisma.chat.findUniqueOrThrow({
-        select: { memoryMode: true, memorySourceRevision: true },
-        where: { id: chat.id }
-      })).resolves.toEqual({ memoryMode: "EXCLUDED", memorySourceRevision: 3 });
+        chatId: chat.id, mode: "NORMAL", resumeDisclosureCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, userId
+      })).resolves.toMatchObject({ kind: "ok", response: { mode: "NORMAL" } });
+      await expect(index()).resolves.toEqual({ passages: 0, state: { dirtyAt: expect.any(Date) } });
+      // Nothing of the old Memory moved or was queued.
       await expect(prisma.userMemorySettings.findUniqueOrThrow({
         select: { memoryGeneration: true, memoryRevision: true },
         where: { userId }
-      })).resolves.toEqual({ memoryGeneration: 2, memoryRevision: 3 });
+      })).resolves.toEqual({ memoryGeneration: 0, memoryRevision: 0 });
+      await expect(prisma.memoryJob.count({ where: { chatId: chat.id, userId } })).resolves.toBe(0);
     });
   });
 });

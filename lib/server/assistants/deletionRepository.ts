@@ -1,11 +1,6 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type { AssistantDeletionConsequences } from "../../contracts/assistantDeletion";
 import { CHAT_ASSISTANT_DELETED_MARKER } from "../../contracts/chats";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import {
-  applyMemoryScopedTargetOwnerLifecycle,
-  type MemorySourceMutationHooks
-} from "../memory/sourceState";
 import { prisma } from "../prisma";
 import { isPrismaSerializationConflict } from "../runs/prismaRepositoryShared";
 
@@ -14,16 +9,9 @@ export type AssistantDeleteResult =
   | { kind: "not_found" }
   | { kind: "version_conflict" };
 
-export type PrismaAssistantDeletionRepositoryOptions = Readonly<{
-  memorySourceHooks?: MemorySourceMutationHooks;
-}>;
-
 export function createPrismaAssistantDeletionRepository(
-  client: PrismaClient = prisma,
-  options: PrismaAssistantDeletionRepositoryOptions = {}
+  client: PrismaClient = prisma
 ) {
-  const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
-
   return {
     /** Owner-only preview of {@link delete}. Invisible and missing definitions
      * both return null. */
@@ -63,8 +51,9 @@ export function createPrismaAssistantDeletionRepository(
 
     /**
      * Permanently deletes an owned definition in one transaction. Accepted runs,
-     * chats, user defaults and Memory history keep their rows and snapshots;
-     * the foreign keys only detach them from the definition.
+     * chats and user defaults keep their rows and snapshots; the foreign keys
+     * only detach them from the definition. Past-chat search does not read the
+     * binding, so the detached chats keep their passages.
      */
     async delete(
       userId: string,
@@ -74,8 +63,7 @@ export function createPrismaAssistantDeletionRepository(
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           const result = await client.$transaction(async (tx) => {
-            // Match Memory admission's owner -> definition -> chat order.
-            // The deletion hook later locks this owner's Memory settings.
+            // Owner, then definition, then chats: the order the Assistant writers take.
             await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
             // The exclusive row lock also blocks every new reference: inserting
             // a run, chat binding or pin takes a key-share lock on this row, so
@@ -94,13 +82,6 @@ export function createPrismaAssistantDeletionRepository(
 
             await tx.assistantListingRequest.deleteMany({ where: { assistantId } });
             await tx.assistantPublication.deleteMany({ where: { assistantId } });
-
-            await applyMemoryScopedTargetOwnerLifecycle(tx, memorySourceHooks, {
-              kind: "ASSISTANT_DELETE",
-              sourceSnapshots: [],
-              targetId: assistantId,
-              userId
-            });
 
             // One set-based write before the foreign key detaches the chats:
             // the marker replaces their overrides, so each chat can say what

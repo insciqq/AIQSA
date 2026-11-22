@@ -8,7 +8,7 @@ import {
   type WorkspaceSecretValue
 } from "@/lib/contracts/workspaceSecrets";
 import { decryptSecretEnvelope, encryptSecretEnvelope, getSecretEncryptionKey } from "../../secrets/envelope";
-import { requestMemorySavedSecretScrub } from "../../memory/savedSecretScrubRequest";
+import { markOwnerChatsSearchDirty } from "../../chatSearch/index/dirty";
 import { parseWorkspaceSecretMutation, parseWorkspaceSecretValue, WorkspaceSecretError } from "./validation";
 import { validateWorkspaceSshKey } from "./sshKey";
 import { workspaceBrowserSessionChecksum } from "./browserSession";
@@ -175,9 +175,10 @@ export async function mutateWorkspaceSecretInTransaction(tx: Prisma.TransactionC
     const id = current?.id ?? randomUUID();
     const versionId = await createWorkspaceSecretRevision(tx, { userId, secretId: id, value, key: encryptionKey(),
       name: mutation.name.trim(), description: mutation.description, autoSaved: !replacement && current?.value.autoSaved });
-    // A newly saved value leaves what Memory already holds (`memory/savedSecretScrub.ts`).
+    // A newly saved value leaves past-chat search: the owner's indexed chats are rebuilt with it redacted
+    // (`lib/server/chatSearch/index/savedSecrets.ts`). A browser sign-in is no value a chat could hold.
     if (replacement && value.kind !== "browser_session") {
-      await requestMemorySavedSecretScrub(tx, { name: mutation.name.trim(), revisionId: versionId, userId, value });
+      await markOwnerChatsSearchDirty(tx, { userId });
     }
     const browser = { browserFileName: value.kind === "browser_session" ? value.originalName : null, browserWriterSequence: browserSequence };
     if (current) await tx.workspaceSecret.update({ data: { valueId: versionId, ...browser }, where: { id } });
