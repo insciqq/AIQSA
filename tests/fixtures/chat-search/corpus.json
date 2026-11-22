@@ -1,0 +1,574 @@
+{
+  "version": 1,
+  "about": "Synthetic past-chat search corpus. Every name, company, ticket, file and figure is invented; nothing comes from a real installation. Times are relative to the run: daysAgo at a local hour, or minutesAgo.",
+  "fillers": [
+    "Перед переключением зафиксируйте текущую схему данных и сделайте снимок конфигурации: если что-то пойдёт не так, откат должен занимать минуты, а не часы. Отдельно договоритесь с командой поддержки, кто дежурит в окно работ, и заранее подготовьте шаблон сообщения для клиентов на случай задержки.",
+    "Миграцию лучше проводить поэтапно: сначала теневой режим, в котором новый сервис получает копию трафика, но ничего не пишет, затем запись в обе системы и сверка, и только потом переключение чтения. На каждом этапе нужен критерий выхода, который можно проверить по дашборду, а не на глаз.",
+    "Сверку данных делайте по контрольным суммам на уровне партий, а не построчно: построчная сверка на миллионах записей займёт ночь. Расхождения складывайте в отдельную таблицу с причиной, чтобы утром было видно, это ошибка преобразования или просто запись, пришедшая позже.",
+    "Документацию обновляйте одновременно с кодом: схема потоков, владельцы компонентов, порядок действий при сбое. Через месяц никто не вспомнит, почему выбрано именно такое решение, поэтому короткая запись о принятом решении с датой и альтернативами экономит много времени.",
+    "Нагрузочное тестирование проведите на данных, близких к боевым по объёму и распределению: синтетика с равномерным распределением ключей не покажет горячие разделы. Цель — понять запас по пропускной способности при пиковом дне распродаж, а не получить красивую цифру.",
+    "После переключения оставьте старую систему в режиме только для чтения хотя бы на две недели: это страховка на случай, если всплывёт редкий сценарий, который не покрыли тесты. Удаляйте её только после того, как владельцы смежных сервисов подтвердят, что больше к ней не обращаются.",
+    "Отдельно продумайте права доступа: сервисные учётные записи нового компонента должны получать ровно те разрешения, которые нужны, и ничего сверх. Ротацию ключей включите с первого дня, иначе её никогда не включат.",
+    "Наконец, проведите разбор после запуска: что прошло по плану, где потеряли время, какие проверки стоит автоматизировать к следующему разу. Итоги разбора кладите рядом с документацией, а не в личные заметки."
+  ],
+  "users": [
+    {
+      "key": "alice",
+      "timeZone": "Europe/Moscow",
+      "chats": [
+        {
+          "key": "ops-ticket",
+          "title": "OPS-4821 выгрузка заказов в CRM",
+          "daysAgo": 6,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Тикет OPS-4821: выгрузка заказов в CRM падает с ошибкой 502 после вчерашнего деплоя. Что проверить в первую очередь?",
+              "answer": "Для OPS-4821 я бы проверил три вещи. 1) Лимит размера тела запроса в шлюзе: сейчас он 5 МБ, а пачка заказов после деплоя выросла. 2) Таймаут прокси — 30 секунд; ошибка 502 при выгрузке обычно значит, что шлюз обрывает запрос длиннее этого порога. 3) Повторную отправку: без ключа идемпотентности CRM может создать дубли. Самое быстрое исправление — разбить выгрузку на пачки по 200 заказов."
+            },
+            {
+              "key": "t1",
+              "question": "Разбили на пачки по 200, но теперь на повторной отправке CRM отвечает 409.",
+              "answer": "409 Conflict здесь означает, что ключ идемпотентности уже использован для другой пачки. Генерируйте ключ из номера пачки и даты выгрузки, а не случайно, и храните его 24 часа: CRM помнит ключи ровно сутки. Тогда повтор той же пачки вернёт прежний результат, а не конфликт."
+            }
+          ]
+        },
+        {
+          "key": "ops-ticket-similar",
+          "title": "OPS-4812 задержка вебхука оплаты",
+          "daysAgo": 9,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "OPS-4812: вебхук оплаты от платёжного шлюза приходит с задержкой около 40 секунд, заказ всё это время висит в статусе pending. Это нормально?",
+              "answer": "Задержка в 40 секунд для вебхука оплаты — не норма. Обычно шлюз шлёт уведомление в течение пары секунд, а задержки появляются, когда наш обработчик отвечает медленнее 10 секунд и шлюз уходит на повтор. Ответьте 200 сразу, а саму обработку перенесите в фоновую задачу; статус pending тогда будет держаться не дольше нескольких секунд."
+            }
+          ]
+        },
+        {
+          "key": "onboarding-email",
+          "title": "Welcome email for Beacon Market onboarding",
+          "daysAgo": 14,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Draft a welcome email template for new Beacon Market sellers: the onboarding steps, the first listing and the payout schedule.",
+              "answer": "Subject: Welcome to Beacon Market — your first listing in three steps\n\nHi {first_name},\n\nWelcome aboard! Here is how to get your store live this week.\n\nStep 1. Verify your store profile: business details and a bank account for payouts.\nStep 2. Create your first listing: at least three photos, a clear title and the delivery options you offer.\nStep 3. Turn on order notifications so you never miss a buyer.\n\nPayouts are sent every Tuesday for orders delivered the week before. If you have questions, reply to this email and the seller success team will help.\n\nCheers,\nThe Beacon Market team"
+            }
+          ]
+        },
+        {
+          "key": "winback-email",
+          "title": "Win-back email template",
+          "daysAgo": 20,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Write an email for Beacon Market sellers who have not listed anything for 60 days. Friendly, short, one clear call to action.",
+              "answer": "Subject: We miss your store, {first_name}\n\nHi {first_name},\n\nIt has been a while since your last listing, and buyers keep searching for products like yours. Come back this month and your next three listings get featured placement for free.\n\n[Relist in one click]\n\nIf something stopped you, tell us what it was: we read every reply.\n\nThe Beacon Market team"
+            }
+          ]
+        },
+        {
+          "key": "partner-email-ru",
+          "title": "Шаблон письма партнёрам о новом тарифе",
+          "daysAgo": 25,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Нужен шаблон письма партнёрам о переходе на новый тариф с 1 декабря. Тон деловой, без канцелярита.",
+              "answer": "Тема: Новый тариф для партнёров с 1 декабря\n\nЗдравствуйте, {имя}!\n\nС 1 декабря мы переводим партнёрскую программу на новый тариф: комиссия снижается с 12% до 10%, а выплаты станут еженедельными. Ничего делать не нужно — переход произойдёт автоматически.\n\nЕсли у вас индивидуальные условия, они сохранятся до конца срока договора.\n\nС уважением,\nкоманда партнёрской программы"
+            }
+          ]
+        },
+        {
+          "key": "rate-card",
+          "title": "Ставки для коммерческого предложения",
+          "daysAgo": 30,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Зафиксируй наши ставки для КП: дизайн, вёрстка, ретушь. Чтобы в следующий раз не искать.",
+              "answer": "Ставки для КП:\n\n| Работа | Ставка |\n| --- | --- |\n| Дизайн макета | 3 800 ₽ за час |\n| Вёрстка | 2 900 ₽ за час |\n| Ретушь фото | 450 ₽ за снимок |\n\nМинимальный заказ — 8 часов. Срочная работа (меньше 48 часов до сдачи) идёт с коэффициентом 1,5. Правки сверх двух кругов оплачиваются по тем же ставкам."
+            }
+          ]
+        },
+        {
+          "key": "naming-rule",
+          "title": "Правило именования креативов",
+          "daysAgo": 18,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Напомни, как мы называем файлы креативов для рекламных кампаний?",
+              "answer": "Формат такой: CMP-<номер кампании>_<канал>_<размер>_<дата ГГГГММДД>.png, например CMP-0417_vk_1080x1080_20261103.png. Только латиница, без пробелов, канал строчными буквами. Новая версия того же креатива получает суффикс _v2, _v3 и так далее, старую не удаляем."
+            }
+          ]
+        },
+        {
+          "key": "report-w46",
+          "title": "Отчёт по продажам за неделю",
+          "daysAgo": 10,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Вот выгрузка продаж за неделю, сделай короткий отчёт: выручка, средний чек, топ-3 категории.",
+              "questionFiles": ["otchet_prodazhi_w46.xlsx"],
+              "answer": "Отчёт по продажам за неделю: выручка 4,2 млн ₽ (+6% к прошлой неделе), средний чек 2 310 ₽, заказов 1 818. Топ-3 категории: товары для дома, электроника, зоотовары. Категория «Спорт» упала на 11% — закончилась акция на тренажёры."
+            }
+          ]
+        },
+        {
+          "key": "report-w42",
+          "title": "Отчёт по продажам за неделю",
+          "daysAgo": 38,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Сделай отчёт по продажам за неделю по этой выгрузке: выручка, средний чек и что выросло.",
+              "questionFiles": ["otchet_prodazhi_w42.xlsx"],
+              "answer": "Отчёт по продажам за неделю: выручка 3,9 млн ₽, средний чек 2 180 ₽, заказов 1 790. Лучше всего выросла категория «Книги» — плюс 14% благодаря подборке к началу учебного года. Электроника без изменений, товары для дома минус 3%."
+            }
+          ]
+        },
+        {
+          "key": "long-warehouse",
+          "title": "Миграция сервиса склада на очереди",
+          "daysAgo": 45,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Распиши план миграции складского сервиса с синхронных вызовов на очереди событий: этапы, риски, настройки и мониторинг.",
+              "answer": [
+                "План миграции складского сервиса на очереди событий.",
+                "@filler:0",
+                "@filler:1",
+                "@filler:2",
+                "@filler:3",
+                "Настройки очереди складских событий: ставим 7 попыток повторной доставки с паузой 45 секунд между ними, после седьмой неудачи сообщение уходит в очередь мёртвых писем warehouse-dlq. Порядок важен только внутри одного товара, поэтому ключ партиционирования — артикул.",
+                "@filler:4",
+                "@filler:5",
+                "@filler:6",
+                "Мониторинг: алерт дежурному, если в warehouse-dlq больше 50 сообщений за 10 минут или если задержка потребителя превышает 2 минуты.",
+                "@filler:7"
+              ]
+            }
+          ]
+        },
+        {
+          "key": "fresh-post",
+          "title": "Пост о запуске Ventra API v2",
+          "minutesAgo": 4,
+          "arrivesLate": true,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Набросай пост для канала: запускаем Ventra API v2, новые лимиты и вебхуки.",
+              "answer": "Ventra API v2 уже доступен! Что нового: лимит вырос до 600 запросов в минуту, появились вебхуки на события заказов и возвратов, а ключи доступа теперь можно ограничить по IP. Старая версия будет работать до конца марта. Документация и примеры — в разделе для разработчиков."
+            }
+          ]
+        },
+        {
+          "key": "meeting-notes",
+          "title": "Заметки со встречи с подрядчиком",
+          "minutesAgo": 95,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Сведи в список заметки со встречи с подрядчиком по доставке: сроки, ответственные, открытые вопросы.",
+              "answer": "Итоги встречи с подрядчиком по доставке:\n- Сроки поставки на склад в Подольске — до 5 рабочих дней, подрядчик подтвердит письменно до пятницы.\n- Ответственный с их стороны — менеджер по ключевым клиентам, с нашей — отдел логистики.\n- Открытые вопросы: страхование груза и штрафы за просрочку, вернёмся к ним на следующей неделе."
+            }
+          ]
+        },
+        {
+          "key": "edited-hosting",
+          "title": "Сравнение тарифов хостинга",
+          "daysAgo": 12,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Сравни тарифы хостинга Кумулус и Нимбус для сайта на 50 тысяч посетителей в месяц.",
+              "answer": "Для 50 тысяч посетителей в месяц Нимбус выгоднее: тариф «Старт плюс» стоит 1 900 ₽ в месяц против 2 400 ₽ у Кумулуса, при сопоставимых 4 ГБ памяти. У Нимбуса бесплатный SSL и ежедневные бэкапы, у Кумулуса бэкапы платные.",
+              "replaces": {
+                "question": "Сравни тарифы хостинга Кумулус и Стратус для сайта на 50 тысяч посетителей в месяц.",
+                "answer": "Для такого сайта Стратус дешевле: 1 700 ₽ в месяц против 2 400 ₽ у Кумулуса, но у Стратуса нет бэкапов в тарифе."
+              }
+            },
+            {
+              "key": "t1",
+              "question": "А если трафик вырастет вдвое?",
+              "answer": "При 100 тысячах посетителей у Нимбуса понадобится тариф «Бизнес» за 3 200 ₽, у Кумулуса — за 3 900 ₽. Разница сохраняется, так что Нимбус остаётся выгоднее."
+            }
+          ]
+        },
+        {
+          "key": "read-workshop",
+          "title": "Подготовка воркшопа по продуктовой аналитике",
+          "daysAgo": 22,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Помоги подготовить программу воркшопа по продуктовой аналитике на полдня.",
+              "answer": "Программа на полдня: 10:00 — вступление и цели, 10:20 — метрики воронки, 11:30 — перерыв, 11:45 — практика на учебных данных, 13:00 — разбор кейсов участников, 13:45 — итоги."
+            },
+            {
+              "key": "t1",
+              "question": "Кого позвать спикерами?",
+              "answer": "Нужны двое: аналитик, который ведёт метрики воронки, и продакт-менеджер, который расскажет, как решения принимались по данным. Третьим можно позвать кого-то из поддержки — у них лучшие примеры пользовательских проблем."
+            },
+            {
+              "key": "t2",
+              "question": "Что с кофе-брейком?",
+              "answer": "На 40 человек достаточно кофе, чая и выпечки на один перерыв; закажите на 10% больше и обязательно вариант без сахара."
+            },
+            {
+              "key": "t3",
+              "question": "Запиши, где проводим, чтобы я не забыла.",
+              "answer": "Место проведения: коворкинг «Маяк», зал 3, вместимость 40 человек, проектор и флипчарт есть. Вход по списку на ресепшене, список нужно отправить за день."
+            },
+            {
+              "key": "t4",
+              "question": "Набросай текст приглашения.",
+              "answer": "Приглашаем на воркшоп по продуктовой аналитике: разберём метрики воронки на практике и обсудим ваши кейсы. Регистрация по ссылке, мест 40."
+            },
+            {
+              "key": "t5",
+              "question": "И форму обратной связи после воркшопа.",
+              "answer": "Форма из пяти вопросов: оценка от 1 до 5, что было самым полезным, чего не хватило, порекомендуете ли коллегам, свободный комментарий."
+            }
+          ]
+        },
+        {
+          "key": "kazan-trip",
+          "title": "Командировка в Казань",
+          "daysAgo": 33,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Еду в командировку в Казань на три дня, нужен отель рядом с Кремлём и поезд туда.",
+              "answer": "Отель: «Каменный двор» в пяти минутах пешком от Кремля, около 6 500 ₽ за ночь с завтраком. Поезд: фирменный ночной из Москвы, отправление в 22:40, прибытие в 10:15 — удобно, чтобы сразу ехать на встречу."
+            }
+          ]
+        },
+        {
+          "key": "csv-dedupe",
+          "title": "Python script to dedupe a CSV by email",
+          "daysAgo": 27,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "I need a small Python script that removes duplicate rows from contacts.csv by email, keeping the most recent row.",
+              "questionFiles": ["contacts.csv"],
+              "answer": "Here is a version with the standard library only:\n\n```python\nimport csv\nfrom datetime import datetime\n\nrows = {}\nwith open('contacts.csv', newline='') as source:\n    for row in csv.DictReader(source):\n        key = row['email'].strip().lower()\n        seen = rows.get(key)\n        if seen is None or row['updated_at'] > seen['updated_at']:\n            rows[key] = row\n```\n\nIt normalizes the email to lower case before comparing, so the same address in different case counts once."
+            }
+          ]
+        },
+        {
+          "key": "cohort-sql",
+          "title": "SQL: удержание по когортам",
+          "daysAgo": 16,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Напиши запрос удержания пользователей по месячным когортам в PostgreSQL: когорта — месяц регистрации, удержание — доля активных в каждом следующем месяце.",
+              "answer": "```sql\nWITH cohorts AS (\n  SELECT user_id, date_trunc('month', registered_at) AS cohort\n  FROM users\n), activity AS (\n  SELECT DISTINCT user_id, date_trunc('month', event_at) AS month\n  FROM events\n)\nSELECT c.cohort, a.month, count(*)::float / max(count(*)) OVER (PARTITION BY c.cohort) AS share\nFROM cohorts c JOIN activity a USING (user_id)\nGROUP BY c.cohort, a.month\nORDER BY 1, 2;\n```\nДоля считается от размера когорты в её первом месяце."
+            }
+          ]
+        },
+        {
+          "key": "k8s-restart",
+          "title": "Pod crashing after a config change",
+          "daysAgo": 8,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Our payments-api pod is stuck in CrashLoopBackOff right after the configmap change this morning. How do I get it back?",
+              "answer": "First roll the configmap back to the previous revision, then run `kubectl rollout restart deployment/payments-api` so the pods pick it up. If it still loops, check `kubectl logs --previous` for the startup error: a missing key in the configmap is the usual cause."
+            }
+          ]
+        },
+        {
+          "key": "invoice",
+          "title": "Письмо к счёту для Orbita Retail",
+          "daysAgo": 5,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Подготовь текст письма к счёту INV-2026-118 для Orbita Retail, оплата в течение 14 дней.",
+              "answerFiles": ["INV-2026-118.pdf"],
+              "answer": "Тема: Счёт INV-2026-118 за услуги ноября\n\nДобрый день! Направляем счёт INV-2026-118 на сумму 186 400 ₽ за услуги ноября. Срок оплаты — 14 календарных дней. Закрывающие документы пришлём после поступления оплаты."
+            }
+          ]
+        },
+        {
+          "key": "okr-draft",
+          "title": "OKR на первый квартал",
+          "daysAgo": 50,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Помоги сформулировать OKR команды на первый квартал: рост повторных покупок.",
+              "answer": "Цель: покупатели возвращаются чаще. Ключевые результаты: доля повторных покупок с 28% до 34%; время до второй покупки с 41 до 30 дней; NPS после доставки не ниже 60."
+            }
+          ]
+        },
+        {
+          "key": "press-release",
+          "title": "Translate the partnership press release",
+          "daysAgo": 35,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Переведи на английский пресс-релиз о партнёрстве Ventra Labs и сети пунктов выдачи: два абзаца, деловой стиль.",
+              "answer": "Ventra Labs has partnered with a nationwide network of parcel pickup points to offer same-day returns to online shoppers. Starting next month, buyers will be able to drop off a return at more than 3,000 locations.\n\nThe partnership is part of Ventra Labs' plan to make logistics invisible for small merchants, who will get the new option at no extra cost."
+            }
+          ]
+        },
+        {
+          "key": "qa-interview",
+          "title": "Вопросы для собеседования QA-инженера",
+          "daysAgo": 60,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Составь вопросы для собеседования QA-инженера middle-уровня.",
+              "answer": "1. Как вы решаете, что автоматизировать, а что проверять руками? 2. Опишите баг, который вы нашли последним, и как его воспроизвели. 3. Чем отличается регрессионное тестирование от смоук-тестирования? 4. Как тестировать API без документации? 5. Что вы делаете, если разработчик не согласен, что это баг?"
+            }
+          ]
+        },
+        {
+          "key": "vacation-policy",
+          "title": "Vacation policy summary",
+          "daysAgo": 70,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Summarize our vacation policy for a new hire in five bullet points.",
+              "answer": "- 28 calendar days of paid leave per year.\n- At least one block of 14 days in a row.\n- Request leave two weeks in advance through the HR portal.\n- Unused days carry over for one year.\n- Sick days are separate and do not reduce leave."
+            }
+          ]
+        },
+        {
+          "key": "figma-tokens",
+          "title": "Design tokens naming in Figma",
+          "daysAgo": 3,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "How should we name design tokens in Figma so they map to CSS variables?",
+              "answer": "Use category.role.variant: color.bg.surface, color.text.muted, space.inline.md. Keep the same names in CSS as --color-bg-surface. Avoid raw values in names (no blue-500 in semantic tokens) so a theme can change without renaming."
+            }
+          ]
+        },
+        {
+          "key": "excluded-dentist",
+          "title": "Запись к стоматологу",
+          "mode": "excluded",
+          "daysAgo": 7,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Напомни, на какое время я записалась к стоматологу и что взять с собой.",
+              "answer": "Запись к стоматологу во вторник на 9:30, возьмите паспорт и полис. Приём займёт около часа."
+            }
+          ]
+        },
+        {
+          "key": "temporary-gift",
+          "title": "Идеи подарка коллеге",
+          "mode": "temporary",
+          "minutesAgo": 30,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Подкинь идеи подарка коллеге на день рождения до 3 000 ₽.",
+              "answer": "Идеи подарка: хорошая кофейная кружка с подогревом, настольная игра для офиса, сертификат в книжный, набор чая."
+            }
+          ]
+        },
+        {
+          "key": "deleted-contract",
+          "title": "Пункт 4.2 договора с Таймыр Логистик",
+          "mode": "deleted",
+          "daysAgo": 15,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Проверь пункт 4.2 договора с Таймыр Логистик о штрафах за просрочку доставки.",
+              "answer": "Пункт 4.2: штраф 0,1% от стоимости партии за каждый день просрочки, но не более 10%. Форс-мажор освобождает от штрафа, если о нём сообщили в течение 3 дней."
+            }
+          ]
+        },
+        {
+          "key": "excluded-later-party",
+          "title": "Бюджет новогоднего корпоратива",
+          "mode": "excluded_after_index",
+          "daysAgo": 19,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Посчитай бюджет новогоднего корпоратива на 35 человек.",
+              "answer": "Бюджет корпоратива на 35 человек: банкетный зал 180 000 ₽, ведущий 45 000 ₽, подарки 35 000 ₽, транспорт 20 000 ₽. Итого около 280 000 ₽."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "boris",
+      "timeZone": "Europe/Moscow",
+      "chats": [
+        {
+          "key": "ops-ticket-boris",
+          "title": "OPS-4821 разбор инцидента",
+          "daysAgo": 4,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Напиши разбор инцидента OPS-4821 для команды: хронология, причина, что меняем.",
+              "answer": "Разбор инцидента OPS-4821. Хронология: деплой в 18:05, первые ошибки выгрузки в 18:12, откат в 19:40. Причина: размер пачки заказов превысил лимит шлюза. Что меняем: пачки по 200 заказов и алерт на рост ошибок выгрузки."
+            }
+          ]
+        },
+        {
+          "key": "onboarding-boris",
+          "title": "Onboarding email for Beacon Market sellers",
+          "daysAgo": 11,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Make the Beacon Market seller onboarding email shorter, three sentences.",
+              "answer": "Welcome to Beacon Market! Verify your store, publish your first listing and turn on order notifications. Payouts arrive every Tuesday."
+            }
+          ]
+        },
+        {
+          "key": "taymyr-supply",
+          "title": "Договор поставки с Таймыр Логистик",
+          "daysAgo": 9,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Какие сроки доставки прописаны в договоре поставки с Таймыр Логистик?",
+              "answer": "По договору поставки Таймыр Логистик доставляет до склада за 5 рабочих дней, штраф за просрочку — 0,1% в день."
+            }
+          ]
+        },
+        {
+          "key": "budget-boris",
+          "title": "Бюджет корпоратива отдела",
+          "daysAgo": 2,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Прикинь бюджет новогоднего корпоратива отдела на 12 человек.",
+              "answer": "На 12 человек: ресторан 72 000 ₽, подарки 12 000 ₽, такси 8 000 ₽. Итого около 92 000 ₽."
+            }
+          ]
+        },
+        {
+          "key": "release-notes",
+          "title": "Release notes for Ventra API v2",
+          "daysAgo": 6,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Write release notes for Ventra API v2: rate limits, webhooks, IP-restricted keys.",
+              "answer": "Ventra API v2 release notes: the rate limit is now 600 requests per minute, webhooks cover order and refund events, and API keys can be restricted to IP ranges. v1 is supported until the end of March."
+            }
+          ]
+        },
+        {
+          "key": "regex-phones",
+          "title": "Regex for phone numbers",
+          "daysAgo": 13,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Give me a regex that matches Russian mobile numbers in +7 and 8 formats.",
+              "answer": "Try ^(\\+7|8)[\\s-]?\\(?9\\d{2}\\)?[\\s-]?\\d{3}[\\s-]?\\d{2}[\\s-]?\\d{2}$ — it accepts spaces, dashes and brackets around the operator code."
+            }
+          ]
+        },
+        {
+          "key": "training-plan",
+          "title": "План тренировок на месяц",
+          "daysAgo": 30,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Составь план тренировок на месяц: три раза в неделю, зал.",
+              "answer": "Неделя 1–2: базовые упражнения, 3 подхода по 10 повторений. Неделя 3–4: добавить вес на 5–10%, кардио 15 минут в конце."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "vera",
+      "timeZone": "Europe/Moscow",
+      "chats": [
+        {
+          "key": "ab-test",
+          "title": "A/B test significance for the checkout button",
+          "daysAgo": 12,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Is the checkout button A/B test significant? Control 12 400 sessions, 4.1% conversion; variant 12 380 sessions, 4.6% conversion.",
+              "answer": "Yes: a two-proportion z-test gives p = 0.031, below 0.05, so the green checkout button lifts conversion by about half a point. Keep the test running until the full week ends to cover weekend traffic."
+            }
+          ]
+        },
+        {
+          "key": "standup-template",
+          "title": "Daily standup notes template",
+          "daysAgo": 7,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Make me a daily standup notes template for a team of six.",
+              "answer": "Daily standup — {date}\n- Yesterday: one line per person\n- Today: one line per person\n- Blockers: who needs help from whom\n- Decisions: anything agreed, with an owner"
+            }
+          ]
+        },
+        {
+          "key": "meal-kits",
+          "title": "Competitor pricing for meal kits",
+          "daysAgo": 21,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Summarize competitor pricing for meal kit subscriptions: price per serving and delivery fees.",
+              "answer": "Across the five kits compared, price per serving ranges from 390 to 620 ₽; two include free delivery, the others charge 199 ₽ per box. The cheapest per serving requires a four-person plan."
+            }
+          ]
+        },
+        {
+          "key": "talk-proposal",
+          "title": "Talk proposal for a product conference",
+          "daysAgo": 40,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "Help me write a talk proposal about running experiments with small traffic.",
+              "answer": "Title: Experiments when you do not have Google's traffic. Abstract: how to choose metrics that move, when to use sequential testing, and how to decide without statistical significance."
+            }
+          ]
+        },
+        {
+          "key": "lookup-formula",
+          "title": "XLOOKUP vs INDEX MATCH",
+          "daysAgo": 3,
+          "turns": [
+            {
+              "key": "t0",
+              "question": "When should I use XLOOKUP instead of INDEX MATCH in a spreadsheet?",
+              "answer": "Use XLOOKUP when everyone has a recent spreadsheet version: it searches in both directions, returns a default when nothing matches and is easier to read. INDEX MATCH is still the safe choice for files shared with older versions."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
