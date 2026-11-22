@@ -9,6 +9,9 @@ import {
 } from "@/tests/support/subagentViewFixtures";
 import { invalidateChatSubagents, resetSubagentStoreForTest, setOpenSubagentThread, useSubagentStore } from "./subagentStore";
 import { SubagentThreadViewV2 } from "./SubagentThreadViewV2";
+import { RunAnswerV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
+import { runWaitingPhraseV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import type { SubagentTurnView } from "@/lib/contracts/subagentViews";
 
 const target = { chatId: "chat-a", threadId: "thread-researcher" };
 const threadPath = "/api/chats/chat-a/subagents/thread-researcher";
@@ -174,6 +177,35 @@ describe("sub-agent thread view", () => {
     vi.stubGlobal("fetch", fetch);
     renderView();
     expect(await screen.findByText("Worked in Workspace for 3m 20s")).toBeInTheDocument();
+  });
+
+  it("shows a running turn the live line an answer shows for the same work", async () => {
+    const child = { origin: "tool" as const, round: 1, serverName: "scout", status: "running" as const, toolName: "call_subagent" };
+    const childStep = { origin: "web_search" as const, round: 1, status: "running" as const, subagentThreadId: "thread-scout",
+      subagentTurnId: "turn-scout", toolName: "search_web" };
+    const own = { origin: "mcp" as const, round: 1, serverName: "Logs", status: "running" as const, toolName: "tail" };
+    const finished = { entries: [{ command: { exitCode: 0, preview: "npm test" }, id: "test", kind: "command" as const, phase: "succeeded" as const }] };
+    const liveLine = () => document.querySelector("[data-live='true'] .v2-answer-process-label")?.textContent ?? null;
+    const states: [Partial<SubagentTurnView>, string][] = [
+      [{ toolActivity: { calls: [child, childStep] } }, "Waiting for sub-agents…"],
+      [{ toolActivity: { calls: [own, child, childStep] } }, "Using Logs: tail…"],
+      [{ toolActivity: { calls: [own] }, workspaceActivity: finished }, "Working in Workspace…"],
+      [{}, runWaitingPhraseV2("turn-live")]
+    ];
+    for (const [work, expected] of states) {
+      const turn = subagentTurn("turn-live", "running", work);
+      vi.stubGlobal("fetch", subagentFetch([{ path: threadPath,
+        respond: () => jsonResponse(subagentView("chat-a", subagentThread("thread-researcher"), [turn])) }]).fetch);
+      const { view } = renderView();
+      await waitFor(() => expect(liveLine()).toBe(expected));
+      view.unmount();
+      resetSubagentStoreForTest();
+      // An answer waiting on its model with the same steps, under the same waiting phrase.
+      const answer = render(<RunAnswerV2 content="" toolActivity={turn.toolActivity} workspaceActivity={turn.workspaceActivity}
+        presentation={{ activity: { kind: "provider", label: runWaitingPhraseV2("turn-live") }, kind: "activity", runId: "turn-live" }} />);
+      expect(liveLine()).toBe(expected);
+      answer.unmount();
+    }
   });
 });
 

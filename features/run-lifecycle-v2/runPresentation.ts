@@ -981,8 +981,30 @@ function subagentWaitSignal(signal: Pick<ActivitySignal, "kind" | "origin" | "se
   return signal.kind === "tool" && subagentCallV2(signal);
 }
 
+/** A running call the live line may name; a step a sub-agent made carries its thread (`subagentThreadId`). */
+export type LiveRunningCallV2 = ToolActivityIdentity & Readonly<{ subagentThreadId?: unknown }>;
+
+/** A sub-agent's call, or a step a sub-agent made: that work has a place of its own in the answer. */
+function subagentWorkV2(call: LiveRunningCallV2): boolean {
+  return subagentCallV2(call) || call.subagentThreadId !== undefined;
+}
+
+/**
+ * The call the live line names, of the calls running now, oldest first: the
+ * newest of the agent's own work, else a sub-agent's (read as the neutral
+ * wait). A plan update is the plan's own progress and never names it.
+ */
+export function liveRunningCallV2<Call extends LiveRunningCallV2>(running: readonly Call[]): Call | undefined {
+  const shown = running.filter((call) => !planCallHiddenV2(call));
+  return shown.filter((call) => !subagentWorkV2(call)).at(-1) ?? shown.at(-1);
+}
+
+/** The live line's words for the call it names: a sub-agent's work reads as the neutral wait. */
+export function liveRunningCallLabelV2(call: LiveRunningCallV2): string {
+  return subagentWorkV2(call) ? SUBAGENT_WAIT_LABEL_V2 : `${describeToolCallV2(call, "running")}…`;
+}
+
 function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | null, modelName?: string | null): string {
-  if (subagentWaitSignal(signal)) return SUBAGENT_WAIT_LABEL_V2;
   switch (signal.kind) {
     case "synthesis":
       return signal.budget
@@ -991,7 +1013,7 @@ function activityLabel(signal: Omit<ActivitySignal, "index">, runId: string | nu
     case "search":
       return "Searching the web…";
     case "tool":
-      return `${describeToolCallV2(signal, "running")}…`;
+      return liveRunningCallLabelV2(signal);
     case "compaction":
       return "Compacting context…";
     case "provider_retrying":
@@ -1448,10 +1470,7 @@ export function presentRunLifecycleV2(
   const activeMemorySearchCalls = new Set<string>();
   const activeToolCalls = new Map<string, Omit<ActivitySignal, "index">>();
   // The line names the latest running call; the neutral sub-agent wait shows only when nothing else runs.
-  const namedRunningCall = () => {
-    const running = [...activeToolCalls.values()];
-    return running.filter((call) => !subagentWaitSignal(call)).at(-1) ?? running.at(-1);
-  };
+  const namedRunningCall = () => liveRunningCallV2([...activeToolCalls.values()]);
 
   for (const [index, event] of state.events.entries()) {
     if (event.type === "token") {

@@ -124,6 +124,7 @@ import { usePowerAppShellViewModel } from "@/components/app-shell/usePowerAppShe
 import { useRunStreaming } from "@/components/app-shell/useRunStreaming";
 import { useInterruptedRunRecovery } from "@/components/app-shell/useInterruptedRunRecovery";
 import { useWorkspaceInstallationAvailability } from "@/components/app-shell/useWorkspaceInstallationAvailability";
+import { workspaceAvailabilityV2, workspaceUnusableMessageV2 } from "@/components/app-shell/workspaceAvailability";
 import { useShellAppearanceController } from "@/components/app-shell/useShellAppearanceController";
 import { useShellOverlayController } from "@/components/app-shell/useShellOverlayController";
 import { useShellUiActions } from "@/components/app-shell/useShellUiActions";
@@ -1365,10 +1366,9 @@ export function PowerAppShellV2({
       });
     },
     rejectAttachments(fileNames: readonly string[]) {
-      if (workspaceInstallation === null && currentModel?.capabilities.toolCalling === true) {
-        // No availability read has succeeded: Workspace may take these files, so it reads again instead of blaming the model.
-        readWorkspaceAvailability();
-        setNotice({ kind: "error", text: "Checking whether Workspace is available. Try again in a moment." });
+      // Workspace may take these files once it is known: it reads again instead of blaming the model.
+      if (workspaceAvailability.state === "unknown") {
+        askWorkspaceAvailability();
         return;
       }
       void reportRejectedAttachments(fileNames, currentModel, {
@@ -1670,9 +1670,10 @@ export function PowerAppShellV2({
   // no toggle; unknown while availability loads. A chat's stored flag and the
   // saved default never decide it. Runs decide their own value at dispatch
   // (`resolveWorkspaceInstallation`); uploads, attachment checks and
-  // chat creation read the active session's flag kept here.
-  const workspaceUsable = workspaceInstallation?.available === true &&
-    currentModel?.capabilities.toolCalling === true;
+  // chat creation read the active session's flag kept here, which holds only
+  // a confirmed fact: unknown asks the server instead (`workspaceAvailabilityV2`).
+  const workspaceAvailability = workspaceAvailabilityV2(workspaceInstallation, currentModel?.capabilities.toolCalling === true);
+  const workspaceUsable = workspaceAvailability.state === "usable";
   // Also re-syncs a session recreated under the same key.
   const activeSessionWorkspaceEnabled = composerSession.workspaceEnabled;
   useEffect(() => {
@@ -1724,29 +1725,21 @@ export function PowerAppShellV2({
     workspaceUsable
   ]);
 
-  const workspaceUnavailableReason = workspaceInstallation?.available === true
-    ? currentModel?.capabilities.toolCalling === true ? undefined : "model_tools_required" as const
-    : workspaceInstallation?.unavailableReason;
+  const workspaceUnavailableReason = workspaceAvailability.state === "unusable" ? workspaceAvailability.reason : undefined;
   const workspaceSessionState = activeChat?.workspace?.sessionState ??
     (workspaceUsable ? "not_started" as const : null);
 
+  /** Unknown is not "unavailable": a check that needs Workspace reads again instead of saying so. */
+  function askWorkspaceAvailability(): void {
+    readWorkspaceAvailability();
+    setNotice({ kind: "error", text: "Checking whether Workspace is available. Try again in a moment." });
+  }
+
   /** Files that only Workspace can take attach while it is usable; nothing turns it on. */
   function workspaceUsableForFiles(): boolean {
-    if (workspaceUsable) return true;
-    if (workspaceInstallation === null && currentModel?.capabilities.toolCalling === true) {
-      // No read has succeeded yet: unknown is not "unavailable", so it reads again instead of saying so.
-      readWorkspaceAvailability();
-      setNotice({ kind: "error", text: "Checking whether Workspace is available. Try again in a moment." });
-      return false;
-    }
-    setNotice({
-      kind: "error",
-      text: workspaceUnavailableReason === "model_tools_required"
-        ? "Workspace requires a model with tool support."
-        : workspaceUnavailableReason === "installation_disabled"
-          ? "Workspace is disabled by the administrator."
-          : "Workspace runtime is unavailable."
-    });
+    if (workspaceAvailability.state === "usable") return true;
+    if (workspaceAvailability.state === "unknown") askWorkspaceAvailability();
+    else setNotice({ kind: "error", text: workspaceUnusableMessageV2(workspaceAvailability) });
     return false;
   }
 

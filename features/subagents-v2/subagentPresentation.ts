@@ -9,7 +9,7 @@ import {
   type SubagentThreadState
 } from "@/lib/contracts/subagents";
 import type { SubagentChatThreads, SubagentThreadSummary, SubagentTurnMessage } from "@/lib/contracts/subagentViews";
-import { describeToolCallV2, planCallHiddenV2 } from "@/features/run-lifecycle-v2/runPresentation";
+import { liveStatusLabelV2 } from "@/features/run-lifecycle-v2/liveStatusLabel";
 
 /**
  * How a sub-agent's state reads: an icon, a tone (colour means state only:
@@ -116,8 +116,9 @@ export function subagentReasonText(reason: string | null, parentName: string | n
 export function subagentDetailText(thread: Pick<SubagentThreadSummary, "currentStep" | "outcome" | "reason" | "state"> &
   Partial<Pick<SubagentThreadSummary, "parent">>): string {
   if (thread.state === "running") {
+    // The server's current step is running by its contract; a child's call reads as the wait the live line shows.
     const step = thread.currentStep;
-    return step && !planCallHiddenV2(step) ? `${describeToolCallV2(step, "running")}…` : "Working…";
+    return liveStatusLabelV2({ idle: "Working…", toolCalls: step ? [{ ...step, status: "running" }] : [] });
   }
   const parentName = thread.parent?.name ?? null;
   const { label } = subagentStatePresentation(thread.state, thread.outcome, thread.reason, parentName);

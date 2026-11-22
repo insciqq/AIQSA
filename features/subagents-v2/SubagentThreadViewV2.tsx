@@ -7,9 +7,8 @@ import { shellLinkClick } from "@/features/answer-outputs-v2/shellLinkClick";
 import { BrowserLivePanelV2 } from "@/features/browser-live/BrowserLivePanelV2";
 import { ComposerV2 } from "@/features/composer-v2/ComposerV2";
 import { ConversationTurnV2 } from "@/features/conversation-v2/ConversationV2";
-import { describeToolCallV2, planCallHiddenV2, runWaitingPhraseV2, stepDurationSumV2 } from "@/features/run-lifecycle-v2/runPresentation";
-import { workspaceActiveLabelV2 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
-import type { ThreadToolActivity } from "@/lib/contracts/chats";
+import { liveStatusLabelV2 } from "@/features/run-lifecycle-v2/liveStatusLabel";
+import { runWaitingPhraseV2, stepDurationSumV2 } from "@/features/run-lifecycle-v2/runPresentation";
 import { isActiveSubagentState } from "@/lib/contracts/subagents";
 import type { SubagentThreadSummary, SubagentTurnView } from "@/lib/contracts/subagentViews";
 import { cleanAnswerText } from "@/lib/domain/answerTextMarkers";
@@ -28,15 +27,6 @@ import {
 function newer(left: SubagentThreadSummary | null, right: SubagentThreadSummary | null): SubagentThreadSummary | null {
   if (!left || !right) return left ?? right;
   return Date.parse(right.updatedAt) > Date.parse(left.updatedAt) ? right : left;
-}
-
-function runningStepLabel(activity: ThreadToolActivity | null): string | null {
-  const calls = activity?.calls ?? [];
-  for (let index = calls.length - 1; index >= 0; index -= 1) {
-    const call = calls[index]!;
-    if (call.status === "running" && !planCallHiddenV2(call)) return `${describeToolCallV2(call, "running")}…`;
-  }
-  return null;
 }
 
 /**
@@ -76,7 +66,8 @@ function TurnV2({ chatId, latest, parentName, turn }: Readonly<{ chatId: string;
   const state = subagentStatePresentation(turn.state, turn.outcome, turn.reason, parentName);
   const reason = subagentReasonText(turn.reason, parentName);
   const liveLabel = !active ? null : turn.state === "waiting" ? state.label
-    : workspaceActiveLabelV2(turn.workspaceActivity) ?? runningStepLabel(turn.toolActivity) ?? runWaitingPhraseV2(turn.id);
+    // The same line an answer shows for the same work; a sub-agent's turn has no server phase.
+    : liveStatusLabelV2({ idle: runWaitingPhraseV2(turn.id), toolCalls: turn.toolActivity?.calls, workspaceActivity: turn.workspaceActivity });
   return (
     <article className="v2-subagent-turn" data-state={turn.state} data-turn-id={turn.id}>
       <div className="v2-subagent-brief">

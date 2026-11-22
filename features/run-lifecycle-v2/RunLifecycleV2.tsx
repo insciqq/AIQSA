@@ -8,7 +8,6 @@ import { isMcpAutoDiscoveryFailureCode, isToolSynthesisFailure } from "@/lib/con
 import type { ThreadArtifactSummary, ThreadToolActivity } from "@/lib/contracts/chats";
 import type { MarkdownHrefResolver } from "@/components/chat/MarkdownMessage";
 import type { ThreadWorkspaceActivity } from "@/lib/contracts/workspace";
-import { workspaceActiveLabelV2, workspaceLiveLabelV2 } from "./workspaceActivityPresentation";
 import { AnswerProcessV2 } from "@/features/answer-outputs-v2/AnswerProcessV2";
 import { BrowserLivePanelV2 } from "@/features/browser-live/BrowserLivePanelV2";
 import { useAnswerSourcesV2 } from "@/features/answer-outputs-v2/AnswerSourcesV2";
@@ -23,35 +22,18 @@ import {
   useState,
   type ReactNode
 } from "react";
+import { liveStatusLabelV2 } from "./liveStatusLabel";
 import {
-  describeToolCallV2,
-  planCallHiddenV2,
   runWaitingPhraseV2,
   settledRunPresentationV2,
-  subagentCallV2,
-  SUBAGENT_WAIT_LABEL_V2,
   stepDurationSumV2,
   stepRunAnnouncementV2,
   type AnnouncedRunPresentationV2,
-  type RunActivityKindV2,
   type RunAnnouncerMemoryV2,
   type RunPresentationV2
 } from "./runPresentation";
 
 type MaybePromise = Promise<unknown> | unknown;
-
-type ToolCallV2 = ThreadToolActivity["calls"][number];
-
-const livePhaseKinds: ReadonlySet<RunActivityKindV2> = new Set(["files", "provider_retrying", "provider_slow", "results"]);
-
-function runningToolLabel(activity: ThreadToolActivity): string | null {
-  // A plan update is the plan's own progress, not a step the answer waits on.
-  const running = activity.calls.filter((call) => call.status === "running" && !planCallHiddenV2(call));
-  if (running.length === 0) return null;
-  // A sub-agent has its own row in the answer, so the line names only the answer's other work.
-  const own = running.filter((call) => !subagentCallV2(call) && !call.subagentThreadId).at(-1);
-  return own ? `${describeToolCallV2(own, "running")}…` : SUBAGENT_WAIT_LABEL_V2;
-}
 
 function RunConnectionLossV2({
   onRefresh,
@@ -351,21 +333,9 @@ function RunAnswerBodyV2({
   // The live status occupies the process line's slot until the first answer
   // token; from then on the same line is the fold with whatever settled facts
   // exist (steps, then reasoning and past chats once the artifact summary lands).
-  const activity = presentation.activity;
-  // The model's own heading replaces only the waiting label. It is a one-line
-  // status, shown whatever the Reasoning blocks setting, which governs the
-  // reasoning disclosure itself (operator decision 2026-10-20).
-  const activityLabel = activity ? activity.reasoningHeading || activity.label : null;
   const liveLabel = presentation.kind === "activity"
-    ? activity?.kind === "synthesis" || activity?.kind === "compaction" ? activity.label
-      : workspaceActiveLabelV2(workspaceActivity) ??
-      // A live tool call reads as running until it settles, so a server
-      // phase that began after it supersedes its label and the generic
-      // Workspace one.
-      (activity && livePhaseKinds.has(activity.kind) ? activityLabel : null) ??
-      workspaceLiveLabelV2(workspaceActivity) ??
-      (toolActivity ? runningToolLabel(toolActivity) : null) ??
-      activityLabel ?? runWaitingPhraseV2(presentation.runId)
+    ? liveStatusLabelV2({ idle: runWaitingPhraseV2(presentation.runId), phase: presentation.activity,
+      toolCalls: toolActivity?.calls, workspaceActivity })
     : null;
   // Thinking shown with the answer is also shown while its text streams, so
   // the line that held the live status keeps its slot until the answer settles.
