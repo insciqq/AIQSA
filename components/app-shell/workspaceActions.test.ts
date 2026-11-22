@@ -196,25 +196,12 @@ function apiChatMemoryState(
   };
 }
 
-function apiChatSource(summary: WorkspaceChatSummary, sourceRevision = 0) {
-  return {
-    source: {
-      chatId: summary.id,
-      location: "ACTIVE_CHAT",
-      memoryMode: summary.memoryMode ?? "NORMAL",
-      sourceRevision,
-      updatedAt: summary.updatedAt
-    }
-  };
-}
-
-function apiArchivedChat(summary: WorkspaceChatSummary, sourceRevision = 1) {
+function apiArchivedChat(summary: WorkspaceChatSummary) {
   return {
     chat: {
       archived: true,
       id: summary.id,
       memoryMode: "NORMAL",
-      sourceRevision,
       updatedAt: summary.updatedAt
     }
   };
@@ -950,7 +937,6 @@ describe("workspace actions", () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async (url: string | URL | Request) => {
       const path = String(url);
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
-      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
       return Response.json(apiArchivedChat(state.chatA));
     }));
 
@@ -998,9 +984,6 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn((url: string | URL | Request) => {
       if (String(url).endsWith("/memory-mode")) {
         return Promise.resolve(Response.json(apiChatMemoryState(state.chatA)));
-      }
-      if (String(url).endsWith("/source")) {
-        return Promise.resolve(Response.json(apiChatSource(state.chatA)));
       }
       if (String(url) === "/api/chats/chat-a/archive") {
         return Promise.resolve(Response.json(apiArchivedChat(state.chatA)));
@@ -1214,11 +1197,10 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
       const path = String(url);
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
-      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
       if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
       if (path.endsWith("/restore")) {
         return Response.json({
-          chat: { ...apiArchivedChat(state.chatA, 2).chat, archived: false }
+          chat: { ...apiArchivedChat(state.chatA).chat, archived: false }
         });
       }
       return Response.json({ error: "unexpected" }, { status: 500 });
@@ -1236,10 +1218,16 @@ describe("workspace actions", () => {
     await vi.waitFor(() => {
       expect(state.chats().map((candidate) => candidate.id)).toEqual(["chat-a", "chat-b"]);
     });
+    // The chat's own state is the server's fence: archive and restore send no revision, and no source lookup.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chats/chat-a/archive",
+      expect.objectContaining({ body: "{}", method: "POST" })
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/chats/chat-a/restore",
-      expect.objectContaining({ method: "POST" })
+      expect.objectContaining({ body: "{}", method: "POST" })
     );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/source"))).toBe(false);
   });
 
   it("keeps the live navigation list fresh across archive and its undo", async () => {
@@ -1273,11 +1261,10 @@ describe("workspace actions", () => {
     const fetchMock = vi.fn().mockImplementation(async (url: string | URL | Request) => {
       const path = String(url);
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(state.chatA));
-      if (path.endsWith("/source")) return Response.json(apiChatSource(state.chatA));
       if (path.endsWith("/archive")) return Response.json(apiArchivedChat(state.chatA));
       if (path.endsWith("/restore")) {
         return Response.json({
-          chat: { ...apiArchivedChat(state.chatA, 2).chat, archived: false }
+          chat: { ...apiArchivedChat(state.chatA).chat, archived: false }
         });
       }
       return Response.json({ error: "unexpected" }, { status: 500 });
@@ -1732,8 +1719,7 @@ describe("workspace actions", () => {
 
     await expect(state.actions.createChat("folder-1", sourceKey)).resolves.toMatchObject({
       id: "chat-excluded",
-      memoryMode: "EXCLUDED",
-      memorySourceRevision: 0
+      memoryMode: "EXCLUDED"
     });
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       folderId: "folder-1",
@@ -2753,7 +2739,6 @@ describe("workspace actions", () => {
     const temporary = {
       ...state.chatA,
       memoryMode: "TEMPORARY" as const,
-      memorySourceRevision: 2,
       temporaryRetentionDeadline: "2026-06-11T00:00:00.000Z"
     };
     useWorkspaceStore.setState({ activeChatId: temporary.id, chats: [temporary, state.chatB] });
@@ -2948,7 +2933,6 @@ describe("removing and refreshing personal chats", () => {
       const chatId = decodeURIComponent(path.split("/")[3] ?? "");
       const summary = chat({ id: chatId, title: chatId });
       if (path.endsWith("/memory-mode")) return Response.json(apiChatMemoryState(summary));
-      if (path.endsWith("/source")) return Response.json(apiChatSource(summary));
       if (path.endsWith("/archive")) return Response.json(apiArchivedChat(summary));
       return Response.json({ error: "unexpected" }, { status: 500 });
     }));

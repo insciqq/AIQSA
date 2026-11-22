@@ -427,7 +427,6 @@ function createMemoryRepository(
       state.events.push({ event, sequence });
       return event;
     },
-    beginPreparingRunAttempt: async () => false,
     cancelRun: async (input) => {
       if (input.runId !== "run-1" || input.userId !== config.bootstrapUserId) {
         return { kind: "not_found" };
@@ -462,7 +461,6 @@ function createMemoryRepository(
         }
       };
     },
-    completePreparingRunAttempt: async () => false,
     createRun: async (input) => {
       state.created = input;
       state.cancelled = null;
@@ -503,7 +501,6 @@ function createMemoryRepository(
     createSearchRun: async (input) => {
       state.searchRuns.push(input);
     },
-    finalizePreparingRun: async () => false,
     failRun: async (runId, _assistantMessageId, error, options) => {
       state.failed = { error, runId };
       state.recoverySettled = options?.recoveryTerminal === true;
@@ -636,7 +633,6 @@ function createMemoryRepository(
             ],
           }
         : null,
-    recoverPreparingRun: async () => "not_preparing",
     loadConversationContextForExpectedLeaf: async (_chatId, _userId, expectedActiveLeafMessageId) =>
       expectedActiveLeafMessageId === (conversationContext.at(-1)?.id ?? null)
         ? conversationContext
@@ -670,7 +666,6 @@ function createMemoryRepository(
     loadModelPricing: async () => modelPricing,
     loadProviderModelCostBasis: async () => null,
     markRunAnswerStarted: async () => undefined,
-    retryPreparingRunAttempt: async () => null,
     settlePreparingRunFailure: async () => false,
   };
 

@@ -27,7 +27,6 @@ const summary = {
   memoryMode: "EXCLUDED" as const,
   messageCount: 1,
   pinned: false,
-  sourceRevision: 4,
   title: "Archived source",
   updatedAt,
   workspace: {
@@ -73,7 +72,6 @@ function readyDetail() {
         snapshotUpdatedAt: updatedAt
       },
       pinned: false,
-      sourceRevision: 4,
       title: "Archived source",
       updatedAt,
       usageStats: null,
@@ -154,7 +152,6 @@ describe("ArchivedChatsPanelV2", () => {
             archived: false,
             id: "chat-1",
             memoryMode: "EXCLUDED",
-            sourceRevision: 5,
             updatedAt
           }
         });

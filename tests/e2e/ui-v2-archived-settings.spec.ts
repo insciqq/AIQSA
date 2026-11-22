@@ -15,7 +15,6 @@ const archivedSummary = {
   memoryMode: "NORMAL",
   messageCount: 2,
   pinned: false,
-  sourceRevision: 7,
   title: "Quarterly evidence review",
   updatedAt: timestamp
 } as const;
@@ -72,7 +71,7 @@ async function installArchiveRoutes(page: Page) {
     await route.fulfill({ contentType: "application/json", json: { chat: archivedDetail } });
   });
   await page.route("**/api/chats/archive-fixture/restore", async (route: Route) => {
-    expect(route.request().postDataJSON()).toEqual({ expectedChatRevision: 7 });
+    expect(route.request().postDataJSON()).toEqual({});
     restoreRequests += 1;
     restored = true;
     await route.fulfill({
@@ -82,7 +81,6 @@ async function installArchiveRoutes(page: Page) {
           archived: false,
           id: archivedSummary.id,
           memoryMode: archivedSummary.memoryMode,
-          sourceRevision: 8,
           updatedAt: timestamp
         }
       }
@@ -113,7 +111,7 @@ test("a late restore preserves the other archived chat that is now being read", 
     captured();
     await held;
     await route.fulfill({ json: { chat: {
-      archived: false, id: archivedSummary.id, memoryMode: "NORMAL", sourceRevision: 8, updatedAt: timestamp
+      archived: false, id: archivedSummary.id, memoryMode: "NORMAL", updatedAt: timestamp
     } } });
   });
   await page.setViewportSize({ width: 390, height: 844 });

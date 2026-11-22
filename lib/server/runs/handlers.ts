@@ -72,13 +72,13 @@ import {
   AttachmentLinkConflictError,
   McpRunPlanConflictError,
   ProviderAdmissionConflictError,
+  RunAdmissionConflictError,
   ScheduledOccurrenceConflictError,
   SkillRunConflictError,
   WorkspaceRunConflictError
 } from "./runRepositoryContract";
 import type { RunRepository, ScheduledOccurrenceAdmission } from "./runRepositoryContract";
 import { serializeRunOutcome } from "./runOutcome";
-import { MemoryPreparingRunConflictError } from "./preparingRun";
 import { logEvent, runWithContext, type EventFields } from "../observability";
 import { logRunPersistence, runDatabaseFailureCode, settleRunWrite } from "./runObservability";
 import type { DbTransactionTiming } from "../observability/transactionTiming";
@@ -449,11 +449,10 @@ function isSkillRunConflictError(error: unknown): error is SkillRunConflictError
     (error instanceof Error && error.name === "SkillRunConflictError");
 }
 
-function isMemoryPreparingRunConflictError(
-  error: unknown
-): error is MemoryPreparingRunConflictError {
-  return error instanceof MemoryPreparingRunConflictError ||
-    (error instanceof Error && error.name === "MemoryPreparingRunConflictError");
+/** The stable code of an admission its chat's own state refused (`RunAdmissionConflictError`), or null. */
+function runAdmissionConflictCode(error: unknown): string | null {
+  if (error instanceof RunAdmissionConflictError) return error.code;
+  return error instanceof Error && error.name === "RunAdmissionConflictError" ? "run_admission_conflict" : null;
 }
 
 function isWorkspaceRunConflictError(error: unknown): error is WorkspaceRunConflictError {
@@ -879,13 +878,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "skill_not_available" }, { status: 409 });
       }
 
-      if (isMemoryPreparingRunConflictError(error)) {
-        return Response.json({
-          error: error instanceof MemoryPreparingRunConflictError
-            ? error.code
-            : "memory_preparing_run_conflict"
-        }, { status: 409 });
-      }
+      const admissionConflict = runAdmissionConflictCode(error);
+      if (admissionConflict) return Response.json({ error: admissionConflict }, { status: 409 });
 
       if (isWorkspaceRunConflictError(error)) {
         logEvent("run_http_failed", { stage: "send", code: error.code, cause: error.reason, httpStatus: 409 });
@@ -1112,13 +1106,8 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
         return Response.json({ error: "skill_not_available" }, { status: 409 });
       }
 
-      if (isMemoryPreparingRunConflictError(error)) {
-        return Response.json({
-          error: error instanceof MemoryPreparingRunConflictError
-            ? error.code
-            : "memory_preparing_run_conflict"
-        }, { status: 409 });
-      }
+      const admissionConflict = runAdmissionConflictCode(error);
+      if (admissionConflict) return Response.json({ error: admissionConflict }, { status: 409 });
 
       if (isWorkspaceRunConflictError(error)) {
         logEvent("run_http_failed", { stage: "regenerate", code: error.code, cause: error.reason, httpStatus: 409 });

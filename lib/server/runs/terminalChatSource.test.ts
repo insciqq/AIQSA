@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { recordingTransaction, type RecordedCall } from "../chatSearch/index/markRecorder.testFixtures";
 import { TEMPORARY_CHAT_RETENTION_MS } from "../chats/temporaryRetention";
-import { settleTerminalChatSource, settleTerminalMemorySource } from "./prismaRepositoryPreparation";
+import { settleTerminalChatSource } from "./prismaRepositoryPreparation";
 
 const OWNER = "owner-1";
 const INPUT = { assistantMessageId: "answer-1", chatId: "chat-1", runId: "run-1", status: "complete" as const, userId: OWNER };
@@ -74,13 +74,5 @@ describe("a run's terminal write to its chat", () => {
 
     expect(recorder.calls[0]!.text).toContain("\"permanentDeletionAt\" IS NULL");
     expect(recorder.calls.filter((call) => call.name !== "$queryRaw")).toEqual([]);
-  });
-
-  it("keeps the run side's old name and ignores the Memory hooks it still passes", async () => {
-    const recorder = settlement({ memoryMode: "NORMAL" });
-
-    await settleTerminalMemorySource(recorder.tx, INPUT, { onRetainedSourceMutated: () => { throw new Error("called"); } });
-
-    expect(recorder.marks()).toEqual([{ kind: "dirty", values: expect.arrayContaining(["chat-1", OWNER]) }]);
   });
 });

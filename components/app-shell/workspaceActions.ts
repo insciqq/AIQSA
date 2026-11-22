@@ -52,7 +52,6 @@ import {
 import {
   archiveChat as archiveChatRequest,
   loadChatMemoryState,
-  resolveChatSource,
   restoreChat as restoreChatRequest
 } from "@/components/app-shell/chatLifecycleApi";
 import {
@@ -1150,7 +1149,7 @@ export function useWorkspaceActions({
       const summary: WorkspaceChatSummary = {
         ...chatSummaryFromApi(apiChat),
         ...(initialMemoryMode === "EXCLUDED"
-          ? { memoryMode: "EXCLUDED" as const, memorySourceRevision: 0 }
+          ? { memoryMode: "EXCLUDED" as const }
           : {}),
         ...(initialMemoryMode === "TEMPORARY"
           ? { pendingInitialMemoryMode: "TEMPORARY" as const }
@@ -1288,8 +1287,7 @@ export function useWorkspaceActions({
       if (memoryState.mode === "TEMPORARY") {
         throw new Error("memory_temporary_chat_forbidden");
       }
-      const source = await resolveChatSource(chat.id);
-      const archived = await archiveChatRequest(chat.id, source.source.sourceRevision);
+      await archiveChatRequest(chat.id);
 
       const nextActive = nextChatAfterRemoval(useWorkspaceStore.getState().chats, chat.id);
       // Undo brings the row back with the Assistant it showed.
@@ -1308,14 +1306,10 @@ export function useWorkspaceActions({
           onClick: () => {
             void (async () => {
               try {
-                const restored = await restoreChatRequest(
-                  chat.id,
-                  archived.chat.sourceRevision
-                );
+                const restored = await restoreChatRequest(chat.id);
                 const restoredChat: WorkspaceChatSummary = {
                   ...chat,
                   memoryMode: restored.chat.memoryMode,
-                  memorySourceRevision: restored.chat.sourceRevision,
                   updatedAt: restored.chat.updatedAt
                 };
                 useWorkspaceStore.getState().upsertChat(restoredChat);

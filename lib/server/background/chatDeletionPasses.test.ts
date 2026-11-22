@@ -259,7 +259,7 @@ describe("chat deletion passes", () => {
         async readSnapshot({ chatId }) {
           const chat = chats.get(chatId);
           return chat && !chat.fenced
-            ? { activeLeafMessageId: null, activeRunCount: 0, memoryMode: "NORMAL", sourceRevision: 0 }
+            ? { activeLeafMessageId: null, activeRunCount: 0, memoryMode: "NORMAL" }
             : null;
         }
       }
@@ -269,7 +269,7 @@ describe("chat deletion passes", () => {
       capability: { enabled: true },
       deletion: service,
       listPersonalChats: async () => [...chats.keys()].map((id) => ({
-        archived: false, id, memoryMode: "NORMAL" as const, sourceRevision: 0
+        archived: false, id, memoryMode: "NORMAL" as const
       }))
     }, "owner");
     expect(result).toMatchObject({ scheduled: 3, skipped: 0 });

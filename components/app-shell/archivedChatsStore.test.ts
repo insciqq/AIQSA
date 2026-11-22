@@ -43,7 +43,6 @@ const summary = {
   memoryMode: "NORMAL",
   messageCount: 2,
   pinned: false,
-  sourceRevision: 4,
   title: "Archived source",
   updatedAt,
   workspace: {
@@ -78,7 +77,7 @@ afterEach(() => {
 describe("archived chats store", () => {
   function restoredResponse() {
     return Response.json({ chat: {
-      archived: false, id: summary.id, memoryMode: "NORMAL", sourceRevision: 5, updatedAt
+      archived: false, id: summary.id, memoryMode: "NORMAL", updatedAt
     } });
   }
 
@@ -196,7 +195,6 @@ describe("archived chats store", () => {
             archived: false,
             id: "chat-1",
             memoryMode: "NORMAL",
-            sourceRevision: 5,
             updatedAt
           }
         });
@@ -215,8 +213,7 @@ describe("archived chats store", () => {
     expect(useArchivedChatsStore.getState().detail).toMatchObject({
       archived: true,
       id: "chat-1",
-      messages: [expect.objectContaining({ id: "message-new" })],
-      sourceRevision: 4
+      messages: [expect.objectContaining({ id: "message-new" })]
     });
 
     await loadEarlierArchivedMessages();
@@ -230,7 +227,7 @@ describe("archived chats store", () => {
       summaries: []
     });
     const restoreCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/restore"));
-    expect(JSON.parse(String(restoreCall?.[1]?.body))).toEqual({ expectedChatRevision: 4 });
+    expect(JSON.parse(String(restoreCall?.[1]?.body))).toEqual({});
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
   });
 
@@ -261,7 +258,6 @@ describe("archived chats store", () => {
         archived: false,
         id: "chat-1",
         memoryMode: "NORMAL",
-        sourceRevision: 5,
         updatedAt
       }
     }));
@@ -303,7 +299,6 @@ describe("archived chats store", () => {
         archived: false,
         id: "chat-1",
         memoryMode: "NORMAL",
-        sourceRevision: 5,
         updatedAt
       }
     }));

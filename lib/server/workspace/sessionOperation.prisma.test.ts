@@ -225,7 +225,6 @@ describe("Prisma Workspace operation admission", () => {
     expect(claim?.runId).toBe(created.runId);
     const activated = await activateWorkspaceFollowupWithClient(prisma, { admission, created, claimToken: claim!.claimToken });
     expect(activated.deferredWorkspace).toBeUndefined();
-    expect(activated.workspaceMemorySource!.memorySourceRevision).toBe(created.workspaceMemorySource!.memorySourceRevision + 1);
     expect(await prisma.workspaceSession.findUniqueOrThrow({ where: { id: value.session.id } })).toMatchObject({
       operationOwner: `run:${created.runId}`, version: before.version + 1
     });

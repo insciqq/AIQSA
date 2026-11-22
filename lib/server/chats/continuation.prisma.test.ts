@@ -9,7 +9,7 @@ import { ChatContinuationError, createChatContinuationService } from "./continua
 import { cancelChatContinuation, continuationSourceHref, createChatContinuationRepository } from "./continuationRepository";
 import { createChatContinuationHandler } from "./continuationHandlers";
 import { createPrismaChatRepository } from "./prismaRepository";
-import { scheduleTemporaryChatDeletion, temporaryRetentionDeadline } from "../memory/temporaryRetention";
+import { temporaryChatRetentionDeadline } from "./temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { getWorkspaceConfig } from "../workspace/config";
 import { DeterministicWorkspaceRuntime } from "../workspace/deterministicRuntime";
@@ -66,15 +66,12 @@ async function fixture(
   const leafId = randomUUID();
   await prisma.user.create({ data: { id: userId, displayName: "Summary test", status: "active" } });
   try {
-    const deadline = mode === "TEMPORARY" ? temporaryRetentionDeadline(new Date()) : null;
-    const chat = await prisma.$transaction(async (tx) => {
-      const created = await tx.chat.create({ data: { title: "Summary source", userId,
+    // A Temporary chat's deadline on its row is its deletion obligation.
+    const deadline = mode === "TEMPORARY" ? temporaryChatRetentionDeadline(new Date()) : null;
+    const chat = await prisma.chat.create({ data: { title: "Summary source", userId,
       memoryMode: mode === "TEMPORARY" ? "TEMPORARY" : "NORMAL",
       ...(deadline ? { temporaryRetentionDeadline: deadline, temporaryRetentionPolicyVersion: MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } : {})
-      } });
-      if (deadline) await scheduleTemporaryChatDeletion(tx, { chatId: created.id, deadline, now: new Date(), userId });
-      return created;
-    });
+    } });
     const first = await prisma.message.create({ data: { chatId: chat.id, role: "user", status: "complete",
       content: textMessageContent("Our goal: release a small feature.") } });
     await prisma.message.create({ data: { id: leafId, chatId: chat.id, parentMessageId: first.id, role: "assistant", status: "complete", content: textMessageContent("Decision: keep find_tools unchanged.") } });
@@ -89,16 +86,11 @@ async function fixture(
     } });
     await prisma.workspaceSession.deleteMany({ where: { chat: { userId } } });
     if (mode === "NORMAL") await prisma.chat.deleteMany({ where: { userId } });
-    // Disposable fixtures obey the temporary deletion authority used by its normal lifecycle lane.
+    // Disposable fixtures obey the Temporary deletion guard: a Temporary chat goes once its deadline has passed.
     if (mode === "TEMPORARY") {
-      await prisma.$transaction(async (tx) => {
-        await tx.memoryDeletionOutbox.updateMany({ where: { userId, operation: "TEMPORARY_DELETE" }, data: {
-          state: "RUNNING", leaseToken: "summary-test-cleanup", leaseExpiresAt: new Date(Date.now() + 60000),
-          completedAt: null, nextAttemptAt: null
-        } });
-        await tx.chat.deleteMany({ where: { userId } });
-      });
-      await prisma.memoryDeletionOutbox.deleteMany({ where: { userId } });
+      await prisma.chat.updateMany({ data: { temporaryRetentionDeadline: new Date(Date.now() - 60_000) },
+        where: { memoryMode: "TEMPORARY", userId } });
+      await prisma.chat.deleteMany({ where: { userId } });
     }
     await prisma.user.deleteMany({ where: { id: userId } });
     const seedKeys = options.retainSeedCleanup ? [] : seeds.flatMap((seed) =>
@@ -628,7 +620,6 @@ it("keeps temporary continuations temporary with a deletion deadline and no Work
   expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
     userId, memoryMode: "TEMPORARY", temporaryRetentionDeadline: expect.any(Date), workspaceEnabled: false
   });
-  expect(await prisma.memoryDeletionOutbox.count({ where: { userId, targetId: result.chatId, operation: "TEMPORARY_DELETE" } })).toBe(1);
 }, "TEMPORARY"));
 
 it("renews a long-running continuation, reuses settled parts, fences cancellation and never replays unknown dispatch", () => fixture(async ({ userId, chatId, leafId }) => {

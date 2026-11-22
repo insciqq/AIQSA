@@ -15,7 +15,7 @@ const request = {
 } as const;
 
 function snapshot(overrides: Partial<PermanentChatDeletionSnapshot> = {}): PermanentChatDeletionSnapshot {
-  return { activeLeafMessageId: "leaf-1", activeRunCount: 0, memoryMode: "NORMAL", sourceRevision: 4, ...overrides };
+  return { activeLeafMessageId: "leaf-1", activeRunCount: 0, memoryMode: "NORMAL", ...overrides };
 }
 
 function fixture(overrides: Partial<PermanentChatDeletionRepository> = {}) {
@@ -39,7 +39,7 @@ describe("permanent chat deletion service", () => {
     const condition = vi.fn(async () => true);
     await expect(service.confirm("user-1", "chat-1", request, { condition })).resolves.toEqual({ status: "IN_PROGRESS" });
     expect(repository.admit).toHaveBeenCalledWith({
-      chatId: "chat-1", condition, expectedActiveLeafMessageId: "leaf-1", expectedChatRevision: 4, now: NOW, userId: "user-1"
+      chatId: "chat-1", condition, expectedActiveLeafMessageId: "leaf-1", now: NOW, userId: "user-1"
     });
     // Background sub-agents stop once the fence holds; the worker purges after that.
     expect(order).toEqual(["admit", "stopSubagents"]);

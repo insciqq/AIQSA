@@ -67,7 +67,6 @@ describe("chat lifecycle client", () => {
           chatId: "chat-archived",
           location: "ARCHIVED_PREVIEW",
           memoryMode: "EXCLUDED",
-          sourceRevision: 4,
           updatedAt: "2026-08-10T08:00:00.000Z"
         }
       });

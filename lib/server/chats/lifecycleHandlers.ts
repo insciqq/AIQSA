@@ -9,11 +9,8 @@ import {
   type RetainedChatMemoryMode
 } from "../../contracts/chats";
 import {
-  type MemoryChatModePatch,
-  type MemoryChatModeResponse
-} from "../../contracts/memory";
-import {
   decodeMemoryConsumerChatModePatch,
+  type MemoryConsumerChatModePatch,
   type MemoryConsumerChatModeResponse
 } from "../../contracts/memoryClient";
 import type { RequestAuthResolver } from "../auth/requestAuth";
@@ -37,20 +34,17 @@ export type ArchivedChatSummaryRecord = ChatSummaryRecord & Readonly<{
   archived: true;
   lastMessageAt: Date | string | null;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
 }>;
 
 export type ArchivedChatDetailRecord = ChatDetailRecord & Readonly<{
   archived: true;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
 }>;
 
 export type ChatLifecycleStateRecord = Readonly<{
   archived: boolean;
   id: string;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
   updatedAt: Date | string;
 }>;
 
@@ -60,7 +54,6 @@ export type ChatMemoryStateRecord = Readonly<{
   /** Set on an imported chat or a copy of one: its Excluded mode is fixed. */
   importSource?: string;
   mode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
-  sourceRevision: number;
   temporaryRetentionDeadline: Date | string | null;
   temporaryRetentionPolicyVersion: "temporary-24h-v1" | null;
   updatedAt: Date | string;
@@ -70,7 +63,6 @@ export type ChatSourceResolutionRecord = Readonly<{
   chatId: string;
   location: "ACTIVE_CHAT" | "ARCHIVED_PREVIEW";
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
   updatedAt: Date | string;
 }>;
 
@@ -87,24 +79,20 @@ export type ChatLifecycleMutationResult =
   | Readonly<{ kind: "stale" }>
   | Readonly<{ chat: ChatLifecycleStateRecord; kind: "ok" }>;
 
-export type ChatMemoryModeMutationResult =
-  | Readonly<{
-      kind:
-        | "contract_invalid"
-        | "imported"
-        | "memory_stale"
-        | "not_found"
-        | "resume_blocked"
-        | "source_stale"
-        | "temporary";
-    }>
-  | Readonly<{ kind: "ok"; response: MemoryChatModeResponse }>;
+export type ChatMemoryModeMutationResult = Readonly<{
+  kind:
+    | "contract_invalid"
+    | "imported"
+    | "not_found"
+    | "ok"
+    | "resume_blocked"
+    | "source_stale"
+    | "temporary";
+}>;
 
 type ChatMemoryModeMutationInput = Readonly<{
-  expectedChatRevision?: number;
-  expectedMemoryRevision?: number;
-  mode: MemoryChatModePatch["mode"];
-  resumeDisclosureCopyVersion?: MemoryChatModePatch["resumeDisclosureCopyVersion"];
+  mode: MemoryConsumerChatModePatch["mode"];
+  resumeDisclosureCopyVersion?: MemoryConsumerChatModePatch["resumeDisclosureCopyVersion"];
 }>;
 
 export type ChatLifecycleRepository = Readonly<{
@@ -123,7 +111,6 @@ export type ChatLifecycleRepository = Readonly<{
   setArchived(input: {
     archived: boolean;
     chatId: string;
-    expectedChatRevision: number;
     userId: string;
   }): Promise<ChatLifecycleMutationResult>;
   setMemoryMode(input: ChatMemoryModeMutationInput & {
@@ -198,7 +185,6 @@ function serializeLifecycleState(chat: ChatLifecycleStateRecord): ChatLifecycleR
       archived: chat.archived,
       id: chat.id,
       memoryMode: chat.memoryMode,
-      sourceRevision: chat.sourceRevision,
       updatedAt: iso(chat.updatedAt)
     }
   };
@@ -229,8 +215,7 @@ function serializeArchivedSummary(chat: ArchivedChatSummaryRecord): ArchivedChat
     ...serializeChatSummary(chat),
     archived: true,
     lastMessageAt: chat.lastMessageAt === null ? null : iso(chat.lastMessageAt),
-    memoryMode: chat.memoryMode,
-    sourceRevision: chat.sourceRevision
+    memoryMode: chat.memoryMode
   };
 }
 
@@ -239,8 +224,7 @@ function serializeArchivedDetail(chat: ArchivedChatDetailRecord): ArchivedChatDe
     chat: {
       ...serializeChatDetail(chat),
       archived: true,
-      memoryMode: chat.memoryMode,
-      sourceRevision: chat.sourceRevision
+      memoryMode: chat.memoryMode
     }
   };
 }
@@ -332,13 +316,12 @@ function createSetArchivedHandler(deps: ChatLifecycleHandlerDeps, archived: bool
     if (!chatId) return json({ error: "chat_lifecycle_invalid" }, 400);
     const body = await jsonBody(request);
     if (body instanceof Response) return body;
-    const decoded = decodeChatLifecycleRequest(body);
-    if (!decoded) return json({ error: "chat_lifecycle_invalid" }, 400);
+    // A tab opened before the old Memory revision was retired still sends it; it is accepted and ignored.
+    if (!decodeChatLifecycleRequest(body)) return json({ error: "chat_lifecycle_invalid" }, 400);
     try {
       const result = await deps.repository.setArchived({
         archived,
         chatId,
-        expectedChatRevision: decoded.expectedChatRevision,
         userId: resolved.userId
       });
       if (result.kind === "not_found") return json({ error: "chat_not_found" }, 404);
@@ -418,8 +401,6 @@ export function createPatchChatMemoryModeHandler(deps: ChatLifecycleHandlerDeps)
         return json({ error: "memory_temporary_chat_forbidden" }, 409);
       case "imported":
         return json({ error: "memory_imported_chat_forbidden" }, 409);
-      case "memory_stale":
-        return json({ error: "memory_changed" }, 409);
       case "source_stale":
         return json({ error: "memory_changed" }, 409);
       case "resume_blocked":

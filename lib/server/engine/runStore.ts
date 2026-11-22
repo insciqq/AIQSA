@@ -2,11 +2,9 @@ import { createHash } from "node:crypto";
 import { Prisma, type ModelRunEngine, type ModelRunStatus, type PrismaClient } from "@prisma/client";
 import { textMessageContent } from "../../domain/content";
 import { TOKEN_USAGE_FIELDS, sumEstimatedCostMicros, sumTokenUsage, type TokenUsageField } from "../../domain/usage";
-import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { signalRunTerminal } from "../push/runTerminalSignal";
 import { monitoringCheckChatTime } from "../runs/chatListTime";
-import { settleTerminalMemorySource } from "../runs/prismaRepositoryPreparation";
+import { settleTerminalChatSource } from "../runs/prismaRepositoryPreparation";
 import { runFollowupsAllowCompletion } from "../runs/prismaRepositoryFollowups";
 import {
   activeMessageStatuses,
@@ -70,8 +68,7 @@ export function nativeUsageRowId(runId: string, key: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "modelRun" | "usageEvent">,
-  memorySourceHooks: MemorySourceMutationHooks = defaultMemorySourceMutationHooks) {
+export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" | "message" | "modelRun" | "usageEvent">) {
   return {
     /**
      * The published run's work duration exactly as a reload reads it: run
@@ -174,8 +171,8 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
         if (!run || !run.answerCompletedAt || !dispatchableModelRunStatuses.includes(run.status)) return false;
         await tx.modelRun.update({ data: { errorPayload: Prisma.JsonNull, status: "complete" }, where: { id: scope.runId } });
         await closeRunningToolLoopCallsInTransaction(tx, scope.runId);
-        await settleTerminalMemorySource(tx, { assistantMessageId: scope.assistantMessageId, chatId: scope.chatId,
-          runId: scope.runId, status: "complete", userId: scope.userId }, memorySourceHooks);
+        await settleTerminalChatSource(tx, { assistantMessageId: scope.assistantMessageId, chatId: scope.chatId,
+          runId: scope.runId, status: "complete", userId: scope.userId });
         return true;
       });
       if (completed) signalRunTerminal(scope.runId);
@@ -201,7 +198,7 @@ export function createNativeRunStore(client: Pick<PrismaClient, "$transaction" |
       const answerCost = sumEstimatedCostMicros(attributions.map((attribution) => attribution.estimatedCostMicros ?? null));
       await client.$transaction(async (tx) => {
         // The chat row before the run's, in settlement order (owner, chat, run: `lockRunSettlementScope`), as a sub-agent's
-        // settlement and Memory's source check take them: taken run first, this deadlocked with both. The owner's row is
+        // settlement takes them: taken run first, this deadlocked with both. The owner's row is
         // not needed here. A monitoring check keeps its chat's place in the chat list (`chatListTime.ts`) and locks the chat
         // for that before anything else, so no lock is raised while the run's is held. Any other run locks the chat no
         // harder than the UPDATE below does, so a row that only references the chat never waits for it.

@@ -17,7 +17,7 @@ const config = getAuthConfig({
 const auth = createTestAuth({ user: { id: config.bootstrapUserId } });
 
 function row(id: string, overrides: Partial<PersonalChatLifecycleRow> = {}): PersonalChatLifecycleRow {
-  return { archived: false, id, memoryMode: "NORMAL", sourceRevision: 3, ...overrides };
+  return { archived: false, id, memoryMode: "NORMAL", ...overrides };
 }
 
 function deps(input: {
@@ -39,7 +39,6 @@ function deps(input: {
           archived: true,
           id: archiveInput.chatId,
           memoryMode: "NORMAL",
-          sourceRevision: archiveInput.expectedChatRevision + 1,
           updatedAt: new Date()
         },
         kind: "ok"
@@ -95,7 +94,7 @@ describe("delete all personal chats", () => {
     });
     expect(confirmed).toEqual([]);
     expect(archived.map((call) => (call as { chatId: string }).chatId)).toEqual(["a", "c", "d"]);
-    expect(archived[0]).toMatchObject({ archived: true, expectedChatRevision: 3, userId: "user-1" });
+    expect(archived[0]).toEqual({ archived: true, chatId: expect.any(String), userId: "user-1" });
   });
 
   it("propagates unexpected failures instead of reporting a partial success", async () => {

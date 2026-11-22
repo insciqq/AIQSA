@@ -510,7 +510,7 @@ describe("chat wire contracts", () => {
       expect(decodeChatSummaryResponse({ chat: bound })).toEqual(bound);
       expect(decodeWorkspaceChatsResponse({ chats: [bound], folders: [] })?.chats)
         .toEqual([bound]);
-      const archived = { ...bound, archived: true, lastMessageAt: null, memoryMode: "NORMAL", sourceRevision: 1 };
+      const archived = { ...bound, archived: true, lastMessageAt: null, memoryMode: "NORMAL" };
       expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
     }
     // Stale caches without the field read as no Assistant.
@@ -546,7 +546,7 @@ describe("chat wire contracts", () => {
     const imported = { ...summary, importSource: "CHATGPT", importSourceModel: "gpt-4o" };
     expect(decodeChatSummaryResponse({ chat: imported })).toEqual(imported);
     expect(decodeChatSummaryResponse({ chat: { ...summary, importSource: "AIQSA" } })).toEqual({ ...summary, importSource: "AIQSA" });
-    const archived = { ...imported, archived: true, hasContinuationSource: true, lastMessageAt: null, memoryMode: "EXCLUDED", sourceRevision: 1 };
+    const archived = { ...imported, archived: true, hasContinuationSource: true, lastMessageAt: null, memoryMode: "EXCLUDED" };
     expect(decodeArchivedChatsResponse({ chats: [archived], nextCursor: null })?.chats).toEqual([archived]);
     for (const marker of [{ importSource: "GEMINI" }, { importSourceModel: "orphan label" }, { importSource: "CLAUDE", importSourceModel: "" },
       { importSource: "CLAUDE", importSourceModel: "m".repeat(129) }]) {
@@ -1096,7 +1096,6 @@ describe("chat wire contracts", () => {
         archived: true,
         id: summary.id,
         memoryMode: "NORMAL",
-        sourceRevision: 7,
         updatedAt: summary.updatedAt
       }
     };
@@ -1104,8 +1103,7 @@ describe("chat wire contracts", () => {
       ...summary,
       archived: true,
       lastMessageAt: summary.updatedAt,
-      memoryMode: "EXCLUDED",
-      sourceRevision: 8
+      memoryMode: "EXCLUDED"
     };
     const archivedDetail = {
       chat: {
@@ -1113,7 +1111,6 @@ describe("chat wire contracts", () => {
         archived: true,
         memoryMode: "NORMAL",
         messages: [message],
-        sourceRevision: 7,
         usageStats
       }
     };
@@ -1122,15 +1119,16 @@ describe("chat wire contracts", () => {
         chatId: summary.id,
         location: "ARCHIVED_PREVIEW",
         memoryMode: "NORMAL",
-        sourceRevision: 7,
         updatedAt: summary.updatedAt
       }
     };
 
-    expect(decodeChatLifecycleRequest({ expectedChatRevision: 7 })).toEqual({
-      expectedChatRevision: 7
-    });
+    // The chat's own state is the fence; a tab opened before the upgrade still sends the retired revision.
+    expect(decodeChatLifecycleRequest({})).toEqual({});
+    expect(decodeChatLifecycleRequest({ expectedChatRevision: 7 })).toEqual({});
+    expect(decodeChatLifecycleRequest({ expectedChatRevision: -1 })).toBeNull();
     expect(decodeChatLifecycleRequest({ expectedChatRevision: 7, erase: true })).toBeNull();
+    expect(decodeChatLifecycleRequest({ erase: true })).toBeNull();
     expect(decodeChatLifecycleResponse(lifecycle)).toEqual(lifecycle);
     expect(decodeArchivedChatsResponse({ chats: [archivedSummary], nextCursor: "opaque" }))
       .toEqual({ chats: [archivedSummary], nextCursor: "opaque" });
@@ -1141,7 +1139,6 @@ describe("chat wire contracts", () => {
         archived: false,
         chatId: summary.id,
         mode: "TEMPORARY",
-        sourceRevision: 8,
         temporaryRetentionDeadline: "2026-07-15T08:01:00.000Z",
         temporaryRetentionPolicyVersion: "temporary-24h-v1",
         updatedAt: summary.updatedAt
@@ -1152,7 +1149,6 @@ describe("chat wire contracts", () => {
         archived: false,
         chatId: summary.id,
         mode: "TEMPORARY",
-        sourceRevision: 8,
         temporaryRetentionDeadline: null,
         temporaryRetentionPolicyVersion: "temporary-24h-v1",
         updatedAt: summary.updatedAt
@@ -1173,6 +1169,10 @@ describe("chat wire contracts", () => {
     expect(decodeChatSourceResolutionResponse({
       source: { ...source.source, location: "MISSING" }
     })).toBeNull();
+    // The retired revision is no longer part of any of these wires.
+    expect(decodeChatLifecycleResponse({ chat: { ...lifecycle.chat, sourceRevision: 7 } })).toBeNull();
+    expect(decodeArchivedChatsResponse({ chats: [{ ...archivedSummary, sourceRevision: 8 }], nextCursor: null })).toBeNull();
+    expect(decodeChatSourceResolutionResponse({ source: { ...source.source, sourceRevision: 7 } })).toBeNull();
   });
 
 });
@@ -1285,7 +1285,7 @@ describe("chat Assistant projection", () => {
 
   it("keeps an archived preview free of Assistant state", () => {
     const archived = {
-      chat: { ...detailChat({ messages: [message], usageStats }), archived: true, memoryMode: "NORMAL", sourceRevision: 7 }
+      chat: { ...detailChat({ messages: [message], usageStats }), archived: true, memoryMode: "NORMAL" }
     };
     expect(decodeArchivedChatDetailResponse(archived)?.chat.assistant).toBeNull();
     expect(decodeArchivedChatDetailResponse({ chat: { ...archived.chat, assistant: { state: "deleted" } } })).toBeNull();

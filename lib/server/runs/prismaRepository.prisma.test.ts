@@ -1450,13 +1450,6 @@ describe("Prisma-backed run repository", () => {
         activeLeafMessageId: sent.assistantMessageId,
         title: "Atomic defaults"
       });
-      await expect(prisma.chat.findUniqueOrThrow({
-        select: { memoryBranchGeneration: true, memorySourceRevision: true },
-        where: { id: chat.id }
-      })).resolves.toEqual({
-        memoryBranchGeneration: 0,
-        memorySourceRevision: 1
-      });
       await expect(
         prisma.message.findMany({
           orderBy: { createdAt: "asc" },
@@ -1521,28 +1514,6 @@ describe("Prisma-backed run repository", () => {
         activeLeafMessageId: regenerated.assistantMessageId,
         title: "Atomic defaults"
       });
-      await expect(Promise.all([
-        prisma.chat.findUniqueOrThrow({
-          select: { memoryBranchGeneration: true, memorySourceRevision: true },
-          where: { id: chat.id }
-        }),
-        prisma.userMemorySettings.findUniqueOrThrow({
-          select: { memoryGeneration: true, memoryRevision: true },
-          where: { userId }
-        }),
-        prisma.memoryJob.findMany({
-          select: { kind: true },
-          where: {
-            chatId: chat.id,
-            kind: { in: ["RECONCILE_BRANCH", "RECONCILE_SOURCE"] },
-            userId
-          }
-        })
-      ])).resolves.toEqual([
-        { memoryBranchGeneration: 1, memorySourceRevision: 2 },
-        { memoryGeneration: 0, memoryRevision: 1 },
-        []
-      ]);
     });
   });
 

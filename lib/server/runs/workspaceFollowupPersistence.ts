@@ -20,7 +20,6 @@ export type WorkspaceFollowupAdmission = Readonly<{
   admissionKey: string;
   predecessorRunId: string;
   snapshot: unknown;
-  sourceRevisionAdvance: 0 | 1;
 }>;
 
 /**
@@ -40,7 +39,7 @@ export function predecessorReleasesSuccessor(predecessor: Readonly<{ errorPayloa
 /** The caller holds the chat lock. Acceptance permits one waiting successor,
  * never another executor. A completed predecessor takes the ordinary path. */
 export async function prepareWorkspaceFollowupAdmission(
-  tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput, personalMemory: boolean
+  tx: Prisma.TransactionClient, input: PreparingRunAdmissionInput
 ): Promise<WorkspaceFollowupAdmission | null> {
   // The main agent's runs only: background sub-agents run beside them and never hold off the user's next message
   // (one active run per thread, `agent_docs/RUN_CONTRACTS.md`).
@@ -78,7 +77,7 @@ export async function prepareWorkspaceFollowupAdmission(
   if (!active.some((run) => run.id === followup.predecessorRunId)) {
     throw new WorkspaceFollowupError("workspace_followup_predecessor_failed");
   }
-  return { ...followup, sourceRevisionAdvance: personalMemory ? 1 : 0 };
+  return followup;
 }
 
 export async function storeWorkspaceFollowupAdmission(
@@ -88,8 +87,7 @@ export async function storeWorkspaceFollowupAdmission(
   await tx.workspaceFollowup.create({ data: {
     admissionKey: input.admissionKey, admissionResult: json(created), chatId,
     deadlineAt: new Date(Date.now() + WORKSPACE_FOLLOWUP_WAIT_MS), modelRunId: created.runId,
-    predecessorRunId: input.predecessorRunId, snapshot: json(input.snapshot),
-    sourceRevisionAdvance: input.sourceRevisionAdvance
+    predecessorRunId: input.predecessorRunId, snapshot: json(input.snapshot)
   } });
 }
 

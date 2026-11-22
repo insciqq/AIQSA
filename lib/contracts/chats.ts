@@ -463,7 +463,6 @@ export type WorkspaceChatSummary = {
   messageCount: number;
   /** Client-owned lifecycle metadata loaded from the private Memory state route. */
   memoryMode?: MemoryChatMode;
-  memorySourceRevision?: number;
   pendingInitialMemoryMode?: "TEMPORARY";
   /** Local-only personal first-send reservation. The server creates the chat
    * atomically with its first message/run and never serializes this field. */
@@ -621,7 +620,6 @@ export type WorkspaceChatSummaryWire = Omit<
   | "defaultModelId"
   | "defaultProvider"
   | "memoryMode"
-  | "memorySourceRevision"
   | "pendingInitialMemoryMode"
   | "pinned"
   | "temporaryRetentionDeadline"
@@ -679,15 +677,16 @@ export type ChatBranchesResponseWire = {
 
 export type RetainedChatMemoryMode = Exclude<MemoryChatMode, "TEMPORARY">;
 
-export type ChatLifecycleRequestWire = {
-  expectedChatRevision: number;
-};
+/**
+ * Archive and restore take no fields: the chat's own state is the fence. A tab opened before the old Memory revision
+ * was retired still sends `expectedChatRevision`, which is accepted and ignored.
+ */
+export type ChatLifecycleRequestWire = Record<string, never>;
 
 export type ChatLifecycleStateWire = {
   archived: boolean;
   id: string;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
   updatedAt: string;
 };
 
@@ -699,7 +698,6 @@ export type ChatMemoryStateWire = {
   archived: boolean;
   chatId: string;
   mode: MemoryChatMode;
-  sourceRevision: number;
   temporaryRetentionDeadline: string | null;
   temporaryRetentionPolicyVersion: typeof MEMORY_TEMPORARY_RETENTION_POLICY_VERSION | null;
   updatedAt: string;
@@ -713,7 +711,6 @@ export type ArchivedChatSummaryWire = WorkspaceChatSummaryWire & {
   archived: true;
   lastMessageAt: string | null;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
 };
 
 export type ArchivedChatsResponseWire = {
@@ -724,7 +721,6 @@ export type ArchivedChatsResponseWire = {
 export type ArchivedChatDetailWire = ChatDetailWire & {
   archived: true;
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
 };
 
 export type ArchivedChatDetailResponseWire = {
@@ -735,7 +731,6 @@ export type ChatSourceResolutionWire = {
   chatId: string;
   location: "ACTIVE_CHAT" | "ARCHIVED_PREVIEW";
   memoryMode: RetainedChatMemoryMode;
-  sourceRevision: number;
   updatedAt: string;
 };
 
@@ -1931,11 +1926,12 @@ export function decodeChatMessagesPageResponse(value: unknown): ChatMessagesPage
 }
 
 export function decodeChatLifecycleRequest(value: unknown): ChatLifecycleRequestWire | null {
-  if (!isRecord(value) || !hasExactKeys(value, ["expectedChatRevision"])) return null;
+  if (!isRecord(value)) return null;
+  if (hasExactKeys(value, [])) return {};
+  // The retired revision of a tab opened before the upgrade: still bounded, then ignored.
+  if (!hasExactKeys(value, ["expectedChatRevision"])) return null;
   const expectedChatRevision = nonNegativeInteger(value.expectedChatRevision);
-  return expectedChatRevision === null || !Number.isSafeInteger(expectedChatRevision)
-    ? null
-    : { expectedChatRevision };
+  return expectedChatRevision === null || !Number.isSafeInteger(expectedChatRevision) ? null : {};
 }
 
 function retainedMemoryMode(value: unknown): RetainedChatMemoryMode | null {
@@ -1945,23 +1941,20 @@ function retainedMemoryMode(value: unknown): RetainedChatMemoryMode | null {
 function decodeChatLifecycleState(value: unknown): ChatLifecycleStateWire | null {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ["archived", "id", "memoryMode", "sourceRevision", "updatedAt"])
+    !hasExactKeys(value, ["archived", "id", "memoryMode", "updatedAt"])
   ) return null;
   const id = requiredString(value.id);
   const memoryMode = retainedMemoryMode(value.memoryMode);
-  const sourceRevision = nonNegativeInteger(value.sourceRevision);
   const updatedAt = isoTimestamp(value.updatedAt);
   if (
     !id ||
     !memoryMode ||
-    sourceRevision === null ||
-    !Number.isSafeInteger(sourceRevision) ||
     !updatedAt ||
     typeof value.archived !== "boolean"
   ) {
     return null;
   }
-  return { archived: value.archived, id, memoryMode, sourceRevision, updatedAt };
+  return { archived: value.archived, id, memoryMode, updatedAt };
 }
 
 export function decodeChatLifecycleResponse(value: unknown): ChatLifecycleResponseWire | null {
@@ -1981,7 +1974,6 @@ export function decodeChatMemoryStateResponse(
     "archived",
     "chatId",
     "mode",
-    "sourceRevision",
     "temporaryRetentionDeadline",
     "temporaryRetentionPolicyVersion",
     "updatedAt"
@@ -1990,7 +1982,6 @@ export function decodeChatMemoryStateResponse(
   const mode = chat.mode === "NORMAL" || chat.mode === "EXCLUDED" || chat.mode === "TEMPORARY"
     ? chat.mode
     : null;
-  const sourceRevision = nonNegativeInteger(chat.sourceRevision);
   const temporaryRetentionDeadline = chat.temporaryRetentionDeadline === null
     ? null
     : isoTimestamp(chat.temporaryRetentionDeadline);
@@ -1998,8 +1989,6 @@ export function decodeChatMemoryStateResponse(
   if (
     !chatId ||
     !mode ||
-    sourceRevision === null ||
-    !Number.isSafeInteger(sourceRevision) ||
     !updatedAt ||
     typeof chat.archived !== "boolean"
   ) return null;
@@ -2018,7 +2007,6 @@ export function decodeChatMemoryStateResponse(
       archived: chat.archived,
       chatId,
       mode,
-      sourceRevision,
       temporaryRetentionDeadline,
       temporaryRetentionPolicyVersion: mode === "TEMPORARY"
         ? MEMORY_TEMPORARY_RETENTION_POLICY_VERSION
@@ -2044,7 +2032,6 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "memoryMode",
       "messageCount",
       "pinned",
-      "sourceRevision",
       "title",
       "updatedAt",
       ...(Object.hasOwn(value, "assistantId") ? ["assistantId"] : []),
@@ -2060,13 +2047,10 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
     ? null
     : isoTimestamp(value.lastMessageAt);
   const memoryMode = retainedMemoryMode(value.memoryMode);
-  const sourceRevision = nonNegativeInteger(value.sourceRevision);
   return summary &&
     (value.lastMessageAt === null || lastMessageAt !== null) &&
-    memoryMode &&
-    sourceRevision !== null &&
-    Number.isSafeInteger(sourceRevision)
-    ? { ...summary, archived: true, lastMessageAt, memoryMode, sourceRevision }
+    memoryMode
+    ? { ...summary, archived: true, lastMessageAt, memoryMode }
     : null;
 }
 
@@ -2114,7 +2098,6 @@ export function decodeArchivedChatDetailResponse(
     "messages",
     "pageInfo",
     "pinned",
-    "sourceRevision",
     "title",
     "updatedAt",
     "usageStats",
@@ -2127,9 +2110,8 @@ export function decodeArchivedChatDetailResponse(
     ...(Object.hasOwn(value.chat, "workspace") ? ["workspace"] : [])
   ])) return null;
   const memoryMode = retainedMemoryMode(value.chat.memoryMode);
-  const sourceRevision = nonNegativeInteger(value.chat.sourceRevision);
-  return memoryMode && sourceRevision !== null && Number.isSafeInteger(sourceRevision)
-    ? { chat: { ...detail, archived: true, memoryMode, sourceRevision } }
+  return memoryMode
+    ? { chat: { ...detail, archived: true, memoryMode } }
     : null;
 }
 
@@ -2141,18 +2123,16 @@ export function decodeChatSourceResolutionResponse(
   }
   const source = value.source;
   if (
-    !hasExactKeys(source, ["chatId", "location", "memoryMode", "sourceRevision", "updatedAt"])
+    !hasExactKeys(source, ["chatId", "location", "memoryMode", "updatedAt"])
   ) return null;
   const chatId = requiredString(source.chatId);
   const memoryMode = retainedMemoryMode(source.memoryMode);
-  const sourceRevision = nonNegativeInteger(source.sourceRevision);
   const updatedAt = isoTimestamp(source.updatedAt);
   const location = source.location === "ACTIVE_CHAT" || source.location === "ARCHIVED_PREVIEW"
     ? source.location
     : null;
-  return chatId && location && memoryMode && sourceRevision !== null &&
-    Number.isSafeInteger(sourceRevision) && updatedAt
-    ? { source: { chatId, location, memoryMode, sourceRevision, updatedAt } }
+  return chatId && location && memoryMode && updatedAt
+    ? { source: { chatId, location, memoryMode, updatedAt } }
     : null;
 }
 

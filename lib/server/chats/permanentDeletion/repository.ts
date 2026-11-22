@@ -15,7 +15,6 @@ const activeRunStatuses = [
 type LockedChat = Readonly<{
   activeLeafMessageId: string | null;
   memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
-  memorySourceRevision: number;
   permanentDeletionAt: Date | null;
 }>;
 
@@ -25,7 +24,7 @@ async function lockChat(
   userId: string
 ): Promise<LockedChat | null> {
   const rows = await tx.$queryRaw<LockedChat[]>(Prisma.sql`
-    SELECT "activeLeafMessageId", "memoryMode"::text AS "memoryMode", "memorySourceRevision", "permanentDeletionAt"
+    SELECT "activeLeafMessageId", "memoryMode"::text AS "memoryMode", "permanentDeletionAt"
     FROM "Chat"
     WHERE "id" = ${chatId} AND "userId" = ${userId}
     FOR UPDATE
@@ -41,8 +40,7 @@ export function createPrismaPermanentChatDeletionRepository(
       const chat = await client.chat.findFirst({
         select: {
           activeLeafMessageId: true,
-          memoryMode: true,
-          memorySourceRevision: true
+          memoryMode: true
         },
         where: {
           id: chatId,
@@ -63,8 +61,7 @@ export function createPrismaPermanentChatDeletionRepository(
       return {
         activeLeafMessageId: chat.activeLeafMessageId,
         activeRunCount,
-        memoryMode: chat.memoryMode,
-        sourceRevision: chat.memorySourceRevision
+        memoryMode: chat.memoryMode
       };
     },
 
@@ -73,10 +70,8 @@ export function createPrismaPermanentChatDeletionRepository(
         const chat = await lockChat(tx, input.chatId, input.userId);
         if (!chat || chat.permanentDeletionAt) return { kind: "not_found" as const };
         if (chat.memoryMode === "TEMPORARY") return { kind: "temporary" as const };
-        if (
-          chat.memorySourceRevision !== input.expectedChatRevision ||
-          chat.activeLeafMessageId !== input.expectedActiveLeafMessageId
-        ) {
+        // The leaf the snapshot read is the fence: a message sent or a branch switched since makes it stale.
+        if (chat.activeLeafMessageId !== input.expectedActiveLeafMessageId) {
           return { kind: "stale" as const };
         }
         // Under the chat lock, before any change: the caller's own condition.

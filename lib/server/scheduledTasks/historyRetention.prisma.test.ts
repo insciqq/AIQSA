@@ -112,8 +112,7 @@ describe("persisted scheduled task history retention", () => {
       snapshot: {}, title: "Shared" } });
     await chats.updateChat({ chatId: renamed, title: "My October digest", userId });
     expect(await runner.archiveRotatedChat({ chatId: restored, taskId: created.id, userId })).toBe(true);
-    const archived = await prisma.chat.findUniqueOrThrow({ where: { id: restored } });
-    await chats.setArchived({ archived: false, chatId: restored, expectedChatRevision: archived.memorySourceRevision, userId });
+    await chats.setArchived({ archived: false, chatId: restored, userId });
     expect(await prisma.chat.findMany({ select: { id: true }, where: { id: { in: [renamed, restored] }, ownerKeptAt: { not: null } } }))
       .toHaveLength(2);
 
