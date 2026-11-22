@@ -8,7 +8,7 @@ import {
 import { deleteExpiredTemporaryChat } from "../chats/temporaryDeletion";
 import type { ChatAggregateScope } from "../chats/aggregateDeletion";
 import { PERMANENT_CHAT_DELETION_DUTY, TEMPORARY_CHAT_DELETION_DUTY } from "./duties";
-import { backgroundErrorCode } from "./errors";
+import { BackgroundWorkError, backgroundErrorCode } from "./errors";
 import type { BackgroundPass, BackgroundPassContext } from "./passes";
 import {
   backgroundWorkItemClaimableSql,
@@ -17,6 +17,8 @@ import {
   failBackgroundWorkItem,
   pruneCompletedBackgroundWorkItems,
   releaseBackgroundWorkItem,
+  renewBackgroundWorkItem,
+  BACKGROUND_WORK_RENEW_MS,
   type BackgroundWorkClaim,
   type BackgroundWorkClient
 } from "./workItems";
@@ -40,6 +42,8 @@ export type ChatDeletionWorkStore = Readonly<{
   fail(claim: BackgroundWorkClaim, input: Readonly<{ code: string; now: Date }>): Promise<void>;
   prune(duty: ChatDeletionDuty, now: Date): Promise<void>;
   release(claim: BackgroundWorkClaim, now: Date): Promise<void>;
+  /** Extends a claim still being worked on; null when it is no longer this worker's. */
+  renew(claim: BackgroundWorkClaim, now: Date): Promise<Date | null>;
   /**
    * A work row whose chat vanished without it (another path deleted the chat): a permanent deletion's completes,
    * so its owner still reads the outcome; a Temporary one's goes.
@@ -73,6 +77,7 @@ export function createPrismaChatDeletionWorkStore(client: PrismaClient): ChatDel
       await pruneCompletedBackgroundWorkItems(client, { duty, now });
     },
     release: (claim, now) => releaseBackgroundWorkItem(client, claim, now),
+    renew: (claim, now) => renewBackgroundWorkItem(client, claim, now),
     async settleVanished(duty, now) {
       const vanished = Prisma.sql`
         work."duty" = ${duty}
@@ -96,9 +101,64 @@ type PassOptions = Readonly<{
   /** Test seam; the default is the duty's own handler. */
   handler?: ChatDeletionHandler;
   intervalMs?: number;
+  /** How often a worker renews the claim of the item it is processing. */
+  renewEveryMs?: number;
   /** Test seam; the default is the Prisma store over the dependencies' client. */
   store?: ChatDeletionWorkStore;
 }>;
+
+/**
+ * Keeps the claim alive while the item is processed: renewed every `renewEveryMs`, and the item's signal is
+ * aborted once the claim is gone (another worker took it over) or a renewal failure would let it lapse before the
+ * next one, so the handler stops issuing Workspace and storage operations at once. The pass's own signal
+ * (shutdown) aborts it too.
+ */
+function holdClaim(
+  input: Readonly<{
+    claim: BackgroundWorkClaim;
+    context: BackgroundPassContext;
+    renewEveryMs: number;
+    store: ChatDeletionWorkStore;
+  }>
+): Readonly<{ lost: () => boolean; release: () => Promise<void>; signal: AbortSignal }> {
+  const { claim, context, renewEveryMs, store } = input;
+  const item = new AbortController();
+  let lost = false;
+  let leaseExpiresAt = claim.leaseExpiresAt;
+  let renewing: Promise<void> | null = null;
+  const lose = () => {
+    lost = true;
+    item.abort(new BackgroundWorkError("background_work_lease_lost"));
+  };
+  const forward = () => item.abort(context.signal.reason);
+  if (context.signal.aborted) forward();
+  else context.signal.addEventListener("abort", forward, { once: true });
+  const timer = setInterval(() => {
+    if (renewing || item.signal.aborted) return;
+    renewing = (async () => {
+      try {
+        const renewed = await store.renew(claim, context.now());
+        if (renewed) leaseExpiresAt = renewed;
+        else lose();
+      } catch {
+        // One failed renewal leaves the lease valid; stop before it could lapse unrenewed.
+        if (context.now().getTime() + renewEveryMs >= leaseExpiresAt.getTime()) lose();
+      } finally {
+        renewing = null;
+      }
+    })();
+  }, renewEveryMs);
+  timer.unref?.();
+  return {
+    lost: () => lost,
+    async release() {
+      clearInterval(timer);
+      context.signal.removeEventListener("abort", forward);
+      await renewing;
+    },
+    signal: item.signal
+  };
+}
 
 async function processItem(
   input: Readonly<{
@@ -107,30 +167,35 @@ async function processItem(
     dependencies: ChatPurgeDependencies;
     fallbackCode: string;
     handler: ChatDeletionHandler;
+    renewEveryMs: number;
     store: ChatDeletionWorkStore;
   }>
 ): Promise<"completed" | "failed" | "released"> {
   const { claim, context, store } = input;
   const now = context.now();
+  const held = holdClaim({ claim, context, renewEveryMs: input.renewEveryMs, store });
   try {
     const outcome = await input.handler(input.dependencies, { chatId: claim.itemId, userId: claim.userId }, {
       complete: (tx) => store.complete(tx, claim, now),
       now,
-      signal: context.signal
+      signal: held.signal
     });
+    await held.release();
     if (outcome === "not_due") {
       await store.release(claim, context.now());
       return "released";
     }
     return "completed";
   } catch (error) {
-    if (context.signal.aborted) {
+    await held.release();
+    if (context.signal.aborted && !held.lost()) {
       // Shutdown: give the item back at once instead of holding it until the lease expires.
       await store.release(claim, context.now()).catch(() => undefined);
       return "released";
     }
-    const code = backgroundErrorCode(error, input.fallbackCode);
+    const code = held.lost() ? "background_work_lease_lost" : backgroundErrorCode(error, input.fallbackCode);
     reportSubsystemFailure({ action: "retry", code, error, stage: "cleanup", subsystem: "background" });
+    // Backoff for this worker's own claim; a claim another worker took over keeps its row (token check).
     await store.fail(claim, { code, now: context.now() });
     return "failed";
   }
@@ -145,6 +210,7 @@ function createChatDeletionPass(
   const batch = options.batch ?? CHAT_DELETION_BATCH;
   const store = options.store ?? createPrismaChatDeletionWorkStore(dependencies.client);
   const handler = options.handler ?? defaults.handler;
+  const renewEveryMs = options.renewEveryMs ?? BACKGROUND_WORK_RENEW_MS;
   return Object.freeze({
     intervalMs: options.intervalMs ?? defaults.intervalMs,
     name: duty,
@@ -158,7 +224,7 @@ function createChatDeletionPass(
         const claim = await store.claim({ duty, itemId: item.chatId, now: context.now(), userId: item.userId });
         if (!claim) continue;
         const outcome = await processItem({
-          claim, context, dependencies, fallbackCode: defaults.fallbackCode, handler, store
+          claim, context, dependencies, fallbackCode: defaults.fallbackCode, handler, renewEveryMs, store
         });
         if (outcome === "completed") completed += 1;
         if (outcome === "failed") failed += 1;

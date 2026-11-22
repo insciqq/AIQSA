@@ -120,8 +120,9 @@ export async function deleteExclusiveChatObjects(
     const shared = await otherReferences(input.client, attachmentIds, storageKey) > 0;
     if (!shared) {
       try {
-        await input.storage.deleteObject(storageKey);
-      } catch {
+        await input.storage.deleteObject(storageKey, { signal: input.signal });
+      } catch (error) {
+        if (input.signal.aborted) throw error;
         throw new BackgroundWorkError("chat_deletion_object_delete_failed");
       }
     }
@@ -188,11 +189,18 @@ export async function deleteChatAggregate(
     throw new BackgroundWorkError("chat_deletion_aggregate_changed");
   }
   const attachmentIds = current.map(({ id }) => id);
-  for (const disposition of input.dispositions) {
-    if (disposition.deleted) continue;
-    if (await otherReferences(tx, attachmentIds, disposition.storageKey) === 0) {
-      throw new BackgroundWorkError("chat_deletion_object_reference_changed");
-    }
+  const kept = input.dispositions.filter(({ deleted }) => !deleted).map(({ storageKey }) => storageKey).sort();
+  for (const storageKey of kept) {
+    // The per-object lock retention and saved files take (`lib/server/retention/prune.ts`): two deletions removing
+    // the last references to one shared object serialize here, so the later one, reading after the earlier one
+    // committed, finds no other reference left and stages the object's deletion instead of stranding its bytes.
+    // The object worker deletes it only once nothing references it any more.
+    await tx.$queryRaw<Array<{ lock: string }>>(Prisma.sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(${storageKey}, 260))::text AS "lock"
+    `);
+    if (await otherReferences(tx, attachmentIds, storageKey) > 0) continue;
+    const staged = await tx.attachmentDeletionJob.findUnique({ select: { id: true }, where: { storageKey } });
+    if (!staged) await tx.attachmentDeletionJob.create({ data: { storageKey } });
   }
   const runs = await tx.modelRun.findMany({
     select: { id: true },

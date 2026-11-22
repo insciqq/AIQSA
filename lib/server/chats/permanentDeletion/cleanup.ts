@@ -64,6 +64,8 @@ export async function purgePermanentlyDeletedChat(
   const dispositions = await deleteExclusiveChatObjects({
     attachments: snapshot.attachments, client, signal: context.signal, storage: dependencies.storage
   });
+  // A worker that lost its claim (or is stopping) starts no further work; the new holder finishes the item.
+  context.signal.throwIfAborted();
   return client.$transaction(async (tx) => {
     const [chat] = await tx.$queryRaw<Array<{ permanentDeletionAt: Date | null }>>(Prisma.sql`
       SELECT "permanentDeletionAt"

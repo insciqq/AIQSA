@@ -7,8 +7,11 @@ import { Prisma } from "@prisma/client";
  * rows), so the row only decides who works on an item now and when a failed item may be tried again.
  */
 
-/** A claim outlives the slowest item step (a Workspace VM stop, a batch of object deletes) with a wide margin. */
+/** A claim's lease; its holder renews it while it works (`renewBackgroundWorkItem`), so only a stopped worker's
+ * claim expires and is taken over. */
 export const BACKGROUND_WORK_LEASE_MS = 10 * 60 * 1_000;
+/** Renewal runs three times per lease, so one missed renewal still leaves time for the next. */
+export const BACKGROUND_WORK_RENEW_MS = BACKGROUND_WORK_LEASE_MS / 3;
 export const BACKGROUND_WORK_RETRY_BASE_MS = 15 * 1_000;
 export const BACKGROUND_WORK_RETRY_MAX_MS = 60 * 60 * 1_000;
 /** A completed row answers its owner's status reads for a week, then goes. */
@@ -93,6 +96,26 @@ export async function claimBackgroundWorkItem(
     token,
     userId: row.userId
   });
+}
+
+/**
+ * Extends the claim of a worker still processing the item, so a slow item never outlives its lease while its
+ * external I/O runs. Null means the claim is gone (another worker took the item over, or it settled): the caller
+ * must stop issuing external operations for it at once.
+ */
+export async function renewBackgroundWorkItem(
+  client: BackgroundWorkClient,
+  claim: BackgroundWorkClaim,
+  now: Date
+): Promise<Date | null> {
+  const leaseExpiresAt = new Date(now.getTime() + BACKGROUND_WORK_LEASE_MS);
+  const updated = await client.$executeRaw(Prisma.sql`
+    UPDATE "BackgroundWorkItem"
+    SET "leaseExpiresAt" = ${leaseExpiresAt}, "updatedAt" = ${now}
+    WHERE "duty" = ${claim.duty} AND "itemId" = ${claim.itemId} AND "leaseToken" = ${claim.token}
+      AND "completedAt" IS NULL
+  `);
+  return updated === 1 ? leaseExpiresAt : null;
 }
 
 /**
