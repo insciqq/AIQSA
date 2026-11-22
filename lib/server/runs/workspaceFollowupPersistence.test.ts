@@ -19,13 +19,13 @@ describe("the send's active-run guard", () => {
   it("admits the user's message while only background sub-agent runs are active in the chat", async () => {
     const { findMany, tx } = client([{ id: "bg-1", subagentTurnId: "turn-1", workspaceWaitPending: false },
       { id: "bg-2", subagentTurnId: "turn-2", workspaceWaitPending: false }]);
-    await expect(prepareWorkspaceFollowupAdmission(tx, input, true)).resolves.toBeNull();
+    await expect(prepareWorkspaceFollowupAdmission(tx, input)).resolves.toBeNull();
     expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ subagentTurnId: null }) }));
   });
 
   it("still refuses a second main-agent answer", async () => {
     const { tx } = client([{ id: "main-1", subagentTurnId: null, workspaceWaitPending: false },
       { id: "bg-1", subagentTurnId: "turn-1", workspaceWaitPending: false }]);
-    await expect(prepareWorkspaceFollowupAdmission(tx, input, true)).rejects.toBeInstanceOf(ActiveRunConflictError);
+    await expect(prepareWorkspaceFollowupAdmission(tx, input)).rejects.toBeInstanceOf(ActiveRunConflictError);
   });
 });

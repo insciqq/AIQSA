@@ -1,7 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 import { insertAcceptedMcpRunBindings } from "./prismaRepository";
-import { assertCurrentMcpAdmission } from "./prismaRepositoryPreparation";
 import { McpRunPlanConflictError } from "./runRepositoryContract";
 
 type ExecuteRaw = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<number>;
@@ -53,22 +52,6 @@ describe("MCP admission owner fences", () => {
       ? first as unknown as SqlCall
       : { strings: first as readonly string[], values: rest };
     expect(ownerFence(call)).toEqual(expected);
-  });
-
-  it("rechecks the same fence at finalization and refuses a missing row", async () => {
-    const queryRaw = vi.fn(async (_query: SqlCall): Promise<Array<{ id: string }>> => [{ id: binding.runtimeGenerationId }]);
-    const tx = {
-      $queryRaw: queryRaw,
-      mcpRunBinding: { findMany: async () => [{ runtimeGenerationFingerprint: binding.fingerprint, runtimeGenerationId: binding.runtimeGenerationId }] }
-    } as unknown as Prisma.TransactionClient;
-    const input = { bindings: [binding], runId: "run-1", tools: [], userId: "user-1" };
-
-    await assertCurrentMcpAdmission(tx, input);
-    expect(queryRaw).toHaveBeenCalledTimes(1);
-    expect(ownerFence(queryRaw.mock.calls[0]![0])).toEqual(expected);
-
-    queryRaw.mockResolvedValueOnce([]);
-    await expect(assertCurrentMcpAdmission(tx, input)).rejects.toBeInstanceOf(McpRunPlanConflictError);
   });
 });
 

@@ -4,7 +4,6 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { createPrismaRunRepository } from "../runs/prismaRepository";
 import { loadChatUsageTotals } from "../chats/usageTotals";
-import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import { scheduleTemporaryChatDeletion } from "../memory/temporaryRetention";
 import { MEMORY_TEMPORARY_RETENTION_POLICY_VERSION } from "../../contracts/memory";
 import { deleteExpiredTemporaryChat } from "../chats/temporaryDeletion";
@@ -206,7 +205,7 @@ describe("chat PDF database lifecycle", () => {
 
   it.each([false, true])("projects admitted PDF preparation as queued before answer dispatch (Workspace: %s)", async (workspace) => {
     const h = await fixture(false, false, workspace);
-    const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
+    const runs = createPrismaRunRepository(prisma);
     await expect(runs.getRunOutcomeForUser(h.runId, h.userId)).resolves.toEqual({
       id: h.runId,
       status: "queued",
@@ -226,7 +225,7 @@ describe("chat PDF database lifecycle", () => {
       .toMatchObject({ state: "original_only", completedPages: 0, documentArtifactId: null, retryable: false });
     await expect(prisma.chatPdfAttachmentPreparation.update({ where: { id: h.preparationId }, data: { state: "preparing" } }))
       .rejects.toThrow(/chat_pdf_transition_invalid|chat_pdf_preparation_immutable/);
-    const runs = createPrismaRunRepository(prisma, { memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS });
+    const runs = createPrismaRunRepository(prisma);
     expect(await runs.loadAttachments(h.userId, [h.admission.attachmentId], h.runId))
       .toEqual([expect.objectContaining({ workspaceOriginalOnly: true })]);
     await prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } });

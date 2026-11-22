@@ -46,10 +46,6 @@ import type {
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
 import type { RunOutputArtifactEvent } from "./runOutputEvents";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
-import type {
-  MemoryPreparingAttemptResult,
-  MemoryPreparingSettingsSnapshot
-} from "./preparingRun";
 import type { MemoryInitialChatMode } from "../../contracts/memory";
 
 export type RunAttachmentRecord = ProviderAttachment & {
@@ -223,6 +219,22 @@ export class SkillRunConflictError extends Error {
   constructor() {
     super("skill_not_available");
     this.name = "SkillRunConflictError";
+  }
+}
+
+/**
+ * An admission the chat's own state refuses, answered as a 409 with the stable `code`: a Temporary chat whose
+ * deadline passed or a mode the chat cannot take, an owner who is gone, a request whose content does not match its
+ * frozen request. The codes keep their `memory_` names because browsers of the previous release know them.
+ */
+export class RunAdmissionConflictError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    const stable = /^[a-z][a-z0-9_]{0,63}$/u.test(code) ? code : "run_admission_conflict";
+    super(stable);
+    this.code = stable;
+    this.name = "RunAdmissionConflictError";
   }
 }
 
@@ -592,32 +604,21 @@ export type PreparingRunAdmissionInput =
   | (CreateRunInput & { admissionKind: "NORMAL_SEND" })
   | (CreateRegenerationRunInput & { admissionKind: "REGENERATE" });
 
-export type DeferredRunMemorySource = Readonly<{
-    activeLeafMessageId: string | null;
-    memoryBranchGeneration: number;
-    memorySourceRevision: number;
-    preSendActiveLeafMessageId: string | null;
-}>;
-
+/**
+ * What an admission committed. A PDF or Workspace gate stores it with its job (`ChatPdfRunPreparation`,
+ * `WorkspaceFollowup`) and continues the run only while the chat still has this answer as its leaf, in this mode and
+ * folder; a row stored by an earlier release may carry more fields, which nothing reads.
+ */
 export type PreparingRunAdmissionResult = Readonly<{
   deferredPdf?: true;
   deferredWorkspace?: true;
-  pdfMemorySource?: DeferredRunMemorySource;
-  workspaceMemorySource?: DeferredRunMemorySource;
   assistantMessageId: string;
-  attemptId: string;
   chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   folderId: string | null;
-  memoryGeneration: number;
-  memoryCommandQueued?: boolean;
-  memoryRevision: number;
   runId: string;
-  /** The run answers a scheduled task's prompt, as its user message read in the
-   * admitting transaction says: it never changes Personal Memory. Without the
-   * standing read its admission froze it was made dispatchable without Memory;
-   * with it, its Memory attempt reads in whatever mode the chat has. */
+  /** The run answers a scheduled task's prompt, as its user message read in the admitting transaction says: it never
+   * changes the memory note. */
   scheduledPrompt?: true;
-  settingsSnapshot: MemoryPreparingSettingsSnapshot;
   userMessageId: string;
 }>;
 
@@ -647,24 +648,6 @@ export type CreatedRun = Readonly<{
   runId: string;
   userMessageId: string;
 }>;
-
-export type PreparingRunFinalizationInput = Readonly<{
-  assistant?: AcceptedAssistantRun;
-  attemptId: string;
-  mcpBindings?: readonly McpRunPlanBinding[];
-  skillBindings?: readonly AcceptedSkillRun[];
-  normalizedRequest: NormalizedRunRequest;
-  providerAdmissionPlan?: ProviderAdmissionPlan;
-  providerRequestPreview: Readonly<Record<string, unknown>>;
-  runId: string;
-  userId: string;
-}>;
-
-export type PreparingRunRecoveryResult =
-  | "deferred"
-  | "finalized"
-  | "not_preparing"
-  | "settled";
 
 export type RunOwnedChatRecord = Readonly<{
   activeLeafMessageId: string | null;
@@ -720,23 +703,6 @@ export type RunRepository = {
     options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
   appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
-  beginPreparingRunAttempt(input: Readonly<{
-    attemptId: string;
-    now: Date;
-    runId: string;
-    userId: string;
-  }>): Promise<boolean>;
-  cancelRun(input: {
-    payload: { code: string; message: string };
-    runId: string;
-    userId: string;
-  }): Promise<CancelRunResult>;
-  completePreparingRunAttempt(input: Readonly<{
-    attemptId: string;
-    result: MemoryPreparingAttemptResult;
-    runId: string;
-    userId: string;
-  }>): Promise<boolean>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
@@ -862,7 +828,6 @@ export type RunRepository = {
   /** A deployment's own class and stored token prices, which price system
    * attributions it reported no cost for; null when the model no longer exists. */
   loadProviderModelCostBasis(providerModelId: string): Promise<ProviderModelCostBasis | null>;
-  finalizePreparingRun(input: PreparingRunFinalizationInput): Promise<boolean>;
   /**
    * Records the outcome a monitoring check's run reported on the scheduled
    * occurrence that admitted it, while that occurrence is running; repeatable,
@@ -971,26 +936,9 @@ export type RunRepository = {
     taskId: string | null;
     userId: string;
   }>): Promise<ScheduledTaskCallManagement>;
-  recoverPreparingRun(input: Readonly<{
-    now: Date;
-    runId: string;
-    userId: string;
-  }>): Promise<PreparingRunRecoveryResult>;
-  retryPreparingRunAttempt(input: Readonly<{
-    attemptId: string;
-    now: Date;
-    runId: string;
-    userId: string;
-  }>): Promise<Readonly<{
-    attemptId: string;
-    memoryGeneration: number;
-    memoryRevision: number;
-    settingsSnapshot: MemoryPreparingSettingsSnapshot;
-  }> | null>;
   settlePreparingRunFailure(input: Readonly<{
     workspaceClaimToken?: string;
     retryable?: boolean;
-    attemptId?: string;
     errorCode: string;
     message: string;
     runId: string;

@@ -1,110 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  completePreparingRunAttemptWithClient,
-  finalizePreparingRunWithClient,
+  admitPreparingRunWithClient,
   finalizeDispatchablePreparingRunAdmission,
   insertAcceptedWorkspaceRunBinding,
-  memorySpeculativeQueryResolverInventoryDeclared,
-  sameMemoryReadOnlyControlRetryScope,
-  validMemoryRerankRetrySettlement,
-  validMemoryRetrievalExecutionSequence
+  settlePreparingRunInTransaction
 } from "./prismaRepositoryPreparation";
-import {
-  decodeMemoryPreparingSettingsSnapshot
-} from "./preparingRun";
-import {
-  MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
-  MEMORY_RERANK_AGGREGATION_MAX_BATCHES,
-  MEMORY_RERANK_MAX_ATTEMPTS
-} from "../memory/retrieval/runUtilities";
-import { MEMORY_CONTROL_SCREEN_VERSION } from "../memory/actions/controlScreenPolicy";
+import { RunAdmissionConflictError } from "./runRepositoryContract";
+import { recordingTransaction, type RecordedCall } from "../chatSearch/index/markRecorder.testFixtures";
+import { TEMPORARY_CHAT_RETENTION_MS } from "../chats/temporaryRetention";
 import { workspaceRunOutputDirectory } from "@/lib/domain/workspace";
-
-const settingsSnapshot = Object.freeze({
-  acceptedUtilityEgressFingerprint: null,
-  acceptedUtilityPolicyVersion: null,
-  activeIndexGenerationId: null,
-  decayEnabled: false,
-  decayPolicyVersion: null,
-  learnAutomatically: false,
-  memoryConsentRevision: 0,
-  referenceChatHistory: false,
-  schemaVersion: 2 as const,
-  settingsRevision: 0,
-  useMemoryFacts: false
-});
-
-function ownerFirstTransactionClient() {
-  const statements: string[] = [];
-  const tx = {
-    $queryRaw: vi.fn(async (query: Readonly<{ strings: readonly string[] }>) => {
-      const statement = query.strings.join("");
-      statements.push(statement);
-      return statement.includes('FROM "User"') ? [{ id: "user-1" }] : [];
-    })
-  };
-  const client = {
-    $transaction: vi.fn(async (
-      operation: (transaction: typeof tx) => Promise<unknown>
-    ) => operation(tx))
-  };
-  return { client, statements };
-}
-
-describe("Memory preparing transaction lock order", () => {
-  it("locks the owner before the run during retrieval completion", async () => {
-    const { client, statements } = ownerFirstTransactionClient();
-
-    await expect(completePreparingRunAttemptWithClient(client as never, {
-      attemptId: "attempt-1",
-      result: { budgetSnapshot: {}, outcome: "DISABLED" },
-      runId: "run-1",
-      userId: "user-1"
-    })).resolves.toBe(false);
-
-    expect(statements[0]).toContain('FROM "User"');
-    expect(statements[0]).toContain("FOR UPDATE");
-    expect(statements[1]).toContain('FROM "ModelRun"');
-  });
-
-  it("locks the owner before the run during finalization", async () => {
-    const { client, statements } = ownerFirstTransactionClient();
-
-    await expect(finalizePreparingRunWithClient(client as never, {
-      attemptId: "attempt-1",
-      normalizedRequest: {} as never,
-      providerRequestPreview: {},
-      runId: "run-1",
-      userId: "user-1"
-    }, {})).resolves.toBe(false);
-
-    expect(statements[0]).toContain('FROM "User"');
-    expect(statements[0]).toContain("FOR UPDATE");
-    expect(statements[1]).toContain('FROM "ModelRun"');
-  });
-});
-
-describe("Memory preparing settings compatibility", () => {
-  it("normalizes an accepted v1 snapshot to decay-disabled v2", () => {
-    const { decayEnabled: _enabled, decayPolicyVersion: _policy, ...legacy } =
-      settingsSnapshot;
-    expect(decodeMemoryPreparingSettingsSnapshot({
-      ...legacy,
-      schemaVersion: 1
-    })).toEqual(settingsSnapshot);
-  });
-});
 
 function input(chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY") {
   return {
     assistantMessageId: "assistant-message-1",
     chatMemoryMode,
     folderId: null,
-    memoryGeneration: 0,
-    memoryRevision: 0,
     normalizedRequest: { privateMarker: "temporary-user-content" } as never,
     runId: "run-1",
-    settingsSnapshot,
     userMessageId: "user-message-1"
   };
 }
@@ -118,13 +30,9 @@ describe("admission without Memory preparation", () => {
         modelRun: { update }
       } as never, input(chatMemoryMode))).resolves.toEqual({
         assistantMessageId: "assistant-message-1",
-        attemptId: "",
         chatMemoryMode,
         folderId: null,
-        memoryGeneration: 0,
-        memoryRevision: 0,
         runId: "run-1",
-        settingsSnapshot,
         userMessageId: "user-message-1"
       });
       expect(update).toHaveBeenCalledWith({
@@ -140,7 +48,7 @@ describe("admission without Memory preparation", () => {
   it("keeps an answer to a scheduled task's prompt marked as one", async () => {
     const update = vi.fn(async () => ({}));
     await expect(finalizeDispatchablePreparingRunAdmission({ modelRun: { update } } as never,
-      { ...input("EXCLUDED"), scheduledPrompt: true as const })).resolves.toMatchObject({ attemptId: "", scheduledPrompt: true });
+      { ...input("EXCLUDED"), scheduledPrompt: true as const })).resolves.toMatchObject({ scheduledPrompt: true });
     expect(update).toHaveBeenCalledWith({
       data: { normalizedRequest: { privateMarker: "temporary-user-content" }, status: "streaming" },
       where: { id: "run-1" }
@@ -148,508 +56,177 @@ describe("admission without Memory preparation", () => {
   });
 });
 
-describe("Memory retrieval execution sequence", () => {
-  it("admits one qualified control screen before or without strict control", () => {
-    const screen = { logicalRole: "MEMORY_CONTROL_SCREEN", ordinal: 0,
-      pipelineVersion: MEMORY_CONTROL_SCREEN_VERSION };
-    expect(validMemoryRetrievalExecutionSequence([screen])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([screen,
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 }])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([screen], true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([screen, screen])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([{ ...screen, ordinal: 1 }])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([{ ...screen,
-      pipelineVersion: "unqualified" }])).toBe(false);
-  });
-  it("rejects bindings of the retired per-passage history relevance role", () => {
-    expect(validMemoryRetrievalExecutionSequence([{ logicalRole: "MEMORY_HISTORY_RELEVANCE", ordinal: 1,
-      pipelineVersion: "memory-history-relevance-v1" }])).toBe(false);
-  });
-  it("declares a cancelled resolver that missed the attachment boundary", () => {
-    const budget = {
-      queryResolverExecutionStrategy: "SPECULATIVE",
-      queryResolverProviderCalls: 1,
-      queryResolverState: "NOT_READY_AT_ATTACH"
-    };
-    const declared = memorySpeculativeQueryResolverInventoryDeclared(budget);
+/** Model tables of the old Memory an admission or settlement must never touch any more (the chat mode enum stays). */
+const OLD_MEMORY_MODELS = /^(memory\w*|userMemorySettings|modelRunMemoryBinding)\./u;
+const OLD_MEMORY_SQL = /"(Memory(?!ChatMode")\w*|UserMemorySettings|ModelRunMemoryBinding)"|"memorySourceRevision"|"memoryBranchGeneration"/u;
 
-    expect(declared).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
-    ], false, false, declared)).toBe(true);
-    expect(memorySpeculativeQueryResolverInventoryDeclared({
-      ...budget,
-      queryResolverProviderCalls: 0
-    })).toBe(false);
-    expect(memorySpeculativeQueryResolverInventoryDeclared({
-      ...budget,
-      queryResolverState: "UNKNOWN_STATE"
-    })).toBe(false);
-  });
+function touchesOldMemory(call: RecordedCall): boolean {
+  return OLD_MEMORY_MODELS.test(call.name) || Boolean(call.text && OLD_MEMORY_SQL.test(call.text));
+}
 
-  it("allows only one fresh reranker retry after the primary attempt", () => {
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
-    ])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
-    ])).toBe(false);
-  });
+type LockedChat = Readonly<{
+  activeLeafMessageId: string | null;
+  archived: boolean;
+  folderId: string | null;
+  memoryMode: "EXCLUDED" | "NORMAL" | "TEMPORARY";
+  temporaryRetentionDeadline: Date | null;
+}>;
 
-  it("allows nine bounded reranker batches without a generative aggregation role", () => {
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
-      ...Array.from(
-        {
-          length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES *
-            MEMORY_RERANK_MAX_ATTEMPTS
-        },
-        (_, index) => ({ logicalRole: "MEMORY_RERANK", ordinal: index + 2 })
-      )
-    ], false, true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
-      ...Array.from(
-        { length: 6 },
-        (_, index) => ({
-          logicalRole: "MEMORY_RERANK",
-          ordinal: 2 + index * MEMORY_RERANK_MAX_ATTEMPTS
-        })
-      )
-    ], false, true)).toBe(true);
-  });
-
-  it("accounts for one declared speculative resolver in the aggregation bound", () => {
-    const maximumAggregationSequence = [
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
-      ...Array.from(
-        { length: 4 },
-        (_, index) => ({ logicalRole: "MEMORY_QUERY_EMBED", ordinal: index + 1 })
-      ),
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
-      ...Array.from(
-        {
-          length: MEMORY_RERANK_AGGREGATION_MAX_BATCHES *
-            MEMORY_RERANK_MAX_ATTEMPTS
-        },
-        (_, index) => ({ logicalRole: "MEMORY_RERANK", ordinal: index + 2 })
-      )
-    ];
-
-    expect(validMemoryRetrievalExecutionSequence(
-      maximumAggregationSequence,
-      false,
-      true,
-      true
-    )).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence(
-      maximumAggregationSequence,
-      false,
-      true
-    )).toBe(false);
-  });
-
-  it("allows earlier-utility degradation while constraining a broad profile inventory", () => {
-    const profileSequence = [
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 }
-    ];
-    expect(validMemoryRetrievalExecutionSequence(profileSequence, true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence(profileSequence)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      ...profileSequence,
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
-    ], true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 }
-    ], true)).toBe(false);
-  });
-
-  it("allows bounded control, target, retrieval, and read-only retry bindings", () => {
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_CONTROL", ordinal: 1 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 1 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 3 },
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 2 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
-    ])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 2 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_QUERY_EMBED", ordinal: 4 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 1 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
-    ], false, true)).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
-    ], false, true, true)).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_QUERY_RESOLVE", ordinal: 0 }
-    ], true, false, true)).toBe(true);
-  });
-
-  it.each([
-    [[{
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2 + MEMORY_RERANK_AGGREGATION_MAX_BATCHES *
-        MEMORY_RERANK_MAX_ATTEMPTS
-    }]],
-    [[{ logicalRole: "MEMORY_UNKNOWN", ordinal: 0 }]],
-    [[{ logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }]],
-    [[
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 }
-    ]]
-  ])("rejects an invalid or unbounded retry sequence (%#)", (bindings) => {
-    expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(false);
-  });
-
-  it("rejects historical aggregation bindings from a new reader-first attempt", () => {
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 3 }
-    ])).toBe(true);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_RERANK", ordinal: 4 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { logicalRole: "MEMORY_CONTROL", ordinal: 0 },
-      { logicalRole: "MEMORY_AGGREGATE", ordinal: 0 }
-    ], false, true)).toBe(false);
-  });
-
-
-  it("requires a durably invalid primary result before accepting a reranker retry", () => {
-    const retry = {
-      errorCode: null,
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 3,
-      state: "SUCCEEDED"
-    };
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_output_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: null,
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "SUCCEEDED"
-    }, retry])).toBe(false);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_provider_failed",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "rerank_provider_request_failed",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "OUTCOME_UNKNOWN"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "rerank_provider_http_error",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry])).toBe(false);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_reranker_transient_http_failure",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "rerank_response_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2,
-      state: "FAILED"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_output_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 4,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 5
-    }])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_output_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 6,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 7
-    }])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_run_utility_output_invalid",
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 8,
-      state: "FAILED"
-    }, {
-      ...retry,
-      ordinal: 9
-    }])).toBe(true);
-  });
-
-
-  it("requires a transport-uncertain query embedding before its bounded retry", () => {
-    const retry = {
-      errorCode: null,
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 2,
-      state: "SUCCEEDED"
-    };
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "embedding_provider_request_failed",
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 1,
-      state: "OUTCOME_UNKNOWN"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_query_embedding_attempt_timed_out",
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 1,
-      state: "OUTCOME_UNKNOWN"
-    }, retry])).toBe(true);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "embedding_provider_request_failed",
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 1,
-      state: "FAILED"
-    }, retry])).toBe(false);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_query_embedding_output_invalid",
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 1,
-      state: "FAILED"
-    }, retry])).toBe(false);
-    expect(validMemoryRerankRetrySettlement([{
-      errorCode: "memory_query_embedding_transient_http_failure",
-      logicalRole: "MEMORY_QUERY_EMBED",
-      ordinal: 1,
-      state: "FAILED"
-    }, retry])).toBe(true);
-  });
-});
-
-describe("dedicated reranker preparation inventory", () => {
-  function batch(route: number, index: number, state = "SUCCEEDED", errorCode: string | null = null) {
-    return {
-      errorCode,
-      inputHash: (index + 1).toString(16).padStart(64, "0"),
-      logicalRole: "MEMORY_RERANK",
-      ordinal: 2 + route * MEMORY_RERANK_AGGREGATION_MAX_BATCHES + index,
-      pipelineVersion: MEMORY_DEDICATED_RERANK_ROUTE_PIPELINE_VERSION,
-      providerModelId: `reranker-${route}`,
-      state
-    };
-  }
-
-  it.each([[false, false], [false, true], [true, false]])(
-    "accepts independent successful batches for profile=%s aggregation=%s",
-    (profile, aggregation) => {
-      const bindings = [batch(0, 0), batch(0, 1)];
-      expect(validMemoryRetrievalExecutionSequence(bindings, profile, aggregation)).toBe(true);
-      expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
-    }
-  );
-
-  it("accepts a whole-pool fallback after one batch fails on each earlier model", () => {
-    const bindings = [
-      batch(0, 0), batch(0, 1, "FAILED", "memory_reranker_transient_http_failure"),
-      batch(1, 0, "FAILED", "memory_reranker_model_unavailable"), batch(1, 1),
-      batch(2, 0), batch(2, 1)
-    ];
-    expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(true);
-    expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
-  });
-
-  it("retains settled evidence when a later model becomes unavailable before binding every batch", () => {
-    const bindings = [batch(0, 0), batch(0, 1, "OUTCOME_UNKNOWN", "rerank_request_timed_out"),
-      batch(1, 1, "FAILED", "memory_reranker_runtime_unavailable")];
-    expect(validMemoryRetrievalExecutionSequence(bindings)).toBe(true);
-    expect(validMemoryRerankRetrySettlement(bindings)).toBe(true);
-  });
-
-  it.each([
-    "success-only-fallback", "permanent-error", "cancelled-primary", "changed-batch", "same-model",
-    "mixed-model", "missing-first-route", "mixed-protocol", "unidentified-input", "reused-batch-input", "skipped-route"
-  ])("rejects an invalid dedicated route: %s", (variation) => {
-    let bindings = [batch(0, 0), batch(0, 1, "FAILED", "memory_reranker_transient_http_failure"),
-      batch(1, 0), batch(1, 1)];
-    if (variation === "success-only-fallback") bindings[1] = batch(0, 1);
-    if (variation === "permanent-error") bindings[1]!.errorCode = "rerank_provider_http_error";
-    if (variation === "cancelled-primary") bindings[1]!.state = "CANCELLED";
-    if (variation === "changed-batch") bindings[2]!.inputHash = "9".repeat(64);
-    if (variation === "same-model") for (const item of bindings.slice(2)) item.providerModelId = "reranker-0";
-    if (variation === "mixed-model") bindings[1]!.providerModelId = "unrelated-reranker";
-    if (variation === "missing-first-route") bindings = bindings.slice(2);
-    if (variation === "mixed-protocol") Object.assign(bindings[1]!, { pipelineVersion: "memory-multilingual-relevance-v31" });
-    if (variation === "unidentified-input") bindings[2]!.inputHash = "";
-    if (variation === "reused-batch-input") bindings[1]!.inputHash = bindings[0]!.inputHash;
-    if (variation === "skipped-route") for (const item of bindings.slice(2)) item.ordinal += MEMORY_RERANK_AGGREGATION_MAX_BATCHES;
-    expect(validMemoryRerankRetrySettlement(bindings)).toBe(false);
-  });
-
-  it("bounds ordinals and rejects duplicate positions or mixed protocols", () => {
-    expect(validMemoryRetrievalExecutionSequence([batch(3, 0)], false, true)).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([batch(0, 0), batch(0, 0)])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      batch(0, 0), { logicalRole: "MEMORY_RERANK", ordinal: 3 }
-    ])).toBe(false);
-    expect(validMemoryRetrievalExecutionSequence([
-      { ...batch(0, 0), logicalRole: "MEMORY_CONTROL", ordinal: 0 }
-    ])).toBe(false);
-  });
-});
-
-describe("read-only control retry scope", () => {
-  const source = Object.freeze({
-    admissionKind: "NORMAL_SEND" as const,
-    admittedAssistantLeafMessageId: "assistant-message-1",
-    admittedUserMessageId: "user-message-1",
-    assistantIdSnapshot: null,
-    attemptOrdinal: 0,
-    baseRequestHash: "a".repeat(64),
-    budgetSnapshot: {
-      memoryActionLifecycleSnapshot: {
-        activeLeafMessageId: "assistant-message-1",
-        branchGeneration: 2,
-        sourceRevision: 3,
-        version: 1
+/** A transaction for one admission of `chat-1`: the owner and the chat lock, the chat's messages and the new rows. */
+function admissionTransaction(chat: LockedChat, messageCount: number) {
+  return recordingTransaction({
+    $queryRaw: (call) => {
+      const text = (call as RecordedCall).text ?? "";
+      if (text.includes("FROM \"User\"")) return [{ id: "user-1" }];
+      if (text.includes("FROM \"Chat\"") && text.includes("FOR UPDATE")) return [chat];
+      if (text.includes("AS \"userContent\"")) {
+        return [{ assistantParentId: "user-message-0", assistantRole: "assistant", scheduledTaskPrompt: false,
+          userContent: { blocks: [{ text: "Again, please", type: "text" }] }, userRole: "user" }];
       }
+      return [];
     },
-    chatId: "chat-1",
-    chatMemoryModeSnapshot: "NORMAL" as const,
-    folderIdSnapshot: null,
-    id: "attempt-1",
-    indexGenerationIdSnapshot: "generation-1",
-    memoryGenerationSnapshot: 4,
-    modelRunId: "run-1",
-    preSendActiveLeafMessageId: null,
-    settingsSnapshot: {
-      ...settingsSnapshot,
-      acceptedUtilityEgressFingerprint: "b".repeat(64),
-      acceptedUtilityPolicyVersion: "memory-policy-v1",
-      activeIndexGenerationId: "generation-1",
-      learnAutomatically: true,
-      memoryConsentRevision: 2,
-      referenceChatHistory: true,
-      settingsRevision: 5,
-      useMemoryFacts: true
-    },
-    userId: "user-1"
+    "chat.findFirst": () => ({ _count: { messages: messageCount }, id: "chat-1", title: "New Chat" }),
+    "message.create": (args) => ({ id: (args as { data: { role: string } }).data.role === "user"
+      ? "user-message-1" : "assistant-message-1" }),
+    "modelRun.create": () => ({ createdAt: new Date("2026-11-22T10:00:00.000Z"), id: "run-1" })
   });
-  const current = Object.freeze({ ...source, attemptOrdinal: 1, id: "attempt-2" });
-  const switched = Object.freeze({ ...current, indexGenerationIdSnapshot: "generation-2",
-    settingsSnapshot: { ...current.settingsSnapshot, activeIndexGenerationId: "generation-2" } });
+}
 
-  it("accepts the exact retry scope across the bounded retry chain", () => {
-    expect(sameMemoryReadOnlyControlRetryScope(source, current)).toBe(true);
-    expect(sameMemoryReadOnlyControlRetryScope(source, switched)).toBe(true);
-    expect(sameMemoryReadOnlyControlRetryScope(source, {
-      ...current,
-      attemptOrdinal: 2,
-      id: "attempt-3"
-    })).toBe(true);
-    expect(sameMemoryReadOnlyControlRetryScope(current, {
-      ...current,
-      attemptOrdinal: 2,
-      id: "attempt-3"
-    })).toBe(true);
-    expect(sameMemoryReadOnlyControlRetryScope(source, {
-      ...current,
-      attemptOrdinal: 3,
-      id: "attempt-4"
-    })).toBe(false);
+const content = { blocks: [{ text: "Hello", type: "text" }] };
+
+function sendInput(overrides: Readonly<Record<string, unknown>> = {}) {
+  return {
+    admissionKind: "NORMAL_SEND", chatId: "chat-1", content, expectedActiveLeafId: null, modelId: "model-1",
+    normalizedRequest: { attachmentIds: [], chatId: "chat-1", content, modelId: "model-1", params: {}, provider: "test" },
+    provider: "test", providerRequestPreview: {}, userId: "user-1", ...overrides
+  } as never;
+}
+
+function regenerateInput() {
+  const question = { blocks: [{ text: "Again, please", type: "text" }] };
+  return {
+    admissionKind: "REGENERATE", chatId: "chat-1", modelId: "model-1",
+    normalizedRequest: { attachmentIds: [], chatId: "chat-1", content: question, modelId: "model-1", params: {}, provider: "test" },
+    preSendAssistantMessageId: "assistant-message-0", provider: "test", providerRequestPreview: {}, userId: "user-1",
+    userMessageId: "user-message-0"
+  } as never;
+}
+
+const normalChat: LockedChat = { activeLeafMessageId: null, archived: false, folderId: null, memoryMode: "NORMAL",
+  temporaryRetentionDeadline: null };
+
+describe("a send's admission writes its chat without the old Memory", () => {
+  it("makes the new answer the chat's leaf with a plain write and touches no old Memory row", async () => {
+    const recorder = admissionTransaction(normalChat, 0);
+
+    await expect(admitPreparingRunWithClient(recorder.client as never, sendInput())).resolves.toMatchObject({
+      assistantMessageId: "assistant-message-1", chatMemoryMode: "NORMAL", runId: "run-1", userMessageId: "user-message-1"
+    });
+
+    expect(recorder.calls.filter((call) => call.name === "chat.update").map((call) => call.args)).toContainEqual({
+      data: { activeLeafMessageId: "assistant-message-1" }, select: { id: true }, where: { id: "chat-1" }
+    });
+    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
+    // The settlement marks the chat for past-chat search, not the admission.
+    expect(recorder.marks()).toEqual([]);
   });
 
-  it.each([
-    ["owner", { userId: "user-2" }],
-    ["chat", { chatId: "chat-2" }],
-    ["user message", { admittedUserMessageId: "user-message-2" }],
-    ["assistant", { assistantIdSnapshot: "assistant-2" }],
-    ["folder", { folderIdSnapshot: "folder-2" }],
-    ["temporary chat", { chatMemoryModeSnapshot: "TEMPORARY" as const }],
-    ["run", { modelRunId: "run-2" }],
-    ["base request", { baseRequestHash: "c".repeat(64) }],
-    ["assistant leaf", { admittedAssistantLeafMessageId: "assistant-message-2" }],
-    ["index generation", { indexGenerationIdSnapshot: "generation-2" }],
-    ["Memory generation", { memoryGenerationSnapshot: 5 }],
-    ["lifecycle", {
-      budgetSnapshot: {
-        memoryActionLifecycleSnapshot: {
-          activeLeafMessageId: "assistant-message-1",
-          branchGeneration: 2,
-          sourceRevision: 4,
-          version: 1
+  it("switches an empty chat to Temporary with a day's deadline and clears it from past-chat search", async () => {
+    const recorder = admissionTransaction(normalChat, 0);
+    const before = Date.now();
+
+    await expect(admitPreparingRunWithClient(recorder.client as never, sendInput({
+      initialChatMode: { chatMode: "TEMPORARY", temporaryRetentionPolicyVersion: "temporary-24h-v1" }
+    }))).resolves.toMatchObject({ chatMemoryMode: "TEMPORARY" });
+
+    const conversion = recorder.calls.find((call) => call.name === "chat.update" &&
+      (call.args as { data: { memoryMode?: string } }).data.memoryMode === "TEMPORARY");
+    const data = (conversion?.args as { data: { temporaryRetentionDeadline: Date; temporaryRetentionPolicyVersion: string } }).data;
+    expect(data.temporaryRetentionPolicyVersion).toBe("temporary-24h-v1");
+    expect(data.temporaryRetentionDeadline.getTime()).toBeGreaterThanOrEqual(before + TEMPORARY_CHAT_RETENTION_MS);
+    expect(recorder.marks()).toEqual([{ kind: "clear", values: ["chat-1"] }]);
+    // The clear runs after the chat row is locked and switched, in the admission's own transaction.
+    expect(recorder.indexOf((call) => call.text?.startsWith("DELETE FROM \"ChatSearchState\"") === true))
+      .toBeGreaterThan(recorder.indexOf((call) => call === conversion));
+    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
+  });
+
+  it("moves a Temporary chat's deadline on and refuses one whose deadline passed", async () => {
+    const live = admissionTransaction({ ...normalChat, memoryMode: "TEMPORARY",
+      temporaryRetentionDeadline: new Date(Date.now() + 60_000) }, 2);
+    await admitPreparingRunWithClient(live.client as never, sendInput());
+    const moved = live.calls.find((call) => call.name === "chat.update" &&
+      "temporaryRetentionDeadline" in (call.args as { data: object }).data);
+    expect((moved?.args as { data: { temporaryRetentionDeadline: Date } }).data.temporaryRetentionDeadline.getTime())
+      .toBeGreaterThan(Date.now() + TEMPORARY_CHAT_RETENTION_MS - 60_000);
+    expect(live.marks()).toEqual([]);
+
+    const expired = admissionTransaction({ ...normalChat, memoryMode: "TEMPORARY",
+      temporaryRetentionDeadline: new Date(Date.now() - 1) }, 2);
+    await expect(admitPreparingRunWithClient(expired.client as never, sendInput()))
+      .rejects.toMatchObject({ code: "memory_temporary_chat_expired", name: "RunAdmissionConflictError" });
+    expect(expired.calls.some((call) => call.name === "message.create")).toBe(false);
+  });
+
+  it("refuses a Temporary switch after the chat's first message", async () => {
+    const recorder = admissionTransaction(normalChat, 2);
+    await expect(admitPreparingRunWithClient(recorder.client as never, sendInput({
+      initialChatMode: { chatMode: "TEMPORARY", temporaryRetentionPolicyVersion: "temporary-24h-v1" }
+    }))).rejects.toBeInstanceOf(RunAdmissionConflictError);
+  });
+
+  it("makes a regenerated answer the leaf of its question's branch with a plain write", async () => {
+    const recorder = admissionTransaction({ ...normalChat, activeLeafMessageId: "assistant-message-0" }, 2);
+
+    await expect(admitPreparingRunWithClient(recorder.client as never, regenerateInput())).resolves.toMatchObject({
+      assistantMessageId: "assistant-message-1", userMessageId: "user-message-0"
+    });
+
+    expect(recorder.calls.filter((call) => call.name === "chat.update").map((call) => call.args)).toContainEqual({
+      data: { activeLeafMessageId: "assistant-message-1" }, select: { id: true }, where: { id: "chat-1" }
+    });
+    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
+    expect(recorder.marks()).toEqual([]);
+  });
+});
+
+describe("settling a run still at its gate", () => {
+  function gatedRun(gate: Readonly<{ pdf: boolean; workspace: boolean }>) {
+    return recordingTransaction({
+      $queryRaw: (call) => {
+        const text = (call as RecordedCall).text ?? "";
+        if (text.includes("FROM \"ModelRun\"") && text.includes("FOR UPDATE")) {
+          return [{ assistantMessageId: "assistant-message-1", chatId: "chat-1", id: "run-1",
+            pdfPreparationRequired: gate.pdf, status: "preparing", userId: "user-1",
+            workspacePreparationRequired: gate.workspace }];
         }
+        if (text.includes("AS \"memoryMode\"")) return [{ memoryMode: "NORMAL" }];
+        return [];
       }
-    }],
-    ["settings", {
-      settingsSnapshot: { ...source.settingsSnapshot, settingsRevision: 6 }
-    }]
-  ])("rejects tampered %s lineage", (_label, change) => {
-    expect(sameMemoryReadOnlyControlRetryScope(source, { ...current, ...change }))
-      .toBe(false);
+    });
+  }
+  const failure = { errorCode: "pdf_preparation_failed", message: "Failed", runId: "run-1", state: "FAILED", userId: "user-1" } as const;
+
+  it("fails a PDF-gated run, its answer and marks its chat, with no old Memory attempt", async () => {
+    const recorder = gatedRun({ pdf: true, workspace: false });
+
+    await expect(settlePreparingRunInTransaction(recorder.tx, failure)).resolves.toBe(true);
+
+    expect(recorder.calls.find((call) => call.name === "modelRun.update")?.args).toMatchObject({
+      data: { errorPayload: { code: "pdf_preparation_failed" }, normalizedRequest: {}, status: "error" }, where: { id: "run-1" }
+    });
+    expect(recorder.marks()).toEqual([{ kind: "dirty", values: expect.arrayContaining(["chat-1", "user-1"]) }]);
+    expect(recorder.calls.some(touchesOldMemory)).toBe(false);
   });
 
-  it.each([
-    ["revision", { settingsRevision: 6 }],
-    ["consent", { memoryConsentRevision: 3 }],
-    ["egress", { acceptedUtilityEgressFingerprint: "c".repeat(64) }],
-    ["policy", { acceptedUtilityPolicyVersion: "changed" }],
-    ["pause", { useMemoryFacts: false }],
-    ["history", { referenceChatHistory: false }],
-    ["learning", { learnAutomatically: false }],
-    ["decay", { decayEnabled: true }]
-  ])("rejects %s changes even during an otherwise valid projection cutover", (_label, change) => {
-    expect(sameMemoryReadOnlyControlRetryScope(source, { ...switched,
-      settingsSnapshot: { ...switched.settingsSnapshot, ...change }
-    })).toBe(false);
-    expect(sameMemoryReadOnlyControlRetryScope({ ...source,
-      settingsSnapshot: { ...source.settingsSnapshot, ...change }
-    }, switched)).toBe(false);
+  it("leaves a run without a gate alone", async () => {
+    const recorder = gatedRun({ pdf: false, workspace: false });
+
+    await expect(settlePreparingRunInTransaction(recorder.tx, failure)).resolves.toBe(false);
+
+    expect(recorder.calls.some((call) => call.name === "modelRun.update")).toBe(false);
   });
 });
-
 describe("Workspace switch write-back at admission", () => {
   const ids = { assistantMessageId: "assistant-message-1", runId: "run-1", userMessageId: "user-message-1" };
   const normalized = {

@@ -1,6 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
-import { NOOP_MEMORY_SOURCE_MUTATION_HOOKS } from "../memory/sourceState";
 import { registerRunTerminalListener } from "../push/runTerminalSignal";
 import { createPrismaRunRepository } from "./prismaRepository";
 
@@ -37,7 +36,7 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
       return pendingCallIds.map((id) => ({ id }));
     }),
     chat: {
-      // A legacy Project chat: no personal owner, so no Memory source settlement.
+      // A legacy Project chat: no personal owner, so its chat is left alone at settlement.
       findUnique: vi.fn(async () => ({ userId: null }))
     },
     message: {
@@ -71,9 +70,7 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
   const client = { $transaction: transaction } as unknown as PrismaClient;
   return {
     assistantMessageId,
-    repository: createPrismaRunRepository(client, {
-      memorySourceHooks: NOOP_MEMORY_SOURCE_MUTATION_HOOKS
-    }),
+    repository: createPrismaRunRepository(client),
     runId,
     transaction,
     tx,

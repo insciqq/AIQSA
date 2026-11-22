@@ -12,9 +12,6 @@ import { createChatTitleRepository } from "../../chats/titleGenerationRepository
 import { SUBAGENT_RUN_NO_ANSWER, createNativeRunStore } from "../../engine/runStore";
 import { hashCanonicalMcpValue } from "../../mcp/definitions";
 import { namespacedMcpToolName } from "../../mcp/runPlan";
-import { requireMemoryCommandSource } from "../../memory/commands/sourceAuthority";
-import { memorySha256 } from "../../memory/persistence/lexical";
-import { withLockedMemoryTransaction } from "../../memory/persistence/transaction";
 import { prisma } from "../../prisma";
 import type { SubagentBinding } from "../../subagents/ports";
 import { getWorkspaceConfig } from "../../workspace/config";
@@ -27,7 +24,7 @@ import { createPrismaSubagentBackgroundStore } from "./store";
 /**
  * The row-lock order of the transactions that met in production deadlocks, on a disposable database: a background
  * sub-agent's admission against a Workspace registration of its parent run, a sub-agent's settlement against its
- * usage totals, Memory's source check against usage totals, a chat title's usage against its answer's totals, and MCP
+ * usage totals, a chat title's usage against its answer's totals, and MCP
  * discovery of a main-agent run against its background sub-agent's (a design reviewers deadlocked before it shipped). Each
  * test holds one transaction at the point where the old order deadlocked, lets the other one run into it, and checks
  * what the waiting one holds before it lets the first go on: with the order fixed, the waiter holds nothing the holder
@@ -195,32 +192,6 @@ async function runningSubagent() {
     usageScope: { assistantMessageId: SUBAGENT_RUN_NO_ANSWER, chatId: f.chatId, runId: admitted.runId, userId: f.userId } };
 }
 
-/** A finished native answer whose user message holds a claimed Memory command, as `sourceAuthority.prisma.test.ts` builds it. */
-async function memoryCommand() {
-  const userId = `lock-order-memory-${randomUUID()}`;
-  owners.push(userId);
-  await prisma.user.create({ data: { displayName: "Synthetic lock order", id: userId, status: "active" } });
-  const chat = await prisma.chat.create({ data: { title: "Lock order Memory", userId } });
-  const message = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Remember that my synthetic preference is green"),
-    role: "user", status: "complete" } });
-  const answer = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Noted"), parentMessageId: message.id,
-    role: "assistant", status: "complete" } });
-  const run = await prisma.modelRun.create({ data: { assistantMessageId: answer.id, chatId: chat.id, engine: "native", modelId: "fake-qsa",
-    normalizedRequest: {}, provider: "fake", status: "complete", userId, userMessageId: message.id } });
-  await prisma.chat.update({ data: { activeLeafMessageId: answer.id }, where: { id: chat.id } });
-  const settings = await prisma.userMemorySettings.findUniqueOrThrow({ where: { userId } });
-  const claimToken = randomUUID();
-  const job = await prisma.memoryJob.create({ data: {
-    activeLeafMessageId: answer.id, branchGeneration: 0, chatId: chat.id, commandOperation: "UNKNOWN",
-    commandSequence: 1, commandStatus: "RUNNING", idempotencyFingerprint: randomUUID(), kind: "MEMORY_COMMAND",
-    leaseExpiresAt: new Date(Date.now() + 120_000), leaseToken: claimToken, memoryGenerationSnapshot: settings.memoryGeneration,
-    memoryRevisionSnapshot: settings.memoryRevision, pipelineVersion: "memory-command-v1", sourceHash: memorySha256(message.content),
-    sourceMessageId: message.id, sourceRevision: 0, state: "CLAIMED", userId
-  } });
-  return { chatId: chat.id, claimToken, jobId: job.id, messageId: message.id, runId: run.id, userId,
-    usageScope: { assistantMessageId: answer.id, chatId: chat.id, runId: run.id, userId } };
-}
-
 /**
  * A finished native answer with its usage totals still unwritten, whose automatic title was dispatched: the title's
  * usage receipt is still unknown, as `createChatTitleRepository(...).take` leaves it.
@@ -336,10 +307,6 @@ async function discoveringAgents() {
 
 afterEach(async () => {
   for (const userId of owners.splice(0)) {
-    await prisma.memoryOperationReceipt.deleteMany({ where: { userId } });
-    await prisma.memoryMutationAuthorization.deleteMany({ where: { userId } });
-    await prisma.memoryExecutionBinding.deleteMany({ where: { userId } });
-    await prisma.memoryJob.deleteMany({ where: { userId } });
     // Runs first: their Workspace bindings restrict the session, and the session restricts its chat.
     await prisma.modelRun.deleteMany({ where: { userId } });
     await prisma.workspaceSession.deleteMany({ where: { chat: { userId } } });
@@ -491,41 +458,6 @@ describe("a background sub-agent's settlement and its usage totals", () => {
     } finally {
       resume.release();
       await Promise.allSettled([settling, totals]);
-    }
-  }, 60_000);
-});
-
-describe("Memory's source check and usage totals of the same answer", () => {
-  it("lets the source check wait for totals holding the chat and the run before it locks anything of the answer", async () => {
-    const f = await memoryCommand();
-    const usagePid = barrier<number>();
-    const runHeld = barrier();
-    const resume = barrier();
-    const runs = createNativeRunStore(observed(usagePid.release,
-      { pause: { method: "update", model: "chat", reached: () => runHeld.release(), resume: resume.wait } }));
-    const memoryPid = barrier<number>();
-    const memoryFailures: unknown[] = [];
-    const memoryClient = observed((pid) => memoryPid.release(pid), { failed: (error) => memoryFailures.push(error) });
-    let totals: Promise<unknown> | undefined;
-    let checking: Promise<unknown> | undefined;
-    try {
-      totals = runs.applyUsageTotals(f.usageScope, [usage(10)]).catch((error: unknown) => ({ error }));
-      await Promise.race([runHeld.wait, totals.then((value) => { throw new Error("totals_ended_before_run_lock", { cause: value }); })]);
-      // Memory locks the chat, the source message and the run, in that order, in one statement.
-      checking = withLockedMemoryTransaction(memoryClient, f.userId,
-        (tx) => requireMemoryCommandSource(tx, f.userId, f.jobId, f.claimToken)).catch((error: unknown) => ({ error }));
-      await waitForBlock(await memoryPid.wait, await usagePid.wait);
-      // It waits at the chat, so it holds no lock on the source message yet.
-      expect(await lockableNow(Prisma.sql`SELECT "id" FROM "Message" WHERE "id" = ${f.messageId} FOR UPDATE NOWAIT`)).toBe(true);
-      resume.release();
-      expect(await totals).toBeUndefined();
-      // Serializable Memory may make its check again after the totals changed the chat row; it is never a deadlock victim.
-      expect(await checking).toMatchObject({ modelRunId: f.runId });
-      expect(memoryFailures.filter((error) => sqlState(error) === "40P01")).toEqual([]);
-      expect(await prisma.chat.findUniqueOrThrow({ where: { id: f.chatId } })).toMatchObject({ totalInputTokens: 10 });
-    } finally {
-      resume.release();
-      await Promise.allSettled([totals, checking]);
     }
   }, 60_000);
 });
