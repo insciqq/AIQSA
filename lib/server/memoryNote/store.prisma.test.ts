@@ -24,8 +24,9 @@ async function owner(): Promise<string> {
 }
 
 /** A streaming answer of the user's own chat with a running `manage_memory` call, as the engine records it before it runs. */
-async function answer(userId: string, options: Readonly<{ scheduledTaskPrompt?: boolean }> = {}) {
-  const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Synthetic note chat", userId } });
+async function answer(userId: string, options: Readonly<{ scheduledTaskPrompt?: boolean; excluded?: boolean }> = {}) {
+  const chat = await prisma.chat.create({ data: { defaultProviderModelId: providerTemplateIds.fakeModel, title: "Synthetic note chat", userId,
+    ...(options.excluded ? { memoryMode: "EXCLUDED" as const } : {}) } });
   const question = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent("Synthetic question"), role: "user",
     scheduledTaskPrompt: options.scheduledTaskPrompt ?? false, status: "complete" } });
   const reply = await prisma.message.create({ data: { chatId: chat.id, content: textMessageContent(""), parentMessageId: question.id,
@@ -160,6 +161,15 @@ describe("the agent's changes and offers on PostgreSQL", () => {
     }
     expect(await prisma.userMemoryNote.findUnique({ where: { userId } })).toBeNull();
     expect(await prisma.memoryNoteOffer.count({ where: { userId } })).toBe(0);
+  });
+
+  it("changes nothing from a chat excluded from Memory", async () => {
+    const userId = await owner();
+    const run = await answer(userId, { excluded: true });
+    expect(json(await run.execute({ action: "add", ask_first: true, text: "Prefers short answers." })))
+      .toMatchObject({ code: "memory_note_chat_excluded", saved: false });
+    expect(await prisma.memoryNoteOffer.count({ where: { userId } })).toBe(0);
+    expect(await prisma.modelRunToolCall.findUniqueOrThrow({ where: { id: run.callId } })).toMatchObject({ state: "running" });
   });
 
   it("writes nothing when the call cannot settle", async () => {

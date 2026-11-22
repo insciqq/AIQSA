@@ -6,7 +6,7 @@ import {
   type MemoryNoteOperation,
   type MemorySwitches
 } from "@/lib/contracts/memoryNote";
-import type { MemoryNoteRepository, StoredMemoryLegacySuggestion, StoredMemoryNoteOffer } from "./store";
+import type { MemoryNoteRepository, MemoryNoteRunChat, StoredMemoryLegacySuggestion, StoredMemoryNoteOffer } from "./store";
 
 type NoteRow = { text: string; revision: number; lastChangedBy: MemoryNoteAuthor; updatedAt: Date };
 type OfferRow = StoredMemoryNoteOffer & { userId: string; chatId: string; runId: string; assistantMessageId: string; toolCallId: string };
@@ -15,7 +15,7 @@ type State = {
   active: Set<string>;
   notes: Map<string, NoteRow>;
   settings: Map<string, MemorySwitches>;
-  runs: Map<string, { userId: string; chatId: string; assistantMessageId: string | null }>;
+  runs: Map<string, { userId: string; chatId: string; assistantMessageId: string | null; memoryMode?: MemoryNoteRunChat["memoryMode"] }>;
   offers: OfferRow[];
   legacy: LegacyRow[];
 };
@@ -66,9 +66,10 @@ export function fakeMemoryNoteDb(input: Readonly<{ activeUsers: readonly string[
       state.settings.set(userId, next);
       return next;
     },
-    async runAnswerMessage({ chatId, runId, userId }) {
+    async runChat({ chatId, runId, userId }) {
       const run = state.runs.get(runId);
-      return run && run.userId === userId && run.chatId === chatId ? run.assistantMessageId : null;
+      return run && run.userId === userId && run.chatId === chatId
+        ? { assistantMessageId: run.assistantMessageId, memoryMode: run.memoryMode ?? "NORMAL" } : null;
     },
     async createOffer(offer) {
       if (state.offers.some((row) => row.runId === offer.runId && row.toolCallId === offer.toolCallId)) throw new Error("synthetic_unique_violation");

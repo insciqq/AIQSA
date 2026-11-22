@@ -36,6 +36,12 @@ export type StoredMemoryLegacySuggestion = Readonly<{
   createdAt: Date;
 }>;
 
+export type MemoryNoteRunChat = Readonly<{
+  assistantMessageId: string | null;
+  /** `NORMAL` chats read and change the note; Temporary and Excluded chats neither read nor change it. */
+  memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+}>;
+
 /** Where a page of legacy suggestions continues: after this one, oldest first. */
 export type MemoryLegacyCursor = Readonly<{ createdAt: Date; id: string }>;
 
@@ -53,8 +59,11 @@ export type MemoryNoteRepository = Readonly<{
   writeNote(userId: string, input: Readonly<{ text: string; expectedRevision: number; author: MemoryNoteAuthor }>): Promise<MemoryNote | null>;
   readSwitches(userId: string): Promise<MemorySwitches>;
   updateSwitches(userId: string, update: MemorySwitchesUpdate): Promise<MemorySwitches>;
-  /** The answer message of the user's own run in its chat; null for a run that answers none (a sub-agent's) or is not theirs. */
-  runAnswerMessage(input: Readonly<{ userId: string; chatId: string; runId: string }>): Promise<string | null>;
+  /**
+   * The user's own run in its chat: the answer message it writes (null for a sub-agent's run, which answers none) and
+   * whether the chat takes part in Memory; null when the run is not theirs.
+   */
+  runChat(input: Readonly<{ userId: string; chatId: string; runId: string }>): Promise<MemoryNoteRunChat | null>;
   createOffer(input: Readonly<{
     userId: string; chatId: string; runId: string; assistantMessageId: string; toolCallId: string;
     operation: MemoryNoteOperation; beforeText: string | null; afterText: string | null;
@@ -149,9 +158,10 @@ export function createPrismaMemoryNoteRepository(tx: Prisma.TransactionClient): 
       return tx.userSettings.upsert({ create: { userId, ...data }, select: switchesSelect, update: data, where: { userId } });
     },
 
-    async runAnswerMessage({ chatId, runId, userId }) {
-      const run = await tx.modelRun.findFirst({ select: { assistantMessageId: true }, where: { chatId, id: runId, userId } });
-      return run?.assistantMessageId ?? null;
+    async runChat({ chatId, runId, userId }) {
+      const run = await tx.modelRun.findFirst({ select: { assistantMessageId: true, chat: { select: { memoryMode: true, userId: true } } },
+        where: { chatId, id: runId, userId } });
+      return run && run.chat.userId === userId ? { assistantMessageId: run.assistantMessageId, memoryMode: run.chat.memoryMode } : null;
     },
 
     async createOffer(input) {

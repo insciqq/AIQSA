@@ -27,7 +27,8 @@ import { createPrismaMemoryNoteRepository, type MemoryNoteRepositoryFactory } fr
  *   must apply to the note as it is now, so the card never offers what cannot be saved.
  *
  * Memory off (`memoryEnabled`) refuses both, and suggestions off (`memorySuggestionsEnabled`) refuses an offer, read at
- * the call; the run's tool list leaves the tool out while Memory is off, but switches may change during a run.
+ * the call; the run's tool list leaves the tool out while Memory is off, but switches may change during a run. A
+ * Temporary or Excluded chat changes nothing either, whatever the tool list held.
  */
 
 export type AgentMemoryNoteRequest = Readonly<{ edit: MemoryNoteEdit; askFirst: boolean }>;
@@ -44,6 +45,8 @@ export type AgentMemoryNoteRefusal =
   | Readonly<{ code: "memory_note_too_long"; characters: number; current: number }>
   | Readonly<{ code: "memory_note_secret" }>
   | Readonly<{ code: "memory_disabled" }>
+  /** The run's chat is Temporary or Excluded, which read and change no Memory. */
+  | Readonly<{ code: "memory_note_chat_excluded" }>
   | Readonly<{ code: "memory_note_offers_disabled" }>
   /** The run answers no message an offer could be bound to (a sub-agent's). */
   | Readonly<{ code: "memory_note_offer_unavailable" }>
@@ -76,6 +79,10 @@ export function createAgentMemoryNoteService(input: Readonly<{
       return commitSelfServiceChange<AgentMemoryNoteDone, AgentMemoryNoteRefusal>(db, input.store, async (tx: Prisma.TransactionClient) => {
         const repo = repository(tx);
         if (!await repo.lockOwner(scope.userId)) return { kind: "refused", value: { code: "memory_note_unavailable" } };
+        const run = await repo.runChat(scope);
+        if (!run) return { kind: "refused", value: { code: "memory_note_unavailable" } };
+        // The run's tool list leaves the tool out of these chats too; a Temporary or Excluded chat never touches Memory.
+        if (run.memoryMode !== "NORMAL") return { kind: "refused", value: { code: "memory_note_chat_excluded" } };
         const switches = await repo.readSwitches(scope.userId);
         if (!switches.memoryEnabled) return { kind: "refused", value: { code: "memory_disabled" } };
         if (askFirst && !switches.memorySuggestionsEnabled) return { kind: "refused", value: { code: "memory_note_offers_disabled" } };
@@ -93,7 +100,7 @@ export function createAgentMemoryNoteService(input: Readonly<{
         }
         let done: AgentMemoryNoteDone;
         if (askFirst) {
-          const assistantMessageId = await repo.runAnswerMessage(scope);
+          const assistantMessageId = run.assistantMessageId;
           if (!assistantMessageId) return { kind: "refused", value: { code: "memory_note_offer_unavailable" } };
           const offer = await repo.createOffer({ afterText: applied.after, assistantMessageId, beforeText: applied.before, chatId: scope.chatId,
             operation: applied.operation, runId: scope.runId, toolCallId: scope.callId, userId: scope.userId });

@@ -161,6 +161,19 @@ describe("manage_memory", () => {
     expect(test.state.offers).toEqual([]);
   });
 
+  it("changes and offers nothing from a Temporary or Excluded chat, whatever the run's tool list held", async () => {
+    for (const memoryMode of ["TEMPORARY", "EXCLUDED"] as const) {
+      test.state.runs.set("run", { assistantMessageId: "answer-run", chatId: "chat", memoryMode, userId: "alice" });
+      for (const askFirst of [false, true]) {
+        const refused = json(await test.run({ action: "add", ask_first: askFirst, text: "Prefers short answers." }));
+        expect(refused).toMatchObject({ code: "memory_note_chat_excluded", saved: false });
+        expect(refused.message).toContain("Settings › Memory");
+      }
+    }
+    expect(test.state.notes.size).toBe(0);
+    expect(test.state.offers).toEqual([]);
+  });
+
   it("changes nothing for a request only tool output made: a run the self-service fence refuses (an automation's) writes and offers nothing", async () => {
     // The fence refuses runs the user's own message did not start in this turn: scheduled occurrences and answers to a scheduled prompt.
     test.callStore.claim.mockResolvedValue({ kind: "unavailable" });
@@ -240,7 +253,10 @@ describe("Undo of the agent's change", () => {
     expect(await undo(change, "bob")).toEqual({ error: "changed", status: 409 });
     expect(test.state.notes.get("alice")).toMatchObject({ revision: 1, text: "Answer in Russian." });
     expect(test.state.notes.get("bob")).toBeUndefined();
-    await test.run({ action: "add", ask_first: false, text: "Bob's line." }, "bob");
+    // Alice's run is not Bob's to change anything from.
+    expect(json(await test.run({ action: "add", ask_first: false, text: "Bob's line." }, "bob"))).toMatchObject({ code: "memory_note_change_unavailable" });
+    test.state.runs.set("bob-run", { assistantMessageId: "answer-bob", chatId: "chat", userId: "bob" });
+    await test.run({ action: "add", ask_first: false, text: "Bob's line." }, "bob", "bob-run");
     expect(test.state.notes.get("bob")).toMatchObject({ revision: 1, text: "Bob's line." });
     expect(test.state.notes.get("alice")).toMatchObject({ revision: 1, text: "Answer in Russian." });
   });
