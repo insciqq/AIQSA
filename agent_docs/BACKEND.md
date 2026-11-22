@@ -25,7 +25,7 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 - Configuration changes use optimistic concurrency and validate atomically. Never silently clamp, substitute or partially apply a change that spans several resources.
 - The Control Center attention list (`lib/server/admin/attention/`) only aggregates administrator projections that are already authorized. An unavailable source is named without failing the list, and entries carry human copy and links, never raw failures or private identifiers.
 - Using an installation MCP server lets a member fill in its required personal values. Overriding a shared value replaces an installation credential and needs a direct per-user permission.
-- Inbound MCP clients act as the current active account and cannot choose another owner. Memory calls and Hub dispatch create no synthetic chat, run or history.
+- Inbound MCP clients act as the current active account and cannot choose another owner. Hub dispatch creates no synthetic chat, run or history.
 
 ## Assistants
 
@@ -46,4 +46,4 @@ HTTP routes in `app/api/`, server modules in `lib/server/`, and the control plan
 - Long-running work runs as durable claimed jobs, and deletion as idempotent obligations, never as best effort inside a request.
 - An opaque Workspace upload reaches execution only through an admitted run. File reads recheck the reader's current access, and storage authority never reaches browser or guest contracts. A PDF original stays available whether or not its extraction succeeds. A document or image the parser could not digest needs Workspace: a Workspace run takes its original and the model is told what did not reach it (`workspaceMissingContentNotice`); without Workspace admission refuses it, naming the limit and a recovery (operator request 2026-10-31). An animated GIF is a ready image (operator request 2026-11-07): models see its first frame with a note that it is animated, and Workspace stages the original (`lib/server/uploads/providerImageFit.ts`).
 - Chat exports (`aiqsa.chat` and `aiqsa.chat-archive`, `lib/contracts/chatExport.ts`) are held by users outside the installation. A published version never changes: a new shape bumps `version`, and import keeps accepting every published version. Exports contain export-local ids and readable text, never database ids, provider internals, usage or tool payloads.
-- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, Memory and tool evidence, recovery state and private identifiers are dropped.
+- Anonymous shares (`lib/server/shares/`) are sanitized, immutable snapshots behind a hashed high-entropy bearer token, read and written through one allowlisted public schema. Private attachments, past-chat sources, tool evidence, recovery state and private identifiers are dropped.

@@ -69,7 +69,7 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 | MCP and OAuth | Deterministic protocol and security tests, then the relevant disposable runtime. Hosted consent and upstream OAuth need their own authority. |
 | Workspace and KVM | Policy, protocol and output tests, disposable database race checks, image builds, isolated browser flows, then opt-in real KVM evidence covering execution loss, Stop, runner restart, export and recovery, file integrity, network modes and cleanup. A fake runtime is never live evidence. |
 | Upload parsers | Deterministic routing, bounds and decoders, then the disposable parser smoke; a stopped parser must degrade locally without breaking readiness. |
-| Memory, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence, concurrency and retrieval. Integrity and rebuild output stays content-free. |
+| Memory note, past-chat search, recovery | Focused policy and handler tests, then disposable PostgreSQL with pgvector for persistence, concurrency and retrieval; a ranking or indexing change also runs the past-chat scenarios below. Output stays content-free. |
 | Publishing (push, PR) | `npm run release:privacy:check` and the root final review; reuse existing verification. Publishing still needs an explicit request. |
 
 ## Images and releases
@@ -82,10 +82,11 @@ docker compose -f docker-compose.dev.yml run --rm -T app npm run test:e2e
 ## Real providers and opt-in checks
 
 - Tests use fake providers. Never print keys, prompts, answers, source text or URLs, private identifiers, raw tool payloads or paths that carry capabilities. Evidence is limited to versions, stable codes, booleans, counts, latency, limits, hashes and cleanup results.
-- Real provider calls (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek, hosted Search, OAuth registries) need explicit permission for that provider and the smallest useful call. `smoke:custom-openai-compatible` is local and credential-free. `smoke:memory-semantic` may run against a loopback disposable app with credentials already stored through Admin.
+- Real provider calls (Anthropic, OpenAI, OpenRouter, Gemini, DeepSeek, hosted Search, OAuth registries) need explicit permission for that provider and the smallest useful call. `smoke:custom-openai-compatible` is local and credential-free.
 - Read an opt-in script and its guards before running it; flags, fixtures, limits, cleanup and assertions belong to the script.
-- Paid and live Workspace smokes (`smoke:workspace-live`, `smoke:workspace-user-paid`, `smoke:browser-scenarios-paid`, `smoke:subagents-paid`) need explicit disposable opt-in, real KVM and synthetic data; `smoke:memory-browser-paid` and `smoke:memory-mcp-codex` need explicit permission and their own disposable target. Diagnose a failure before any paid retry.
-- An unexplained Personal Memory `DEGRADED` result fails a provider smoke, benchmark or qualification even when the answer is right. Find and fix the shared cause, or show that the scenario injected that fallback on purpose.
+- Paid and live Workspace smokes (`smoke:workspace-live`, `smoke:workspace-user-paid`, `smoke:browser-scenarios-paid`, `smoke:subagents-paid`) need explicit disposable opt-in, real KVM and synthetic data. Diagnose a failure before any paid retry.
+- An unexplained fallback, such as a past-chat search marked partial because meaning search did not take part, fails a provider smoke, benchmark or scenario run even when the answer is right. Find and fix the shared cause, or show that the run chose it on purpose.
+- Past-chat search quality: `lib/server/chatSearch/pastChatScenarios.test.ts` runs the scenarios of `tests/fixtures/chat-search/` with fakes in the ordinary suite; `scripts/eval/chat-search-scenarios.ts` runs them on the disposable stand with the installation's real embedding model and reranker (paid, opt-in, thresholds in its support file). `scripts/eval/chat-search-replay-snapshot.sql` (read-only, on a production host before the v0.5.0 upgrade, while the old tables exist) and `scripts/eval/chat-search-replay.ts` (after it) compare the old search's recorded searches with the new one and print aggregates only; the snapshot holds private queries and is deleted after the replay.
 - Benchmarks are opt-in and outside product lint, types and tests. A benchmark that calls providers needs isolated disposable infrastructure, provider permission, frozen public datasets and content-free output.
 
 ## Writing tests
