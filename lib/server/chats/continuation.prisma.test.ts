@@ -88,8 +88,9 @@ async function fixture(
     if (mode === "NORMAL") await prisma.chat.deleteMany({ where: { userId } });
     // Disposable fixtures obey the Temporary deletion guard: a Temporary chat goes once its deadline has passed.
     if (mode === "TEMPORARY") {
-      await prisma.chat.updateMany({ data: { temporaryRetentionDeadline: new Date(Date.now() - 60_000) },
-        where: { memoryMode: "TEMPORARY", userId } });
+      // The deadline must stay after the chat's creation (`Chat_memory_state_check`), so both move into the past.
+      await prisma.chat.updateMany({ data: { createdAt: new Date(Date.now() - 2 * 86_400_000),
+        temporaryRetentionDeadline: new Date(Date.now() - 60_000) }, where: { memoryMode: "TEMPORARY", userId } });
       await prisma.chat.deleteMany({ where: { userId } });
     }
     await prisma.user.deleteMany({ where: { id: userId } });

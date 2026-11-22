@@ -279,11 +279,12 @@ describe("Prisma-backed message branch repository", () => {
           }
         })
       ).resolves.toBe(runStatus === "preparing" ? 4 : 2);
+      // An admitted send no longer waits in `preparing` for Memory: it is dispatchable at once, still active.
       await expect(
         prisma.modelRun.count({
           where: {
             chatId: sourceChat.id,
-            status: runStatus
+            status: runStatus === "preparing" ? { in: ["preparing", "queued", "streaming", "in_progress"] } : runStatus
           }
         })
       ).resolves.toBe(1);

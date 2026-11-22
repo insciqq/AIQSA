@@ -110,26 +110,4 @@ describe("past-chat search call sites", () => {
 
     expect((await state(chat.id))?.dirtyAt).toBeInstanceOf(Date);
   });
-
-  it("old Memory history no longer holds back a branch switch, a message deletion or a folder deletion", async () => {
-    const userId = await owner();
-    const folder = await prisma.folder.create({ data: { name: "Trips", sortOrder: 10, userId } });
-    const { answer, chat, question } = await chatWithTurn(userId, { folderId: folder.id });
-    // What the old Memory history left on the chat: a READY checkpoint at the current leaf, which its source guard
-    // compared with the chat on every write and its key tied to the leaf message; and a fact scope of the folder.
-    await prisma.chatMemoryCheckpoint.create({ data: {
-      activeLeafMessageId: answer.id, branchGeneration: 0, chatId: chat.id, sourceContentHash: "a".repeat(64),
-      sourceRevision: 0, status: "READY", userId
-    } });
-    await prisma.memoryScope.create({ data: { folderId: folder.id, scopeType: "FOLDER", targetIdSnapshot: folder.id, userId } });
-    const chats = createPrismaChatRepository(prisma);
-
-    await expect(chats.updateChat({ activeLeafMessageId: question.id, chatId: chat.id, userId }))
-      .resolves.toMatchObject({ activeLeafMessageId: question.id });
-    await chats.updateChat({ activeLeafMessageId: answer.id, chatId: chat.id, userId });
-    await expect(createPrismaMessageBranchRepository(prisma).deleteMessageSubtree({ messageId: answer.id, userId }))
-      .resolves.toMatchObject({ activeLeafMessageId: question.id, deletedMessageIds: [answer.id] });
-    await expect(chats.deleteFolder({ folderId: folder.id, userId })).resolves.toBe(true);
-    expect((await state(chat.id))?.dirtyAt).toBeInstanceOf(Date);
-  });
 });
