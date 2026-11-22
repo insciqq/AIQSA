@@ -1007,7 +1007,7 @@ func DecodeOpResult(op Op, data []byte) (Validator, error) {
 // Protocol 2 device events.
 
 // OpReplyEvent answers an OpCommand: `{ok: true, result}` or `{ok: false, code}`
-// with one of OpErrorCodes. Its type is `reply`, as in protocol 1.
+// with one of OpErrorCodes. Its type is `reply`.
 type OpReplyEvent struct {
 	Type      string          `json:"type"`
 	RequestID string          `json:"requestId"`
@@ -1196,33 +1196,4 @@ func (m *EventBatchV2) Validate() error {
 		}
 	}
 	return nil
-}
-
-// LegacyClientManifest is the manifest a protocol 1 client gets: what its
-// strict decoder accepts, at most LegacyMaxClientTargets darwin and linux targets.
-type LegacyClientManifest struct {
-	Version string         `json:"version"`
-	Targets []ClientTarget `json:"targets"`
-}
-
-func (m *LegacyClientManifest) UnmarshalJSON(data []byte) error {
-	type plain LegacyClientManifest
-	return strictUnmarshal(data, (*plain)(m))
-}
-
-func (m *LegacyClientManifest) Validate() error {
-	if err := checkPattern("version", m.Version, VersionRegexp); err != nil {
-		return err
-	}
-	if err := checkList("targets", m.Targets != nil, len(m.Targets), 1, LegacyMaxClientTargets); err != nil {
-		return err
-	}
-	keys := make([]string, len(m.Targets))
-	for i := range m.Targets {
-		if err := firstError(m.Targets[i].Validate(), checkEnum("os", m.Targets[i].OS, LegacyOSValues)); err != nil {
-			return fmt.Errorf("targets[%d].%w", i, err)
-		}
-		keys[i] = string(m.Targets[i].OS) + "-" + string(m.Targets[i].Arch)
-	}
-	return checkUnique("targets", keys)
 }

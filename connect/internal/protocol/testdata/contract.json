@@ -1,6 +1,5 @@
 {
   "protocolVersion": 2,
-  "legacyProtocolVersion": 1,
   "limits": {
     "maxDevicesPerUser": 10,
     "maxEventsPerPost": 64,
@@ -18,7 +17,6 @@
     "maxClientBinaryBytes": 134217728,
     "maxClientTargets": 6,
     "maxSeq": 9007199254740991,
-    "legacyMaxClientTargets": 4,
     "maxConcurrentOps": 16,
     "maxJobs": 8,
     "maxReplyBytes": 524288,
@@ -101,26 +99,7 @@
   "deviceStreamClosedCodes": ["connect_disabled", "connect_unauthorized", "connect_client_outdated"],
   "eventsStreamClosedCodes": ["connect_disabled", "connect_unauthorized"],
   "os": ["darwin", "linux", "windows"],
-  "legacyOs": ["darwin", "linux"],
   "arch": ["amd64", "arm64"],
-  "legacyClientTargets": [
-    {
-      "os": "darwin",
-      "arch": "amd64"
-    },
-    {
-      "os": "darwin",
-      "arch": "arm64"
-    },
-    {
-      "os": "linux",
-      "arch": "amd64"
-    },
-    {
-      "os": "linux",
-      "arch": "arm64"
-    }
-  ],
   "ops": [
     "shell",
     "job_output",

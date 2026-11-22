@@ -7,13 +7,9 @@ package protocol
 import "regexp"
 
 // ProtocolVersion is the `protocol` of HelloV2: the agent works on the
-// user's computer through `op` commands. Protocol 2 clients send
-// ProtocolHeader on every device API request.
+// user's computer through `op` commands. The client sends ProtocolHeader on
+// every device API request.
 const ProtocolVersion = 2
-
-// LegacyProtocolVersion is the `protocol` of the removed terminal protocol;
-// the shared contract still names it.
-const LegacyProtocolVersion = 1
 
 // Limits. Byte limits count UTF-8 bytes; text limits count Unicode code points.
 const (
@@ -32,7 +28,6 @@ const (
 	MaxURLLength                         = 2_048
 	MaxClientBinaryBytes                 = 134_217_728
 	MaxClientTargets                     = 6
-	LegacyMaxClientTargets               = 4
 	MaxSeq                        uint64 = 1<<53 - 1
 )
 
@@ -149,9 +144,6 @@ const (
 
 var OSValues = []OS{OSDarwin, OSLinux, OSWindows}
 
-// LegacyOSValues are the systems a protocol 1 client knows; its manifest names no others.
-var LegacyOSValues = []OS{OSDarwin, OSLinux}
-
 type Arch string
 
 const (
@@ -160,17 +152,6 @@ const (
 )
 
 var ArchValues = []Arch{ArchAMD64, ArchARM64}
-
-// Target is one client build.
-type Target struct {
-	OS   OS   `json:"os"`
-	Arch Arch `json:"arch"`
-}
-
-// LegacyClientTargets are the four targets of the manifest a protocol 1 client gets, in this order.
-var LegacyClientTargets = []Target{
-	{OSDarwin, ArchAMD64}, {OSDarwin, ArchARM64}, {OSLinux, ArchAMD64}, {OSLinux, ArchARM64},
-}
 
 // Op is an agent operation of protocol 2, the `op` of an `op` command.
 type Op string
@@ -313,9 +294,8 @@ const (
 // the server records it on the device when the stream opens.
 const ClientVersionHeader = "X-AIQSA-Connect-Version"
 
-// ProtocolHeader carries "2" on every device API request of a protocol 2
-// client. Without it the stream answers 426 connect_client_outdated and the
-// manifest lists only LegacyClientTargets.
+// ProtocolHeader carries ProtocolVersion on every device API request. A
+// stream request without it answers 426 connect_client_outdated.
 const ProtocolHeader = "X-AIQSA-Connect-Protocol"
 
 // ClientBinaryName is the release file name of one target, for example

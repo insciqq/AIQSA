@@ -76,7 +76,7 @@ export function connectDeviceToken(request: Request): string | null {
   return token && CONNECT_DEVICE_TOKEN_PATTERN.test(token) ? token : null;
 }
 
-/** Whether a device API request comes from a protocol 2 client; terminal clients never send the header (D-03). */
+/** Whether a device API request names the current protocol in {@link CONNECT_PROTOCOL_HEADER}. */
 export function isConnectProtocol2(request: Request): boolean {
   return request.headers.get(CONNECT_PROTOCOL_HEADER)?.trim() === String(CONNECT_PROTOCOL_VERSION);
 }

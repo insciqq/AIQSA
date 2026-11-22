@@ -74,8 +74,7 @@ var fixtureSchemas = map[string]decodeFunc{
 	"deviceEventV2": func(data []byte) (any, error) {
 		return DecodeDeviceEventV2(data)
 	},
-	"deviceEventBatchV2":   decodeInto[EventBatchV2](),
-	"legacyClientManifest": decodeInto[LegacyClientManifest](),
+	"deviceEventBatchV2": decodeInto[EventBatchV2](),
 }
 
 // opResultFixture is the fixture shape of an op result: the op it answers
@@ -193,8 +192,7 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	actual := map[string]any{
-		"protocolVersion":       ProtocolVersion,
-		"legacyProtocolVersion": LegacyProtocolVersion,
+		"protocolVersion": ProtocolVersion,
 		"limits": map[string]any{
 			"maxDevicesPerUser":             MaxDevicesPerUser,
 			"maxEventsPerPost":              MaxEventsPerPost,
@@ -212,7 +210,6 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 			"maxClientBinaryBytes":          MaxClientBinaryBytes,
 			"maxClientTargets":              MaxClientTargets,
 			"maxSeq":                        MaxSeq,
-			"legacyMaxClientTargets":        LegacyMaxClientTargets,
 			"maxConcurrentOps":              MaxConcurrentOps,
 			"maxJobs":                       MaxJobs,
 			"maxReplyBytes":                 MaxReplyBytes,
@@ -252,9 +249,7 @@ func TestConstantsMatchSharedContract(t *testing.T) {
 		"deviceStreamClosedCodes": DeviceStreamClosedCodes,
 		"eventsStreamClosedCodes": EventsStreamClosedCodes,
 		"os":                      OSValues,
-		"legacyOs":                LegacyOSValues,
 		"arch":                    ArchValues,
-		"legacyClientTargets":     LegacyClientTargets,
 		"ops":                     Ops,
 		"shellKinds":              ShellKinds,
 		"grepModes":               GrepModes,

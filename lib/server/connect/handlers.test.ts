@@ -285,18 +285,18 @@ function setup() {
   return { admin, browser, clientKey, computerOps, device, gate, limits, policy, relay, relayEvents, resolveAuth, store };
 }
 
-/** A device API request; a protocol 2 client unless `legacy` (a terminal client without the protocol header). */
+/** A device API request of the current client; `noProtocol` leaves out the protocol header. */
 function deviceRequest(path: string, init: Readonly<{
   body?: unknown;
   headers?: Record<string, string>;
-  legacy?: boolean;
   method?: string;
+  noProtocol?: boolean;
   token?: string;
 }> = {}) {
   return new Request(`${ORIGIN}${path}`, {
     ...(init.body === undefined ? {} : { body: typeof init.body === "string" ? init.body : JSON.stringify(init.body) }),
     headers: {
-      ...(init.legacy ? {} : { [CONNECT_PROTOCOL_HEADER]: "2" }),
+      ...(init.noProtocol ? {} : { [CONNECT_PROTOCOL_HEADER]: "2" }),
       ...(init.token ? { authorization: `Bearer ${init.token}` } : {}),
       ...(init.body === undefined ? {} : { "content-type": "application/json" }),
       ...init.headers
@@ -543,13 +543,13 @@ describe("AIQSA Connect device API", () => {
       .resolves.toEqual({ body: { code: "connect_unauthorized" }, status: 401 });
   });
 
-  it("sends a terminal client without the protocol 2 header to update itself before any hello", async () => {
+  it("refuses a stream without the current protocol header with connect_client_outdated before any hello", async () => {
     const context = setup();
     const { token } = context.store.seedDevice("alice");
     const lookup = vi.spyOn(context.store.repository, "findStreamDevice");
     const headerSets: Record<string, string>[] = [{}, { [CONNECT_PROTOCOL_HEADER]: "1" }, { [CONNECT_PROTOCOL_HEADER]: "two" }];
     for (const headers of headerSets) {
-      const response = await context.device.stream(deviceRequest("/connect-api/v1/stream", { headers, legacy: true, token }));
+      const response = await context.device.stream(deviceRequest("/connect-api/v1/stream", { headers, noProtocol: true, token }));
       await expect(json(response)).resolves.toEqual({ body: { code: "connect_client_outdated" }, status: 426 });
     }
     expect(lookup).not.toHaveBeenCalled();
@@ -1024,7 +1024,7 @@ describe("AIQSA Connect logging", () => {
     await vi.advanceTimersByTimeAsync(CONNECT_PICKER_OP_TIMEOUT_MS + CONNECT_OP_REPLY_GRACE_MS);
     await timed;
     await context.device.stream(deviceRequest("/connect-api/v1/stream", { token: issueConnectDeviceToken().value }));
-    await context.device.stream(deviceRequest("/connect-api/v1/stream", { legacy: true, token: approved.deviceToken }));
+    await context.device.stream(deviceRequest("/connect-api/v1/stream", { noProtocol: true, token: approved.deviceToken }));
     await context.device.revokeSelf(deviceRequest("/connect-api/v1/device", { method: "DELETE", token: approved.deviceToken }));
     await deviceStream.close();
 
