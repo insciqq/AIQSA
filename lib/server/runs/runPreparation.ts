@@ -26,7 +26,7 @@ import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspac
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
-import { MCP_APPROVAL_CONTINUATION_KIND, type MessageSystemTurnKind } from "../../contracts/mcpApprovals";
+import type { MessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import { mcpPersonalCredentialRejectedMessage } from "../../contracts/runs";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
@@ -68,7 +68,7 @@ import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory
 import { renderMemoryNoteForPrompt } from "../memoryNote/prompt";
 import type { MemoryNoteRunContext } from "../memoryNote/runContext";
 import { readPastChatTool, searchPastChatsTool } from "../tools/pastChats";
-import { connectorTurnRules, DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
+import { DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
 import { logEvent } from "../observability";
 import type {
   ConversationFileReference,
@@ -117,6 +117,7 @@ import { skillWorkspacePath } from "../../domain/skillBundlePaths";
 import { skillToolsForRequest } from "../tools/skill";
 import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { applyProviderRequestContextBudget } from "./requestContextBudget";
+import { turnProvenance } from "./turnProvenance";
 import {
   followupAdmissionBudgetTokens, followupTokenCost, requestWithRunFollowups, type RunFollowupAdmission, type RegenerationFollowups
 } from "./runFollowups";
@@ -367,9 +368,11 @@ export type RunPreparationInput = Readonly<{
   /**
    * Server-only: a message that is not the owner's own from the web app (a connector's turn, a sub-agent wake-up turn); a
    * scheduled occurrence is known from its source. Such a message never takes a computer (D-07), and a connector's turn
-   * is prepared under its rules whatever the body says (`lib/server/connectors/turn.ts`).
+   * is prepared under its rules whatever the body says (`lib/server/connectors/turn.ts`). Preparation reads this and the
+   * other server-only turn facts below once, as the turn's provenance (`turnProvenance.ts`).
    */
   origin?: ConnectorTurn | "wake_up";
+  /** Server-only: the current message's text is the server's (an approval continuation, a sign-in request, a wake-up turn). */
   serverAuthoredInput?: boolean;
   /** Server-only: the turn the server wrote for this send (`Message.systemTurnKind`), with `serverAuthoredInput`. */
   systemTurnKind?: MessageSystemTurnKind;
@@ -1081,6 +1084,9 @@ export async function prepareRun(
   input: RunPreparationInput
 ): Promise<RunPreparationResult> {
   const body = input.body;
+  // Where the turn comes from and whose request it is, derived once from the server-only inputs; every decision below
+  // that depends on it reads it here, never the inputs again.
+  const provenance = turnProvenance(input);
   const artifactIntentValue = body && Object.hasOwn(body, "artifactIntent") ? body.artifactIntent
     : input.source.kind === "regenerate" ? input.source.source.artifactIntent : undefined;
   if (artifactIntentValue !== undefined && artifactIntentValue !== "create") return failure("artifact_intent_invalid", 400);
@@ -1093,7 +1099,7 @@ export async function prepareRun(
   // Deep research belongs to the message (operator decision 2026-11-05): only a send and an edited message's first run carry the field,
   // since a message sent with it is never regenerated (the handler refuses it, operator decision 2026-11-06), and a turn the server
   // wrote never carries it. Whether this run can research is the handler's call.
-  const deepResearch = decodeDeepResearchRequest(input.serverAuthoredInput ? undefined
+  const deepResearch = decodeDeepResearchRequest(provenance.serverAuthoredInput ? undefined
     : body && Object.hasOwn(body, DEEP_RESEARCH_SEND_FIELD) ? body[DEEP_RESEARCH_SEND_FIELD] : undefined);
   if (deepResearch === "invalid") return failure(DEEP_RESEARCH_REFUSALS.invalid, 400);
   const toolBudgets = deps.runPolicy
@@ -1101,24 +1107,15 @@ export async function prepareRun(
     : DEFAULT_TOOL_RUN_BUDGETS;
   const observationPolicy = normalizeToolObservationPolicy(toolBudgets.toolObservationPolicy);
   const chat = input.source.kind === "send" ? input.source.chat : input.source.source.chat;
-  // A scheduled task's send: a flat selected context, whatever the chat's mode.
-  const scheduledOccurrence = input.source.kind === "send" ? input.source.scheduledOccurrence : undefined;
-  // Any answer to a scheduled task's prompt, which the model may have written: the scheduled run
-  // itself or a regeneration, in its chat or a branch copy. It never learns into Personal Memory
-  // and never gets the scheduled task creation tool.
-  const scheduledPromptAnswer = scheduledOccurrence !== undefined ||
-    (input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskPrompt === true);
-  // Such an answer reads Memory only while its task has Memory on: the scheduled run by its
-  // occurrence, a regeneration by the task that posted the prompt (never in a branch copy).
-  const scheduledMemoryRead = scheduledOccurrence ? scheduledOccurrence.memory === true
-    : input.source.kind === "regenerate" && input.source.source.userMessage.scheduledTaskMemory === true;
+  // A scheduled task's send: a flat selected context, whatever the chat's mode. Any answer to a scheduled task's
+  // prompt, which the model may have written, never changes the note and never gets the automation or Skill save tools.
+  const { scheduledOccurrence, scheduledPromptAnswer } = provenance;
   const workspaceEnabled = resolveWorkspaceEnabled(body, chat.workspaceEnabled);
   if (workspaceEnabled === null) {
     return failure("workspace_intent_invalid", 400);
   }
   // A connector's turn under its rules (only Discord's narrow them); its Workspace is a web chat's (operator decisions 2026-11-16).
-  const connectorTurn = input.origin === "wake_up" ? undefined : input.origin;
-  const connector = connectorTurnRules(connectorTurn);
+  const { connector } = provenance;
   // A chat runs with its bound Assistant; the request may only bind an
   // unbound chat or repeat the binding.
   const assistantSource = chatAssistantSource(body, chat);
@@ -1145,11 +1142,8 @@ export async function prepareRun(
     assistantChat: Boolean(assistantSource.assistantId),
     field: body && Object.hasOwn(body, COMPUTER_SEND_FIELD) ? body[COMPUTER_SEND_FIELD] : undefined,
     // A regenerate repeats an admitted run and the turn after an Allow continues one: each keeps that run's computer.
-    ...(input.source.kind === "regenerate" && input.source.source.computer !== undefined
-      ? { frozen: input.source.source.computer }
-      : input.source.kind === "send" && input.source.approvalContinuation
-        ? { frozen: input.source.approvalContinuation.computer } : {}),
-    origin: scheduledOccurrence ? "scheduled" : input.origin ?? "interactive",
+    ...(provenance.frozenComputer !== undefined ? { frozen: provenance.frozenComputer } : {}),
+    origin: provenance.computerOrigin,
     stored: input.source.kind === "send" ? input.source.chat.computer : undefined,
     userId: input.userId
   });
@@ -1871,7 +1865,7 @@ export async function prepareRun(
   // Discord turn never does. Frozen here with the run like the Instructions, so a change applies from the next message
   // and retries read the same text. A failed read answers without Memory, and users see nothing of it.
   const memoryRead = resolvedChatMode.mode !== "TEMPORARY" && connector?.memory !== false && (scheduledPromptAnswer
-    ? scheduledMemoryRead
+    ? provenance.scheduledMemoryRead
     : resolvedChatMode.mode === "NORMAL");
   let memoryAdmission: RunMemoryAdmission | null = null;
   if (memoryRead && deps.memoryNote) {
@@ -1887,15 +1881,12 @@ export async function prepareRun(
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   // The note's own tool rides with the self-service tools of an interactive personal chat (`selfServiceToolsFor`): never
   // an answer to a scheduled task's prompt, which reads and may search but never writes, nor an Assistant chat. Only the
-  // user's own message in this turn authorizes a change (operator rule): a turn the server wrote, a sub-agent wake-up or
-  // a browser sign-in request, never does, while the continuation after an MCP Allow goes on with the user's own turn.
-  // The note's service checks the stored message again when the change commits (`agentMemoryNote.ts`).
-  const serverTurnKind = input.source.kind === "regenerate"
-    ? input.source.source.userMessage.systemTurnKind
-    : input.serverAuthoredInput ? input.systemTurnKind ?? "server_authored" : undefined;
-  const userAuthoredTurn = serverTurnKind === undefined || serverTurnKind === MCP_APPROVAL_CONTINUATION_KIND;
+  // user's own message in this turn authorizes a change (operator rule, `TurnProvenance.userRequest`): a turn the server
+  // wrote, a sub-agent wake-up or a browser sign-in request, never does, while the continuation after an MCP Allow goes
+  // on with the user's own turn. The note's service checks the stored message again when the change commits
+  // (`agentMemoryNote.ts`).
   const memory: NormalizedRunRequest["memory"] = memoryAdmission && memoryNote ? Object.freeze({
-    changes: memoryTools && !scheduledPromptAnswer && !assistantRun && userAuthoredTurn,
+    changes: memoryTools && !assistantRun && provenance.userRequest,
     offers: memoryAdmission.switches.memorySuggestionsEnabled,
     pastChats: memoryTools && memoryAdmission.switches.pastChatSearchEnabled && memoryAdmission.searchAllowed,
     version: 1 as const
@@ -1950,7 +1941,7 @@ export async function prepareRun(
   // decision 2026-11-12, O-10: the service account's grants hold read-only servers).
   // The initiator's "Always allow" consents for the run's servers are frozen here:
   // a revocation applies to later runs.
-  const unattendedMcp = scheduledOccurrence !== undefined || connector?.unattendedMcp === true;
+  const { unattendedMcp } = provenance;
   const approvalServerIds = [...new Set([
     ...(mcpPlan?.ok ? mcpPlan.snapshot.servers.map((server) => server.serverId) : []),
     ...(mcpDiscoveryEnabled && mcpCatalog ? mcpCatalog.servers.map((server) => server.serverId) : [])
@@ -1958,13 +1949,12 @@ export async function prepareRun(
   const inheritedFollowups = input.source.kind === "regenerate" ? input.source.source.followups : undefined;
   const guard = !unattendedMcp && approvalServerIds.length > 0 ? await deps.mcpGuard?.admit({
     chatId: chat.id, userId: input.userId, messages: conversationMessages,
-    ...(input.source.kind === "send" && !input.serverAuthoredInput
-      ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
+    ...(provenance.guardReadsCurrentMessage ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
     ...(inheritedFollowups ? { inheritedFollowups } : {})
   }) : undefined;
   const mcpApproval = !unattendedMcp && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
-        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, input.mcpApprovalId)
+        serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, provenance.mcpApprovalId)
     : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memory ? { memory } : {}),
