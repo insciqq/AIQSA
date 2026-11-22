@@ -51,9 +51,11 @@ export type NativeEngineHandlerDeps = Readonly<{
  * own request (`TurnProvenance.userRequest`): a turn the server wrote (a
  * sub-agent wake-up, a browser sign-in request, a regenerate of either),
  * which authorizes nothing, or a regenerate of a scheduled task's prompt,
- * which the model may have written; the continuation after the user's MCP
- * Allow still is the user's turn. Every change fences its run again as it
- * commits (`selfServiceRunAllowedInTransaction`). `manage_memory` rides only
+ * which the model may have written. The continuation after an MCP Allow has
+ * the authority of the turn whose call the user allowed: it goes on with the
+ * user's own request, and takes none after a wake-up's or a sign-in
+ * request's, since that Allow covers its one call. Every change fences its
+ * run again as it commits (`selfServiceRunAllowedInTransaction`). `manage_memory` rides only
  * where admission froze the user's Memory with changes (`memory.changes`: Memory
  * on, an ordinary personal chat that is neither Temporary nor Excluded), so a
  * temporary chat, a task and an Assistant chat never change the note.

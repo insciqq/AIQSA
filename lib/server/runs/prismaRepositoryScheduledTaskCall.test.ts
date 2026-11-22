@@ -41,6 +41,11 @@ type FakeState = {
   owner: boolean;
   /** The answered user message's scheduled task prompt mark and server turn kind; null when the message is gone. */
   prompt: { scheduledTaskPrompt: boolean; systemTurnKind?: string | null } | null;
+  /**
+   * For a continuation after an MCP Allow: the messages of the runs its Allows gated, followed back to the first turn
+   * (`storedUserRequest`).
+   */
+  gated?: Array<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>;
   run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
   /** Other runs answering the same user message. */
   siblingRuns: Array<{ id: string }>;
@@ -60,8 +65,15 @@ function harness(overrides: Partial<FakeState> = {}) {
   const runOfMessage = (runId: string) => runId === "run-1" || state.siblingRuns.some((sibling) => sibling.id === runId);
   const queries: string[] = [];
   const tx = {
-    $queryRaw: vi.fn(async (query: Prisma.Sql) => {
-      const text = query.strings.join("?");
+    $queryRaw: vi.fn(async (query: Prisma.Sql | TemplateStringsArray, ...values: unknown[]) => {
+      const text = (Array.isArray(query) ? query : (query as Prisma.Sql).strings).join("?");
+      // The stored turn's chain, the answered message first, read as the run's user.
+      if (text.includes("WITH RECURSIVE")) {
+        queries.push("turn");
+        const [messageId] = Array.isArray(query) ? values : (query as Prisma.Sql).values;
+        return messageId === state.run?.userMessageId && state.prompt ? [{ scheduledTaskPrompt: state.prompt.scheduledTaskPrompt,
+          systemTurnKind: state.prompt.systemTurnKind ?? null }, ...state.gated ?? []] : [];
+      }
       queries.push(text.includes("\"User\"") ? "owner" : text.includes("\"ModelRun\"") ? "run" : "other");
       if (text.includes("\"User\"")) return state.owner ? [{ id: "user-1" }] : [];
       if (text.includes("\"ModelRun\"")) return state.run ? [state.run] : [];
@@ -86,10 +98,7 @@ function harness(overrides: Partial<FakeState> = {}) {
       })
     }
   };
-  const findPrompt = vi.fn(async ({ where }: { where: { id: string } }) =>
-    where.id === state.run?.userMessageId ? state.prompt : null);
   Object.assign(tx, {
-    message: { findUnique: findPrompt },
     scheduledTask: { count: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
       where.id.in.filter((id) => state.existingTaskIds.includes(id)).length) }
   });
@@ -110,7 +119,7 @@ function harness(overrides: Partial<FakeState> = {}) {
       body, callId: "persisted-1", result: (task) => scheduledTaskCreatedResult(providerCall, task, false), runId: "run-1",
       userId: "user-1", ...input
     });
-  return { create, deps, findPrompt, kick, prisma, queries, state, tx };
+  return { create, deps, kick, prisma, queries, state, tx };
 }
 
 beforeEach(() => {
@@ -123,7 +132,7 @@ describe("scheduled task creation for a run's tool call", () => {
     const h = harness();
     const outcome = await h.create();
     expect(outcome).toMatchObject({ kind: "created", task: { id: "task-1" } });
-    expect(h.queries).toEqual(["owner", "run"]);
+    expect(h.queries).toEqual(["owner", "run", "turn"]);
     expect(insertScheduledTask).toHaveBeenCalledExactlyOnceWith(h.tx, "user-1", expect.objectContaining({
       title: "Check mail", schedule: { kind: "weekly", time: "09:00", days: ["mon", "tue", "wed", "thu", "fri"] }
     }), new Date("2026-10-05T06:00:00.000Z"));
@@ -188,18 +197,32 @@ describe("scheduled task creation for a run's tool call", () => {
     // ordinary run whose user message is marked as the task's prompt.
     const scheduledTurn = harness({ prompt: { scheduledTaskPrompt: true }, siblingRuns: [{ id: "run-0" }] });
     expect(await scheduledTurn.create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
-    expect(scheduledTurn.findPrompt).toHaveBeenCalledWith({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
-      where: { id: "message-1" } });
+    expect(scheduledTurn.queries).toEqual(["owner", "run", "turn"]);
+    const [query] = scheduledTurn.tx.$queryRaw.mock.calls.at(-1) as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(query.join("?")).toContain("WITH RECURSIVE");
+    expect(scheduledTurn.tx.$queryRaw.mock.calls.at(-1)!.slice(1, 3)).toEqual(["message-1", "user-1"]);
     // A message that cannot be read fails closed.
     expect(await harness({ prompt: null }).create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
-    // Nor does a turn the server wrote, which authorizes nothing.
+    // Nor does a turn the server wrote, which authorizes nothing, nor the continuation after an Allow of a call it made.
+    const allow = { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" };
     for (const systemTurnKind of ["subagent_callback", "browser_sign_in_request"]) {
       expect(await harness({ prompt: { scheduledTaskPrompt: false, systemTurnKind } }).create(), systemTurnKind)
         .toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
+      expect(await harness({ gated: [{ scheduledTaskPrompt: false, systemTurnKind }], prompt: allow }).create(), systemTurnKind)
+        .toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
     }
+    // A continuation that names no Allow it continues fails closed too.
+    expect(await harness({ prompt: allow }).create()).toEqual({ code: "scheduled_task_call_unavailable", kind: "refused" });
     expect(insertScheduledTask).not.toHaveBeenCalled();
     // The call stays the loop's to settle.
     expect(scheduledTurn.state.calls[0]?.state).toBe("running");
+  });
+
+  it("creates from the continuation after an MCP Allow of the user's own turn, however many Allows back", async () => {
+    const allow = { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" };
+    const own = { scheduledTaskPrompt: false, systemTurnKind: null };
+    expect(await harness({ gated: [own], prompt: allow }).create()).toMatchObject({ kind: "created", task: { id: "task-1" } });
+    expect(await harness({ gated: [allow, own], prompt: allow }).create()).toMatchObject({ kind: "created", task: { id: "task-1" } });
   });
 
   it("never creates from a scheduled, settled or missing run, or for a call that is not this run's running creation", async () => {

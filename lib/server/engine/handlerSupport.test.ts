@@ -83,10 +83,15 @@ describe("self-service by turn kind: what a turn is offered and whether its chan
   type StoredMessage = Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: MessageSystemTurnKind | null }>;
   type Row = Readonly<{
     label: string;
-    /** What the entry point gives preparation (`handlers.ts`). */
+    /** What the entry point gives preparation (`handlers.ts`), from the approval or the stored chain for a continuation. */
     input: Parameters<typeof turnProvenance>[0];
-    /** The run's stored user message and scheduled task, as the commit-time fence reads them. */
-    stored: StoredMessage & Readonly<{ scheduledTaskId: string | null }>;
+    /** The run's scheduled task and its stored turn, as the commit-time fence reads them. */
+    scheduledTaskId?: string;
+    /**
+     * The stored chain of the run's message (`storedUserRequest`): the message first, then for a continuation the message
+     * of the run each Allow gated, back to the first turn.
+     */
+    chain: readonly StoredMessage[];
     assistant?: true;
     connectorTurn?: "telegram";
     offered: readonly string[];
@@ -94,7 +99,10 @@ describe("self-service by turn kind: what a turn is offered and whether its chan
   }>;
   const send = (extra: Readonly<Record<string, unknown>> = {}, source: Readonly<Record<string, unknown>> = {}) =>
     ({ ...extra, source: { chat: { id: "chat-1" }, kind: "send", ...source } }) as unknown as Row["input"];
-  const regenerate = (message: StoredMessage) =>
+  // A send continuation as the handler admits it: the authority of the gated run's turn, read from its approval.
+  const continuation = (userRequest: boolean) => send({ mcpApprovalId: "approval-1", serverAuthoredInput: true,
+    systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }, { approvalContinuation: { computer: null, userRequest } });
+  const regenerate = (message: StoredMessage & Readonly<{ continuesUserRequest?: true }>) =>
     ({ source: { kind: "regenerate", source: { chat: { id: "chat-1" }, userMessage: { id: "message-1", ...message } } } }) as unknown as Row["input"];
   const own: StoredMessage = { scheduledTaskPrompt: false, systemTurnKind: null };
   const allow: StoredMessage = { scheduledTaskPrompt: false, systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND };
@@ -102,31 +110,45 @@ describe("self-service by turn kind: what a turn is offered and whether its chan
   const signIn: StoredMessage = { scheduledTaskPrompt: false, systemTurnKind: BROWSER_SIGN_IN_TURN_KIND };
   const prompt: StoredMessage = { scheduledTaskPrompt: true, systemTurnKind: null };
   const ROWS: readonly Row[] = [
-    { label: "the user's own send", input: send(), stored: { ...own, scheduledTaskId: null }, offered: all, commits: true },
-    { label: "the continuation after the user's MCP Allow", input: send({ serverAuthoredInput: true,
-      systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }), stored: { ...allow, scheduledTaskId: null }, offered: all, commits: true },
+    { label: "the user's own send", input: send(), chain: [own], offered: all, commits: true },
+    { label: "the continuation after an MCP Allow of the user's own turn", input: continuation(true), chain: [allow, own],
+      offered: all, commits: true },
+    { label: "a continuation of a continuation of the user's own turn", input: continuation(true), chain: [allow, allow, own],
+      offered: all, commits: true },
+    // The Allow covers the one call a wake-up or a sign-in request made, never the authority those turns lack.
+    { label: "the continuation after an MCP Allow of a wake-up's call", input: continuation(false), chain: [allow, wakeUp],
+      offered: [], commits: false },
+    { label: "the continuation after an MCP Allow of a sign-in request's call", input: continuation(false), chain: [allow, signIn],
+      offered: [], commits: false },
+    { label: "a continuation of a continuation of a wake-up", input: continuation(false), chain: [allow, allow, wakeUp],
+      offered: [], commits: false },
     { label: "a sub-agent wake-up", input: send({ origin: "wake_up", serverAuthoredInput: true, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND }),
-      stored: { ...wakeUp, scheduledTaskId: null }, offered: [], commits: false },
+      chain: [wakeUp], offered: [], commits: false },
     { label: "a browser sign-in request", input: send({ serverAuthoredInput: true, systemTurnKind: BROWSER_SIGN_IN_TURN_KIND }),
-      stored: { ...signIn, scheduledTaskId: null }, offered: [], commits: false },
-    { label: "the user's own message regenerated", input: regenerate(own), stored: { ...own, scheduledTaskId: null }, offered: all,
-      commits: true },
-    { label: "an Allow continuation regenerated", input: regenerate(allow), stored: { ...allow, scheduledTaskId: null }, offered: all,
-      commits: true },
-    { label: "a wake-up regenerated", input: regenerate(wakeUp), stored: { ...wakeUp, scheduledTaskId: null }, offered: [], commits: false },
-    { label: "a sign-in request regenerated", input: regenerate(signIn), stored: { ...signIn, scheduledTaskId: null }, offered: [],
+      chain: [signIn], offered: [], commits: false },
+    { label: "the user's own message regenerated", input: regenerate(own), chain: [own], offered: all, commits: true },
+    { label: "an Allow continuation of the user's own turn regenerated", input: regenerate({ ...allow, continuesUserRequest: true }),
+      chain: [allow, own], offered: all, commits: true },
+    { label: "an Allow continuation of a wake-up's call regenerated", input: regenerate(allow), chain: [allow, wakeUp], offered: [],
       commits: false },
-    { label: "a scheduled task's occurrence", input: send({}, { scheduledOccurrence: occurrence }),
-      stored: { ...prompt, scheduledTaskId: "task-1" }, offered: [], commits: false },
-    { label: "a scheduled task's prompt regenerated", input: regenerate(prompt), stored: { ...prompt, scheduledTaskId: null }, offered: [],
-      commits: false },
-    { label: "a Telegram message", input: send({ origin: "telegram" }), stored: { ...own, scheduledTaskId: null },
-      connectorTurn: "telegram", offered: all, commits: true },
-    { label: "an Assistant chat's own message", input: send(), stored: { ...own, scheduledTaskId: null }, assistant: true,
-      offered: ASSISTANT, commits: true },
+    { label: "an Allow continuation of a sign-in request's call regenerated", input: regenerate(allow), chain: [allow, signIn],
+      offered: [], commits: false },
+    // A branch copy's continuation has no runs of its own to name its Allow.
+    { label: "a branch copy's Allow continuation regenerated", input: regenerate(allow), chain: [allow], offered: [], commits: false },
+    { label: "a wake-up regenerated", input: regenerate(wakeUp), chain: [wakeUp], offered: [], commits: false },
+    { label: "a sign-in request regenerated", input: regenerate(signIn), chain: [signIn], offered: [], commits: false },
+    { label: "a scheduled task's occurrence", input: send({}, { scheduledOccurrence: occurrence }), scheduledTaskId: "task-1",
+      chain: [prompt], offered: [], commits: false },
+    { label: "a scheduled task's prompt regenerated", input: regenerate(prompt), chain: [prompt], offered: [], commits: false },
+    { label: "a Telegram message", input: send({ origin: "telegram" }), chain: [own], connectorTurn: "telegram", offered: all,
+      commits: true },
+    { label: "a Telegram continuation after an Allow of the user's own turn", input: { ...continuation(true), origin: "telegram" },
+      chain: [allow, own], connectorTurn: "telegram", offered: all, commits: true },
+    { label: "an Assistant chat's own message", input: send(), chain: [own], assistant: true, offered: ASSISTANT, commits: true },
     { label: "an Assistant chat's wake-up", input: send({ origin: "wake_up", serverAuthoredInput: true,
-      systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND }), stored: { ...wakeUp, scheduledTaskId: null }, assistant: true, offered: [],
-      commits: false }
+      systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND }), chain: [wakeUp], assistant: true, offered: [], commits: false },
+    { label: "an Assistant chat's continuation after an Allow of a wake-up's call", input: continuation(false),
+      chain: [allow, wakeUp], assistant: true, offered: [], commits: false }
   ];
 
   it.each(ROWS)("$label", async (row) => {
@@ -138,7 +160,8 @@ describe("self-service by turn kind: what a turn is offered and whether its chan
     // As `nativeRunResponse` passes them from the entry point.
     expect(selfServiceToolsFor(run, { ...(row.connectorTurn ? { connectorTurn: row.connectorTurn } : {}),
       scheduled: provenance.scheduledOccurrence !== undefined, userRequest: provenance.userRequest })).toEqual(row.offered);
-    const tx = { $queryRaw: vi.fn(async () => [{ ...row.stored, status: "streaming", userStatus: "active" }]) };
+    const tx = { $queryRaw: vi.fn(async (query: TemplateStringsArray) => query.join("?").includes("WITH RECURSIVE") ? row.chain
+      : [{ scheduledTaskId: row.scheduledTaskId ?? null, status: "streaming", userMessageId: "message-1", userStatus: "active" }]) };
     expect(await selfServiceRunAllowedInTransaction(tx as never, { runId: "run-1", userId: "user-1" })).toBe(row.commits);
   });
 });

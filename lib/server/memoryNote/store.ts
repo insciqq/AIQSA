@@ -167,13 +167,12 @@ export function createPrismaMemoryNoteRepository(tx: Prisma.TransactionClient): 
 
     async runChat({ chatId, runId, userId }) {
       const run = await tx.modelRun.findFirst({
-        select: { assistantMessageId: true, chat: { select: { memoryMode: true, userId: true } },
-          userMessage: { select: { scheduledTaskPrompt: true, systemTurnKind: true } } },
+        select: { assistantMessageId: true, chat: { select: { memoryMode: true, userId: true } }, userMessageId: true },
         where: { chatId, id: runId, userId }
       });
       if (!run || run.chat.userId !== userId) return null;
       return { assistantMessageId: run.assistantMessageId, memoryMode: run.chat.memoryMode,
-        userTurn: storedUserRequest(run.userMessage) };
+        userTurn: await storedUserRequest(tx, { messageId: run.userMessageId, userId }) };
     },
 
     async createOffer(input) {

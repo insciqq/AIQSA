@@ -204,10 +204,11 @@ async function manageOnce(
           call.result as StoredResult) };
       }
       if (call.state !== "running") return refused("scheduled_task_call_unavailable");
-      // Nor does any other answer to a scheduled task's prompt, nor a turn the server wrote, by the marks on its message.
-      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
-        where: { id: run.userMessageId } });
-      if (!prompt || !storedUserRequest(prompt)) return refused("scheduled_task_call_unavailable");
+      // Nor does any other answer to a scheduled task's prompt, nor a turn the server wrote, nor the continuation after an
+      // Allow of such a turn, as the stored turn tells (`storedUserRequest`).
+      if (!await storedUserRequest(tx, { messageId: run.userMessageId, userId: input.userId })) {
+        return refused("scheduled_task_call_unavailable");
+      }
 
       const settle = async (result: ToolExecutionResult): Promise<ScheduledTaskCallManagement> => {
         const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
