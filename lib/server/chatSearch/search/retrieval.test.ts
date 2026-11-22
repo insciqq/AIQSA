@@ -424,6 +424,46 @@ describe("past-chat search redaction", () => {
     expect(await search({ store }, { query: secret })).toEqual({ kind: "query_unusable" });
   });
 
+  it("matches a saved value in the original query before a recognized token inside it is replaced, for every stage", async () => {
+    for (const value of [`API_KEY=${secret} DB_PASS=fixture-pass-42`, "corp-prefix::ghp_abcdefghijklmnopqrstuvwxyz1234567890"]) {
+      const { store } = createWorld([chat("a"), chat("b")], [{ chatId: "a", id: "pa", text: "Key rotation schedule for the gateway" },
+        { chatId: "b", id: "pb", text: "Rotation schedule of the on-call team" }]);
+      const statistics: string[] = [];
+      const units: string[] = [];
+      const watched: PastChatSearchStore = { ...store,
+        wordStatistics: (ownerId, query, phrases) => {
+          statistics.push(query, ...phrases);
+          return store.wordStatistics(ownerId, query, phrases);
+        },
+        wordHits: (scope, wordUnits, limit) => {
+          units.push(JSON.stringify(wordUnits));
+          return store.wordHits(scope, wordUnits, limit);
+        } };
+      const { fake, texts } = embedder({});
+      const rerank = reranker(async (request) => ({ model: "r", provider: "x", requestId: null, usage,
+        scores: request.documents.map((document, index) => ({ handle: document.handle, index, relevanceScore: 1 })) }));
+      const outcome = searched(await search({ embedder: fake, reranker: rerank.fake, savedSecretValues: async () => [value], store: watched },
+        { query: `rotation ${value} schedule ${value}` }));
+      expect(outcome.rerank).toBe("used");
+      expect(statistics[0]).toBe("rotation schedule");
+      expect(texts).toEqual(["rotation schedule"]);
+      expect(rerank.requests.map((request) => request.query)).toEqual(["rotation schedule"]);
+      for (const seen of [...statistics, ...units]) {
+        expect(seen).not.toContain("fixture-pass-42");
+        expect(seen).not.toContain("API_KEY");
+        expect(seen).not.toContain("corp-prefix");
+      }
+    }
+  });
+
+  it("matches a saved value with CRLF line endings in a query written with LF", async () => {
+    const { store } = createWorld([chat("a")], [{ chatId: "a", id: "pa", text: "Rotation notes" }]);
+    const { fake, texts } = embedder({});
+    await search({ embedder: fake, savedSecretValues: async () => ["account=demo\r\npass=fixture-pass-42"], store },
+      { query: "rotation account=demo\npass=fixture-pass-42" });
+    expect(texts).toEqual(["rotation"]);
+  });
+
   it("redacts what an excerpt and a title show, whatever the index kept", async () => {
     const { store } = createWorld([chat("a", { title: `Keys ${secret}` })], [{ chatId: "a", id: "pa", text: `api key ${secret} for staging` }]);
     const outcome = searched(await search({ embedder: embedder({}, { model: { kind: "unset" } }).fake, store }, { query: "staging" }));

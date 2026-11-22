@@ -9,8 +9,6 @@ import {
 } from "../../../contracts/pastChats";
 import { logEvent } from "../../observability";
 import { RerankAdapterError, type RerankUsage } from "../../providers/rerank";
-import { redactSavedSecretValues } from "../../redaction/savedSecrets";
-import { redactSearchQuery } from "../../redaction/searchQuery";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder } from "../embedder";
 import { chatSearchPassageBody } from "../index/passages";
 import { pastChatTimestamp, pastChatTurnRange } from "./dates";
@@ -24,7 +22,7 @@ import {
   type PastChatFusedHit,
   type PastChatLaneHit
 } from "./rank";
-import { pastChatTitle, redactPastChatText, type SavedSecretValuesReader } from "./redaction";
+import { pastChatSearchQuery, pastChatTitle, redactPastChatText, type SavedSecretValuesReader } from "./redaction";
 import type { PastChatReranker, PastChatRerankBinding, PastChatUsageRecorder } from "./rerank";
 import type { PastChatPassageRow, PastChatScope, PastChatSearchStore } from "./store";
 
@@ -65,8 +63,6 @@ const MIN_EXCERPT_CHARS = 200;
  * stays near 100 000 characters, as 24 of 4 000 were, and within the adapter's request bytes in any script.
  */
 const RERANK_DOCUMENT_CHARS = 2_000;
-/** The markers `lib/server/redaction/` puts in place of a secret (`[REDACTED:TOKEN]`, `[REDACTED_SECRET]`, `[REDACTED:SAVED_SECRET]`). */
-const REDACTION_MARKER = /\[REDACTED[:_][A-Z0-9_:]*\]/gu;
 
 /** Why meaning search did not take part; the result then holds word matches only. */
 export type PastChatMeaningDegradation = "meaning_search_not_set" | "meaning_search_unavailable" | "meaning_search_failed" | "meaning_search_timed_out";
@@ -214,11 +210,8 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
           return { degraded: null, kind: "searched", rerank: "not_needed", result: { mode, results } };
         }
 
-        const redacted = redactSearchQuery(input.query ?? "");
-        // A redaction marker is no word of the query: searched for, it would find other redacted text.
-        const query = redacted.eligible
-          ? redactSavedSecretValues(redacted.safeText, savedValues).text.replace(REDACTION_MARKER, " ").replace(/\s+/gu, " ").trim()
-          : "";
+        // The one query every stage below receives, redacted in the order what is shown is (`redaction.ts`).
+        const query = pastChatSearchQuery(input.query ?? "", savedValues);
         if (!query) return { kind: "query_unusable" };
         const phrases = pastChatPhraseChunks(pastChatQueryChunks(query));
 
