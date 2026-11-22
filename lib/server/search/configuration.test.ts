@@ -140,7 +140,17 @@ describe("Search adapter configuration", () => {
     // Any DeepSeek model carries the key; model-backed protocols still need native Search.
     expect(technicalSearchModelSupports("deepseek_search_api", { adapterKind: "deepseek_responses_native", nativeSearch: false })).toBe(true);
     expect(technicalSearchModelSupports("deepseek_search_api", { adapterKind: "openai_responses_native", nativeSearch: true })).toBe(false);
-    expect(technicalSearchModelSupports("deepseek_responses_web_search", { adapterKind: "deepseek_responses_native", nativeSearch: false })).toBe(false);
-    expect(technicalSearchModelSupports("deepseek_responses_web_search", { adapterKind: "deepseek_responses_native", nativeSearch: true })).toBe(true);
+    expect(technicalSearchModelSupports("anthropic_web_search", { adapterKind: "anthropic_messages", nativeSearch: false })).toBe(false);
+    expect(technicalSearchModelSupports("anthropic_web_search", { adapterKind: "anthropic_messages", nativeSearch: true })).toBe(true);
+  });
+
+  it("refuses a stored draft of DeepSeek's retired hosted Search, so its route reads as unavailable", () => {
+    // Retired 2026-10-24; the upgrade archived its sources, whose revisions still name it.
+    const hosted = { ...clientDraft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", providerModelId: null };
+    for (const stored of [clientDraft, hosted]) {
+      expect(() => normalizeSearchDraft({ ...stored, protocol: "deepseek_responses_web_search" }))
+        .toThrow("search_configuration_invalid");
+      expect(decodeAdminSearchDraft({ ...stored, protocol: "deepseek_responses_web_search" })).toBeNull();
+    }
   });
 });

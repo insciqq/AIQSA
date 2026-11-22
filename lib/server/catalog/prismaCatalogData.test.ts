@@ -752,7 +752,7 @@ describe("prisma catalog data loader", () => {
     expect(exposed(false)).toEqual([]);
     // A removed key takes the source away again, as for the other provider searches.
     expect(exposed(true, { ...carrier, connection: { ...carrier.connection, credentials: [] } })).toEqual([]);
-    // The hosted DeepSeek Search slot never adopts the API's route.
+    // A web_search source on the DeepSeek connection (its retired hosted Search) never adopts the API's route.
     expect(searchOptionToCatalogEntry(stored("web_search"))?.routes).toEqual([]);
   });
 

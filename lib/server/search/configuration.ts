@@ -130,11 +130,6 @@ export function searchStrategyKind(
       ? "anthropic_native_web_search"
       : "provider_model_web_search";
   }
-  if (protocol === "deepseek_responses_web_search") {
-    return adapterKind === "answer_provider_hosted"
-      ? "deepseek_native_web_search"
-      : "provider_model_web_search";
-  }
   if (protocol === "gemini_google_search") return "gemini_google_search";
   if (protocol === "openrouter_perplexity_chat") return "perplexity_tool_search";
   if (protocol === "deepseek_search_api") return "provider_model_web_search";
@@ -153,7 +148,7 @@ export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind
   if (protocol === "openai_responses_web_search") {
     return adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible";
   }
-  if (protocol === "deepseek_responses_web_search" || protocol === "deepseek_search_api") {
+  if (protocol === "deepseek_search_api") {
     return adapterKind === "deepseek_responses_native";
   }
   return adapterKind === "gemini_interactions_native";
@@ -197,8 +192,6 @@ export function builtInSearchDraft(input: Readonly<{
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     protocol: input.kind === "anthropic_native_web_search"
       ? "anthropic_web_search"
-      : input.kind === "deepseek_native_web_search"
-        ? "deepseek_responses_web_search"
       : input.kind === "gemini_google_search"
         ? "gemini_google_search"
       : input.kind === "perplexity_tool_search"

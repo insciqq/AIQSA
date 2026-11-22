@@ -107,7 +107,7 @@ export type CatalogWireSearchStrategy = {
   description?: string;
   displayName: string;
   executionModes?: SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search" | "web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search" | "web_search";
   privacy?: "answer_provider" | "query_only";
   protocol?: SearchProtocol;
   revisionId?: string;
@@ -381,7 +381,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
     !nonEmptyString(value.displayName) ||
     (value.kind !== "none" &&
       value.kind !== "anthropic_native_web_search" &&
-      value.kind !== "deepseek_native_web_search" &&
       value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
       value.kind !== "perplexity_tool_search" &&
@@ -406,7 +405,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
     (privacy !== undefined && privacy !== "answer_provider" && privacy !== "query_only") ||
     (protocol !== undefined &&
       protocol !== "anthropic_web_search" &&
-      protocol !== "deepseek_responses_web_search" &&
       protocol !== "deepseek_search_api" &&
       protocol !== "gemini_google_search" &&
       protocol !== "openai_responses_web_search" &&

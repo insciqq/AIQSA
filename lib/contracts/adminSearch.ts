@@ -93,7 +93,7 @@ export type AdminSearchProviderModelOption = {
   searchReasoningSupported: boolean;
   /** `deepseek_search_api` lists a DeepSeek model whose connection key the
    * DeepSeek Search API uses; that model is never called for Search. */
-  searchKind: "anthropic_web_search" | "deepseek_search_api" | "deepseek_web_search" | "gemini_google_search" | "perplexity_search" | "web_search";
+  searchKind: "anthropic_web_search" | "deepseek_search_api" | "gemini_google_search" | "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -135,7 +135,6 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       adminSearchExecutionLimits.maxOutputTokens.maximum
     )) &&
     (value.protocol === "anthropic_web_search" ||
-      value.protocol === "deepseek_responses_web_search" ||
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
@@ -169,7 +168,6 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
     (value.method === "configuration" || value.method === "provider_search") &&
     Number.isSafeInteger(value.normalizedSourceCount) &&
     (value.protocol === "anthropic_web_search" ||
-      value.protocol === "deepseek_responses_web_search" ||
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
@@ -216,7 +214,6 @@ function providerModel(value: unknown): boolean {
     typeof value.searchReasoningSupported === "boolean" &&
     (value.searchKind === "anthropic_web_search" ||
       value.searchKind === "deepseek_search_api" ||
-      value.searchKind === "deepseek_web_search" ||
       value.searchKind === "gemini_google_search" ||
       value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }

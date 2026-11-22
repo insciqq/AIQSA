@@ -238,11 +238,9 @@ export function draftForModel(
         ? "gemini_google_search"
         : model.searchKind === "anthropic_web_search"
           ? "anthropic_web_search"
-          : model.searchKind === "deepseek_web_search"
-            ? "deepseek_responses_web_search"
-            : model.searchKind === "deepseek_search_api"
-              ? "deepseek_search_api"
-              : "openai_responses_web_search",
+          : model.searchKind === "deepseek_search_api"
+            ? "deepseek_search_api"
+            : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: searchApi
       ? Math.min(queryMaxCharacters, DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS)
@@ -310,8 +308,7 @@ export function configurableModels(
   return providerModels.filter((model) =>
     model.connectionId === source.sourceConnectionId &&
     (source.kind === model.searchKind ||
-      (source.kind === "web_search" && (model.searchKind === "anthropic_web_search" ||
-        model.searchKind === "deepseek_web_search"))));
+      (source.kind === "web_search" && model.searchKind === "anthropic_web_search")));
 }
 
 export function sourceIdentityFor(model: AdminSearchProviderModelOption): Readonly<{

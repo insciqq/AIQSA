@@ -132,7 +132,6 @@ function SourceFields({
   const outputErrorId = `${ids}-output-error`;
   const updateDraft = (patch: Partial<AdminSearchDraft>) => setForm({ ...form, draft: { ...form.draft, ...patch } });
   const reasoningProtocol = form.draft.protocol === "anthropic_web_search" ||
-    form.draft.protocol === "deepseek_responses_web_search" ||
     form.draft.protocol === "openai_responses_web_search";
 
   return (
