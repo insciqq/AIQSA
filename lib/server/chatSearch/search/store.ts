@@ -38,9 +38,9 @@ export type PastChatSearchStore = Readonly<{
   wordStatistics(ownerId: string, query: string, phrases: readonly string[]): Promise<PastChatUnitStatistics[]>;
   wordHits(scope: PastChatScope, units: readonly PastChatWordUnit[], limit: number): Promise<PastChatWordHit[]>;
   vectorHits(scope: PastChatScope, vector: Readonly<{ providerModelId: string; values: readonly number[] }>, limit: number): Promise<PastChatLaneHit[]>;
-  /** The texts and chat titles of these passages that are still eligible, in no order. */
+  /** The texts and chat titles of these passages that are still eligible and on their chat's active branch, in no order. */
   passages(scope: Omit<PastChatScope, "range">, ids: readonly string[]): Promise<PastChatPassageRow[]>;
-  /** Each eligible chat once by its latest turn in the range (that turn's first window), newest first. */
+  /** Each eligible chat once by its latest active-branch turn in the range (that turn's first window), newest first. */
   recent(scope: PastChatScope, limit: number): Promise<PastChatPassageRow[]>;
 }>;
 
@@ -70,6 +70,27 @@ function scopeSql(scope: Omit<PastChatScope, "range"> & Partial<Pick<PastChatSco
     AND ${chatSearchEligibleSql("c", scope.ownerId)}
     AND p."chatId" <> ${scope.currentChatId}
     ${scope.range ? rangeSql(scope.range) : Prisma.empty}`;
+}
+
+/**
+ * The `active_path` CTE (without a trailing comma, under `WITH RECURSIVE`): every message from each chat's active
+ * leaf up to its root, for the `("chatId", "activeLeafMessageId")` rows `leaves` selects. A passage is on the active
+ * branch when its answer is (its question is that answer's parent). Checked where a passage's text is read, so after
+ * a branch switch, or while the upgrade backfill runs, an abandoned branch's passage is never returned before the
+ * indexer drops it, and the ancestry both branches share stays searchable (review 2026-11-23). The ranking lanes do
+ * not walk the paths: a stale passage they rank is left out when its text is read, like one of a chat no longer
+ * eligible. `UNION` ends a walk that meets a message twice.
+ */
+function activePathSql(leaves: Prisma.Sql): Prisma.Sql {
+  return Prisma.sql`active_path AS (
+    SELECT m."chatId", m."id", m."parentMessageId"
+    FROM (${leaves}) leaf
+    JOIN "Message" m ON m."chatId" = leaf."chatId" AND m."id" = leaf."activeLeafMessageId"
+    UNION
+    SELECT parent."chatId", parent."id", parent."parentMessageId"
+    FROM active_path a
+    JOIN "Message" parent ON parent."chatId" = a."chatId" AND parent."id" = a."parentMessageId"
+  )`;
 }
 
 function textArray(values: readonly string[]): Prisma.Sql {
@@ -166,18 +187,29 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
     async passages(scope: Omit<PastChatScope, "range">, ids: readonly string[]): Promise<PastChatPassageRow[]> {
       if (ids.length === 0) return [];
       return db.$queryRaw<PastChatPassageRow[]>(Prisma.sql`
-        SELECT p."id", p."chatId", p."userMessageId", p."turnAt", p."text", c."title"
-        FROM "ChatSearchPassage" p
-        JOIN "Chat" c ON c."id" = p."chatId"
-        WHERE p."id" = ANY(${[...ids]}::text[]) AND ${scopeSql(scope)}`);
+        WITH RECURSIVE candidates AS MATERIALIZED (
+          SELECT p."id", p."chatId", p."userMessageId", p."assistantMessageId", p."turnAt", p."text", c."title", c."activeLeafMessageId"
+          FROM "ChatSearchPassage" p
+          JOIN "Chat" c ON c."id" = p."chatId"
+          WHERE p."id" = ANY(${[...ids]}::text[]) AND ${scopeSql(scope)}
+        ),
+        ${activePathSql(Prisma.sql`SELECT DISTINCT k."chatId", k."activeLeafMessageId" FROM candidates k`)}
+        SELECT k."id", k."chatId", k."userMessageId", k."turnAt", k."text", k."title"
+        FROM candidates k
+        WHERE EXISTS (SELECT 1 FROM active_path a WHERE a."chatId" = k."chatId" AND a."id" = k."assistantMessageId")`);
     },
 
     async recent(scope: PastChatScope, limit: number): Promise<PastChatPassageRow[]> {
       return db.$queryRaw<PastChatPassageRow[]>(Prisma.sql`
-        WITH latest AS MATERIALIZED (
+        WITH RECURSIVE ${activePathSql(Prisma.sql`SELECT DISTINCT c."id" AS "chatId", c."activeLeafMessageId"
+          FROM "ChatSearchPassage" p
+          JOIN "Chat" c ON c."id" = p."chatId"
+          WHERE ${scopeSql(scope)}`)},
+        latest AS MATERIALIZED (
           SELECT DISTINCT ON (p."chatId") p."id", p."chatId", p."turnAt"
           FROM "ChatSearchPassage" p
           JOIN "Chat" c ON c."id" = p."chatId"
+          JOIN active_path a ON a."chatId" = p."chatId" AND a."id" = p."assistantMessageId"
           WHERE ${scopeSql(scope)}
           ORDER BY p."chatId", p."turnAt" DESC, p."ordinal", p."id"
         ),

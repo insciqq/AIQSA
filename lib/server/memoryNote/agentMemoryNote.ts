@@ -8,7 +8,7 @@ import {
 } from "../tools/selfServiceCall";
 import type { ToolExecutionResult } from "../tools/types";
 import { applyMemoryNoteEdit, memoryNoteEditInsertion, type MemoryNoteEdit, type MemoryNoteEditRefusal } from "./edit";
-import { loadMemoryNoteSavedSecrets, memoryNoteTextHoldsSecret, type MemoryNoteSavedSecrets } from "./secrets";
+import { loadMemoryNoteSavedSecrets, memoryNoteChangeAddsSecret, memoryNoteTextHoldsSecret, type MemoryNoteSavedSecrets } from "./secrets";
 import { memoryNoteChangeCard } from "./service";
 import { createPrismaMemoryNoteRepository, type MemoryNoteRepositoryFactory } from "./store";
 
@@ -74,9 +74,11 @@ export function createAgentMemoryNoteService(input: Readonly<{
 
   return {
     async change({ askFirst, edit }, result) {
-      // Screened before the transaction: decrypting the saved secrets holds no lock.
+      // Read before the transaction: decrypting the saved secrets holds no lock. The text an edit puts in is screened
+      // here, and the note it composes once it applies (a removal or a replace can assemble a credential too).
+      const savedValues = await savedSecrets(scope.userId);
       const insertion = memoryNoteEditInsertion(edit);
-      if (insertion !== null && memoryNoteTextHoldsSecret(insertion, await savedSecrets(scope.userId))) {
+      if (insertion !== null && memoryNoteTextHoldsSecret(insertion, savedValues)) {
         return { kind: "refused", value: { code: "memory_note_secret" } };
       }
       return commitSelfServiceChange<AgentMemoryNoteDone, AgentMemoryNoteRefusal>(db, input.store, async (tx: Prisma.TransactionClient) => {
@@ -104,6 +106,8 @@ export function createAgentMemoryNoteService(input: Readonly<{
               return { kind: "refused", value: applied };
           }
         }
+        // Both a direct change and an offer: the card never offers a note that would hold a credential.
+        if (memoryNoteChangeAddsSecret(note.text, applied.text, savedValues)) return { kind: "refused", value: { code: "memory_note_secret" } };
         let done: AgentMemoryNoteDone;
         if (askFirst) {
           const assistantMessageId = run.assistantMessageId;

@@ -15,6 +15,7 @@ import type {
   AgentSecretService,
   AgentSecretView
 } from "../workspace/secrets/agentSecrets";
+import { savedSecretIdentifierVariable } from "../redaction/savedSecrets";
 import { parseWorkspaceSecretValue, WorkspaceSecretError } from "../workspace/secrets/validation";
 import { harnessToolError, type HarnessToolDescriptor } from "./harnessTool";
 import { newProposalId, PROPOSAL_CARD_NOTE, ResourceChangeCardError, resourceChangeArtifact } from "./resourceChangeCard";
@@ -96,19 +97,8 @@ export const manageSecretTool: HarnessToolDescriptor = Object.freeze({
 });
 
 type Refusal = Readonly<{ code: string; message: string; extra?: Record<string, unknown> }>;
-/** Last name parts that mark an env variable as an identifier the answer may name: a login, an email, a region. */
-const IDENTIFIER_NAME_PARTS = new Set(["ACCOUNT", "BUCKET", "DOMAIN", "EMAIL", "HOST", "HOSTNAME", "LOGIN", "MAIL", "PORT", "PROJECT", "REGION", "USER", "USERNAME"]);
-/** Anywhere in a name, these keep the value masked, as in AWS_ACCESS_KEY_ID, DB_USER_PASSWORD or MAIL_URL. */
-const SECRET_NAME_PATTERN = /AUTH|BEARER|CERT|CODE|CONN|COOKIE|CRED|DSN|HASH|KEY|LICENSE|MFA|OTP|PASS|PIN|PRIVATE|PW|SALT|SECRET|SEED|SESSION|TOKEN|URI|URL/u;
-/** A value that carries a password itself, such as smtp://bob:pw@host or bob:pw@host. */
-const CREDENTIAL_VALUE = /(?:^|:\/\/)[^\s:@/]+:[^\s@/]+@/u;
-
 /** Only the name's last part decides (DB_USER, AWS_DEFAULT_REGION), so USER_PW or LOGIN_CODE stay masked. */
-function identifierVariable(name: unknown, value: unknown): boolean {
-  if (typeof name !== "string" || typeof value !== "string" || CREDENTIAL_VALUE.test(value)) return false;
-  const upper = name.toUpperCase();
-  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(upper.split("_").at(-1) ?? "");
-}
+const identifierVariable = savedSecretIdentifierVariable;
 
 /**
  * The values a create or update call passes inline, which its answer must not

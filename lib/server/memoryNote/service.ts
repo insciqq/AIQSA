@@ -16,7 +16,7 @@ import {
   type MemorySwitchesUpdate
 } from "@/lib/contracts/memoryNote";
 import { applyMemoryNoteEdit, memoryNoteEditInsertion, memoryNoteEditOf, type MemoryNoteEditResult } from "./edit";
-import { loadMemoryNoteSavedSecrets, memoryNoteTextHoldsSecret, type MemoryNoteSavedSecrets } from "./secrets";
+import { loadMemoryNoteSavedSecrets, memoryNoteChangeAddsSecret, memoryNoteTextHoldsSecret, type MemoryNoteSavedSecrets } from "./secrets";
 import {
   createPrismaMemoryNoteRepository,
   type MemoryLegacyCursor,
@@ -177,6 +177,8 @@ export function createMemoryNoteService(deps: MemoryNoteServiceDeps): MemoryNote
           if (applied.code === "memory_note_too_long") throw tooLong(applied.characters);
           throw new MemoryNoteError("memory_note_offer_stale");
         }
+        // The note as the edit composes it, not only the text it puts in: an edit can assemble a credential around it.
+        if (memoryNoteChangeAddsSecret(current.text, applied.text, values)) throw secretRefused();
         // The user's decision writes it, so the user made this change.
         const written = await repo.writeNote(userId, { author: "user", expectedRevision: current.revision, text: applied.text });
         const accepted = written && await repo.decideOffer(userId, offerId, "accepted");
@@ -216,6 +218,7 @@ export function createMemoryNoteService(deps: MemoryNoteServiceDeps): MemoryNote
           if (applied.code === "memory_note_too_long") throw tooLong(applied.characters);
           throw new MemoryNoteError("memory_note_invalid");
         }
+        if (memoryNoteChangeAddsSecret(current.text, applied.text, values)) throw secretRefused();
         const written = await repo.writeNote(userId, { author: "user", expectedRevision: current.revision, text: applied.text });
         if (!written) throw new MemoryNoteError("memory_note_conflict");
         await repo.deleteLegacy(userId, suggestionId);
