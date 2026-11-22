@@ -253,7 +253,9 @@ describe("past-chat search SQL", () => {
     expect((await wordSearch("ОТЧЁТ"))[0]).toMatchObject({ chatId: fixture.chat.cyrillic });
     // A stem finds its inflected form.
     expect((await wordSearch("кампани")).map((hit) => hit.chatId)).toContain(fixture.chat.cyrillic);
-    const common = await timed("words_common", () => wordSearch(`${fillerWord(1)} ${fillerWord(2)} ${fillerWord(3)}`));
+    // Three words the seeded owner chats really hold, each common across the corpus.
+    const commonWords = fillerText(0).split(" ").slice(0, 3).join(" ");
+    const common = await timed("words_common", () => wordSearch(commonWords));
     expect(common.length).toBeGreaterThan(0);
     for (const hits of [ticket, common, await wordSearch("campaign_42 отчёт report_2026-11-12.xlsx")]) {
       expect(hits.every((hit) => fixture.eligible.has(hit.chatId))).toBe(true);

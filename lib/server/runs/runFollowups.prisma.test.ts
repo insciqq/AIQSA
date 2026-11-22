@@ -74,7 +74,9 @@ describe("durable in-run Follow-up", () => {
   it("serializes duplicate submissions, preserves their receipt after completion and rejects nonce reuse", async () => fixture(async f => {
     const run = await f.create(), input = submission(f, run);
     const [a, b] = await Promise.all([followups.accept(input), followups.accept(input)]);
-    expect(a).toEqual(b);
+    // Both get the one entry; only the submission that wrote it says it was created (a waiting handoff ends once).
+    expect(a.kind === "accepted" && b.kind === "accepted" ? a.entry : null).toEqual(b.kind === "accepted" ? b.entry : undefined);
+    expect([a, b].filter((result) => result.kind === "accepted" && result.created === true)).toHaveLength(1);
     expect(await prisma.runFollowup.count({ where: { modelRunId: run.runId } })).toBe(1);
     expect(await followups.accept({ ...input, text: "Changed text" })).toEqual({ kind: "conflict" });
     expect(await followups.deliver({ runId: run.runId, userId: f.userId, revision: 1, precedingText: "Old partial", budgetTokens: 2_000 })).toBe(true);
