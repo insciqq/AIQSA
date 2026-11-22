@@ -18,6 +18,12 @@ describe("a sub-agent's row words", () => {
     expect(subagentDetailText(row)).toBe("Working…");
   });
 
+  it("reads a call to its own child as the wait the live line shows, and a plan update as nothing", () => {
+    // The child has its own row under this one, as a sub-agent has in an answer.
+    expect(subagentDetailText({ ...row, currentStep: { origin: "tool", toolName: "call_subagent" } })).toBe("Waiting for sub-agents…");
+    expect(subagentDetailText({ ...row, currentStep: { origin: "session", toolName: "update_plan" } })).toBe("Working…");
+  });
+
   it("says how it ended, by its reason when that says more", () => {
     expect(subagentDetailText({ ...row, state: "waiting" })).toBe("Waiting for you");
     expect(subagentDetailText({ ...row, outcome: "partial", state: "done" })).toBe("Partly done");
