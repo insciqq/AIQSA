@@ -120,8 +120,6 @@ func (c *Client) get(ctx context.Context, path string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set(protocol.ClientVersionHeader, c.Version)
-	// Without it the server answers as to a protocol 1 client, whose
-	// manifest lists no Windows binary.
 	req.Header.Set(protocol.ProtocolHeader, strconv.Itoa(protocol.ProtocolVersion))
 	req.Header.Set("User-Agent", "aiqsa-connect/"+c.Version)
 	resp, err := c.HTTP.Do(req)

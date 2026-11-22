@@ -46,14 +46,9 @@ func isolate(t *testing.T) config.Paths {
 
 func TestUsageListsTheClientCommands(t *testing.T) {
 	_, stdout, _ := runArgs("help")
-	for _, name := range []string{"login <origin>", "up", "logout", "version", "update", "service install|uninstall|status", "setup --remove"} {
+	for _, name := range []string{"login <origin>", "up", "logout", "version", "update", "service install|uninstall|status"} {
 		if !strings.Contains(stdout, name) {
 			t.Errorf("usage lacks %q:\n%s", name, stdout)
-		}
-	}
-	for _, gone := range []string{"attach", "sessions", "tmux"} {
-		if strings.Contains(stdout, gone) {
-			t.Errorf("usage still names %q:\n%s", gone, stdout)
 		}
 	}
 }

@@ -38,7 +38,7 @@ computer, do not connect it.
 - An administrator of your AIQSA installation has turned on **AIQSA Connect**
   in Admin → AIQSA Connect. While it is off, the downloads answer "not found".
 
-Nothing else is needed: no tmux, no administrator rights.
+Nothing else is needed: no administrator rights.
 
 ## Install on Windows
 
@@ -213,24 +213,6 @@ rm -rf ~/.config/aiqsa-connect ~/.local/state/aiqsa-connect
 AIQSA cannot be reached it deletes them anyway and tells you to revoke the
 computer in AIQSA.
 
-## Upgrading from the terminal version
-
-Earlier versions opened tmux terminal sessions and added hooks to Claude Code
-and Codex. An installed earlier client updates itself to this version when it
-next connects. The new client writes no hooks and does not touch tmux; clean up
-what the old one left:
-
-```bash
-aiqsa-connect setup --remove
-tmux -L aiqsa-connect kill-server
-```
-
-`setup --remove` shows which files it changes and asks first: it removes only
-its own entries from `~/.claude/settings.json` and `~/.codex/hooks.json`. Until
-then those hooks run `aiqsa-connect hook`, which now does nothing.
-`kill-server` ends the old sessions and whatever still runs in them, so finish
-that work first.
-
 ## Logs
 
 - macOS and Linux: `~/.local/state/aiqsa-connect/aiqsa-connect.log` (under
@@ -325,8 +307,6 @@ Without a Go toolchain the development server answers
 - `internal/state/`: the connection state the Windows tray shows.
 - `internal/winapp/`: the Windows install, uninstall, switch and tray flows,
   testable on any system; the Win32 parts are in the `_windows.go` files.
-- `internal/hooks/`: removes the hooks an earlier version added
-  (`setup --remove`).
 - `internal/update/`: self-update: the server's manifest, checksums and binary,
   verified, run once and renamed over the current binary.
 - `internal/service/`: the systemd user unit and the LaunchAgent.

@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -50,9 +49,8 @@ func newFakeServer(t *testing.T, version string) *fakeServer {
 		if r.Header.Get(protocol.ClientVersionHeader) == "" || r.Header.Get("Authorization") != "" || r.Header.Get("Origin") != "" {
 			t.Errorf("unexpected request headers: %v", r.Header)
 		}
-		protocol2 := r.Header.Get(protocol.ProtocolHeader) == strconv.Itoa(protocol.ProtocolVersion)
-		if !protocol2 {
-			t.Errorf("%s requested without the protocol 2 header", r.URL.Path)
+		if r.Header.Get(protocol.ProtocolHeader) != strconv.Itoa(protocol.ProtocolVersion) {
+			t.Errorf("%s requested without the protocol header", r.URL.Path)
 		}
 		switch r.URL.Path {
 		case protocol.ClientManifestPath:
@@ -61,14 +59,9 @@ func newFakeServer(t *testing.T, version string) *fakeServer {
 				fmt.Fprint(w, `{"code":"connect_client_unavailable"}`)
 				return
 			}
-			// Every target, as lib/server/connect/distribution.ts lists
-			// them: a request without the protocol 2 header is a protocol 1
-			// client's, which gets the darwin and linux targets only.
+			// Every target, as lib/server/connect/distribution.ts lists them.
 			var targets []protocol.ClientTarget
 			for _, os := range protocol.OSValues {
-				if !protocol2 && !slices.Contains(protocol.LegacyOSValues, os) {
-					continue
-				}
 				for _, a := range protocol.ArchValues {
 					target := protocol.ClientTarget{OS: os, Arch: a, SHA256: strings.Repeat("0", 64), Size: 1}
 					if os == goos && a == arch {
@@ -204,8 +197,7 @@ func TestManifestDecodesStrictly(t *testing.T) {
 	}
 }
 
-// A Windows client finds its binary: every update request says protocol 2,
-// so the manifest lists the Windows targets a protocol 1 client never sees.
+// A Windows client finds its binary, the .exe of its target.
 func TestInstallFindsTheWindowsTarget(t *testing.T) {
 	previous := currentTarget
 	currentTarget = func() (protocol.OS, protocol.Arch, error) { return protocol.OSWindows, protocol.ArchAMD64, nil }

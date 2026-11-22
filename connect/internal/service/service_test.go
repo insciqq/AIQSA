@@ -29,8 +29,6 @@ Restart=on-failure
 RestartSec=5
 # A client that a restart cannot fix (logged out, revoked) exits 0 and stays stopped.
 RestartPreventExitStatus=3
-# Stop or restart only the client: it ends the agent's commands itself, and a tmux server left by an older client keeps its sessions.
-KillMode=process
 Environment="PATH=/home/ann/.nvm/bin:/usr/bin"
 
 [Install]
@@ -89,10 +87,8 @@ func TestLaunchAgentPlist(t *testing.T) {
 	if len(args) != 3 || args[0].Content != "/Users/ann/bin/a&b/aiqsa-connect" || args[1].Content != "up" || args[2].Content != "--service" {
 		t.Errorf("ProgramArguments = %+v", args)
 	}
-	for _, key := range []string{"RunAtLoad", "AbandonProcessGroup"} {
-		if values[key].XMLName.Local != "true" {
-			t.Errorf("%s = %s", key, values[key].XMLName.Local)
-		}
+	if values["RunAtLoad"].XMLName.Local != "true" {
+		t.Errorf("RunAtLoad = %s", values["RunAtLoad"].XMLName.Local)
 	}
 	keepAlive := values["KeepAlive"].Items
 	if len(keepAlive) != 2 || keepAlive[0].Content != "SuccessfulExit" || keepAlive[1].XMLName.Local != "false" {
@@ -140,8 +136,9 @@ func TestSystemdInstallUninstallAndStatus(t *testing.T) {
 		t.Fatalf("unit path %s", m.File())
 	}
 	data, err := os.ReadFile(m.File())
-	if err != nil || !strings.Contains(string(data), "KillMode=process") {
-		t.Fatalf("unit file: %q %v", data, err)
+	unit, unitErr := SystemdUnit(Spec{Executable: exe, Path: "/usr/bin"})
+	if err != nil || unitErr != nil || string(data) != unit {
+		t.Fatalf("unit file: %q %v %v", data, err, unitErr)
 	}
 	want := []string{
 		"systemctl --user show-environment",
