@@ -45,7 +45,9 @@ export const PAST_CHATS_TOOL_ERROR_CODES = [
   /** Unknown, foreign, deleted and excluded chats and messages get the same refusal. */
   "past_chat_not_found",
   /** Search could not run now; nothing was found or left out silently. */
-  "past_chats_unavailable"
+  "past_chats_unavailable",
+  /** The answer used its searches or reads (`PAST_CHATS_CALL_LIMITS` in `lib/server/tools/pastChats.ts`). */
+  "past_chats_call_limit"
 ] as const;
 export type PastChatsToolErrorCode = (typeof PAST_CHATS_TOOL_ERROR_CODES)[number];
 

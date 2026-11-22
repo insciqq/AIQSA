@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PAST_CHATS_LIMITS,
+  PAST_CHATS_TOOL_ERROR_CODES,
   clipPastChatLine,
   clipPastChatText,
   decodePastChatSource,
@@ -111,5 +112,12 @@ describe("past-chat sources", () => {
     expect(title).toBe("Trip to Rome");
     expect(ok(searchPastChatsResultSchema, { mode: "recent", results: [{ ...excerpt, chatTitle: title }] })).toBe(true);
     expect(clipPastChatLine("x".repeat(400), PAST_CHATS_LIMITS.titleChars)).toHaveLength(PAST_CHATS_LIMITS.titleChars);
+  });
+});
+
+describe("past-chat tool refusals", () => {
+  it("name the answer's used-up call budget apart from the other refusals", () => {
+    expect(PAST_CHATS_TOOL_ERROR_CODES).toEqual(["past_chats_disabled", "past_chats_arguments_invalid", "past_chat_not_found",
+      "past_chats_unavailable", "past_chats_call_limit"]);
   });
 });
