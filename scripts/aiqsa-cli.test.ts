@@ -17,7 +17,7 @@ const toolNames = ["awk", "basename", "bash", "cat", "chmod", "cp", "cut", "date
   "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "rmdir", "sed", "sh", "sha256sum",
   "sleep", "sort", "stat", "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
 const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_ENCRYPTION_KEY",
-  "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
+  "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
 const directories: string[] = [];
 let toolbox = "";
 let journalSocket = "";
@@ -253,10 +253,11 @@ describe("configure", () => {
     const parsed = values(body);
     const hexKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
     for (const key of hexKeys) expect(parsed[key]).toMatch(/^[a-f0-9]{64}$/u);
-    const base64Keys = ["AIQSA_ENCRYPTION_KEY", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY"];
+    const base64Keys = ["AIQSA_ENCRYPTION_KEY"];
     for (const key of base64Keys) expect(Buffer.from(parsed[key], "base64")).toHaveLength(32);
-    // The retired Memory fingerprint keyring is no longer generated.
+    // The retired Memory fingerprint keyring and the gateway routing key are no longer generated.
     expect(parsed).not.toHaveProperty("AIQSA_MEMORY_FINGERPRINT_KEYRING");
+    expect(parsed).not.toHaveProperty("AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY");
     const secrets = [...hexKeys, ...base64Keys].map((key) => parsed[key]);
     expect(new Set(secrets).size).toBe(secrets.length);
     for (const secret of secrets) expect(result.output).not.toContain(secret);
@@ -361,7 +362,8 @@ describe("configure", () => {
 describe("doctor", () => {
   it("passes a healthy host and stack without printing secrets", () => {
     const fixture = new Fixture();
-    const body = fixture.writeEnv();
+    // An upgraded .env may still set the retired gateway routing key; nothing reads it.
+    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: secretOf("AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY") });
     const result = fixture.run(["doctor"]);
     expect(result.status).toBe(0);
     for (const line of ["PASS docker: Engine 27.3.1", "PASS compose: Compose 2.29.7",
@@ -946,15 +948,15 @@ describe("upgrade", () => {
   it("never appends a key that the process environment provides", () => {
     const { fixture, git, seed } = repository();
     release(seed, git);
-    const routingKey = "cHJvdmlkZWQtYnktdGhlLWVudmlyb25tZW50LTAxMjM0NQ==";
-    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: null });
+    const encryptionKey = Buffer.alloc(32, 3).toString("base64");
+    const body = fixture.writeEnv({ AIQSA_ENCRYPTION_KEY: null });
     const result = fixture.run(["upgrade", "--backup-confirmed", "--add-missing-keys"],
-      { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: routingKey });
+      { AIQSA_ENCRYPTION_KEY: encryptionKey });
     expect(result.status).toBe(0);
     const appended = readFileSync(fixture.file(".env"), "utf8").slice(body.length);
     expect(values(appended)).toEqual({ AIQSA_NEW_SETTING: "on" });
-    expect(result.stdout).toContain("Keys in .env.example provided by the environment, not .env: AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY");
-    expect(result.output).not.toContain(routingKey);
+    expect(result.stdout).toContain("Keys in .env.example provided by the environment, not .env: AIQSA_ENCRYPTION_KEY");
+    expect(result.output).not.toContain(encryptionKey);
   });
 
   it("appends missing keys only with --add-missing-keys and to a pinned tag", () => {
@@ -962,7 +964,7 @@ describe("upgrade", () => {
     release(seed, git);
     git(seed, "tag", "v0.3.1");
     git(seed, "push", "--quiet", "origin", "v0.3.1");
-    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: null }).replace(/\n$/u, "");
+    const body = fixture.writeEnv({ AIQSA_ENCRYPTION_KEY: null }).replace(/\n$/u, "");
     writeFileSync(fixture.file(".env"), body);
     const result = fixture.run(["upgrade", "--backup-confirmed", "--add-missing-keys", "--to", "v0.3.1"]);
     expect(result.status).toBe(0);
@@ -970,9 +972,9 @@ describe("upgrade", () => {
     expect(after.startsWith(`${body}\n`)).toBe(true);
     const appended = values(after.slice(body.length));
     expect(appended.AIQSA_NEW_SETTING).toBe("on");
-    expect(Buffer.from(appended.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY, "base64")).toHaveLength(32);
+    expect(Buffer.from(appended.AIQSA_ENCRYPTION_KEY, "base64")).toHaveLength(32);
     expect(appended).not.toHaveProperty("AIQSA_COMMENTED_SETTING");
-    expect(result.output).not.toContain(appended.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY);
+    expect(result.output).not.toContain(appended.AIQSA_ENCRYPTION_KEY);
     expect(git(fixture.project, "describe", "--tags")).toBe("v0.3.1");
   });
 

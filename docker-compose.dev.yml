@@ -38,9 +38,6 @@ services:
       # Optional: one public address every Discord connection goes to (SNI forwarding); unset uses DNS.
       AIQSA_DISCORD_CONNECT_ADDRESS: ${AIQSA_DISCORD_CONNECT_ADDRESS:-}
       AIQSA_ENCRYPTION_KEY: ${AIQSA_ENCRYPTION_KEY:-QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=}
-      # Public deterministic development material; never use this key for
-      # an installation or any non-disposable data.
-      AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
       AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS: ${AIQSA_FAKE_PROVIDER_TOKEN_DELAY_MS:-10}
       AIQSA_GOOGLE_OAUTH_CLIENT_ID: ""
       AIQSA_GOOGLE_OAUTH_CLIENT_SECRET: ""

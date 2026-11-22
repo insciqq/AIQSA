@@ -22,9 +22,8 @@ Environment variables, secrets and key rotation, and Compose topology selection.
 ## Secrets and rotation
 
 - Keep `.env` out of Git, images, logs, transcripts and support bundles. Production provisioning and rotation belong to the infrastructure operator.
-- Session and flow signing, `AIQSA_ENCRYPTION_KEY`, the gateway routing key and the Workspace token are independent; never derive one from another. The encryption and routing keys are backed up separately from data.
+- Session and flow signing, `AIQSA_ENCRYPTION_KEY` and the Workspace token are independent; never derive one from another. The encryption key is backed up separately from data.
 - Replacing `AIQSA_ENCRYPTION_KEY` without a migration makes every encrypted provider, SMTP, MCP, OAuth, TOTP and sign-in secret unreadable.
-- `AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY` keeps its name although it no longer keys a search index (decision 2026-10-23), so existing `.env` files and `./aiqsa.sh configure` keep working. It only derives, under its own label, the gateway routing keys of native runs' model calls (`lib/server/providers/gatewayRouting.ts`); rotating it costs them only prompt-cache hits.
 - The trusted base URL decides callback and email origins, cookie defaults and same-origin policy; request Host and forwarding headers never select it. Changing it is an identity and security migration.
 
 ## Running Compose
@@ -33,4 +32,4 @@ Environment variables, secrets and key rotation, and Compose topology selection.
 - When `.env` defines `COMPOSE_FILE` and `COMPOSE_PROJECT_NAME`, use plain `docker compose`. An explicit `-f`, including inside npm scripts, replaces that selection, so use it only for a deliberately chosen topology. `-p` cannot isolate external volumes, and stable volume names prove nothing about isolation.
 - Environment changes apply only when containers are recreated (`docker compose up -d`); a restart keeps the old environment.
 - Production logs go to the host journal. Hosts without journald select `compose.json-file-logging.yaml` through `COMPOSE_FILE`; the log driver cannot be switched by variable interpolation because Docker rejects json-file options for journald.
-- Upgraded `.env` files may still set variables of the removed search index service (decision 2026-10-23) and of the old Memory: every `AIQSA_MEMORY_*` key, the fingerprint keyring included, except the routing key above and the worker's resource limits (`AIQSA_MEMORY_WORKER_*`) (decision 2026-11-22). Nothing reads them, and Compose starts with or without them. The background worker keeps its `memory-worker` service name (`agent_docs/ARCHITECTURE.md`).
+- Upgraded `.env` files may still set variables of the removed search index service (decision 2026-10-23), of the old Memory (every `AIQSA_MEMORY_*` key, the fingerprint keyring included, except the worker's resource limits `AIQSA_MEMORY_WORKER_*`; decision 2026-11-22), the former gateway routing key `AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY` (each process now generates its own routing secret, `lib/server/providers/gatewayRouting.ts`) and `AIQSA_ACCEPT_LOCAL_MCP_REMOVAL`. Nothing reads them, and Compose starts with or without them. The background worker keeps its `memory-worker` service name (`agent_docs/ARCHITECTURE.md`).
