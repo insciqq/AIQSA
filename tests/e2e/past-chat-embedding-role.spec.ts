@@ -114,13 +114,15 @@ test.describe("past-chat embedding role", () => {
   });
 
   test("assigns and clears the model through the Embeddings row, each after the cost confirmation", async ({ page }) => {
+    // The Control Center's first compile under `next dev` takes longer than the default 30 s, as in the other admin specs.
+    test.setTimeout(120_000);
     const resolver = createEmbeddingModelRoleResolver(prisma);
     await expect(resolver.resolve()).resolves.toMatchObject({ kind: "unset" });
 
     await signInWithLocalToken(page);
     await page.goto("/admin?section=roles");
     const row = page.getByTestId("admin-role-embedding");
-    await expect(row).toContainText("Embeddings");
+    await expect(row).toContainText("Embeddings", { timeout: 60_000 });
     await expect(row).toContainText("Used by past-chat search");
     await expect(page.getByTestId("admin-role-embedding-status")).toHaveText("Not assigned");
 
