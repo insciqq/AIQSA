@@ -230,8 +230,9 @@ function scriptedSubagentResult(request: ProviderRunRequest, question: string): 
     { finishReason: "tool_calls", provider: "fake" }, finalText: "", toolCalls, usage: fakeUsage(question, "") }, waitMs: 0 });
   const offersCall = request.tools?.some((tool) => tool.name === "call_subagent") === true;
   const task = SUBAGENT_TASK_DIRECTIVE.exec(question);
-  // A sub-agent: its tools never include call_subagent, and its input is the main agent's brief.
-  if (task && !offersCall) {
+  // A sub-agent: its input is the main agent's brief, which alone carries the task directive. Its tools may include
+  // call_subagent too, since a sub-agent with every tool may start children (2026-10-31).
+  if (task) {
     const name = task[1]!;
     const steps = (task[2] ?? "").split(",").filter(Boolean);
     const turnItems = currentTurnItems(request);
