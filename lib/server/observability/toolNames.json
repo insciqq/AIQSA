@@ -28,6 +28,8 @@
   "read_secret": "other",
   "manage_secret": "other",
   "manage_assistant": "other",
+  "manage_instructions": "other",
+  "manage_proxy": "other",
   "read_aiqsa_guide": "other",
   "read_tool_result": "other",
   "search_engine_1": "search",
