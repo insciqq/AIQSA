@@ -24,7 +24,7 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 - **A browser you can watch.** The agent opens real websites in the Workspace browser and streams them into the chat. Watch it work, take control at any moment, and sign in yourself when a site asks, so the agent never needs your password.
 - **Agents that work side by side.** The agent can hand parts of a task to sub-agents that run at the same time in the same Workspace, each in its own browser tab.
 - **Answers you can check.** Web search answers come with linked sources you can open.
-- **Memory that understands, not just stores.** AIQSA learns only from what you actually say, keeps track of who each fact is about and when it was true, replaces outdated facts, settles contradictions on its own, and searches your past chats when an answer needs more. You control everything it keeps, and the same Memory works in Claude Code and Codex.
+- **Memory you can read.** One short note tells the agent who you are and how you like to work, in every chat. You edit it yourself, or ask the agent to remember something and see exactly what changed, with Undo. The agent also searches and reads your earlier chats when an answer needs them, and shows which ones it used.
 - **Work that runs on its own.** Automations run a prompt daily, weekly or monthly, or when another system such as GitLab calls their webhook, and deliver the answer to their own chat, with an optional email.
 - **Built for teams.** Role-based access control, shared Assistants and Skills, invitations, API keys per installation, group or person, and usage per user.
 
@@ -48,14 +48,14 @@ GPT, Claude, Gemini, DeepSeek and your own models in one private workspace, on y
 - Automations: once, daily, weekly or monthly runs, or a run for each webhook call with its request body as event data, with optional email notifications.
 
 **Memory**
-- Learns from what you say, never from model answers, quotes or documents; facts you save explicitly always take priority.
-- Each fact keeps its subject, source and time. Newer facts replace outdated ones; duplicates and contradictions are settled in the background.
-- Key facts reach every chat without extra model calls; search across facts and past chats covers the rest.
-- Secrets such as API keys and passwords are removed before anything is saved.
-- Review, edit, pause or reset it at any time.
+- A memory note in Settings: plain text every ordinary chat includes, for your answer rules, projects, terms and links.
+- Say "remember…" and the agent updates the note at once with a card and Undo; mention a lasting preference and it only offers to remember it, saving nothing unless you accept.
+- Nothing is learned in the background, and the agent changes the note only when your own message asks.
+- Past-chat search finds earlier chats by exact words and, once an administrator sets an embedding model, by meaning, and the agent can read a chat further; the chats it used are listed under the answer.
+- Temporary and excluded chats stay out of Memory, a deleted chat leaves search at once, and secrets are removed before anything is indexed.
 
 **For Claude Code and Codex**
-- Connect your coding agents to AIQSA over OAuth with one command: your team's MCP tools through the MCP Hub, your Skills, and your Memory.
+- Connect your coding agents to AIQSA over OAuth with one command: your team's MCP tools through the MCP Hub and your Skills.
 
 **Team and administration**
 - Assistants with fixed instructions, models, search, tools and Skills.
