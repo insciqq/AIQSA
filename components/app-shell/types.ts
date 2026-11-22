@@ -1,5 +1,3 @@
-import type { WorkspaceChatSummary } from "@/lib/contracts/chats";
-
 export type {
   Catalog,
   CatalogModel,
@@ -43,13 +41,6 @@ export type FolderSummary = {
 export type NameSaveResult =
   | Readonly<{ ok: true }>
   | Readonly<{ fieldError: string | null; ok: false }>;
-
-export type ChatGroup = {
-  chats: WorkspaceChatSummary[];
-  depth: number;
-  folder: FolderSummary | null;
-  name: string;
-};
 
 export type NoticeAction = {
   disabled?: boolean;
