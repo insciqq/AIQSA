@@ -14,6 +14,7 @@ import type { FrozenComputerBinding } from "../tools/computerBinding";
 import { computerToolDefinitions } from "../tools/computerTools";
 import { admitComputer, type ComputerAdmission, type ComputerAdmissionDeps } from "./computerAdmission";
 import { freezeSubagentModels, type FrozenSubagentModels, type SubagentModelCatalogSource } from "../engine/subagents/modelCatalog";
+import { appendPromptPart, replacePromptSegment, type PromptPartScope } from "../engine/systemPrompt";
 import { freezeSubagentDefault } from "../subagents/typeCatalog";
 import { admitModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { isChatPdfPolicyUnavailableError, type ChatPdfAttachmentAdmission, type ChatPdfRouteAdmission } from "../uploads/chatPdfAdmission";
@@ -770,18 +771,13 @@ export async function preparePdfRetry(
       return [contract.stable, contract.turn] as const;
     };
     const newSegments = segments(plan);
-    let system = request.prompt.system ?? "";
-    // The parts admission recorded as appended change with it, so each is still found where it stands (`splitTurnGuidance`).
-    let { turnGuidance, workspaceGuidance } = request.prompt;
-    // Replace only the server-owned segments; the accepted user/Assistant
-    // instructions, file references and unrelated tool authority stay frozen.
+    // Replace only the server-owned segments, in `system` and in the parts admission recorded with it, so each is still
+    // found where it stands; the accepted user/Assistant instructions, file references and unrelated tool authority stay frozen.
+    let prompt = request.prompt;
     for (const [index, oldSegment] of segments(prior).entries()) {
-      const at = system.indexOf(oldSegment);
-      if (at < 0 || at !== system.lastIndexOf(oldSegment)) return failure("pdf_preparation_unavailable", 409);
-      system = system.slice(0, at) + newSegments[index] + system.slice(at + oldSegment.length);
-      const replaced = (parts: readonly string[] | undefined) => parts?.map(part => part.split(oldSegment).join(newSegments[index]));
-      turnGuidance = replaced(turnGuidance);
-      workspaceGuidance = replaced(workspaceGuidance);
+      const replaced = replacePromptSegment(prompt, oldSegment, newSegments[index]!);
+      if (!replaced) return failure("pdf_preparation_unavailable", 409);
+      prompt = replaced;
     }
     // The retry keeps the run's accepted tool limits, on or off, never the installation's current ones; only the
     // Workspace allowance comes from this admission, and it raises only a limit that is on.
@@ -789,7 +785,6 @@ export async function preparePdfRetry(
     const toolBudgets = { ...request.toolBudgets,
       maxToolCalls: workspaceToolLimit(accepted.maxToolCalls, plan.normalized.maxToolCalls),
       maxToolRounds: workspaceToolLimit(accepted.maxToolRounds, plan.normalized.maxToolRounds) };
-    const prompt = { ...request.prompt, system, ...(turnGuidance ? { turnGuidance } : {}), ...(workspaceGuidance ? { workspaceGuidance } : {}) };
     prepared.workspaceAdmissionPlan = plan;
     prepared.normalizedRequest = { ...request, prompt, toolBudgets, workspace: plan.normalized };
     const priorWorkspaceToolNames = new Set(prior.toolDefinitions.map(tool => tool.namespacedName));
@@ -1417,9 +1412,13 @@ export async function prepareRun(
       ...(renderedInstructions.overridesAnswerRules ? { developer: null } : {}) } : {}),
     responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? ""
   };
+  // Every part admission adds goes through this one write (`appendPromptPart`): `system` and the part's record by scope.
+  const appendPrompt = (part: string | null | undefined, scope: PromptPartScope) => {
+    prompt = appendPromptPart(prompt, part, scope);
+  };
   // The connector's fixed note, in the chat's own system prompt: every turn of such a chat is the connector's, so the
   // prompt stays the same across them (provider caches).
-  if (connector?.note) prompt = { ...prompt, system: [prompt.system, connector.note].filter(Boolean).join("\n\n") };
+  appendPrompt(connector?.note, "chat");
   const branchContext =
     input.source.kind === "send"
       ? input.source.draftPersonalChat
@@ -1778,8 +1777,7 @@ export async function prepareRun(
       currentAttachmentCount: attachments.length, hasIndexedFiles: hasWorkspaceIndexedFiles,
       hasEarlierExports: facts.hasEarlierExports, searchEnabled: admissionPlan.searches.length > 0, fileContext });
     // Also recorded as appended (`prompt.workspaceGuidance`), so a sub-agent turn without the Workspace leaves it out.
-    prompt = { ...prompt, system: [prompt.system, contract.stable].filter(part => Boolean(part?.trim())).join("\n\n") || null,
-      workspaceGuidance: [contract.stable] };
+    appendPrompt(contract.stable, "workspace");
     workspaceTurnContract = contract.turn;
   }
 
@@ -1787,15 +1785,9 @@ export async function prepareRun(
   // artifacts as they stand now) is appended like the rest and also recorded as it was appended
   // (`prompt.turnGuidance`): the native engine sends it with the run's input instead, so its system
   // prompt stays the same across the chat's turns and provider caches keep reading it.
-  const turnGuidance: string[] = [];
-  const appendTurnGuidance = (part: string | null | undefined) => {
-    if (!part?.trim()) return;
-    turnGuidance.push(part);
-    prompt = { ...prompt, system: [prompt.system, part].filter(Boolean).join("\n\n") };
-  };
+  const appendTurnGuidance = (part: string | null | undefined) => appendPrompt(part, "turn");
   const workspaceCheckpoints = Boolean(workspaceAdmissionPlan && body?.tools !== "none");
-  if (workspaceCheckpoints) prompt = { ...prompt, system: [prompt.system, WORKSPACE_CHECKPOINT_GUIDANCE].filter(Boolean).join("\n\n"),
-    workspaceGuidance: [...prompt.workspaceGuidance ?? [], WORKSPACE_CHECKPOINT_GUIDANCE] };
+  if (workspaceCheckpoints) appendPrompt(WORKSPACE_CHECKPOINT_GUIDANCE, "workspace");
   const workspaceVision = workspaceAdmissionPlan && body?.tools !== "none" && modelCapabilities.toolCalling === true
     ? await deps.vision?.resolve() : undefined;
   // A chat model with verified vision looks at Workspace images itself (operator decision 2026-10-26), frozen with the
@@ -1812,15 +1804,12 @@ export async function prepareRun(
   if (workspaceAdmissionPlan) {
     appendTurnGuidance(workspaceMissingContentNotice(attachments, workspaceAdmissionPlan.normalized.inboxIndexPath));
   }
-  if (imagePlan || workspaceEnabled && imageReferences.length > 0) {
-    // Without image generation only the Workspace makes this the chat's text (a chat without one carries it as the turn's), so
-    // it is recorded with the Workspace's parts and a sub-agent turn without the Workspace leaves it out.
-    prompt = { ...prompt, system: [prompt.system, IMAGE_EDITING_GUIDANCE].filter(Boolean).join("\n\n"),
-      ...(imagePlan ? {} : { workspaceGuidance: [...prompt.workspaceGuidance ?? [], IMAGE_EDITING_GUIDANCE] }) };
-  } else if (imageReferences.length > 0) appendTurnGuidance(IMAGE_EDITING_GUIDANCE);
-  if (imageUnavailableGuidance) {
-    prompt = { ...prompt, system: [prompt.system, imageUnavailableGuidance].filter(Boolean).join("\n\n") };
+  // The chat's with image generation. Without it only the Workspace makes this the chat's text, so it is recorded with the
+  // Workspace's parts and a sub-agent turn without the Workspace leaves it out; a chat without one carries it as the turn's.
+  if (imagePlan || imageReferences.length > 0) {
+    appendPrompt(IMAGE_EDITING_GUIDANCE, imagePlan ? "chat" : workspaceEnabled ? "workspace" : "turn");
   }
+  appendPrompt(imageUnavailableGuidance, "chat");
   if (imagePlan || chatVision || !workspaceEnabled && imageReferences.length > 0) {
     appendTurnGuidance(imageReferenceInstructions(imageReferences, modelCapabilities.vision === true, Boolean(chatVision), !workspaceEnabled));
   }
@@ -1828,7 +1817,7 @@ export async function prepareRun(
   appendTurnGuidance(artifactFileGuidance);
   // Auto discloses the frozen catalog's bounded tool index; the accepted prompt keeps it through recovery.
   const mcpServicesGuidance = mcpDiscoveryEnabled ? mcpToolIndexGuidance(mcpCatalog) : null;
-  if (mcpServicesGuidance) prompt = { ...prompt, system: [prompt.system, mcpServicesGuidance].filter(Boolean).join("\n\n") };
+  appendPrompt(mcpServicesGuidance, "chat");
   // A scheduled run knows it already is its automation, and since when its previous shown result stands.
   appendTurnGuidance(scheduledOccurrenceContext(scheduledOccurrence?.automation,
     { previousResultInContext: (scheduledContext?.messages.length ?? 0) > 0 }));
@@ -1842,15 +1831,11 @@ export async function prepareRun(
   // compares with the previous shown result only while the context holds it,
   // and the run keeps which (`monitoringPreviousResult`) for its settlement.
   const monitoringPreviousResult = (sendContext?.length ?? 0) > 0;
-  if (monitoringCheck) {
-    prompt = { ...prompt, system: [prompt.system, monitoringCheckInstruction({ previousResult: monitoringPreviousResult })]
-      .filter(Boolean).join("\n\n") };
-  }
+  if (monitoringCheck) appendPrompt(monitoringCheckInstruction({ previousResult: monitoringPreviousResult }), "chat");
   let artifactReferences: NormalizedRunRequest["artifactReferences"];
   let artifactFocus: NormalizedRunRequest["artifactFocus"];
   let artifactCompactPrompt: Pick<NormalizedRunRequest["prompt"], "system" | "turnGuidance"> | undefined;
-  const beforeArtifactSystem = prompt.system;
-  const beforeArtifactTurnGuidance = [...turnGuidance];
+  const beforeArtifacts = prompt;
   // A scheduled run's context is its selection alone: the chat's other artifacts stay out of it.
   if (artifactToolAvailable && deps.artifacts && !scheduledOccurrence) {
     const artifactContext = await deps.artifacts.contextForChat({ chatId: chat.id, ownerUserId: input.userId,
@@ -1866,13 +1851,13 @@ export async function prepareRun(
       const editGuidance = artifactEdit ? `The user's current message edits artifact_id=${JSON.stringify(artifactEdit.artifactId)} from base_version_id=${JSON.stringify(artifactEdit.versionId)}; update that artifact with intent=update unless the message clearly asks for something else.` : "";
       const compactContext = guidance + "\n" + JSON.stringify(artifactContext.map(artifact => ({ ...artifact,
         files: artifact.files.map(file => { const { text: _text, ...metadata } = file; return metadata; }) })));
-      artifactCompactPrompt = { system: [beforeArtifactSystem, compactContext, editGuidance].filter(Boolean).join("\n\n"),
-        turnGuidance: [...beforeArtifactTurnGuidance, compactContext, ...(editGuidance ? [editGuidance] : [])] };
+      // The same parts with the artifacts' file text left out, for a request that does not fit with it.
+      const compact = appendPromptPart(appendPromptPart(beforeArtifacts, compactContext, "turn"), editGuidance, "turn");
+      artifactCompactPrompt = { system: compact.system, turnGuidance: compact.turnGuidance };
       appendTurnGuidance("Artifacts already created in this chat are private server-owned context. For an edit, use intent=update and the exact base_version_id; preserve useful files unless the user asks to replace them. Never invent asset references or URLs.\n" + JSON.stringify(artifactContext));
       appendTurnGuidance(editGuidance);
     }
   }
-  if (turnGuidance.length > 0) prompt = { ...prompt, turnGuidance };
   const observationCapable = modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({
       modelId: executionModelId,
