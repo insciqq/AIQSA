@@ -31,7 +31,7 @@ import type { EngineTool, EngineToolEffects, ToolRegistry } from "./toolRegistry
 import { TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultOutputText } from "./toolResults";
 import { rehydratePersistedSearchToolExecutionResult } from "../search/toolResult";
 import { threeEngineResult } from "../search/toolResult.testFixtures";
-import { createUnknownEffects, unknownEffectsOf } from "./unknownEffects";
+import { createAgentUnknownEffects, createUnknownEffects, unknownEffectsOf } from "./unknownEffects";
 import { createTranscriptRepository } from "./transcriptRepository";
 import { SearchToolCancelledError } from "../search/toolExecutor";
 import { mixedToolsImagePlan } from "@/tests/support/openRouterTools";
@@ -1153,6 +1153,27 @@ it("asks if another claim consumed the human approval after the read-only previe
 });
 
 describe("native unknown-outcome approval freshness", () => {
+  it("fences a write a stopped sub-agent may have sent, so its parent does not send it again (review 2026-11-22)", async () => {
+    const fences = createAgentUnknownEffects();
+    const stop = new AbortController();
+    let sends = 0;
+    const registry = { write: tool("write", "external", async ({ call }) => {
+      sends += 1;
+      if (sends === 1) {
+        stop.abort();
+        throw stop.signal.reason;
+      }
+      return ok(call);
+    }, { retryApproval: () => approval }) };
+    const { store } = fakeStore({ gated: true });
+    const run = (agent: string, signal: AbortSignal) => runToolBatch(
+      deps(registry, store, { signal, unknownEffects: fences.agent(agent) }),
+      { calls: 0 }, { calls: [{ arguments: {}, id: agent, name: "write" }], round: 1 });
+    await expect(run("child", stop.signal)).rejects.toBeDefined();
+    await run("main", new AbortController().signal);
+    expect(sends).toBe(1);
+  });
+
   it.each([
     { continuation: false, decision: "allow_once", offset: -1_000 },
     { continuation: false, decision: "allow_once", offset: 0 },

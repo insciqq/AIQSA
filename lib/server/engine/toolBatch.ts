@@ -621,6 +621,9 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       // Stop or the deadline: the run's ending closes the record with an unknown outcome, and the stopped call gets no
       // live step here, since the run's end settles it.
       if (deps.signal.aborted) {
+        // It may have been sent: an equivalent call is fenced at once, so a parent that outlives a stopped sub-agent
+        // never repeats its write on the model's word (review 2026-11-22).
+        if (tool.effects === "external") deps.unknownEffects.record(call, "unknown");
         logSettled({ kind: "aborted", reason: deps.signal.reason });
         // A stopped Search keeps what its settled engines reported (usage, sources) before the stop goes on;
         // nothing else runs meanwhile.
