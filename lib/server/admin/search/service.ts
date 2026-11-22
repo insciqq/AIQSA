@@ -13,22 +13,21 @@ import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
-  DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
-  DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID,
   decodeSearchPlan,
   GEMINI_PROVIDER_SEARCH_INTEGRATION_ID,
   GEMINI_PROVIDER_SEARCH_STRATEGY_ID,
   hostedSearchProtocolUsable,
   OPENAI_PROVIDER_SEARCH_INTEGRATION_ID,
   OPENAI_PROVIDER_SEARCH_STRATEGY_ID,
-  type SearchPlan
+  searchProtocols,
+  type SearchPlan,
+  type SearchProtocol
 } from "../../../domain/search";
 import {
   effectiveProviderResponseTimeoutMs,
   normalizeProviderConnectionConfiguration,
   normalizeProviderModelConfiguration
 } from "../../providers/providerConfiguration";
-import { lowestSupportedDeepSeekSearchEffort } from "../../providers/deepSeekResponsesSearch";
 import { lowestSupportedOpenAIResponsesSearchEffort } from "../../providers/openaiResponsesSearch";
 import { observedFailure } from "../../providers/providerObservability";
 import {
@@ -57,8 +56,6 @@ export type AdminSearchTester = Readonly<{
     userId: string;
   }>): Promise<Omit<AdminSearchTestEvidence, "checkedAt"> & Readonly<{
     probeBinding: SearchProbeBinding;
-    /** Only native DeepSeek may explicitly report that source URLs are unavailable. */
-    sourceAttribution?: "provider_unavailable";
   }>>;
 }>;
 
@@ -150,7 +147,9 @@ function testEvidence(value: unknown): AdminSearchTestEvidence | null {
   if (
     (evidence.method !== "configuration" && evidence.method !== "provider_search") ||
     (evidence.status !== "available" && evidence.status !== "unavailable") ||
-    typeof evidence.protocol !== "string" ||
+    // A protocol this release no longer has, such as DeepSeek's retired
+    // hosted Search, leaves the source without evidence.
+    !searchProtocols.includes(evidence.protocol as SearchProtocol) ||
     typeof evidence.checkedAt !== "string" ||
     !Number.isSafeInteger(evidence.normalizedSourceCount)
   ) {
@@ -163,7 +162,7 @@ function testEvidence(value: unknown): AdminSearchTestEvidence | null {
     checkedAt: evidence.checkedAt,
     method: evidence.method,
     normalizedSourceCount: evidence.normalizedSourceCount as number,
-    protocol: evidence.protocol as AdminSearchTestEvidence["protocol"],
+    protocol: evidence.protocol as SearchProtocol,
     status: evidence.status
   };
 }
@@ -205,7 +204,6 @@ function draftClientSearchKind(
   draft: AdminSearchDraft
 ): AdminSearchProviderModelOption["searchKind"] {
   if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
-  if (draft.protocol === "deepseek_responses_web_search") return "deepseek_web_search";
   if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
   return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
@@ -229,16 +227,6 @@ function clientRouteIdentities(
       {
         id: ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
         strategyId: ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID
-      },
-      { id: fallbackId, strategyId: fallbackId }
-    ];
-  }
-  if (option.templateKey === "search:deepseek" && option.optionId === "deepseek-native-web-search") {
-    const fallbackId = `deepseek-search-client:${sourceConnectionId}`;
-    return [
-      {
-        id: DEEPSEEK_PROVIDER_SEARCH_INTEGRATION_ID,
-        strategyId: DEEPSEEK_PROVIDER_SEARCH_STRATEGY_ID
       },
       { id: fallbackId, strategyId: fallbackId }
     ];
@@ -284,12 +272,6 @@ function hostedRouteIdentity(
   if (option.templateKey === "search:anthropic" && option.optionId === "anthropic-web-search") {
     return { id: option.optionId, strategyId: option.optionId };
   }
-  if (option.templateKey === "search:deepseek" && option.optionId === "deepseek-native-web-search") {
-    return {
-      id: `deepseek-search-hosted:${sourceConnectionId}`,
-      strategyId: option.optionId
-    };
-  }
   if (
     option.templateKey === null &&
     option.optionId === `custom-web-search:${sourceConnectionId}`
@@ -317,7 +299,6 @@ function hostedRouteIdentity(
 
 function hostedDraftFor(draft: AdminSearchDraft, current: AdminSearchDraft | null = null): AdminSearchDraft | null {
   return draft.protocol === "anthropic_web_search" ||
-    draft.protocol === "deepseek_responses_web_search" ||
     draft.protocol === "openai_responses_web_search" ||
     draft.protocol === "gemini_google_search"
     ? {
@@ -762,12 +743,10 @@ export function createAdminSearchService(input: Readonly<{
           connectionConfiguration,
           configuration
         ) / 1_000,
-        searchReasoningSupported: configuration.adapterKind === "deepseek_responses_native"
-          ? Boolean(lowestSupportedDeepSeekSearchEffort(configuration.capabilities, configuration.upstreamModelId))
-          : (configuration.adapterKind === "anthropic_messages" ||
-            configuration.adapterKind === "openai_responses_native" ||
-            configuration.adapterKind === "openai_responses_compatible" ||
-            configuration.adapterKind === "gemini_interactions_native") &&
+        searchReasoningSupported: (configuration.adapterKind === "anthropic_messages" ||
+          configuration.adapterKind === "openai_responses_native" ||
+          configuration.adapterKind === "openai_responses_compatible" ||
+          configuration.adapterKind === "gemini_interactions_native") &&
           Boolean(lowestSupportedOpenAIResponsesSearchEffort(configuration.capabilities)),
         searchKind
       }];
@@ -936,13 +915,11 @@ export function createAdminSearchService(input: Readonly<{
       throw new AdminSearchServiceError(checkFailureCode(error));
     }
     const binding = searchProbeBinding(outcome.probeBinding);
-    const sourceUrlsUnavailable = draft.protocol === "deepseek_responses_web_search" &&
-      outcome.sourceAttribution === "provider_unavailable";
     if (
       outcome.status !== "available" ||
       outcome.method !== "provider_search" || outcome.protocol !== draft.protocol ||
       !Number.isSafeInteger(outcome.normalizedSourceCount) || outcome.normalizedSourceCount < 0 ||
-      outcome.normalizedSourceCount === 0 && !sourceUrlsUnavailable ||
+      outcome.normalizedSourceCount === 0 ||
       binding?.providerModelId !== draft.providerModelId ||
       binding?.connectionId !== sourceConnectionId
     ) {

@@ -461,24 +461,3 @@ export function createDeepSeekSearchApiAdapter(input: Readonly<{
   };
   return adapter;
 }
-
-/** A DeepSeek binding's one Search adapter: the raw results API for its
- * policy, else the model's hosted Search when the model has it. */
-export function createDeepSeekSearchAdapter(input: Readonly<{
-  responses?: ProviderSearchAdapter;
-  searchApi: ProviderSearchAdapter;
-}>): ProviderSearchAdapter {
-  const adapterFor = (request: ProviderSearchRequest): ProviderSearchAdapter => {
-    const adapter = request.searchPolicy.strategyId === DEEPSEEK_SEARCH_API_STRATEGY_ID
-      ? input.searchApi
-      : input.responses;
-    if (!adapter) throw new Error("search_adapter_not_available");
-    return adapter;
-  };
-  return {
-    buildRequestPreview: (request) => adapterFor(request).buildRequestPreview(request),
-    async search(request, options) {
-      return adapterFor(request).search(request, options);
-    }
-  };
-}

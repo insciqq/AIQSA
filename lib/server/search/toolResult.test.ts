@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_FAIR_SHARE_FIRST_SOURCES, searchToolResultFairShare } from "./toolResult";
+import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_FAIR_SHARE_FIRST_SOURCES, searchExecutionsFromToolResult, searchToolResultFairShare,
+  type SearchExecutionEvidence } from "./toolResult";
 import { failedSearchEngine, proseFindings, searchEngine, searchResult, threeEngineResult } from "./toolResult.testFixtures";
 import type { ToolExecutionResult } from "../tools/types";
+import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
+import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 
 const BUDGET = 16_000;
 
@@ -113,5 +116,30 @@ describe("a merged search result's fair share", () => {
     expect(searchToolResultFairShare(merged, `${textOf(merged)}\n\nappended`, BUDGET)).toBeNull();
     expect(searchToolResultFairShare({ callId: "c", content: merged.content, name: "lookup", status: "complete" }, textOf(merged), BUDGET))
       .toBeNull();
+  });
+});
+
+describe("an answer that searched DeepSeek's retired hosted Search", () => {
+  // As the executor stored it before 2026-10-24: findings without source links, beside an engine with sources.
+  const retired: SearchExecutionEvidence = { displayName: "DeepSeek Search", findings: "Hosted DeepSeek findings.",
+    invocationId: "c1:deepseek-native-web-search", modelId: "deepseek-v4-flash", optionId: "deepseek-native-web-search",
+    protocol: "deepseek_responses_web_search", provider: "deepseek", revisionId: "revision-deepseek",
+    sourceAttribution: "provider_unavailable", sources: [], status: "complete",
+    usage: { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 }, warning: "provider_sources_unavailable" };
+  const other = searchEngine({ count: 2, displayName: "OpenAI", findings: "OpenAI findings [1].", host: "openai.example",
+    optionId: "openai", provider: "openai" });
+
+  it("still rehydrates from its stored row with every engine and source", () => {
+    const stored = searchResult([other, retired]);
+    const snapshot = snapshotToolExecutionResult(stored, toolLoopPersistenceLimits.resultBytes);
+    if (!snapshot) throw new Error("expected a stored search result");
+    const parsed = parsePersistedToolExecutionResult({ id: stored.callId, name: stored.name }, snapshot);
+    if (!parsed) throw new Error("expected the stored search result to parse");
+    expect(parsed.content).toEqual(stored.content);
+    expect(textOf(parsed)).toContain("Hosted DeepSeek findings.");
+    expect(searchExecutionsFromToolResult(parsed)).toEqual([
+      expect.objectContaining({ optionId: "openai", sources: other.sources }),
+      expect.objectContaining({ optionId: "deepseek-native-web-search", sourceAttribution: "provider_unavailable", sources: [] })
+    ]);
   });
 });

@@ -80,7 +80,7 @@ function withChatToolCallName(toolCall: unknown, name: string | undefined): unkn
 
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
-  protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search"
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search"
 ): boolean {
   return request.searchPlan.options.some((option) =>
     option.adapterKind === "answer_provider_hosted" && option.protocol === protocol);
@@ -273,11 +273,6 @@ export const deepSeekResponsesToolBridge: ProviderToolBridge = {
   parseToolCalls: openAIResponsesToolBridge.parseToolCalls,
   provider: "deepseek",
   serializeAssistantToolCalls: openAIResponsesToolBridge.serializeAssistantToolCalls,
-  serializeHostedTools(request) {
-    return usesHostedSearchRoute(request, "deepseek_responses_web_search")
-      ? [{ type: "web_search" }]
-      : [];
-  },
   serializeTool: deepSeekFunctionTool,
   supportsToolCalling(input) {
     return input.provider === "deepseek";

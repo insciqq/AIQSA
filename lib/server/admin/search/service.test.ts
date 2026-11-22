@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { AdminSearchDraft } from "../../../contracts/adminSearch";
+import { decodeAdminSearchCatalog, type AdminSearchDraft } from "../../../contracts/adminSearch";
 import { ProviderSearchExecutionError } from "../../providers/types";
 import { searchDraftHash } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
@@ -1510,15 +1510,10 @@ describe("admin Search service", () => {
 });
 
 describe.each(["create", "save"] as const)("Search %s publication binding", (operation) => {
-  function fixture(protocol: AdminSearchDraft["protocol"] = draft.protocol) {
-    const proposed = { ...draft, protocol };
-    const hosted = { ...hostedDraft, protocol };
-    const technical = providerModel();
-    const model = protocol === "deepseek_responses_web_search" ? {
-      ...technical,
-      activeConfig: { ...technical.activeConfig, adapterKind: "deepseek_responses_native" },
-      connection: { ...technical.connection, family: "deepseek" }
-    } : technical;
+  function fixture() {
+    const proposed = draft;
+    const hosted = hostedDraft;
+    const model = providerModel();
     const write = vi.fn(async () => ({ count: 1 }));
     const revisions = revisionRepository();
     const tx = {
@@ -1538,13 +1533,13 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     const prisma = { ...tx, $transaction: transaction } as unknown as PrismaClient;
     const currentBinding = vi.fn<AdminSearchTester["currentBinding"]>(async () => PROBE_BINDING);
     const test = vi.fn<AdminSearchTester["test"]>(async () => ({
-      method: "provider_search", normalizedSourceCount: 2, probeBinding: PROBE_BINDING, protocol, status: "available"
+      method: "provider_search", normalizedSourceCount: 2, probeBinding: PROBE_BINDING, protocol: draft.protocol, status: "available"
     }));
     const tester = { currentBinding, test };
     const service = createAdminSearchService({ prisma, tester });
-    const save = () => operation === "create"
-      ? service.createDraft({ check: true, description: "Web evidence", displayName: "Source", draft: proposed, userId: "admin-1" })
-      : service.saveAndCheck({ description: "Web evidence", displayName: "Source", draft: proposed, expectedDraftVersion: 1, id: "source-1", userId: "admin-1" });
+    const save = (saved: unknown = proposed) => operation === "create"
+      ? service.createDraft({ check: true, description: "Web evidence", displayName: "Source", draft: saved, userId: "admin-1" })
+      : service.saveAndCheck({ description: "Web evidence", displayName: "Source", draft: saved, expectedDraftVersion: 1, id: "source-1", userId: "admin-1" });
     return { currentBinding, revisions, save, test, tester, transaction, tx, write };
   }
 
@@ -1580,7 +1575,7 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     const state = fixture();
     state.test.mockResolvedValueOnce({
       method: "provider_search", normalizedSourceCount: 0, probeBinding: PROBE_BINDING,
-      protocol: draft.protocol, sourceAttribution: "provider_unavailable", status: "available"
+      protocol: draft.protocol, status: "available"
     });
     await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
     expect(state.transaction).not.toHaveBeenCalled();
@@ -1588,8 +1583,9 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
   });
 
   it("refuses DeepSeek's retired hosted Search before any provider request", async () => {
-    const state = fixture("deepseek_responses_web_search");
-    await expect(state.save()).rejects.toMatchObject({ code: "search_provider_model_not_available" });
+    const state = fixture();
+    await expect(state.save({ ...draft, protocol: "deepseek_responses_web_search" }))
+      .rejects.toMatchObject({ code: "search_configuration_invalid" });
     expect(state.test).not.toHaveBeenCalled();
     expect(state.write).not.toHaveBeenCalled();
   });
@@ -1600,6 +1596,37 @@ describe.each(["create", "save"] as const)("Search %s publication binding", (ope
     await expect(state.save()).rejects.toMatchObject({ code: "search_test_failed" });
     expect(state.test).not.toHaveBeenCalled();
     expect(state.transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe("a stored source of DeepSeek's retired hosted Search", () => {
+  it("lists as unavailable, with nothing to configure, and the page still decodes", async () => {
+    // The 2026-10-24 upgrade archived it; its rows still name the protocol.
+    const retired = { ...draft, protocol: "deepseek_responses_web_search", providerModelId: "technical-1" };
+    const evidence = { checkedAt: NOW.toISOString(), method: "provider_search", normalizedSourceCount: 0,
+      protocol: retired.protocol, status: "available" };
+    const stored = {
+      ...child(draft),
+      activeRevision: { ...activeRevision(draft), configuration: retired, draftHash: "retired-hash", validationEvidence: evidence },
+      draft: retired,
+      draftTestEvidence: evidence,
+      testedDraftHash: "retired-hash"
+    };
+    // Its draft no longer types as a current one.
+    const row = option([stored as unknown as ReturnType<typeof child>], { archivedAt: NOW, displayName: "DeepSeek Search",
+      enabled: false, id: "source-retired", optionId: "deepseek-native-web-search", templateKey: "search:deepseek" });
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [providerModel()]) },
+      searchOption: { findMany: vi.fn(async () => [row]) },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+    } as unknown as PrismaClient;
+    const catalog = await createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } }).list();
+
+    expect(catalog.integrations).toEqual([expect.objectContaining({
+      archivedAt: NOW.toISOString(), configurable: false, configuration: null, draftTestEvidence: null,
+      executionModes: [], id: "source-retired", ready: false, readiness: "source_unavailable"
+    })]);
+    expect(decodeAdminSearchCatalog(JSON.parse(JSON.stringify({ search: catalog })))).not.toBeNull();
   });
 });
 

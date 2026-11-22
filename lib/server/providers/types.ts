@@ -360,14 +360,6 @@ export type ProviderSearchPolicy =
       strategyId: "perplexity-tool-search";
     }>
   | Readonly<{
-      maxOutputTokens: number;
-      modelCapabilities: ProviderModelCapabilities;
-      modelId: string;
-      provider: "deepseek";
-      reasoningPolicy: ProviderSearchReasoningPolicy;
-      strategyId: "deepseek-responses-web-search";
-    }>
-  | Readonly<{
       /** The raw results API generates no model output. */
       maxOutputTokens?: never;
       /** The API's usage label, never the model that carries the key. */
@@ -517,9 +509,8 @@ export type ProviderSearchResult = {
   noResults?: true;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
-  /** Omitted by legacy/test adapters means normal source attribution. Only
-   * the dedicated DeepSeek adapter may emit `provider_unavailable`. */
-  sourceAttribution?: "available" | "provider_unavailable";
+  /** Omitted by legacy/test adapters means normal source attribution. */
+  sourceAttribution?: "available";
   sources: readonly SearchSource[];
   usage: ModelRunUsage;
 };

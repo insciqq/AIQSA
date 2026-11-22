@@ -303,11 +303,13 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption,
   };
 }
 
+/** The engine request, or null for a protocol this release does not search
+ * through, such as DeepSeek's retired hosted Search in a frozen plan. */
 function queryOnlyRequest(
   correlationId: string,
   option: NormalizedSearchPlanOption,
   query: ValidatedSearchQuery
-): ProviderSearchRequest {
+): ProviderSearchRequest | null {
   const configured = searchExecutionConfiguration(option, { query });
   let searchPolicy: ProviderSearchPolicy;
   if (option.protocol === "openrouter_perplexity_chat") {
@@ -341,18 +343,6 @@ function queryOnlyRequest(
       reasoningPolicy: configured.reasoningPolicy,
       strategyId: "openai-responses-web-search"
     };
-  } else if (
-    option.protocol === "deepseek_responses_web_search" &&
-    option.provider === "deepseek"
-  ) {
-    searchPolicy = {
-      maxOutputTokens: configured.maxOutputTokens,
-      modelCapabilities: configured.capabilities,
-      modelId: option.modelId ?? "",
-      provider: "deepseek",
-      reasoningPolicy: configured.reasoningPolicy,
-      strategyId: "deepseek-responses-web-search"
-    };
   } else if (option.protocol === "deepseek_search_api" && option.provider === "deepseek") {
     searchPolicy = {
       modelId: option.modelId ?? "",
@@ -378,7 +368,7 @@ function queryOnlyRequest(
       strategyId: "anthropic-web-search"
     };
   } else {
-    throw new Error("search_protocol_not_supported");
+    return null;
   }
   return {
     correlationId,
@@ -400,19 +390,17 @@ async function consumeProviderSearch(
   costUsd: number | null;
   findings: string;
   noResults?: true;
-  sourceAttribution: "available" | "provider_unavailable";
   sources: SearchSource[];
   usage: ModelRunUsage;
 }> {
   if (!runtime.searchAdapter) throw new Error("search_adapter_not_available");
   const result = await runtime.searchAdapter.search(request, { ...(dispatch ? { dispatch } : {}), signal, timeoutMs });
   const costUsd = result.costUsd ?? null;
-  const sourceAttribution = result.sourceAttribution ?? "available";
   if (result.noResults === true) {
     // An explicit empty answer of a raw results API is an ordinary outcome:
     // no sources and no provider text, only the server's own words.
     if (option.protocol !== "deepseek_search_api" || option.provider !== "deepseek" || result.sources.length > 0 ||
-      result.findings !== SEARCH_NO_RESULTS_FINDINGS || sourceAttribution !== "available") {
+      result.findings !== SEARCH_NO_RESULTS_FINDINGS) {
       throw new ProviderSearchExecutionError({
         artifacts: result.artifacts,
         code: "search_sources_invalid",
@@ -420,17 +408,10 @@ async function consumeProviderSearch(
         usage: result.usage
       });
     }
-    return { costUsd, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, sourceAttribution, sources: [], usage: result.usage };
+    return { costUsd, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, sources: [], usage: result.usage };
   }
   const sources = engineSearchSources(result.sources);
-  const providerSourcesUnavailable =
-    sourceAttribution === "provider_unavailable" &&
-    option.provider === "deepseek" &&
-    option.protocol === "deepseek_responses_web_search";
-  if (
-    (sourceAttribution === "provider_unavailable" && !providerSourcesUnavailable) ||
-    (sources.length === 0 && !providerSourcesUnavailable)
-  ) {
+  if (sources.length === 0) {
     throw new ProviderSearchExecutionError({
       artifacts: result.artifacts,
       code: "search_sources_invalid",
@@ -452,7 +433,6 @@ async function consumeProviderSearch(
   return {
     costUsd,
     findings,
-    sourceAttribution,
     sources,
     usage: result.usage
   };
@@ -512,6 +492,13 @@ async function executeOne(input: Readonly<{
     });
   }
   const request = queryOnlyRequest(invocationId, input.option, input.query);
+  if (!request) {
+    logEvent("tool_execution", {
+      tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
+      outcome: "failed", code: "search_protocol_not_supported"
+    });
+    return failedSearchExecution({ call: input.call, failure: { code: "search_protocol_not_supported" }, option: input.option });
+  }
   const configured = searchExecutionConfiguration(input.option);
   const effectiveTimeoutMs = Math.min(
     configured.timeoutMs,
@@ -604,9 +591,7 @@ async function executeOne(input: Readonly<{
     logEvent("tool_execution", {
       tool_kind: "search", stage: "execution", engine_index: input.engineIndex,
       duration_ms: performance.now() - startedAt,
-      outcome: result.sourceAttribution === "provider_unavailable" ? "degraded" : "completed",
-      ...(result.sourceAttribution === "provider_unavailable"
-        ? { code: "provider_sources_unavailable", action: "degrade" as const } : {}),
+      outcome: "completed",
       count: result.sources.length
     });
     return {
@@ -617,19 +602,13 @@ async function executeOne(input: Readonly<{
       modelId: input.option.modelId,
       optionId: input.option.optionId,
       provider: input.option.provider,
-      // The protocol vouches for a source-free result: DeepSeek's hosted
-      // Search without URLs, or a raw results API that found nothing.
-      ...(result.sourceAttribution === "provider_unavailable" || result.noResults
-        ? { protocol: input.option.protocol }
-        : {}),
+      // The protocol vouches for a source-free result: a raw results API that found nothing.
+      ...(result.noResults ? { protocol: input.option.protocol } : {}),
       revisionId: input.option.revisionId,
-      sourceAttribution: result.sourceAttribution,
+      sourceAttribution: "available",
       sources: result.sources,
       status: "complete",
-      usage: result.usage,
-      ...(result.sourceAttribution === "provider_unavailable"
-        ? { warning: "provider_sources_unavailable" }
-        : {})
+      usage: result.usage
     };
   } catch (error) {
     const providerFailure = isProviderSearchExecutionError(error) ? error : null;
