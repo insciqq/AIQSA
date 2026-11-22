@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPUTER_TOOL_NAMES } from "@/lib/contracts/computer";
-import { createFakeComputerOps, type ComputerOpCall } from "../connect/computerPort";
+import type { ComputerOpCall } from "../connect/computerPort";
+import { createFakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import type { FrozenComputerBinding } from "./computerBinding";
 import {
   COMPUTER_TOOL_EFFECTS,

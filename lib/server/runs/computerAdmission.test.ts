@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { COMPUTER_REFUSALS } from "@/lib/contracts/computer";
-import { createFakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import { freezeComputerBinding } from "../tools/computerBinding";
 import { admitComputer, type ComputerAdmissionDeps, type ComputerAdmissionInput } from "./computerAdmission";
 

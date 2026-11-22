@@ -3,7 +3,7 @@ import sharp from "sharp";
 import { describe, expect, it, vi } from "vitest";
 import { COMPUTER_TOOL_NAMES } from "@/lib/contracts/computer";
 import { SUBAGENT_TOOL_GROUPS } from "@/lib/contracts/subagents";
-import { createFakeComputerOps, type FakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps, type FakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import type { ProviderRunRequest } from "../providers/types";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolCallBounds } from "../runs/turnDeadline";

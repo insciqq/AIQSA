@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
-import { createFakeComputerOps, type FakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps, type FakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import type { ConnectorTurn } from "../connectors/turn";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";

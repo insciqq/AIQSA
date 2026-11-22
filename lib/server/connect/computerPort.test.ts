@@ -1,7 +1,8 @@
 import { COMPUTER_ERROR_CODES, COMPUTER_FAILURE_CODES, COMPUTER_REFUSALS } from "@/lib/contracts/computer";
 import { CONNECT_OP_ERROR_CODES } from "@/lib/contracts/connect";
 import failureCodes from "../observability/failureCodes.json";
-import { createFakeComputerOps, getComputerOps, setComputerOps, type ComputerOpCall } from "./computerPort";
+import { getComputerOps, setComputerOps, type ComputerOpCall } from "./computerPort";
+import { createFakeComputerOps } from "./fakeComputerOps.testFixtures";
 
 const USER = "user-1";
 const DEVICE = "0b6f1c2e-6a49-4c3e-9a51-3f1f0d2b7c11";

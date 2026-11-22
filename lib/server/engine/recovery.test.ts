@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { captureRunObservation } from "@/tests/support/runObservation";
-import { createFakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import { freezeComputerBinding } from "../tools/computerBinding";
 import { NATIVE_RUN_INTERRUPTED, reconcileNativeRuns, type NativeOrphanRun, type NativeRecoveryDeps } from "./recovery";
 

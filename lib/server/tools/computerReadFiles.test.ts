@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ConnectOpArgs } from "@/lib/contracts/connect";
 import { COMPUTER_FILE_FETCH_LIMITS, createComputerFileBudget, type ComputerFileBudget } from "../connect/computerFileFetch";
 import type { ComputerOpCall, ComputerOpOutcome, ComputerOps } from "../connect/computerPort";
-import { createFakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import { projectTranscript, type TranscriptToolResultItem } from "../engine/transcript";
 import { DocumentParserError } from "../parsing/errors";
 import type { DocumentParseInput, ParsedDocument } from "../parsing/types";

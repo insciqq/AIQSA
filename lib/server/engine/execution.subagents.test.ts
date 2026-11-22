@@ -9,7 +9,7 @@ import type { SubagentTypeSnapshot } from "../subagents/ports";
 import type { FrozenSubagentDefault } from "../subagents/typeCatalog";
 import { FakeSubagentBackgroundControl, FakeSubagentTypeResolver } from "../../../tests/support/subagentPorts";
 import { activeRunControllerRegistry } from "../runs/activeRunControllerRegistry";
-import { createFakeComputerOps } from "../connect/computerPort";
+import { createFakeComputerOps } from "../connect/fakeComputerOps.testFixtures";
 import { computerTurnGuidance, freezeComputerBinding } from "../tools/computerBinding";
 import { subagentCatalogItem } from "./conversation";
 import { createNativeRunExecutionResponse, type NativeEngineDeps } from "./execution";
