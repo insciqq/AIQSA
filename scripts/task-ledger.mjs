@@ -28,13 +28,12 @@ const REQUIRED_SECTIONS = [
   "Goal",
   "Context",
   "Scope",
-  "Out Of Scope",
   "Acceptance Criteria",
-  "Plan",
-  "Progress",
   "Decisions",
   "Verification"
 ];
+// Optional sections may be omitted; when present they must appear once and not be empty.
+const OPTIONAL_SECTIONS = ["Out Of Scope", "Plan", "Progress"];
 const READINESS_PLACEHOLDERS = [
   "Link the current owner documents and relevant code paths before promotion.",
   "Define the implementation slice.",
@@ -113,13 +112,23 @@ function isGitRepository(root) {
   return existsSync(path.join(root, ".git"));
 }
 
-function isIgnoredTask(root, relativePath) {
-  if (!isGitRepository(root)) return true;
-  const result = spawnSync("git", ["--work-tree", root, "check-ignore", "-q", "--", portable(relativePath)], {
+// One git process for the whole ledger; a tracked file is never reported as ignored.
+function ignoredTaskPaths(root, relativePaths) {
+  const paths = relativePaths.map(portable);
+  if (!isGitRepository(root)) return new Set(paths);
+  if (!paths.length) return new Set();
+  const result = spawnSync("git", ["--work-tree", root, "check-ignore", "--stdin", "-z"], {
     cwd: root,
-    encoding: "utf8"
+    encoding: "utf8",
+    input: `${paths.join("\0")}\0`,
+    maxBuffer: 64 * 1024 * 1024
   });
-  return result.status === 0;
+  if (result.status !== 0 && result.status !== 1) return new Set();
+  return new Set(result.stdout.split("\0").filter(Boolean));
+}
+
+function isIgnoredTask(root, relativePath) {
+  return ignoredTaskPaths(root, [relativePath]).has(portable(relativePath));
 }
 
 export function parseDependencies(value) {
@@ -161,7 +170,7 @@ function groupDirectory(directory, group) {
   return destination;
 }
 
-function discoverNamespace(root, relativeDirectory) {
+function discoverNamespace(root, relativeDirectory, { readBodies = true } = {}) {
   const directory = path.join(root, relativeDirectory);
   const invalidFiles = [];
   const records = [];
@@ -184,7 +193,7 @@ function discoverNamespace(root, relativeDirectory) {
         invalidFiles.push(relativePath);
         continue;
       }
-      const body = readFileSync(absolutePath, "utf8");
+      const body = readBodies ? readFileSync(absolutePath, "utf8") : "";
       records.push({
         blockedBy: field(body, "Blocked by"),
         body,
@@ -221,10 +230,11 @@ function indexRecords(records) {
   return { byId, byStem };
 }
 
-export function readTaskLedger(root = process.cwd()) {
+// Without `archive`, archived tasks are indexed by filename only: enough to keep stems and ids unique.
+export function readTaskLedger(root = process.cwd(), { archive: readArchive = true } = {}) {
   root = path.resolve(root);
   const tasks = discoverNamespace(root, TASK_DIRECTORY);
-  const archive = discoverNamespace(root, TASK_ARCHIVE_DIRECTORY);
+  const archive = discoverNamespace(root, TASK_ARCHIVE_DIRECTORY, { readBodies: readArchive });
   const drafts = discoverNamespace(root, TASK_DRAFT_DIRECTORY);
   const { byId, byStem } = indexRecords(tasks.records);
   const archiveIndex = indexRecords(archive.records);
@@ -267,10 +277,13 @@ function cycleErrors(records) {
 
 function contentErrors(record) {
   const errors = [];
-  for (const name of REQUIRED_SECTIONS) {
+  for (const name of [...REQUIRED_SECTIONS, ...OPTIONAL_SECTIONS]) {
     const occurrences = sectionOccurrences(record.body, name);
+    if (occurrences.length === 0 && OPTIONAL_SECTIONS.includes(name)) continue;
     if (occurrences.length !== 1) {
-      errors.push(`${record.relativePath}: expected exactly one ## ${name} section`);
+      errors.push(
+        `${record.relativePath}: expected ${OPTIONAL_SECTIONS.includes(name) ? "at most" : "exactly"} one ## ${name} section`
+      );
       continue;
     }
     if (!section(record.body, name)) {
@@ -288,12 +301,6 @@ function readinessErrors(record) {
     }
   }
 
-  const plan = section(record.body, "Plan") ?? "";
-  if (!/-\s*\[[ xX]\]\s+\S/mu.test(plan)) {
-    errors.push(`${record.relativePath}: ## Plan needs at least one concrete checkbox milestone`);
-  }
-
-  const verification = section(record.body, "Verification") ?? "";
   const evidence = verificationEvidence(record.body);
   if (evidence.planned + evidence.passed + evidence.unavailable === 0) {
     errors.push(`${record.relativePath}: ## Verification needs at least one concrete planned or unavailable check`);
@@ -361,17 +368,8 @@ function durableRationaleErrors(record, root, { requireSettled = false } = {}) {
 
 function completionReadiness(record, root) {
   const errors = [];
-  const plan = section(record.body, "Plan") ?? "";
-  const uncheckedPlanItems = [...plan.matchAll(/^-\s*\[\s\]\s+\S.*$/gmu)].length;
-  if (uncheckedPlanItems > 0) {
-    errors.push(`${record.relativePath}: ## Plan has ${uncheckedPlanItems} unchecked milestone(s); remove or resolve every item before completion`);
-  }
-
   if ((section(record.body, "Progress") ?? "").trim() === "- Not started.") {
-    errors.push(`${record.relativePath}: ## Progress must replace the scaffold value \`- Not started.\` before completion`);
-  }
-  if ((section(record.body, "Decisions") ?? "").trim() === "- None yet.") {
-    errors.push(`${record.relativePath}: ## Decisions must replace the scaffold value \`- None yet.\`; use \`- None.\` when no task-local decision was needed`);
+    errors.push(`${record.relativePath}: ## Progress still holds the scaffold value \`- Not started.\`; record the handoff state or remove the section before completion`);
   }
 
   const evidence = verificationEvidence(record.body);
@@ -383,15 +381,19 @@ function completionReadiness(record, root) {
   return { errors, evidence };
 }
 
-export function validateTaskLedger(root = process.cwd()) {
-  const ledger = readTaskLedger(root);
+// Transitions pass `archive: false`: the archive only grows through `complete`, so revalidating every
+// archived file on each transition costs time without protecting the task being moved. `check` validates it.
+export function validateTaskLedger(root = process.cwd(), { archive: validateArchive = true } = {}) {
+  const ledger = readTaskLedger(root, { archive: validateArchive });
   const errors = [];
   errors.push(...ledger.tasks.invalidFiles.map(
     (filename) => `${filename}: task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
   ));
-  errors.push(...ledger.archive.invalidFiles.map(
-    (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
-  ));
+  if (validateArchive) {
+    errors.push(...ledger.archive.invalidFiles.map(
+      (filename) => `${filename}: archived task filenames must be <YYYYMMDDHHMMSSmmm>-<kebab-slug>.md; only README.md is exempt`
+    ));
+  }
 
   for (const [stem, matches] of ledger.byStem) {
     if (matches.length > 1) errors.push(`${stem}: duplicate task stem`);
@@ -400,16 +402,21 @@ export function validateTaskLedger(root = process.cwd()) {
     if (matches.length > 1) errors.push(`${id}: duplicate task id`);
   }
   for (const [stem, matches] of ledger.archive.byStem) {
-    if (matches.length > 1) errors.push(`${stem}: duplicate archived task stem`);
+    if (validateArchive && matches.length > 1) errors.push(`${stem}: duplicate archived task stem`);
     if (ledger.byStem.has(stem)) errors.push(`${stem}: task exists in both the open queue and completion archive`);
   }
   for (const [id, matches] of ledger.archive.byId) {
-    if (matches.length > 1) errors.push(`${id}: duplicate archived task id`);
+    if (validateArchive && matches.length > 1) errors.push(`${id}: duplicate archived task id`);
     if (ledger.byId.has(id)) errors.push(`${id}: task id exists in both the open queue and completion archive`);
   }
 
-  for (const record of ledger.archive.records) {
-    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+  const archiveRecords = validateArchive ? ledger.archive.records : [];
+  const ignored = ignoredTaskPaths(
+    ledger.root,
+    [...archiveRecords, ...ledger.tasks.records].map((record) => record.relativePath)
+  );
+  for (const record of archiveRecords) {
+    if (!ignored.has(record.relativePath)) {
       errors.push(`${record.relativePath}: archived task instances must be ignored and must not be tracked by public Git`);
     }
     if (!validTimestampId(record.id)) {
@@ -421,7 +428,7 @@ export function validateTaskLedger(root = process.cwd()) {
   }
 
   for (const record of ledger.tasks.records) {
-    if (!isIgnoredTask(ledger.root, record.relativePath)) {
+    if (!ignored.has(record.relativePath)) {
       errors.push(`${record.relativePath}: task instances must be ignored and must not be tracked by public Git`);
     }
     if (!validTimestampId(record.id)) {
@@ -468,8 +475,8 @@ export function validateTaskLedger(root = process.cwd()) {
   return { errors, ledger };
 }
 
-function assertValid(root) {
-  const result = validateTaskLedger(root);
+function assertValid(root, { archive = false } = {}) {
+  const result = validateTaskLedger(root, { archive });
   if (result.errors.length) throw new Error(`task ledger is invalid:\n- ${result.errors.join("\n- ")}`);
   return result.ledger;
 }
@@ -525,7 +532,7 @@ export function createTask({ root = process.cwd(), slug, summary, date = new Dat
     throw new Error(`${relativePath} must be ignored before local task creation`);
   }
   mkdirSync(path.dirname(destination), { recursive: true });
-  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Out Of Scope\n\n- Unrelated product changes.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Plan\n\n- [ ] Replace this scaffold with concrete implementation milestones.\n\n## Progress\n\n- Not started.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, { encoding: "utf8", flag: "wx" });
+  writeFileSync(destination, `# ${stem}\n\nStatus: backlog\nDepends on: none\nBlocked by: none\nDurable rationale: pending\n\n## Goal\n\n${summary.trim()}\n\n## Context\n\n- Link the current owner documents and relevant code paths before promotion.\n\n## Scope\n\n- Define the implementation slice.\n\n## Acceptance Criteria\n\n- The goal is observable and verified.\n\n## Decisions\n\n- None yet.\n\n## Verification\n\n- [ ] Replace this scaffold with exact focused checks.\n`, { encoding: "utf8", flag: "wx" });
   return stem;
 }
 
@@ -618,7 +625,7 @@ export function restoreTask({ root = process.cwd(), reference, group = null }) {
   }
   mkdirSync(path.dirname(destination), { recursive: true });
   renameSync(record.path, destination);
-  const validation = validateTaskLedger(ledger.root);
+  const validation = validateTaskLedger(ledger.root, { archive: false });
   if (validation.errors.length) {
     renameSync(destination, record.path);
     throw new Error(`draft task cannot be restored:\n- ${validation.errors.join("\n- ")}`);
@@ -722,7 +729,7 @@ export function runTaskCli(argv = process.argv.slice(2)) {
   }
   if (command === "check") {
     if (arguments_.length || group !== null) throw new Error("usage: task-ledger check [--root <path>]; check validates every group");
-    assertValid(root);
+    assertValid(root, { archive: true });
     return "Task ledger is valid.";
   }
   if (command === "block") {

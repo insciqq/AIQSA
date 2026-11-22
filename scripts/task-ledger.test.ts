@@ -27,16 +27,22 @@ function fixture() {
 }
 
 type TaskOptions = {
+  decisions?: string;
   dependencies?: string;
   group?: string;
   plan?: string;
+  progress?: string;
   rationale?: string;
+  // "old" writes all nine sections; "new" omits the optional Out Of Scope, Plan and Progress.
+  shape?: "new" | "old";
   verification?: string;
 };
 
 function task(root: string, stem: string, status: string, options: TaskOptions = {}) {
   const directory = path.join(root, "agent_docs/tasks/queue", options.group ?? "");
   mkdirSync(directory, { recursive: true });
+  const optional = (heading: string, body: string) =>
+    options.shape === "new" ? "" : `## ${heading}\n\n${body}\n\n`;
   writeFileSync(
     path.join(directory, `${stem}.md`),
     `# ${stem}
@@ -58,25 +64,13 @@ Deliver the fixture outcome.
 
 - Implement the fixture slice.
 
-## Out Of Scope
-
-- Product runtime behavior outside this fixture.
-
-## Acceptance Criteria
+${optional("Out Of Scope", "- Product runtime behavior outside this fixture.")}## Acceptance Criteria
 
 - The fixture behavior is observable.
 
-## Plan
+${optional("Plan", options.plan ?? "- [x] Implement the fixture milestone.")}${optional("Progress", options.progress ?? "- Fixture implementation recorded.")}## Decisions
 
-${options.plan ?? "- [x] Implement the fixture milestone."}
-
-## Progress
-
-- Fixture implementation recorded.
-
-## Decisions
-
-- No lasting decision.
+${options.decisions ?? "- No lasting decision."}
 
 ## Verification
 
@@ -192,6 +186,27 @@ describe("local task ledger command", () => {
     expect(run(root, "park", stem, "--group", "maintenance").stderr).toContain("not a file or symlink");
     expect(existsSync(path.join(directory, `${stem}.md`))).toBe(true);
     expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("reports tracked task files in the queue and the archive", () => {
+    const root = fixture();
+    const queued = "20260801120000001-tracked";
+    const archived = "20260701120000001-tracked-prior";
+    const untracked = "20260801120000002-untracked";
+    task(root, queued, "backlog");
+    task(root, untracked, "backlog");
+    archivedTask(root, archived);
+    expect(run(root, "check").status).toBe(0);
+    const added = spawnSync("git", ["add", "-f", `agent_docs/tasks/queue/${queued}.md`, `agent_docs/tasks/archive/${archived}.md`], {
+      cwd: root,
+      encoding: "utf8"
+    });
+    expect(added.status).toBe(0);
+    const result = run(root, "check");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`queue/${queued}.md: task instances must be ignored`);
+    expect(result.stderr).toContain(`archive/${archived}.md: archived task instances must be ignored`);
+    expect(result.stderr).not.toContain(untracked);
   });
 
   it("keeps task identifiers globally unique across named queues and their archives", () => {
@@ -312,13 +327,21 @@ describe("local task ledger command", () => {
     expect(result.stderr).toContain("does not resolve to exactly one open task");
   });
 
-  it("requires finished work and positive verification before completion", () => {
+  it("requires finished verification and positive evidence before completion", () => {
     const root = fixture();
     const unchecked = "20260801120000001-unchecked";
-    task(root, unchecked, "in_progress", { plan: "- [ ] Finish the fixture." });
+    task(root, unchecked, "in_progress", {
+      verification: "- [x] focused check passed.\n- [ ] browser check."
+    });
     expect(run(root, "complete", unchecked).stderr)
-      .toContain("## Plan has 1 unchecked milestone");
+      .toContain("no unchecked checks before completion");
     rmSync(path.join(root, "agent_docs/tasks/queue", `${unchecked}.md`));
+
+    const pending = "20260801120000004-pending";
+    task(root, pending, "in_progress", { rationale: "pending" });
+    expect(run(root, "complete", pending).stderr)
+      .toContain("Durable rationale must be settled before completion");
+    rmSync(path.join(root, "agent_docs/tasks/queue", `${pending}.md`));
 
     const unavailable = "20260801120000002-unavailable";
     task(root, unavailable, "in_progress", {
@@ -335,5 +358,112 @@ describe("local task ledger command", () => {
         "- Not run: provider smoke — credentials are unavailable"
     });
     expect(run(root, "complete", mixed).status).toBe(0);
+  });
+
+  it("keeps old-shape tasks valid and no longer gates on Plan boxes or the Decisions scaffold", () => {
+    const root = fixture();
+    const old = "20260801120000001-old-shape";
+    task(root, old, "backlog", {
+      decisions: "- None yet.",
+      plan: "- [ ] Optional milestone left open.\n- Plain plan note."
+    });
+    expect(run(root, "check").status).toBe(0);
+    expect(run(root, "promote", old).status).toBe(0);
+    expect(run(root, "start", old).status).toBe(0);
+    const completed = run(root, "complete", old);
+    expect(completed.stderr).toBe("");
+    expect(completed.status).toBe(0);
+
+    const plainPlan = "20260801120000002-plain-plan";
+    task(root, plainPlan, "backlog", { plan: "1. Read the code.\n2. Change it." });
+    expect(run(root, "promote", plainPlan).status).toBe(0);
+
+    const scaffoldProgress = "20260801120000003-scaffold-progress";
+    task(root, scaffoldProgress, "in_progress", { progress: "- Not started." });
+    expect(run(root, "complete", scaffoldProgress).stderr)
+      .toContain("## Progress still holds the scaffold value");
+  });
+
+  it("accepts new-shape tasks without the optional sections and validates them when present", () => {
+    const root = fixture();
+    const lean = "20260801120000001-new-shape";
+    task(root, lean, "backlog", { shape: "new" });
+    expect(run(root, "check").status).toBe(0);
+    expect(run(root, "promote", lean).status).toBe(0);
+    expect(run(root, "start", lean).status).toBe(0);
+    expect(run(root, "complete", lean).status).toBe(0);
+
+    const file = path.join(root, "agent_docs/tasks/queue/20260801120000002-broken.md");
+    task(root, "20260801120000002-broken", "backlog", { shape: "new" });
+    const body = readFileSync(file, "utf8");
+    writeFileSync(file, `${body}\n## Plan\n\n## Progress\n\n- One.\n\n## Progress\n\n- Two.\n`);
+    const result = run(root, "check");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("## Plan must not be empty");
+    expect(result.stderr).toContain("expected at most one ## Progress section");
+
+    writeFileSync(file, body.replace(/## Decisions\n\n[^\n]*\n\n/u, ""));
+    expect(run(root, "check").stderr).toContain("expected exactly one ## Decisions section");
+  });
+
+  it("moves tasks without revalidating the archive while check still reports a broken archive file", () => {
+    const root = fixture();
+    const archive = path.join(root, "agent_docs/tasks/archive");
+    writeFileSync(path.join(archive, "20260701120000001-reopened.md"), "Status: in_progress\n");
+    writeFileSync(path.join(archive, "not-a-task.md"), "stray\n");
+    const stem = "20260801120000001-moving";
+    task(root, stem, "backlog");
+
+    for (const command of ["promote", "start", "list", "complete"]) {
+      const result = run(root, command, ...(command === "list" ? [] : [stem]));
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    }
+    expect(existsSync(path.join(archive, `${stem}.md`))).toBe(true);
+
+    const checked = run(root, "check");
+    expect(checked.status).toBe(1);
+    expect(checked.stderr).toContain("20260701120000001-reopened.md: archived task Status must be completed");
+    expect(checked.stderr).toContain("archive/not-a-task.md: archived task filenames must be");
+
+    // Uniqueness against the archive still holds on transitions.
+    task(root, "20260701120000001-reused", "backlog");
+    expect(run(root, "list").stderr).toContain("task id exists in both the open queue and completion archive");
+  });
+
+  it("scaffolds only the required sections and keeps the placeholder and Verification gates", () => {
+    const root = fixture();
+    expect(run(root, "new", "lean-task", "--summary", "Lean slice").status).toBe(0);
+    const filename = readdirSync(path.join(root, "agent_docs/tasks/queue"))
+      .find((entry) => entry !== "README.md")!;
+    const file = path.join(root, "agent_docs/tasks/queue", filename);
+    const stem = filename.slice(0, -3);
+    const scaffold = readFileSync(file, "utf8");
+    for (const heading of ["Out Of Scope", "Plan", "Progress"]) {
+      expect(scaffold).not.toContain(`## ${heading}`);
+    }
+
+    const refused = run(root, "promote", stem);
+    expect(refused.status).toBe(1);
+    expect(refused.stderr).toContain("replace scaffold placeholder");
+
+    writeFileSync(file, scaffold
+      .replace("- Link the current owner documents and relevant code paths before promotion.", "- `scripts/x.mjs`.")
+      .replace("- Define the implementation slice.", "- Change x.")
+      .replace("- The goal is observable and verified.", "- x works.")
+      .replace("- [ ] Replace this scaffold with exact focused checks.", "Checks follow."));
+    expect(run(root, "promote", stem).stderr)
+      .toContain("## Verification needs at least one concrete planned or unavailable check");
+
+    writeFileSync(file, readFileSync(file, "utf8").replace("Checks follow.", "- [ ] focused vitest."));
+    expect(run(root, "promote", stem).status).toBe(0);
+    expect(run(root, "start", stem).status).toBe(0);
+    expect(run(root, "complete", stem).stderr).toContain("Verification must contain checked results");
+
+    writeFileSync(file, readFileSync(file, "utf8").replace("- [ ] focused vitest.", "- [x] focused vitest passed."));
+    expect(run(root, "complete", stem).stderr).toContain("Durable rationale must be settled before completion");
+
+    writeFileSync(file, readFileSync(file, "utf8").replace("Durable rationale: pending", "Durable rationale: none"));
+    expect(run(root, "complete", stem).status).toBe(0);
   });
 });
