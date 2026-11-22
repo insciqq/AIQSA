@@ -920,6 +920,43 @@ describe("memory note and past-chat search admission", () => {
     expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
   });
 
+  it("freezes the chat's Memory mode it was prepared for, which admission checks again under the chat lock", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const deps = { ...harness.deps, ...memoryNoteDeps() };
+    expect(preparedFrom(await prepareRun(deps, sendInput())).preparedChatMode).toBe("NORMAL");
+    expect(preparedFrom(await prepareRun(deps, sendInput(successBody(), { memoryMode: "EXCLUDED" }))).preparedChatMode).toBe("EXCLUDED");
+    expect(preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { chat: { defaultModelId: "fake-qsa",
+      defaultProvider: "fake", id: "chat-1", memoryMode: "EXCLUDED", projectMemory: null } }))).preparedChatMode).toBe("EXCLUDED");
+  });
+
+  it("lets only the user's own message change the note: never a turn the server wrote, sent or regenerated", async () => {
+    const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+    const deps = { ...harness.deps, ...memoryNoteDeps() };
+    const readOnly = { changes: false, offers: true, pastChats: true, version: 1 };
+    // A sub-agent wake-up and a browser sign-in request read the note and may search, and never change it.
+    const wakeUp = preparedFrom(await prepareRun(deps, { ...sendInput(), origin: "wake_up", serverAuthoredInput: true }));
+    expect(wakeUp.normalizedRequest.memory?.changes).toBe(false);
+    expect(wakeUp.normalizedRequest.memory).toEqual(readOnly);
+    expect(wakeUp.normalizedRequest.prompt.memoryNote).toBe(renderMemoryNoteForPrompt(NOTE));
+    const signIn = preparedFrom(await prepareRun(deps, { ...sendInput(), serverAuthoredInput: true,
+      systemTurnKind: "browser_sign_in_request" }));
+    expect(signIn.normalizedRequest.memory).toEqual(readOnly);
+    // The continuation after an MCP Allow goes on with the user's own turn.
+    const continued = preparedFrom(await prepareRun(deps, { ...sendInput(), serverAuthoredInput: true,
+      systemTurnKind: "mcp_approval_continuation" }));
+    expect(continued.normalizedRequest.memory).toEqual({ ...readOnly, changes: true });
+    // A regenerated answer keeps what its stored message is.
+    for (const systemTurnKind of ["subagent_callback", "browser_sign_in_request"] as const) {
+      const regenerated = preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { userMessage: {
+        content: textMessageContent("Shared question"), id: "stored-user-message", scheduledTaskPrompt: false, systemTurnKind } })));
+      expect(regenerated.normalizedRequest.memory).toEqual(readOnly);
+    }
+    const ownAfterAllow = preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { userMessage: {
+      content: textMessageContent("Shared question"), id: "stored-user-message", scheduledTaskPrompt: false,
+      systemTurnKind: "mcp_approval_continuation" } })));
+    expect(ownAfterAllow.normalizedRequest.memory).toEqual({ ...readOnly, changes: true });
+  });
+
   it("admits a regeneration of a scheduled task's prompt only while its task has Memory on, whatever the chat's mode", async () => {
     const harness = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
     const memory = memoryNoteDeps();

@@ -25,6 +25,7 @@ import { workspacePromptContract, WORKSPACE_GUIDANCE_VERSION } from "../workspac
 import { textMessageContent } from "../../domain/content";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { decodeMcpRunSelection, MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { MCP_APPROVAL_CONTINUATION_KIND, type MessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import { mcpPersonalCredentialRejectedMessage } from "../../contracts/runs";
 import { decodeSkillIds, resolveEffectiveSkillIds, SKILL_MAX_PINNED, SKILL_MAX_AVAILABLE, type SkillBudgetFacts, type SkillValidationError } from "../../contracts/skills";
 import { resolveAssistantChatBaseline, resolveStandardChatBaseline, VISIBLE_ANSWER_CONTRACT } from "../../domain/promptTemplates";
@@ -355,6 +356,8 @@ export type RegenerateRunPreparationSource = Readonly<{
       scheduledTaskPrompt: boolean;
       /** Server-only: the prompt's task still exists with Memory on (never for a branch copy). */
       scheduledTaskMemory?: true;
+      /** Server-only: the stored message is a turn the server wrote (`Message.systemTurnKind`). */
+      systemTurnKind?: MessageSystemTurnKind;
     }>;
     /** Server-only: the computer the repeated run was admitted with, null for none; absent for a message with no run yet. */
     computer?: FrozenComputerBinding | null;
@@ -369,6 +372,8 @@ export type RunPreparationInput = Readonly<{
    */
   origin?: ConnectorTurn | "wake_up";
   serverAuthoredInput?: boolean;
+  /** Server-only: the turn the server wrote for this send (`Message.systemTurnKind`), with `serverAuthoredInput`. */
+  systemTurnKind?: MessageSystemTurnKind;
   mcpApprovalId?: string;
   body: Readonly<Record<string, unknown>> | null;
   skillCatalogDecision?: Readonly<{ operationKey: string; authorizeScope(): Promise<void> }>;
@@ -413,6 +418,11 @@ export type MaterializedPreparedRunData = {
   defaults: PreparedRunDefaultsData | null;
   expectedActiveLeafId: string | null;
   initialChatMode?: MemoryInitialChatMode;
+  /**
+   * The chat's Memory mode this run was prepared for (after a first send's switch to Temporary): what it reads of the
+   * note was decided for it, so admission refuses a chat whose mode changed since. Absent in snapshots frozen before.
+   */
+  preparedChatMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   mcpBindings?: McpRunPlanBinding[];
   /** A scheduled send: the relevant personal sources its Auto catalog could not offer. */
   scheduledUnavailableSources?: ScheduledUnavailableSource[];
@@ -648,6 +658,7 @@ export function materializePreparedRunData(prepared: PreparedRun): MaterializedP
     ...(prepared.initialChatMode
       ? { initialChatMode: mutablePreparedData<MemoryInitialChatMode>(prepared.initialChatMode) }
       : {}),
+    ...(prepared.preparedChatMode ? { preparedChatMode: prepared.preparedChatMode } : {}),
     ...(prepared.mcpBindings
       ? { mcpBindings: mutablePreparedData<McpRunPlanBinding[]>(prepared.mcpBindings) }
       : {}),
@@ -1916,9 +1927,16 @@ export async function prepareRun(
   const memoryTools = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
     toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
   // The note's own tool rides with the self-service tools of an interactive personal chat (`selfServiceToolsFor`): never
-  // an answer to a scheduled task's prompt, which reads and may search but never writes, nor an Assistant chat.
+  // an answer to a scheduled task's prompt, which reads and may search but never writes, nor an Assistant chat. Only the
+  // user's own message in this turn authorizes a change (operator rule): a turn the server wrote, a sub-agent wake-up or
+  // a browser sign-in request, never does, while the continuation after an MCP Allow goes on with the user's own turn.
+  // The note's service checks the stored message again when the change commits (`agentMemoryNote.ts`).
+  const serverTurnKind = input.source.kind === "regenerate"
+    ? input.source.source.userMessage.systemTurnKind
+    : input.serverAuthoredInput ? input.systemTurnKind ?? "server_authored" : undefined;
+  const userAuthoredTurn = serverTurnKind === undefined || serverTurnKind === MCP_APPROVAL_CONTINUATION_KIND;
   const memory: NormalizedRunRequest["memory"] = memoryAdmission && memoryNote ? Object.freeze({
-    changes: memoryTools && !scheduledPromptAnswer && !assistantRun,
+    changes: memoryTools && !scheduledPromptAnswer && !assistantRun && userAuthoredTurn,
     offers: memoryAdmission.switches.memorySuggestionsEnabled,
     pastChats: memoryTools && memoryAdmission.switches.pastChatSearchEnabled && memoryAdmission.searchAllowed,
     version: 1 as const
@@ -2177,6 +2195,7 @@ export async function prepareRun(
     ...(resolvedChatMode.initialChatMode
       ? { initialChatMode: resolvedChatMode.initialChatMode }
       : {}),
+    preparedChatMode: resolvedChatMode.mode,
     ...(mcpPlan?.ok ? { mcpBindings: [...mcpPlan.bindings] } : {}),
     ...(scheduledMissingSources.length > 0 ? { scheduledUnavailableSources: scheduledMissingSources } : {}),
     ...(skillRuns.length > 0

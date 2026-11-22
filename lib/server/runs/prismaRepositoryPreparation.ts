@@ -838,7 +838,13 @@ export async function admitPreparingRunWithClient(
       }
 
       // No admission reads Personal Memory's settings (operator decision 2026-11-22): the run's frozen request carries
-      // what it reads of the memory note.
+      // what it reads of the memory note, decided for the chat's mode at preparation. A chat another tab excluded,
+      // resumed or otherwise changed since is no longer that chat, so the message is refused as stale, to send again in
+      // the chat as it is now; nothing of it is written. An answer to a scheduled task's prompt reads by its task's
+      // switch, whatever its chat's mode, so it goes on.
+      if (input.preparedChatMode !== undefined && !scheduledPrompt && lockedChat.memoryMode !== input.preparedChatMode) {
+        throw new ActiveLeafConflictError();
+      }
       const scheduledOccurrence = input.admissionKind === "NORMAL_SEND" ? input.scheduledOccurrence : undefined;
 
       const run = await tx.modelRun.create({

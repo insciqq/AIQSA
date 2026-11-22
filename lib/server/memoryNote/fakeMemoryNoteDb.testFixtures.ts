@@ -15,7 +15,8 @@ type State = {
   active: Set<string>;
   notes: Map<string, NoteRow>;
   settings: Map<string, MemorySwitches>;
-  runs: Map<string, { userId: string; chatId: string; assistantMessageId: string | null; memoryMode?: MemoryNoteRunChat["memoryMode"] }>;
+  runs: Map<string, { userId: string; chatId: string; assistantMessageId: string | null; memoryMode?: MemoryNoteRunChat["memoryMode"];
+    userTurn?: boolean }>;
   offers: OfferRow[];
   legacy: LegacyRow[];
 };
@@ -69,7 +70,7 @@ export function fakeMemoryNoteDb(input: Readonly<{ activeUsers: readonly string[
     async runChat({ chatId, runId, userId }) {
       const run = state.runs.get(runId);
       return run && run.userId === userId && run.chatId === chatId
-        ? { assistantMessageId: run.assistantMessageId, memoryMode: run.memoryMode ?? "NORMAL" } : null;
+        ? { assistantMessageId: run.assistantMessageId, memoryMode: run.memoryMode ?? "NORMAL", userTurn: run.userTurn ?? true } : null;
     },
     async createOffer(offer) {
       if (state.offers.some((row) => row.runId === offer.runId && row.toolCallId === offer.toolCallId)) throw new Error("synthetic_unique_violation");

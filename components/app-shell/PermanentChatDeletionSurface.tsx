@@ -65,6 +65,7 @@ function errorText(reason: string | null): string {
   switch (reason) {
     case "BUSY": return t("busy");
     case "CHANGED": return t("stale");
+    case "RELOAD": return t("reload");
     case "UNAVAILABLE":
       return t("unavailable");
     default:

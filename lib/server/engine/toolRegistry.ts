@@ -69,6 +69,7 @@ import {
 } from "../tools/scheduledTaskManagement";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
 import {
+  MANAGE_MEMORY_TOOL_NAME,
   SELF_SERVICE_TOOLS,
   createToolCallSelfServiceStore,
   executeSelfServiceTool,
@@ -165,6 +166,11 @@ export type EngineTool = Readonly<{
    * and the source's authority is rechecked (Memory, `agent_docs/MEMORY.md`).
    */
   runScopedResult?: true;
+  /**
+   * What later turns read in place of a run-scoped result, when the default note (call again if still needed) would
+   * invite a tool that changes something to repeat its change.
+   */
+  runScopedNote?: string;
   /**
    * The approval request of exactly this call, whatever standing consent the
    * initiator gave: the card in which the user decides whether a call whose
@@ -362,6 +368,12 @@ function unavailable(call: ModelToolCall, code: string): ToolExecutionResult {
 const WORKSPACE_LIFECYCLE_KINDS: ReadonlySet<WorkspaceActivityKind> = new Set<WorkspaceActivityKind>([
   "attachments_prepare", "execution_status", "outputs_export", "workspace_recreated", "workspace_start", "workspace_stopped"
 ]);
+
+/** What later turns read of a `manage_memory` result, which stays within its run (`runScopedResult`). */
+export const MANAGE_MEMORY_RUN_SCOPED_NOTE =
+  "This result was used only in the answer that produced it and is not kept. That answer says what was changed or " +
+  "offered, and the memory note as it is now is in the prompt whenever this chat reads Memory. Do not repeat the change; " +
+  "call the tool again only for a new request of the user.";
 
 /** Conversation files the self-service tools may read: those of the run's frozen branch and its own message. */
 const ADMITTED_ATTACHMENTS_LIMIT = 256;
@@ -564,6 +576,11 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     for (const descriptor of SELF_SERVICE_TOOLS) {
       if (selfService.tools && !selfService.tools.includes(descriptor.name)) continue;
       add({ activity: listed(descriptor.name), definition: descriptor.tool, effects: descriptor.effects, observationSource: "workspace",
+        // A refused note change carries the whole note as it is now (`current`), so its result stays within this run,
+        // never replayed, compacted or saved for a later read, whatever Memory or the chat's mode is by then; the change
+        // and offer cards are the answer's own artifacts and stay.
+        ...(descriptor.name === MANAGE_MEMORY_TOOL_NAME
+          ? { runScopedNote: MANAGE_MEMORY_RUN_SCOPED_NOTE, runScopedResult: true as const } : {}),
         execute: async (execution) => await executeSelfServiceTool(deps, execution.call, {
           callId: execution.persistedToolCallId, signal: execution.signal,
           store: createToolCallSelfServiceStore({ callId: execution.persistedToolCallId, runId: input.runId, toolName: execution.call.name,

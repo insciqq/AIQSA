@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { MCP_APPROVAL_CONTINUATION_KIND } from "@/lib/contracts/mcpApprovals";
 import {
   EMPTY_MEMORY_NOTE,
   MEMORY_SWITCH_DEFAULTS,
@@ -40,6 +41,12 @@ export type MemoryNoteRunChat = Readonly<{
   assistantMessageId: string | null;
   /** `NORMAL` chats read and change the note; Temporary and Excluded chats neither read nor change it. */
   memoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY";
+  /**
+   * The run answers the user's own message, as stored: one they wrote, or the continuation of their turn after an MCP
+   * Allow. False for a turn the server wrote (a sub-agent wake-up, a browser sign-in request) and a scheduled task's
+   * prompt, which never change the note.
+   */
+  userTurn: boolean;
 }>;
 
 /** Where a page of legacy suggestions continues: after this one, oldest first. */
@@ -159,9 +166,15 @@ export function createPrismaMemoryNoteRepository(tx: Prisma.TransactionClient): 
     },
 
     async runChat({ chatId, runId, userId }) {
-      const run = await tx.modelRun.findFirst({ select: { assistantMessageId: true, chat: { select: { memoryMode: true, userId: true } } },
-        where: { chatId, id: runId, userId } });
-      return run && run.chat.userId === userId ? { assistantMessageId: run.assistantMessageId, memoryMode: run.chat.memoryMode } : null;
+      const run = await tx.modelRun.findFirst({
+        select: { assistantMessageId: true, chat: { select: { memoryMode: true, userId: true } },
+          userMessage: { select: { scheduledTaskPrompt: true, systemTurnKind: true } } },
+        where: { chatId, id: runId, userId }
+      });
+      if (!run || run.chat.userId !== userId) return null;
+      const turnKind = run.userMessage.systemTurnKind;
+      return { assistantMessageId: run.assistantMessageId, memoryMode: run.chat.memoryMode,
+        userTurn: !run.userMessage.scheduledTaskPrompt && (turnKind === null || turnKind === MCP_APPROVAL_CONTINUATION_KIND) };
     },
 
     async createOffer(input) {

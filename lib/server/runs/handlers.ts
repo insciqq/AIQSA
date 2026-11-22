@@ -734,6 +734,9 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
       // Neither a connector turn nor a wake-up turn is the owner's own web message, so neither takes a computer (D-07).
       ...(deps.connectorTurn ? { origin: deps.connectorTurn } : wakeUp ? { origin: "wake_up" as const } : {}),
       serverAuthoredInput: Boolean(continuationBody) || Boolean(signInBody) || Boolean(wakeUp),
+      ...(continuationBody ? { systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }
+        : signInBody ? { systemTurnKind: BROWSER_SIGN_IN_TURN_KIND }
+          : wakeUp ? { systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND } : {}),
       ...(continuationBody && body?.systemTurn && typeof body.systemTurn === "object" &&
         typeof (body.systemTurn as Record<string, unknown>).approvalId === "string"
         ? { mcpApprovalId: (body.systemTurn as { approvalId: string }).approvalId } : {}),
@@ -805,6 +808,7 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
         ...(preparedData.initialChatMode
           ? { initialChatMode: preparedData.initialChatMode }
           : {}),
+        ...(preparedData.preparedChatMode ? { preparedChatMode: preparedData.preparedChatMode } : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         ...(preparedData.workspaceAdmissionPlan
@@ -1050,6 +1054,7 @@ export function createRegenerateModelRunHandler(deps: RunHandlerDeps) {
               }
             }
           : {}),
+        ...(preparedData.preparedChatMode ? { preparedChatMode: preparedData.preparedChatMode } : {}),
         ...(preparedData.mcpBindings ? { mcpBindings: preparedData.mcpBindings } : {}),
         ...(preparedData.skillBindings ? { skillBindings: preparedData.skillBindings } : {}),
         ...(preparedData.workspaceAdmissionPlan

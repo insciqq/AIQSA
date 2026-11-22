@@ -19,6 +19,7 @@ const COPY = {
     noticePending: "Chat deleted · cleanup is finishing",
     noticeSucceeded: "Chat deletion completed",
     refresh: "Refresh status",
+    reload: "This page is out of date. Reload it, then delete the chat again.",
     refreshing: "Refreshing…",
     stale: "The chat changed. Review it, then confirm again.",
     stateRunning: "The chat is unavailable. Private data cleanup is in progress.",

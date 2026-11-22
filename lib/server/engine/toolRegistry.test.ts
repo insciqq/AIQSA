@@ -5,8 +5,10 @@ import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
 import {
-  buildToolRegistry, engineMcpBindings, engineSnapshotMcpBindings, type EngineMcpBinding, type ToolRegistryInput
+  MANAGE_MEMORY_RUN_SCOPED_NOTE, buildToolRegistry, engineMcpBindings, engineSnapshotMcpBindings, type EngineMcpBinding,
+  type ToolRegistryInput
 } from "./toolRegistry";
+import { transcriptRecord } from "./toolBatch";
 import { READ_TOOL_RESULT_NAME } from "./toolResults";
 
 const snapshot: McpRunPlanSnapshot = {
@@ -245,6 +247,20 @@ describe("native tool registry", () => {
       selfService: { ...selfService, ...(tools ? { tools } : {}) } } }))).definitions().map((tool) => tool.name);
     expect(await names()).toEqual(expect.arrayContaining(["create_subagent", "edit_subagent", "delete_subagent"]));
     expect(await names(["read_aiqsa_guide"])).not.toContain("create_subagent");
+  });
+
+  it("keeps a manage_memory result within its run, with a note that asks for no repeat, and its card", async () => {
+    const selfService = { assistants: {} as never, db: {} as never, storage: {} as never };
+    const secrets = { list: vi.fn(async () => []), read: vi.fn() } as never;
+    const registry = await buildToolRegistry(input({ request: request(), services: { repository: {} as never,
+      savedResults: { read: vi.fn(async () => null) }, secrets, selfService: { ...selfService, tools: ["manage_memory", "manage_secret"] } } }));
+    expect(registry.resolve("manage_memory")).toMatchObject({ runScopedNote: MANAGE_MEMORY_RUN_SCOPED_NOTE, runScopedResult: true });
+    expect(registry.resolve("manage_secret")?.runScopedResult).toBeUndefined();
+    // A refused change carries the note as it is now: later turns, compactions and saved results never read it.
+    const refused = { callId: "c1", id: "item-1", kind: "tool_result" as const, name: "manage_memory", outcome: "error" as const,
+      output: JSON.stringify({ code: "memory_note_passage_not_found", current: "PRIVATE_NOTE_TEXT" }) };
+    expect(transcriptRecord(registry, refused)).toEqual({ ...refused, output: MANAGE_MEMORY_RUN_SCOPED_NOTE });
+    expect(MANAGE_MEMORY_RUN_SCOPED_NOTE).toContain("Do not repeat the change");
   });
 
   it("offers direct view only where admission froze it, the same tool list every turn of a fixed model", async () => {

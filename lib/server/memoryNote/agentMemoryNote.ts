@@ -16,7 +16,8 @@ import { createPrismaMemoryNoteRepository, type MemoryNoteRepositoryFactory } fr
  * The agent's access to its user's memory note (`manage_memory`, operator decision 2026-11-22), committed with the tool
  * call and its card (`commitSelfServiceChange`), so a repeated delivery returns the settled card and never applies
  * twice. Only the user's own request authorizes a change: the call runs in that user's own interactive run, fenced by
- * the self-service claim (`selfServiceRunAllowedInTransaction`), as every self-service tool is; the tool's description
+ * the self-service claim (`selfServiceRunAllowedInTransaction`), as every self-service tool is, and the run must answer
+ * the user's own message as stored (never a turn the server wrote or a scheduled task's prompt); the tool's description
  * and prompt line keep tool output, pages, files and other agents from asking for one.
  *
  * - Asked to remember, change or forget something, it changes the note at once with the edit rules Settings' save
@@ -47,6 +48,8 @@ export type AgentMemoryNoteRefusal =
   | Readonly<{ code: "memory_disabled" }>
   /** The run's chat is Temporary or Excluded, which read and change no Memory. */
   | Readonly<{ code: "memory_note_chat_excluded" }>
+  /** The run answers a turn the server wrote or a scheduled task's prompt, never the user's own message. */
+  | Readonly<{ code: "memory_note_not_user_turn" }>
   | Readonly<{ code: "memory_note_offers_disabled" }>
   /** The run answers no message an offer could be bound to (a sub-agent's). */
   | Readonly<{ code: "memory_note_offer_unavailable" }>
@@ -83,6 +86,9 @@ export function createAgentMemoryNoteService(input: Readonly<{
         if (!run) return { kind: "refused", value: { code: "memory_note_unavailable" } };
         // The run's tool list leaves the tool out of these chats too; a Temporary or Excluded chat never touches Memory.
         if (run.memoryMode !== "NORMAL") return { kind: "refused", value: { code: "memory_note_chat_excluded" } };
+        // Only the user's own message in this turn authorizes a change, as the run's stored message says, whatever the
+        // run's frozen tool list held (a regenerated or deferred run included).
+        if (!run.userTurn) return { kind: "refused", value: { code: "memory_note_not_user_turn" } };
         const switches = await repo.readSwitches(scope.userId);
         if (!switches.memoryEnabled) return { kind: "refused", value: { code: "memory_disabled" } };
         if (askFirst && !switches.memorySuggestionsEnabled) return { kind: "refused", value: { code: "memory_note_offers_disabled" } };

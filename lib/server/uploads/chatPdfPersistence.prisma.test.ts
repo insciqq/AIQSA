@@ -234,11 +234,14 @@ describe("chat PDF database lifecycle", () => {
     expect(await prisma.chatPdfPageAttempt.count({ where: { preparationId: h.preparationId } })).toBe(0);
   });
 
-  it("does not use Workspace degradation to bypass the Personal Memory gate", async () => {
+  it("dispatches a prepared answer in a retained chat without any Memory binding", async () => {
+    // A Normal chat: the answer waits only for its documents, never for a Personal Memory preparation.
     const h = await fixture(false, false, true);
     await repository.useWorkspaceOriginal(h.claim, h.preparationId, "pdf_local_text_unusable");
     await expect(prisma.modelRun.update({ where: { id: h.runId }, data: { normalizedRequest: {}, status: "streaming" } }))
-      .rejects.toThrow(/chat_pdf_memory_not_ready/);
+      .resolves.toMatchObject({ status: "streaming" });
+    expect(await repository.markAnswerDispatched(h.claim)).toBe(true);
+    expect(await repository.claim()).toBeNull();
   });
 
   it("keeps ambiguous Vision work and late usage after continuing with the original", async () => {

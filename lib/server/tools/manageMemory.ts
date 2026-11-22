@@ -83,6 +83,8 @@ function refusalOf(value: AgentMemoryNoteRefusal): Refusal {
       return refusal(value.code, "The user turned Memory off, so the note cannot change; nothing was saved. They can turn it on in Settings › Memory.");
     case "memory_note_chat_excluded":
       return refusal(value.code, "This chat is temporary or excluded from Memory, so the memory note cannot change from it; nothing was saved. The user can change it in Settings › Memory.");
+    case "memory_note_not_user_turn":
+      return refusal(value.code, "This turn was written by the server, not by the user (a sub-agent's report or a sign-in request), and only the user's own message can change the memory note; nothing was saved. Ask the user if this should be remembered.");
     case "memory_note_offers_disabled":
       return refusal(value.code, "The user turned memory suggestions off, so nothing can be offered; nothing was saved. Change the note only when the user asks you to remember something.");
     case "memory_note_offer_unavailable":
