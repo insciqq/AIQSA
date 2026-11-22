@@ -104,6 +104,7 @@ import {
   memoryNoteAdoptionBareRepeatProofSql, memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql,
   memoryNoteAdoptionRepeatProofSql
 } from "./memory-note-adoption";
+import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
@@ -718,10 +719,6 @@ function bootstrapFoundationDigest(database: string): string {
         SELECT jsonb_agg(to_jsonb(settings) - 'createdAt' - 'updatedAt' ORDER BY settings."userId")
         FROM "UserSettings" AS settings
       ), '[]'::jsonb),
-      'memory_settings', COALESCE((
-        SELECT jsonb_agg(to_jsonb(settings) - 'updatedAt' ORDER BY settings."userId")
-        FROM "UserMemorySettings" AS settings
-      ), '[]'::jsonb),
       'mcp_grants', COALESCE((
         SELECT jsonb_agg(jsonb_build_array("serverId", "userId", "groupId", "canUse", "personalSlotKeys") ORDER BY "serverId", id)
         FROM "McpGrant"
@@ -742,10 +739,6 @@ function bootstrapFoundationDigest(database: string): string {
       'system_model_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, "providerModelId", "reasoningEffort", version, "updatedByUserId") ORDER BY id)
         FROM "SystemModelPolicy"
-      ), '[]'::jsonb),
-      'memory_utility_model_policy', COALESCE((
-        SELECT jsonb_agg(to_jsonb(policy) - 'createdAt' - 'updatedAt' ORDER BY policy.id)
-        FROM "MemoryUtilityModelPolicy" AS policy
       ), '[]'::jsonb),
       'workspace_policy', COALESCE((
         SELECT jsonb_agg(jsonb_build_array(id, enabled, "internetEnabled", version, "updatedByUserId") ORDER BY id)
@@ -839,15 +832,10 @@ function runBootstrapProof(database: string): void {
   assert.equal(psqlScalar(database, `SELECT "toolLimitsEnabled" FROM "ModelPolicy" WHERE id = 'installation';`), "f",
     "bootstrap must leave a fresh installation without tool limits");
   psqlScalar(database, `UPDATE "ModelPolicy" SET "mcpAutoDiscoveryMaxOutputTokens" = 4096, "toolObservationPolicy" = 'off', "toolLimitsEnabled" = true WHERE id = 'installation';`);
-  assert.equal(psqlScalar(database, `SELECT count(*) FROM "MemoryUtilityModelPolicy" WHERE id = 'installation'
-    AND "providerModelId" IS NULL AND "reasoningEffort" IS NULL AND "assignmentSource" = 'UNASSIGNED' AND version = 1;`), "1",
-    "fresh bootstrap leaves Memory available for verified automatic setup");
-  psqlScalar(database, `UPDATE "MemoryUtilityModelPolicy" SET "assignmentSource" = 'OPERATOR', version = 7 WHERE id = 'installation';`);
-  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" s JOIN "User" u ON u.id = s."userId"
-    WHERE u.email = 'baseline-admin@example.invalid' AND s."useMemoryFacts" AND s."referenceChatHistory"
-      AND s."learnAutomatically" AND s."decayEnabled"
-      AND s."decayPolicyVersion" = 'memory-decay-v1';`), "1", "initial administrator Memory defaults");
-  psqlScalar(database, `UPDATE "UserMemorySettings" SET "learnAutomatically" = false, "decayEnabled" = false;`);
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserSettings" s JOIN "User" u ON u.id = s."userId"
+    WHERE u.email = 'baseline-admin@example.invalid' AND s."memoryEnabled" AND s."pastChatSearchEnabled"
+      AND s."memorySuggestionsEnabled";`), "1", "initial administrator Memory defaults");
+  psqlScalar(database, `UPDATE "UserSettings" SET "memorySuggestionsEnabled" = false;`);
   assert.equal(
     psqlScalar(database, `SELECT CASE WHEN enabled THEN 'on' ELSE 'off' END || ':' || version::text FROM "ConnectPolicy" WHERE id = 'installation';`),
     "off:1",
@@ -859,7 +847,7 @@ function runBootstrapProof(database: string): void {
     DELETE FROM "DiscordBotControl";`);
   const repeat = app(database, ["npx", "tsx", "prisma/bootstrap.ts"], bootstrapEnvironment);
   assert.match(repeat, /"code":"installation_already_adopted"/u);
-  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserMemorySettings" WHERE "learnAutomatically" OR "decayEnabled";`), "0",
+  assert.equal(psqlScalar(database, `SELECT count(*) FROM "UserSettings" WHERE "memorySuggestionsEnabled";`), "0",
     "bootstrap adoption must preserve later Memory opt-outs");
   assert.equal(psqlScalar(database, `SELECT "mcpAutoDiscoveryMaxOutputTokens" FROM "ModelPolicy" WHERE id = 'installation';`), "4096", "bootstrap must retain the operator's MCP output allowance");
   assert.equal(psqlScalar(database, `SELECT "toolObservationPolicy" FROM "ModelPolicy" WHERE id = 'installation';`), "off", "bootstrap must retain the operator's observation kill switch");
@@ -7747,7 +7735,10 @@ function main(
   runKnowledgeBasicRuntimeCleanupMigrationProof(shadowDatabase, beforeKnowledgeDrop);
   runKnowledgeToolCoexistenceMigrationProof(beforeKnowledgeDrop);
   runKnowledgeSearchHealthMigrationProof(shadowDatabase, beforeKnowledgeDrop);
-  runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, migrations);
+  // The Memory vNext cutover proof deploys the history after its migration and then reads old Memory tables.
+  const beforeOldMemoryDrop = migrations.slice(0, migrations.indexOf(DROP_OLD_MEMORY_MIGRATION));
+  assert.ok(beforeOldMemoryDrop.length > 0, "old Memory drop migration is missing");
+  runMemoryVNextRetrievalCutoverMigrationProof(shadowDatabase, beforeOldMemoryDrop);
   // Its proof reads the Project bindings the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, ASSISTANT_LIVE_MIGRATION,
     assistantLiveAdoptionFixtureSql, assistantLiveAdoptionProofSql, undefined, DROP_PROJECTS_KNOWLEDGE_MIGRATION);
@@ -7771,18 +7762,20 @@ function main(
   // Its proof compares the whole policy row, which the later tool limits switch extends.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_TIMEOUT_MIGRATION,
     memorySearchTimeoutFixtureSql, memorySearchTimeoutProofSql, memorySearchTimeoutRepeatProofSql, TOOL_LIMITS_OFF_MIGRATION);
+  // Proofs bounded by DROP_OLD_MEMORY_MIGRATION read the old Memory subsystem's storage, or compare whole rows of a
+  // table the drop narrows, so they end before it.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_SEARCH_RECEIPT_MIGRATION,
-    memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql);
+    memorySearchReceiptFixtureSql, memorySearchReceiptProofSql, memorySearchReceiptRepeatProofSql, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, ARTIFACT_VERSIONED_MIGRATION,
     artifactVersionedFixtureSql, artifactVersionedProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, RUN_FOLLOWUPS_MIGRATION,
     runFollowupsFixtureSql, runFollowupsProofSql, runFollowupsProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, GEMINI_GROUNDING_MIGRATION,
-    geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql);
+    geminiGroundingAdoptionFixtureSql, geminiGroundingAdoptionProofSql, undefined, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_CONFIGURATION_WAIT_MIGRATION,
-    memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql);
+    memoryConfigurationAdoptionFixtureSql, memoryConfigurationAdoptionProofSql, undefined, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_BUDGET_MIGRATION,
-    memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql);
+    memoryHistoryBudgetFixtureSql, memoryHistoryBudgetProofSql, memoryHistoryBudgetProofSql, DROP_OLD_MEMORY_MIGRATION);
   // Its proof reads the table the later drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_EGRESS_RECEIPT_MIGRATION,
     memoryEgressReceiptFixtureSql, memoryEgressReceiptProofSql, memoryEgressReceiptProofSql,
@@ -7798,7 +7791,7 @@ function main(
     memoryRecommendationV2FixtureSql, memoryRecommendationV2ProofSql, memoryRecommendationV2RepeatProofSql,
     DROP_PROJECTS_KNOWLEDGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_WORKER_RECOVERY_MIGRATION,
-    memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql);
+    memoryWorkerRecoveryFixtureSql, memoryWorkerRecoveryProofSql, undefined, DROP_OLD_MEMORY_MIGRATION);
   for (const { fixture, proof } of mcpModelOutputBudgetFixtures) {
     runForwardAdoptionProof(shadowDatabase, migrations, MCP_MODEL_OUTPUT_BUDGET_MIGRATION,
       fixture, proof, proof);
@@ -7816,10 +7809,12 @@ function main(
   runForwardAdoptionProof(shadowDatabase, migrations, DECISION_UPGRADE_MIGRATION,
     decisionUpgradeFixtureSql, decisionUpgradeProofSql, decisionUpgradeProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_HISTORY_LIVE_ORDINALS_MIGRATION,
-    memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql, memoryHistoryLiveOrdinalsProofSql);
+    memoryHistoryLiveOrdinalsFixtureSql, memoryHistoryLiveOrdinalsProofSql, memoryHistoryLiveOrdinalsProofSql,
+    DROP_OLD_MEMORY_MIGRATION);
   for (const assigned of [false, true]) {
     runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_UTILITY_MODEL_MIGRATION,
-      memoryUtilityModelFixtureSql(assigned), memoryUtilityModelProofSql(assigned), memoryUtilityModelRepeatProofSql);
+      memoryUtilityModelFixtureSql(assigned), memoryUtilityModelProofSql(assigned), memoryUtilityModelRepeatProofSql,
+      DROP_OLD_MEMORY_MIGRATION);
   }
   for (const pdfAllowed of [false, true]) {
     runForwardAdoptionProof(shadowDatabase, migrations, SYSTEM_MODEL_ROLES_MIGRATION,
@@ -7845,8 +7840,9 @@ function main(
     toolObservationFixtureSql, toolObservationProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, TOOL_OBSERVATION_ROLLOUT_POLICY_MIGRATION,
     toolObservationRolloutPolicyFixtureSql, toolObservationRolloutPolicyProofSql);
+  // Its proof compares whole usage rows, which the old Memory drop narrows.
   runForwardAdoptionProof(shadowDatabase, migrations, VISION_ANALYSIS_MIGRATION,
-    visionAnalysisFixtureSql, visionAnalysisProofSql);
+    visionAnalysisFixtureSql, visionAnalysisProofSql, undefined, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_SELECTED_CAPTURE_MIGRATION,
     workspaceSelectedCaptureFixtureSql, workspaceSelectedCaptureProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_ROLE_MIGRATION,
@@ -7859,7 +7855,8 @@ function main(
     DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION);
   // Its revision bump must not resolve an embedding selection nobody made.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_EMBEDDING_SELECTION_BACKFILL_MIGRATION,
-    memoryEmbeddingSelectionFixtureSql, memoryEmbeddingSelectionProofSql, memoryEmbeddingSelectionProofSql);
+    memoryEmbeddingSelectionFixtureSql, memoryEmbeddingSelectionProofSql, memoryEmbeddingSelectionProofSql,
+    DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, WORKSPACE_USER_DEFAULT_MIGRATION,
     workspaceUserDefaultFixtureSql, workspaceUserDefaultProofSql, workspaceUserDefaultRepeatProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, CHAT_TITLE_CREDENTIAL_MIGRATION,
@@ -7907,7 +7904,7 @@ function main(
     mcpToolUpdateTrustFixtureSql, mcpToolUpdateTrustProofSql);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_SYNTHESIS_COLUMNS_MIGRATION,
     dropRetiredMemorySynthesisColumnsFixtureSql, dropRetiredMemorySynthesisColumnsProofSql,
-    dropRetiredMemorySynthesisColumnsProofSql);
+    dropRetiredMemorySynthesisColumnsProofSql, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MCP_ACTIVATION_STORAGE_MIGRATION,
     dropRetiredMcpActivationStorageFixtureSql, dropRetiredMcpActivationStorageProofSql,
     dropRetiredMcpActivationStorageProofSql);
@@ -7922,7 +7919,7 @@ function main(
     retireDreamSynthesisStagingProofSql, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_RETIRED_MEMORY_DIGEST_SYNTHESIS_STORAGE_MIGRATION,
     dropRetiredMemoryDigestSynthesisStorageFixtureSql, dropRetiredMemoryDigestSynthesisStorageProofSql,
-    dropRetiredMemoryDigestSynthesisStorageProofSql);
+    dropRetiredMemoryDigestSynthesisStorageProofSql, DROP_OLD_MEMORY_MIGRATION);
   // Its proof reads the Knowledge relevance owner check the Project and Knowledge drop removes.
   runForwardAdoptionProof(shadowDatabase, migrations, USAGE_EVENT_PURPOSE_MIGRATION,
     usageEventPurposeFixtureSql, usageEventPurposeProofSql, usageEventPurposeProofSql,
@@ -7987,15 +7984,16 @@ function main(
   // Retirement step two: the projection tables, their types and routines go.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_LEXICAL_PROJECTION_MIGRATION,
     dropMemoryLexicalProjectionFixtureSql, dropMemoryLexicalProjectionProofSql,
-    dropMemoryLexicalProjectionProofSql);
+    dropMemoryLexicalProjectionProofSql, DROP_OLD_MEMORY_MIGRATION);
   // Project and Knowledge storage goes, including rows a missed retirement
   // left; the Memory embedding default moves and core routines stay.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
-    dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql, dropProjectsKnowledgeProofSql);
+    dropProjectsKnowledgeFixtureSql, dropProjectsKnowledgeProofSql, dropProjectsKnowledgeProofSql, DROP_OLD_MEMORY_MIGRATION);
   // After a completed retirement every Project check holds, and a deleted
   // Project's scoped upload stays writable for its cleanup.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_PROJECTS_KNOWLEDGE_MIGRATION,
-    dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql, dropProjectsKnowledgeRetiredProofSql);
+    dropProjectsKnowledgeRetiredFixtureSql, dropProjectsKnowledgeRetiredProofSql, dropProjectsKnowledgeRetiredProofSql,
+    DROP_OLD_MEMORY_MIGRATION);
   // Only the old run core wrote these receipts; the releases since stopped every write.
   runForwardAdoptionProof(shadowDatabase, migrations, DROP_MEMORY_TOOL_EGRESS_RECEIPT_MIGRATION,
     dropMemoryToolEgressReceiptFixtureSql, dropMemoryToolEgressReceiptProofSql, dropMemoryToolEgressReceiptProofSql);
@@ -8085,12 +8083,17 @@ function main(
     dropTelegramLinkRetiredSettingsProofSql);
   // Personal Memory becomes the note: switches, saved and automatic facts, the embedding role, inbound Memory MCP
   // grants and finished chat deletions carry over once, and an installation without Memory data invents nothing.
-  // Both proofs read the old Memory tables and run the body again, so once the migration that drops those tables
-  // lands they must end before it (pass it as proofBefore).
+  // Both proofs read the old Memory tables and run the body again, so they end before the drop of those tables.
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_NOTE_ADOPTION_MIGRATION,
-    memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql, memoryNoteAdoptionRepeatProofSql);
+    memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql, memoryNoteAdoptionRepeatProofSql, DROP_OLD_MEMORY_MIGRATION);
   runForwardAdoptionProof(shadowDatabase, migrations, MEMORY_NOTE_ADOPTION_MIGRATION,
-    memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql, memoryNoteAdoptionBareRepeatProofSql);
+    memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql, memoryNoteAdoptionBareRepeatProofSql,
+    DROP_OLD_MEMORY_MIGRATION);
+  // The old subsystem goes with its data: runs it left preparing end interrupted, runs at a PDF or Workspace gate keep
+  // waiting, and the note, the past-chat index, the worker's tables, settings, roles, inbound OAuth, other chats, runs
+  // and usage stay as they were. Nothing named after it is left in the catalog.
+  runForwardAdoptionProof(shadowDatabase, migrations, DROP_OLD_MEMORY_MIGRATION,
+    dropOldMemoryFixtureSql, dropOldMemoryProofSql, dropOldMemoryProofSql);
   if (mode === "smoke") {
     runBootstrapProof(databases[0]!);
     runSeedProof(databases[0]!);

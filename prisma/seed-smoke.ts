@@ -135,25 +135,27 @@ async function main() {
     throw new Error("Seed smoke did not find exactly two ordinary-user fixtures");
   }
 
+  // Memory starts on with an empty note, no suggestions and nothing indexed for past-chat search.
   const seededUserIds = [user.id, ...LOCAL_ORDINARY_USERS.map((fixture) => fixture.id)];
-  const [memorySettings, checkpointCount, chunkCount] = await Promise.all([
-    prisma.userMemorySettings.findMany({
+  const [memorySettings, noteCount, suggestionCount, searchStateCount, passageCount] = await Promise.all([
+    prisma.userSettings.findMany({
+      select: { memoryEnabled: true, memorySuggestionsEnabled: true, pastChatSearchEnabled: true },
       where: { userId: { in: seededUserIds } }
     }),
-    prisma.chatMemoryCheckpoint.count({ where: { userId: { in: seededUserIds } } }),
-    prisma.memoryRecallChunk.count({ where: { userId: { in: seededUserIds } } })
+    prisma.userMemoryNote.count({ where: { userId: { in: seededUserIds } } }),
+    prisma.memoryLegacySuggestion.count({ where: { userId: { in: seededUserIds } } }),
+    prisma.chatSearchState.count({ where: { userId: { in: seededUserIds } } }),
+    prisma.chatSearchPassage.count({ where: { userId: { in: seededUserIds } } })
   ]);
   if (
     memorySettings.length !== seededUserIds.length ||
     memorySettings.some(
-      (settings) =>
-        !settings.useMemoryFacts ||
-        !settings.referenceChatHistory ||
-        !settings.learnAutomatically ||
-        settings.activeIndexGenerationId !== null
+      (settings) => !settings.memoryEnabled || !settings.pastChatSearchEnabled || !settings.memorySuggestionsEnabled
     ) ||
-    checkpointCount !== 0 ||
-    chunkCount !== 0
+    noteCount !== 0 ||
+    suggestionCount !== 0 ||
+    searchStateCount !== 0 ||
+    passageCount !== 0
   ) {
     throw new Error("Seed smoke found unexpected default Memory state");
   }
