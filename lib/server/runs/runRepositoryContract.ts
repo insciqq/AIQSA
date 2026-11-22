@@ -703,6 +703,11 @@ export type RunRepository = {
     options: Readonly<{ allowErrored?: boolean; runId: string }>
   ): Promise<void>;
   appendRunOutputEvent(runId: string, event: RunOutputArtifactEvent): Promise<RunOutputArtifactEvent>;
+  cancelRun(input: {
+    payload: { code: string; message: string };
+    runId: string;
+    userId: string;
+  }): Promise<CancelRunResult>;
   createRun(input: CreateRunInput): Promise<CreatedRun>;
   createRegenerationRun(input: CreateRegenerationRunInput): Promise<CreatedRun>;
   createSearchRun(input: {
