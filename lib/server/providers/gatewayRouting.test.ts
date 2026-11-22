@@ -54,6 +54,18 @@ describe("gateway routing lanes", () => {
     expect(lane.key()).toBe(first);
   });
 
+  it("never gives a failed request's key back when it fails just after its lane's window ends (review 2026-11-22)", () => {
+    let now = 1_000;
+    const lane = gatewayRoutingLane({ chatId: "chat-routing-expiry", name: "loop" }, { now: () => now });
+    lane.key();
+    lane.failed();
+    now += GATEWAY_ROUTING.unsettledMs - 1_000;
+    const sent = lane.key();
+    now += 2_000;
+    lane.failed();
+    expect(lane.key()).not.toBe(sent);
+  });
+
   it("start over under another secret in a new process", () => {
     const routingGlobal = globalThis as { __aiqsaGatewayRouting?: unknown };
     const chatId = "chat-routing-restart";
