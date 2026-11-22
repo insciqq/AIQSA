@@ -244,15 +244,18 @@ async function readJson(
  * A continuation turn after an MCP approval (`systemTurn`). The turn's text
  * is the server's, written from the user's own Allow in this chat; the body's
  * text, attachments and computer are ignored, since the turn continues the
- * gated run with that run's computer (`computer`, null for none). Null for an
- * ordinary send.
+ * gated run with that run's computer (`computer`, null for none) and the
+ * authority of its turn (`userRequest`: the user's own request, never a
+ * wake-up's or a sign-in request's, whose Allow covers that one call alone).
+ * Null for an ordinary send.
  */
 async function approvalContinuationBody(
   deps: RunHandlerDeps,
   body: Record<string, unknown> | null,
   chatId: string,
   userId: string
-): Promise<Readonly<{ body: Record<string, unknown>; computer: FrozenComputerBinding | null }> | "invalid" | "unavailable" | null> {
+): Promise<Readonly<{ body: Record<string, unknown>; computer: FrozenComputerBinding | null; userRequest: boolean }> |
+  "invalid" | "unavailable" | null> {
   if (!body || !Object.hasOwn(body, "systemTurn") || browserSignInTurn(body)) return null;
   const turn = body.systemTurn;
   if (!turn || typeof turn !== "object" || Array.isArray(turn)) return "invalid";
@@ -273,7 +276,7 @@ async function approvalContinuationBody(
     ...rest
   } = body;
   return { body: { ...rest, content: { blocks: [{ type: "text", text: mcpApprovalContinuationText(approval) }] } },
-    computer: approval.computer ?? null };
+    computer: approval.computer ?? null, userRequest: approval.userRequest === true };
 }
 
 function browserSignInTurn(body: Record<string, unknown>): boolean {
@@ -759,7 +762,8 @@ export function createSendMessageHandler(deps: RunHandlerDeps) {
           ...chat,
           activeLeafMessageId: expectedActiveLeafId
         },
-        ...(continuationBody ? { approvalContinuation: { computer: continuationBody.computer } } : {}),
+        ...(continuationBody ? { approvalContinuation: { computer: continuationBody.computer,
+          userRequest: continuationBody.userRequest } } : {}),
         ...(personalChat ? { draftPersonalChat: true } : {}),
         kind: "send",
         ...(deps.scheduledOccurrence ? { scheduledOccurrence: deps.scheduledOccurrence } : {})

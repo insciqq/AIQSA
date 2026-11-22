@@ -4904,6 +4904,29 @@ describe("interactive sends on the agent engine", () => {
       "create_subagent"]) expect(tools, name).not.toContain(name);
   });
 
+  it("gives the turn after an MCP Allow the self-service tools only when the allowed call's turn was the user's own request", async () => {
+    // The approval says whose turn the gated run was (`storedUserRequest`): an Allow of a call a wake-up made covers that call.
+    for (const userRequest of [true, false, undefined]) {
+      const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);
+      repository.loadMcpApprovalContinuation = async () => ({ computer: null, serverName: "Records", toolName: "create_record",
+        ...(userRequest === undefined ? {} : { userRequest }) });
+      const native = nativeEngineFake({ tools: true });
+      const provider = recordingProvider();
+      const response = await createSendMessageHandler({ ...authDeps, nativeEngine: native.deps, providers: { fake: provider.adapter },
+        repository })(new Request("http://app.local/api/chats/chat-1/messages", {
+        body: JSON.stringify({ modelId: "fake-qsa", provider: "fake", searchPlan: { mode: "all_selected", optionIds: [] },
+          systemTurn: { approvalId: "approval-1", kind: "mcp_approval_continuation" } }),
+        headers: { cookie: authCookie() }, method: "POST"
+      }), { params: { chatId: "chat-1" } });
+      await response.text();
+      const tools = toolNames(provider.requests[0]);
+      expect(tools, String(userRequest)).toContain("read_secret");
+      for (const name of ["read_aiqsa_guide", "manage_secret", "manage_skill", "manage_assistant", "manage_instructions"]) {
+        expect(tools.includes(name), `${name} ${String(userRequest)}`).toBe(userRequest === true);
+      }
+    }
+  });
+
   // Operator decision 2026-11-16: a Telegram turn takes what the same chat takes on the web, its cards shown as messages with buttons.
   it("gives Telegram turn the self-service tools of a personal chat, with read_secret", async () => {
     const { repository } = createMemoryRepository(entitledFakeModel, [], null, toolCallingModel);

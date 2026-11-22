@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { MCP_APPROVAL_CONTINUATION_KIND, type MessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import { connectorTurnRules, type ConnectorTurn, type ConnectorTurnRules } from "../connectors/turn";
 import type { FrozenComputerBinding } from "../tools/computerBinding";
@@ -17,11 +18,14 @@ import type { ScheduledOccurrenceAdmission } from "./runRepositoryContract";
  * (`serverAuthoredInput`): a turn the server wrote is never the user's words,
  * so it carries no Deep research choice and the MCP guard never reads it as
  * theirs. And whether the turn is the user's own request (`userRequest`),
- * which only the user's own message in this turn makes it: the continuation
- * after the user's MCP Allow still is, while a sub-agent wake-up, a browser
- * sign-in request and an answer to a scheduled task's prompt, which the model
- * may have written, never are (`agent_docs/RUN_CONTRACTS.md`, Agent-initiated
- * changes).
+ * which only the user's own message in this turn makes it: a sub-agent
+ * wake-up, a browser sign-in request and an answer to a scheduled task's
+ * prompt, which the model may have written, never are
+ * (`agent_docs/RUN_CONTRACTS.md`, Agent-initiated changes). The continuation
+ * after an MCP Allow has the authority of the turn whose call the user
+ * allowed, as admission found it (`storedUserRequest`): it goes on with the
+ * user's own request, and with nothing more after a wake-up's or a sign-in
+ * request's, since the Allow authorizes that one call alone.
  */
 export type TurnProvenance = Readonly<{
   /** The scheduled task occurrence a send admits, from its server-only source; none for any other turn. */
@@ -58,7 +62,10 @@ export type TurnProvenance = Readonly<{
    * `server_authored` for a server-written send that names none; undefined for the user's own message.
    */
   serverTurnKind: MessageSystemTurnKind | "server_authored" | undefined;
-  /** No turn the server wrote, or the continuation after the user's MCP Allow, which goes on with the user's own turn. */
+  /**
+   * No turn the server wrote, or the continuation after an MCP Allow of a turn that was the user's own request, which
+   * goes on with it (`storedUserRequest`).
+   */
   userAuthoredTurn: boolean;
   /** The turn is the user's own request in this turn: user-authored, and no answer to a scheduled task's prompt. */
   userRequest: boolean;
@@ -85,7 +92,11 @@ export function turnProvenance(input: Pick<RunPreparationInput, "mcpApprovalId" 
   const serverTurnKind = source.kind === "regenerate"
     ? source.source.userMessage.systemTurnKind
     : serverAuthoredInput ? input.systemTurnKind ?? "server_authored" : undefined;
-  const userAuthoredTurn = userTurnKind(serverTurnKind);
+  // The turn after an Allow goes on with the authority of the turn whose call the user allowed, which admission read from
+  // the approval (a send) or the stored chain (a regenerate); nothing that says so is no request of the user's.
+  const continuesUserRequest = source.kind === "regenerate" ? source.source.userMessage.continuesUserRequest === true
+    : source.approvalContinuation?.userRequest === true;
+  const userAuthoredTurn = !serverTurnKind || (serverTurnKind === MCP_APPROVAL_CONTINUATION_KIND && continuesUserRequest);
   return Object.freeze({
     computerOrigin: scheduledOccurrence ? "scheduled" : input.origin ?? "interactive",
     connector,
@@ -104,16 +115,55 @@ export function turnProvenance(input: Pick<RunPreparationInput, "mcpApprovalId" 
   });
 }
 
-/** No turn the server wrote, or the continuation after the user's MCP Allow, which goes on with the user's own turn. */
-function userTurnKind(kind: string | null | undefined): boolean {
-  return kind === null || kind === undefined || kind === MCP_APPROVAL_CONTINUATION_KIND;
-}
+/** How many continuations of continuations a stored turn is followed back through; a longer chain is no request of the user's. */
+export const CONTINUATION_CHAIN_LIMIT = 32;
 
 /**
  * `TurnProvenance.userRequest` as a stored user message shows it, for the checks a change makes again as it commits (the
- * self-service fence, the memory note's service): a turn the server wrote (`Message.systemTurnKind`) or an answer to
- * a scheduled task's prompt is never the user's own request.
+ * self-service fence, the memory note's service, a scheduled task's creation and management, a Skill save) and for a
+ * regenerate's admission: a turn the server wrote (`Message.systemTurnKind`) or an answer to a scheduled task's prompt
+ * is never the user's own request, and a missing message fails closed.
+ *
+ * The continuation after an MCP Allow has the authority of the turn whose call the user allowed, followed back
+ * through a continuation of a continuation to the first turn: its first run names the Allow it continues
+ * (`NormalizedRunRequest.mcpApproval.approvedBy`, which admission freezes on every continuation), the Allow names the
+ * run it gated (`McpToolApproval.modelRunId`), and that run its own message. A regenerate shares the message, so it
+ * reads the same chain. A link that is missing (a branch copy, whose messages have no runs of their own) or a chain past
+ * `CONTINUATION_CHAIN_LIMIT` fails closed.
  */
-export function storedUserRequest(message: Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>): boolean {
-  return !message.scheduledTaskPrompt && userTurnKind(message.systemTurnKind);
+export async function storedUserRequest(db: Pick<Prisma.TransactionClient, "$queryRaw">,
+  input: Readonly<{ messageId: string; userId: string }>): Promise<boolean> {
+  const turns = await db.$queryRaw<Array<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>>`
+    WITH RECURSIVE "turn" AS (
+      SELECT m."id", m."chatId", m."systemTurnKind"::text AS "systemTurnKind", m."scheduledTaskPrompt", 0 AS "depth"
+      FROM "Message" m
+      WHERE m."id" = ${input.messageId} AND m."role" = 'user'
+      UNION ALL
+      SELECT gated."id", gated."chatId", gated."systemTurnKind"::text, gated."scheduledTaskPrompt", t."depth" + 1
+      FROM "turn" t
+      JOIN "McpToolApproval" a ON a."userId" = ${input.userId} AND a."chatId" = t."chatId" AND a."id" = (
+        SELECT r."normalizedRequest" -> 'mcpApproval' ->> 'approvedBy'
+        FROM "ModelRun" r
+        WHERE r."userMessageId" = t."id" AND r."chatId" = t."chatId" AND r."userId" = ${input.userId}
+          AND r."subagentTurnId" IS NULL AND (r."normalizedRequest" -> 'mcpApproval' ->> 'approvedBy') IS NOT NULL
+        ORDER BY r."createdAt" ASC, r."id" ASC
+        LIMIT 1)
+      JOIN "ModelRun" g ON g."id" = a."modelRunId"
+      JOIN "Message" gated ON gated."id" = g."userMessageId"
+      WHERE t."systemTurnKind" = ${MCP_APPROVAL_CONTINUATION_KIND} AND t."depth" < CAST(${CONTINUATION_CHAIN_LIMIT} AS integer)
+    )
+    SELECT "systemTurnKind", "scheduledTaskPrompt" FROM "turn" ORDER BY "depth" ASC`;
+  return storedChainUserRequest(turns);
+}
+
+/**
+ * The user's own request as a stored chain reads, the current turn first: every turn of it no scheduled task's prompt,
+ * every turn but the last an Allow's continuation, and the last the user's own message. A chain that ends on a
+ * continuation lost its link or its bound.
+ */
+export function storedChainUserRequest(turns: readonly Readonly<{ scheduledTaskPrompt: boolean | null;
+  systemTurnKind: string | null }>[]): boolean {
+  const origin = turns.at(-1);
+  return origin !== undefined && origin.systemTurnKind === null && turns.every((turn, index) => turn.scheduledTaskPrompt === false &&
+    (index === turns.length - 1 || turn.systemTurnKind === MCP_APPROVAL_CONTINUATION_KIND));
 }

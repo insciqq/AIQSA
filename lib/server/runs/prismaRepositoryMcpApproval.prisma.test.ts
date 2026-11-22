@@ -19,6 +19,8 @@ import { mcpApprovalGated } from "./mcpApprovalGate";
 import { createPrismaRunRepository } from "./prismaRepository";
 import type { CreateRunInput, CreatedRun } from "./runRepositoryContract";
 import { createToolCallStore, type ToolCallRow } from "../engine/toolCallStore";
+import { selfServiceRunAllowedInTransaction } from "../tools/selfServiceCall";
+import { storedUserRequest } from "./turnProvenance";
 
 const repository = createPrismaRunRepository(prisma);
 const cancelPayload = { code: "model_run_cancelled", message: "Model run cancelled" };
@@ -117,10 +119,24 @@ function decide(f: Fixture, runId: string, approvalId: string, decision: "allow_
   return decideMcpApproval(prisma, { approvalId, decision, nonce, runId, userId });
 }
 
-/** The continuation run: the server-written turn after the user's Allow. */
-function continueAfter(f: Fixture, first: CreatedRun) {
+/**
+ * The continuation run: the server-written turn after the user's Allow. With `approvalId` it names the Allow it
+ * continues, as admission freezes it on every continuation (`runPreparation.ts`).
+ */
+function continueAfter(f: Fixture, first: CreatedRun, approvalId?: string) {
   return f.create({ content: textMessageContent(mcpApprovalContinuationText({ serverName: "Synthetic Records",
-    toolName: "delete_record" })), expectedActiveLeafId: first.assistantMessageId, systemTurnKind: "mcp_approval_continuation" });
+    toolName: "delete_record" })), expectedActiveLeafId: first.assistantMessageId, systemTurnKind: "mcp_approval_continuation",
+  ...(approvalId ? { normalizedRequest: { mcpApproval: mcpApprovalAdmission([], undefined, approvalId) } as unknown as
+    CreateRunInput["normalizedRequest"] } : {}) });
+}
+
+/** A regenerated answer to a stored user message: a later run of the same message, which names no Allow of its own. */
+async function answerAgain(f: Fixture, userMessageId: string) {
+  const reply = await prisma.message.create({ data: { chatId: f.chatId, content: textMessageContent(""), parentMessageId: userMessageId,
+    role: "assistant", status: "streaming" } });
+  const run = await prisma.modelRun.create({ data: { assistantMessageId: reply.id, chatId: f.chatId, engine: "native", modelId: "fake-qsa",
+    normalizedRequest: {}, provider: "fake", status: "streaming", userId: f.userId, userMessageId } });
+  return { assistantMessageId: reply.id, id: run.id };
 }
 
 describe("MCP write approval storage", () => {
@@ -196,7 +212,8 @@ describe("MCP write approval storage", () => {
       repository.loadMcpApprovalContinuation!({ approvalId, chatId: f.chatId, userId });
     const { card, first } = await askedFirst(f);
     await decide(f, first.runId, card.id, "allow_once", "nonce-0001");
-    expect(await load(card.id)).toEqual({ computer: null, serverName: "Synthetic Records", toolName: "delete_record" });
+    expect(await load(card.id)).toEqual({ computer: null, serverName: "Synthetic Records", toolName: "delete_record",
+      userRequest: true });
     expect(await load(card.id, f.otherId)).toBeNull();
 
     const withComputer = await f.create({ expectedActiveLeafId: first.assistantMessageId,
@@ -205,8 +222,66 @@ describe("MCP write approval storage", () => {
     const gatedCard = await prisma.mcpToolApproval.findFirstOrThrow({ where: { modelRunId: withComputer.runId } });
     await repository.cancelRun({ runId: withComputer.runId, userId: f.userId, payload: cancelPayload });
     await decide(f, withComputer.runId, gatedCard.id, "allow_once", "nonce-0002");
-    expect(await load(gatedCard.id)).toEqual({ computer, serverName: "Synthetic Records", toolName: "delete_record" });
+    expect(await load(gatedCard.id)).toEqual({ computer, serverName: "Synthetic Records", toolName: "delete_record",
+      userRequest: true });
   }));
+
+  it("gives the turn after an Allow the authority of the turn whose call was allowed, followed back to the first turn",
+    async () => fixture(async f => {
+      const load = (approvalId: string) => repository.loadMcpApprovalContinuation!({ approvalId, chatId: f.chatId, userId: f.userId });
+      const turn = (messageId: string) => storedUserRequest(prisma, { messageId, userId: f.userId });
+      const fence = (runId: string) => prisma.$transaction((tx) => selfServiceRunAllowedInTransaction(tx, { runId, userId: f.userId }));
+      const regenerated = async (messageId: string) =>
+        (await repository.findRegenerationSource(messageId, f.userId))?.userMessage.continuesUserRequest === true;
+
+      // The user's own message asks for a call; the user allows it.
+      const { card, first } = await askedFirst(f);
+      const markFirst = (systemTurnKind: "browser_sign_in_request" | "subagent_callback" | null) =>
+        prisma.message.update({ where: { id: first.userMessageId }, data: { systemTurnKind } });
+      await decide(f, first.runId, card.id, "allow_once", "nonce-0001");
+      expect(await load(card.id)).toMatchObject({ userRequest: true });
+      // Its continuation goes on with the user's own request, by the Allow its first run names.
+      const second = await continueAfter(f, first, card.id);
+      expect(await turn(second.userMessageId)).toBe(true);
+      expect(await fence(second.runId)).toBe(true);
+      // The continuation asks for another call, which the user allows too: a continuation of a continuation.
+      await f.persist(second.runId, [{ id: "r-2" }]);
+      const nextCard = await prisma.mcpToolApproval.findFirstOrThrow({ where: { modelRunId: second.runId } });
+      await repository.cancelRun({ runId: second.runId, userId: f.userId, payload: cancelPayload });
+      await decide(f, second.runId, nextCard.id, "allow_once", "nonce-0002");
+      expect(await load(nextCard.id)).toMatchObject({ userRequest: true });
+      const third = await continueAfter(f, second, nextCard.id);
+      expect(await turn(third.userMessageId)).toBe(true);
+      expect(await fence(third.runId)).toBe(true);
+      // A regenerate of that continuation is a later run of the same message and keeps its authority.
+      await repository.cancelRun({ runId: third.runId, userId: f.userId, payload: cancelPayload });
+      const again = await answerAgain(f, third.userMessageId);
+      expect(await fence(again.id)).toBe(true);
+      expect(await regenerated(third.userMessageId)).toBe(true);
+      expect(await regenerated(again.assistantMessageId)).toBe(true);
+
+      // Had the first turn been a sub-agent wake-up or a sign-in request, which authorize nothing, every Allow down the
+      // chain covers its one call and nothing more: no admission, fence or regenerate reads a user's request.
+      for (const kind of ["subagent_callback", "browser_sign_in_request"] as const) {
+        await markFirst(kind);
+        expect(await load(nextCard.id), kind).toMatchObject({ userRequest: false });
+        expect(await turn(first.userMessageId), kind).toBe(false);
+        expect(await turn(second.userMessageId), kind).toBe(false);
+        expect(await turn(third.userMessageId), kind).toBe(false);
+        expect(await fence(again.id), kind).toBe(false);
+        expect(await regenerated(third.userMessageId), kind).toBe(false);
+      }
+
+      // A continuation whose runs name no Allow, as in a branch copy, has no authority of the user's either.
+      await markFirst(null);
+      expect(await turn(third.userMessageId)).toBe(true);
+      await repository.cancelRun({ runId: again.id, userId: f.userId, payload: cancelPayload });
+      const unlinked = await continueAfter(f, third);
+      expect(await turn(unlinked.userMessageId)).toBe(false);
+      expect(await fence(unlinked.runId)).toBe(false);
+      // Another user never reads this chain.
+      expect(await storedUserRequest(prisma, { messageId: third.userMessageId, userId: f.otherId })).toBe(false);
+    }));
 
   it("never serves an expired Allow once or one of another chat", async () => fixture(async f => {
     const { card, first } = await askedFirst(f);

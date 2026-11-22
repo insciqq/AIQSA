@@ -764,6 +764,16 @@ function sendInput(
   };
 }
 
+/**
+ * The turn after an MCP Allow as the send handler admits it: the server's text, the Allow it names and the authority of
+ * the turn whose call the user allowed (`userRequest`, read from the approval).
+ */
+function continuationInput(userRequest: boolean, body: Readonly<Record<string, unknown>> | null = successBody()): RunPreparationInput {
+  const input = sendInput(body);
+  return { ...input, mcpApprovalId: "approval-1", serverAuthoredInput: true, systemTurnKind: "mcp_approval_continuation",
+    source: { ...input.source as SendRunPreparationSource, approvalContinuation: { computer: null, userRequest } } };
+}
+
 function regenerateInput(
   body: Readonly<Record<string, unknown>> | null = successBody(),
   sourceOverrides: Partial<RegenerateRunPreparationSource["source"]> = {}
@@ -941,10 +951,12 @@ describe("memory note and past-chat search admission", () => {
     const signIn = preparedFrom(await prepareRun(deps, { ...sendInput(), serverAuthoredInput: true,
       systemTurnKind: "browser_sign_in_request" }));
     expect(signIn.normalizedRequest.memory).toEqual(readOnly);
-    // The continuation after an MCP Allow goes on with the user's own turn.
-    const continued = preparedFrom(await prepareRun(deps, { ...sendInput(), serverAuthoredInput: true,
-      systemTurnKind: "mcp_approval_continuation" }));
+    // The continuation after an MCP Allow has the authority of the turn whose call the user allowed: it goes on with the
+    // user's own turn, and changes nothing after an Allow of a call a wake-up or a sign-in request made.
+    const continued = preparedFrom(await prepareRun(deps, continuationInput(true)));
     expect(continued.normalizedRequest.memory).toEqual({ ...readOnly, changes: true });
+    const afterServerTurn = preparedFrom(await prepareRun(deps, continuationInput(false)));
+    expect(afterServerTurn.normalizedRequest.memory).toEqual(readOnly);
     // A regenerated answer keeps what its stored message is.
     for (const systemTurnKind of ["subagent_callback", "browser_sign_in_request"] as const) {
       const regenerated = preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { userMessage: {
@@ -952,9 +964,13 @@ describe("memory note and past-chat search admission", () => {
       expect(regenerated.normalizedRequest.memory).toEqual(readOnly);
     }
     const ownAfterAllow = preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { userMessage: {
+      content: textMessageContent("Shared question"), continuesUserRequest: true, id: "stored-user-message",
+      scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" } })));
+    expect(ownAfterAllow.normalizedRequest.memory).toEqual({ ...readOnly, changes: true });
+    const serverTurnAfterAllow = preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { userMessage: {
       content: textMessageContent("Shared question"), id: "stored-user-message", scheduledTaskPrompt: false,
       systemTurnKind: "mcp_approval_continuation" } })));
-    expect(ownAfterAllow.normalizedRequest.memory).toEqual({ ...readOnly, changes: true });
+    expect(serverTurnAfterAllow.normalizedRequest.memory).toEqual(readOnly);
   });
 
   it("admits a regeneration of a scheduled task's prompt only while its task has Memory on, whatever the chat's mode", async () => {
@@ -2653,7 +2669,7 @@ describe("run preparation", () => {
     const approvalTurn = (request: Record<string, unknown>, computer: typeof sent.normalizedRequest.computer | null): RunPreparationInput => {
       const input = sendInput(request);
       return { ...input, serverAuthoredInput: true,
-        source: { ...input.source as SendRunPreparationSource, approvalContinuation: { computer: computer ?? null } } };
+        source: { ...input.source as SendRunPreparationSource, approvalContinuation: { computer: computer ?? null, userRequest: true } } };
     };
     for (const request of [{ ...body, computer: null }, body, { ...body, computer: { cwd: "~", deviceId: "9e8d7c6b-5a49-4382-a1b2-c3d4e5f60718" } }]) {
       const continued = preparedFrom(await prepareRun(deps, approvalTurn(request, sent.normalizedRequest.computer)));
@@ -4732,18 +4748,20 @@ describe("automation and Skill save admission by turn kind", () => {
     return { ...harness.deps, ...memoryNoteDeps(), workspace: contractWorkspace(), repository: { ...harness.deps.repository,
       createScheduledTaskForCall: vi.fn(), saveSkillForCall: vi.fn() } };
   }
-  const stored = (systemTurnKind?: "browser_sign_in_request" | "mcp_approval_continuation" | "subagent_callback") =>
+  const stored = (systemTurnKind?: "browser_sign_in_request" | "mcp_approval_continuation" | "subagent_callback",
+    continuesUserRequest?: true) =>
     regenerateInput(toolBody, { userMessage: { content: textMessageContent("Remind me daily"), id: "stored-user-message",
-      scheduledTaskPrompt: false, ...(systemTurnKind ? { systemTurnKind } : {}) } });
+      scheduledTaskPrompt: false, ...(systemTurnKind ? { systemTurnKind } : {}), ...(continuesUserRequest ? { continuesUserRequest } : {}) } });
   const CASES: ReadonlyArray<readonly [string, RunPreparationInput, boolean]> = [
     ["the user's own send", sendInput(toolBody), true],
-    ["the continuation after the user's MCP Allow", { ...sendInput(toolBody), serverAuthoredInput: true,
-      systemTurnKind: "mcp_approval_continuation" }, true],
+    ["the continuation after an MCP Allow of the user's own turn", continuationInput(true, toolBody), true],
+    ["the continuation after an MCP Allow of a wake-up's or a sign-in request's call", continuationInput(false, toolBody), false],
     ["a sub-agent wake-up", { ...sendInput(toolBody), origin: "wake_up", serverAuthoredInput: true,
       systemTurnKind: "subagent_callback" }, false],
     ["a browser sign-in request", { ...sendInput(toolBody), serverAuthoredInput: true, systemTurnKind: "browser_sign_in_request" }, false],
     ["the user's own message regenerated", stored(), true],
-    ["an Allow continuation regenerated", stored("mcp_approval_continuation"), true],
+    ["an Allow continuation of the user's own turn regenerated", stored("mcp_approval_continuation", true), true],
+    ["an Allow continuation of a wake-up's call regenerated", stored("mcp_approval_continuation"), false],
     ["a wake-up regenerated", stored("subagent_callback"), false],
     ["a sign-in request regenerated", stored("browser_sign_in_request"), false]
   ];
@@ -5151,6 +5169,17 @@ it("freezes a concrete current message reference in both accepted request shapes
   expect(marker?.messages).toEqual([{ kind: "message", id: marker?.currentMessageId }]);
   expect(marker).not.toHaveProperty("userMessages");
   expect(prepared.providerRequest.mcpApproval?.guard).toEqual(marker);
+});
+
+it("freezes the Allow a continuation names, with or without an MCP server left in its run, and on no other turn", async () => {
+  // The name is the stored link the commit-time fences follow back to the turn whose call the user allowed.
+  const plain = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true } });
+  expect(preparedFrom(await prepareRun(plain.deps, continuationInput(false))).normalizedRequest.mcpApproval)
+    .toEqual({ approvedBy: "approval-1", consentedServerIds: [], version: 1 });
+  expect(preparedFrom(await prepareRun(plain.deps, sendInput())).normalizedRequest.mcpApproval).toBeUndefined();
+  const served = createHarness({ capabilities: { ...baseCapabilities, toolCalling: true }, mcpPlan: readyMcpPlan() });
+  expect(preparedFrom(await prepareRun(served.deps, continuationInput(true, successBody({ mcp: { mode: "load_all" } }))))
+    .normalizedRequest.mcpApproval).toMatchObject({ approvedBy: "approval-1", version: 1 });
 });
 
 describe("a Discord turn under its connector rules", () => {

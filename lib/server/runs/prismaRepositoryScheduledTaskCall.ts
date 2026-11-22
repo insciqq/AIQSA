@@ -88,11 +88,11 @@ export async function createScheduledTaskForToolCall(
       // Nor does any other answer to a scheduled task's prompt, which the model
       // may have written: a regeneration in its chat or an answer in a branch
       // copy, nor a turn the server wrote (a wake-up, a sign-in request), which
-      // authorizes nothing. The marks are on the message (`storedUserRequest`); a
-      // missing message fails closed.
-      const prompt = await tx.message.findUnique({ select: { scheduledTaskPrompt: true, systemTurnKind: true },
-        where: { id: run.userMessageId } });
-      if (!prompt || !storedUserRequest(prompt)) return refused("scheduled_task_call_unavailable");
+      // authorizes nothing, nor the continuation after an Allow of such a turn.
+      // The stored turn tells (`storedUserRequest`); a missing message fails closed.
+      if (!await storedUserRequest(tx, { messageId: run.userMessageId, userId: input.userId })) {
+        return refused("scheduled_task_call_unavailable");
+      }
       // Only a creation settles complete: another one means this answer has its task.
       const created = await tx.modelRunToolCall.count({ where: {
         id: { not: input.callId }, modelRunId: input.runId, state: "complete", toolName: CREATE_SCHEDULED_TASK_TOOL_NAME

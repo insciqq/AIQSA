@@ -769,6 +769,11 @@ export type RunRepository = {
       scheduledTaskMemory?: true;
       /** The stored message is a turn the server wrote (`Message.systemTurnKind`): never the user's own words. */
       systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
+      /**
+       * The stored turn after an MCP Allow continues a turn that was the user's own request (`storedUserRequest`);
+       * absent, it has no authority of the user's.
+       */
+      continuesUserRequest?: true;
     };
   } | null>;
   /** The branch path to the leaf as the model reads it, without quiet checks. */
@@ -885,10 +890,13 @@ export type RunRepository = {
    * user's own Allow in this chat within the approval window; null otherwise.
    * `computer` is the gated run's frozen computer (`NormalizedRunRequest.computer`), null for none: the turn continues
    * that run, so it keeps that binding whatever its body says (`computerAdmission.ts`); absent reads as none.
+   * `userRequest` is whether the gated run's turn was the user's own request (`storedUserRequest`), whose authority the
+   * turn has; absent reads as no.
    */
   loadMcpApprovalContinuation?(input: Readonly<{ approvalId: string; chatId: string; userId: string }>): Promise<Readonly<{
     computer?: import("../tools/computerBinding").FrozenComputerBinding | null;
     serverName: string; toolName: string;
+    userRequest?: boolean;
   }> | null>;
   /** The approval cards of a run, as its initiator's live stream shows them. */
   loadRunMcpApprovalCards?(input: Readonly<{ runId: string; userId: string }>): Promise<

@@ -320,9 +320,11 @@ export type SendRunPreparationSource = Readonly<{
   }>;
   /**
    * Server-only: the turn after an MCP Allow, which continues the run the approval gated: `computer` is that run's
-   * frozen computer, null for none, which this turn keeps whatever its request says (`computerAdmission.ts`).
+   * frozen computer, null for none, which this turn keeps whatever its request says (`computerAdmission.ts`), and
+   * `userRequest` whether that run's turn was the user's own request (`storedUserRequest`), whose authority this turn
+   * has: the Allow authorizes that one call, never more.
    */
-  approvalContinuation?: Readonly<{ computer: FrozenComputerBinding | null }>;
+  approvalContinuation?: Readonly<{ computer: FrozenComputerBinding | null; userRequest: boolean }>;
   draftPersonalChat?: boolean;
   kind: "send";
   /** Server-only: the scheduled task occurrence this send admits. */
@@ -358,6 +360,11 @@ export type RegenerateRunPreparationSource = Readonly<{
       scheduledTaskMemory?: true;
       /** Server-only: the stored message is a turn the server wrote (`Message.systemTurnKind`). */
       systemTurnKind?: MessageSystemTurnKind;
+      /**
+       * Server-only: the stored turn after an MCP Allow continues a turn that was the user's own request
+       * (`storedUserRequest`); absent, it has no authority of the user's.
+       */
+      continuesUserRequest?: true;
     }>;
     /** Server-only: the computer the repeated run was admitted with, null for none; absent for a message with no run yet. */
     computer?: FrozenComputerBinding | null;
@@ -1889,9 +1896,9 @@ export async function prepareRun(
   // The note's own tool rides with the self-service tools of an interactive personal chat (`selfServiceToolsFor`): never
   // an answer to a scheduled task's prompt, which reads and may search but never writes, nor an Assistant chat. Only the
   // user's own message in this turn authorizes a change (operator rule, `TurnProvenance.userRequest`): a turn the server
-  // wrote, a sub-agent wake-up or a browser sign-in request, never does, while the continuation after an MCP Allow goes
-  // on with the user's own turn. The note's service checks the stored message again when the change commits
-  // (`agentMemoryNote.ts`).
+  // wrote, a sub-agent wake-up or a browser sign-in request, never does, and the continuation after an MCP Allow has the
+  // authority of the turn whose call was allowed. The note's service checks the stored turn again when the change
+  // commits (`agentMemoryNote.ts`, `storedUserRequest`).
   const memory: NormalizedRunRequest["memory"] = memoryAdmission && memoryNote ? Object.freeze({
     changes: memoryTools && !assistantRun && provenance.userRequest,
     offers: memoryAdmission.switches.memorySuggestionsEnabled,
@@ -1962,10 +1969,13 @@ export async function prepareRun(
     ...(provenance.guardReadsCurrentMessage ? { currentMessageId: workspaceAdmissionPlan?.userMessageId ?? randomUUID() } : {}),
     ...(inheritedFollowups ? { inheritedFollowups } : {})
   }) : undefined;
+  // A continuation names the Allow it continues even when no MCP server is left in its run: that name is the stored link
+  // the commit-time fences and a regenerate follow back to the turn whose call the user allowed (`storedUserRequest`).
+  // With no server the marker gates nothing.
   const mcpApproval = !unattendedMcp && approvalServerIds.length > 0
     ? mcpApprovalAdmission(await deps.repository.loadMcpToolConsentServerIds?.({
         serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, provenance.mcpApprovalId)
-    : undefined;
+    : !unattendedMcp && provenance.mcpApprovalId ? mcpApprovalAdmission([], undefined, provenance.mcpApprovalId) : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
     ...(memory ? { memory } : {}),
     toolObservationVersion,

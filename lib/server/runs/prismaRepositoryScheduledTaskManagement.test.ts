@@ -54,6 +54,11 @@ type FakeState = {
   owner: boolean;
   /** The answered user message's scheduled task prompt mark and server turn kind; null when the message is gone. */
   prompt: { scheduledTaskPrompt: boolean; systemTurnKind?: string | null } | null;
+  /**
+   * For a continuation after an MCP Allow: the messages of the runs its Allows gated, followed back to the first turn
+   * (`storedUserRequest`).
+   */
+  gated?: Array<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>;
   rows: ScheduledTaskRow[];
   run: { errorPayload: null; scheduledTaskId: string | null; status: string; userMessageId: string } | null;
 };
@@ -84,15 +89,20 @@ function harness(overrides: Partial<FakeState> = {}) {
   };
   const queries: string[] = [];
   const tx = {
-    $queryRaw: vi.fn(async (query: Prisma.Sql) => {
-      const text = query.strings.join("?");
+    $queryRaw: vi.fn(async (query: Prisma.Sql | TemplateStringsArray, ...values: unknown[]) => {
+      const text = (Array.isArray(query) ? query : (query as Prisma.Sql).strings).join("?");
+      // The stored turn's chain, the answered message first, read as the run's user.
+      if (text.includes("WITH RECURSIVE")) {
+        queries.push("turn");
+        const [messageId] = Array.isArray(query) ? values : (query as Prisma.Sql).values;
+        return messageId === state.run?.userMessageId && state.prompt ? [{ scheduledTaskPrompt: state.prompt.scheduledTaskPrompt,
+          systemTurnKind: state.prompt.systemTurnKind ?? null }, ...state.gated ?? []] : [];
+      }
       queries.push(text.includes("\"User\"") ? "owner" : text.includes("\"ModelRun\"") ? "run" : "other");
       if (text.includes("\"User\"")) return state.owner ? [{ id: "user-1" }] : [];
       if (text.includes("\"ModelRun\"")) return state.run ? [state.run] : [];
       throw new Error("unexpected_query");
     }),
-    message: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
-      where.id === state.run?.userMessageId ? state.prompt : null) },
     modelRunToolCall: {
       findFirst: vi.fn(async ({ where }: { where: { id: string; modelRunId: string } }) =>
         state.calls.find((call) => call.id === where.id && call.modelRunId === where.modelRunId) ?? null),
@@ -165,7 +175,7 @@ describe("a chat answer's scheduled task change", () => {
     const h = harness();
     const outcome = await h.manage({ action: "update", change: moveTo("10:00") });
     expect(outcome).toMatchObject({ kind: "managed", result: { status: "complete", content: [{ value: { changed: true } }] } });
-    expect(h.queries).toEqual(["owner", "run"]);
+    expect(h.queries).toEqual(["owner", "run", "turn"]);
     expect(updateScheduledTask).toHaveBeenCalledExactlyOnceWith(h.tx, "user-1", "task-1", {
       draft: expect.objectContaining({ schedule: { ...weekly, time: "10:00" }, prompt: "Remind me to send the weekly report.",
         modelId: "deployment-1" }),
@@ -310,6 +320,15 @@ describe("a chat answer's scheduled task change", () => {
     expect(full.deps.kick).not.toHaveBeenCalled();
   });
 
+  it("manages from the continuation after an MCP Allow of the user's own turn, however many Allows back", async () => {
+    const allow = { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" };
+    const own = { scheduledTaskPrompt: false, systemTurnKind: null };
+    for (const gated of [[own], [allow, own]]) {
+      expect(await harness({ gated, prompt: allow }).manage({ action: "update", change: moveTo("10:00") }))
+        .toMatchObject({ kind: "managed", result: { status: "complete", content: [{ value: { changed: true } }] } });
+    }
+  });
+
   it("never manages from a scheduled, settled or missing run, another answer to a task's prompt, or a call that is not its own", async () => {
     for (const overrides of [
       { run: { errorPayload: null, scheduledTaskId: "task-0", status: "streaming", userMessageId: "message-1" } },
@@ -319,6 +338,12 @@ describe("a chat answer's scheduled task change", () => {
       // A turn the server wrote authorizes nothing.
       { prompt: { scheduledTaskPrompt: false, systemTurnKind: "subagent_callback" } },
       { prompt: { scheduledTaskPrompt: false, systemTurnKind: "browser_sign_in_request" } },
+      // Nor does the continuation after an Allow of a call such a turn made, nor one that names no Allow.
+      { gated: [{ scheduledTaskPrompt: false, systemTurnKind: "subagent_callback" }],
+        prompt: { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" } },
+      { gated: [{ scheduledTaskPrompt: false, systemTurnKind: "browser_sign_in_request" }],
+        prompt: { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" } },
+      { prompt: { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" } },
       { prompt: null },
       { calls: [{ arguments: {}, id: "persisted-1", modelRunId: "run-1", providerCallId: "provider-call-1", result: null,
         state: "pending", toolName: MANAGE_SCHEDULED_TASK_TOOL_NAME }] },

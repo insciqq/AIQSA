@@ -92,6 +92,7 @@ import { createPrismaRunFollowupOperations, runFollowupSelect } from "./prismaRe
 import { projectRunFollowups } from "./runFollowups";
 import { decodeRunFollowupState } from "../../contracts/runFollowups";
 import { isMessageSystemTurnKind, MCP_APPROVAL_CONTINUATION_KIND } from "../../contracts/mcpApprovals";
+import { storedUserRequest } from "./turnProvenance";
 
 export { insertAcceptedMcpRunBindings } from "./prismaRepositoryBindings";
 
@@ -200,6 +201,15 @@ export function createPrismaRunRepository(
       where: { id: origin.scheduledTaskId, userId }
     }).catch(retainRunPrismaCode) : null;
     return task?.memoryEnabled === true;
+  }
+  /**
+   * A regenerated turn after an MCP Allow has the authority of the turn whose call the user allowed, read again from the
+   * stored chain (`storedUserRequest`): a branch copy, whose messages have no runs, has none.
+   */
+  async function continuesUserRequest(message: Readonly<{ id: string; systemTurnKind: string | null }>,
+    userId: string): Promise<boolean> {
+    return message.systemTurnKind === MCP_APPROVAL_CONTINUATION_KIND &&
+      await storedUserRequest(prismaClient, { messageId: message.id, userId }).catch(retainRunPrismaCode);
   }
   async function loadConversationPath(
     chatId: string,
@@ -392,12 +402,15 @@ export function createPrismaRunRepository(
     loadMcpApprovalContinuation: async (input) => {
       const approval = await loadMcpApprovalContinuation(prismaClient, input).catch(retainRunPrismaCode);
       if (!approval) return null;
-      // The turn continues the run the approval gated, so it keeps the computer that run was admitted with.
+      // The turn continues the run the approval gated, so it keeps the computer that run was admitted with and the
+      // authority of that run's turn, followed back through a continuation of a continuation (`storedUserRequest`).
       const gated = await prismaClient.mcpToolApproval.findFirst({
-        select: { modelRun: { select: { normalizedRequest: true } } },
+        select: { modelRun: { select: { normalizedRequest: true, userMessageId: true } } },
         where: { chatId: input.chatId, id: input.approvalId, userId: input.userId }
       }).catch(retainRunPrismaCode);
-      return { ...approval, computer: frozenComputerOf(gated?.modelRun.normalizedRequest) };
+      const userRequest = gated ? await storedUserRequest(prismaClient, { messageId: gated.modelRun.userMessageId,
+        userId: input.userId }).catch(retainRunPrismaCode) : false;
+      return { ...approval, computer: frozenComputerOf(gated?.modelRun.normalizedRequest), userRequest };
     },
     loadRunMcpApprovalCards: (input) => loadRunMcpApprovalCards(prismaClient, input).catch(retainRunPrismaCode),
     loadScheduledTaskManagement: (input) => loadScheduledTaskManagementAdmission(prismaClient, input).catch(retainRunPrismaCode),
@@ -841,6 +854,7 @@ export function createPrismaRunRepository(
         const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
           ? normalizedRequest.artifactEdit : undefined;
         const memory = await scheduledTaskMemory(sourceMessage, userId);
+        const continued = await continuesUserRequest(sourceMessage, userId);
         return {
           ...(sourceRun ? { computer: frozenComputerOf(normalizedRequest) } : {}),
           ...(artifactEdit !== undefined ? { artifactEdit } : {}),
@@ -854,7 +868,8 @@ export function createPrismaRunRepository(
             id: sourceMessage.id,
             scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt,
             ...(memory ? { scheduledTaskMemory: true as const } : {}),
-            ...(isMessageSystemTurnKind(sourceMessage.systemTurnKind) ? { systemTurnKind: sourceMessage.systemTurnKind } : {})
+            ...(isMessageSystemTurnKind(sourceMessage.systemTurnKind) ? { systemTurnKind: sourceMessage.systemTurnKind } : {}),
+            ...(continued ? { continuesUserRequest: true as const } : {})
           }
         };
       }
@@ -890,6 +905,7 @@ export function createPrismaRunRepository(
       const artifactEdit = normalizedRequest && typeof normalizedRequest === "object" && !Array.isArray(normalizedRequest)
         ? normalizedRequest.artifactEdit : undefined;
       const memory = await scheduledTaskMemory({ ...question, chatId: sourceMessage.chat.id }, userId);
+      const continued = await continuesUserRequest(question, userId);
 
       return {
         ...(sourceRun ? { computer: frozenComputerOf(normalizedRequest) } : {}),
@@ -910,7 +926,8 @@ export function createPrismaRunRepository(
           id: question.id,
           scheduledTaskPrompt: question.scheduledTaskPrompt,
           ...(memory ? { scheduledTaskMemory: true as const } : {}),
-          ...(isMessageSystemTurnKind(question.systemTurnKind) ? { systemTurnKind: question.systemTurnKind } : {})
+          ...(isMessageSystemTurnKind(question.systemTurnKind) ? { systemTurnKind: question.systemTurnKind } : {}),
+          ...(continued ? { continuesUserRequest: true as const } : {})
         }
       };
     },
