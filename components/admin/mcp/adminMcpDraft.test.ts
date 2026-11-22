@@ -2,36 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   changeMcpRemoteSource,
   defaultMcpDraft,
-  diffMcpToolInventory,
   enabledMcpToolInventory,
   normalizeMcpImport,
-  preparedMcpOAuthPolicy,
-  staleDisabledMcpToolNames,
-  withMcpToolEnabled
+  preparedMcpOAuthPolicy
 } from "./adminMcpDraft";
 
 describe("adminMcpDraft", () => {
-  it("edits an exact-name opt-out policy while new tools remain enabled", () => {
-    const draft = defaultMcpDraft();
-    const disabled = withMcpToolEnabled(
-      withMcpToolEnabled(draft, "Echo", false),
-      "remember",
-      false
-    );
-
-    expect(disabled.disabledToolNames).toEqual(["Echo", "remember"]);
+  it("hides only exact-name opt-outs while new tools remain enabled", () => {
     expect(enabledMcpToolInventory([
       { description: null, name: "Echo" },
       { description: null, name: "echo" },
       { description: null, name: "new_tool" }
-    ], disabled.disabledToolNames).map((tool) => tool.name)).toEqual(["echo", "new_tool"]);
-    expect(staleDisabledMcpToolNames(disabled, [
-      { description: null, name: "Echo" }
-    ])).toEqual(["remember"]);
-
-    const enabled = withMcpToolEnabled(disabled, "Echo", true);
-    expect(enabled.disabledToolNames).toEqual(["remember"]);
-    expect(withMcpToolEnabled(enabled, "remember", true)).not.toHaveProperty("disabledToolNames");
+    ], ["Echo", "remember"]).map((tool) => tool.name)).toEqual(["echo", "new_tool"]);
+    expect(enabledMcpToolInventory([{ description: null, name: "Echo" }], undefined)
+      .map((tool) => tool.name)).toEqual(["Echo"]);
   });
 
   it("starts as a remote Streamable HTTP draft", () => {
@@ -225,19 +209,9 @@ describe("adminMcpDraft", () => {
       .toThrow(/not valid JSON/i);
   });
 
-  it("requires one pasted server and produces a stable tool diff", () => {
+  it("requires one pasted server", () => {
     expect(() => normalizeMcpImport(JSON.stringify({
       mcpServers: { first: { url: "https://one.example/mcp" }, second: { url: "https://two.example/mcp" } }
     }))).toThrow(/exactly one/i);
-
-    expect(diffMcpToolInventory(
-      [{ description: "Old", name: "changed" }, { description: null, name: "removed" }],
-      [{ description: "New", name: "changed" }, { description: null, name: "added" }]
-    )).toEqual({
-      added: [{ description: null, name: "added" }],
-      changed: [{ description: "New", name: "changed" }],
-      removed: [{ description: null, name: "removed" }],
-      unchanged: []
-    });
   });
 });
