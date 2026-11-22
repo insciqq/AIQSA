@@ -13,6 +13,7 @@ import { chatExportText } from "../../../domain/chatExport";
 import { omitSubagentCallbackTurns } from "../../../domain/subagentCallbackTurns";
 import { quietCheckOmission } from "../../chats/quietScheduledChecks";
 import { chatSearchEligibleWhere } from "../eligibility";
+import { chatSearchWithheldMessages } from "../index/exclusions";
 import { pastChatTimestamp } from "./dates";
 import { pastChatTitle, redactPastChatText, type SavedSecretValuesReader } from "./redaction";
 import { readPastChatSwitches, type PastChatSwitches } from "./store";
@@ -29,7 +30,8 @@ import { readPastChatSwitches, type PastChatSwitches } from "./store";
  * (`lib/server/chatSearch/eligibility.ts`); a chat the caller cannot see and
  * a missing one answer the same. A message search never holds
  * (`ChatSearchExcludedMessage`, the old Memory's exclusions) is left out like
- * a message of another branch.
+ * a message of another branch, and so is the other message of its turn
+ * (`chatSearchWithheldMessages`), as the indexer leaves the whole turn out.
  */
 
 /** The JSON of a window stays within the engine's inline tool result with its note beside it. */
@@ -227,8 +229,9 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         db.message.findMany({ select: branchSelect, where: { chatId: chat.id } }),
         db.chatSearchExcludedMessage.findMany({ select: { messageId: true }, where: { chatId: chat.id, userId: ownerId } })
       ]);
-      // A message search never holds is walked through, so the branch stays whole, but never shown.
+      // A turn search never holds is walked through, so the branch stays whole, but neither of its messages is shown.
       const hidden = new Set(excluded.map((row) => row.messageId));
+      const stored = new Map(rows.map((row) => [row.id, row]));
       const quiet = await quietCheckOmission(db, chat.id, rows);
       const shown = rows.filter((row) => !quiet.removed.has(row.id))
         .map((row) => quiet.parents.has(row.id) ? { ...row, parentMessageId: quiet.parents.get(row.id) ?? null } : row);
@@ -242,10 +245,11 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         const row = kept.get(cursor);
         if (!row || seen.has(cursor)) break;
         seen.add(cursor);
-        if ((row.role === "user" || row.role === "assistant") && !hidden.has(row.id)) path.push({ id: row.id, role: row.role });
+        if (row.role === "user" || row.role === "assistant") path.push({ id: row.id, role: row.role });
         cursor = row.parentMessageId;
       }
-      return { chatId: chat.id, messages: path.reverse(), title: chat.title };
+      const withheld = chatSearchWithheldMessages(path.map((node) => node.id), stored, hidden);
+      return { chatId: chat.id, messages: path.reverse().filter((node) => !withheld.has(node.id)), title: chat.title };
     },
 
     async messages(ownerId: string, chatId: string, ids: readonly string[]): Promise<PastChatMessageSource[]> {

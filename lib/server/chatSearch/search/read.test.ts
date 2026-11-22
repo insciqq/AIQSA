@@ -201,4 +201,19 @@ describe("read_past_chat over the stored chat", () => {
     expect(ids(before.messages)).toEqual(["u2e"]);
     expect(before.hasEarlier).toBe(false);
   });
+
+  it("withholds the whole turn when only one of its messages was kept out, as the indexer does", async () => {
+    const shown = async (excluded: readonly string[], input: Partial<ReadPastChatInput> = {}) => {
+      const outcome = await reader(excluded.map((messageId) => ({ chatId: "chat-1", messageId, userId: OWNER })))
+        .read({ input: { chat_id: "chat-1", ...input }, ownerId: OWNER, timeZone: "UTC" });
+      return outcome.kind === "read" ? ids(outcome.result.messages) : outcome.kind;
+    };
+    // The answer repeats a forgotten question's words, so it stays out with it; the walk goes on to later turns.
+    expect(await shown(["u1"])).toEqual(["u2e", "a2e", "a3"]);
+    expect(await shown(["a2e"])).toEqual(["u1", "a1", "a3"]);
+    // An answer to a server-written turn the read omits still belongs to that turn.
+    expect(await shown(["wake"])).toEqual(["u1", "a1", "u2e", "a2e"]);
+    expect(await shown(["u1"], { around_message_id: "a1" })).toBe("message_not_found");
+    expect(await shown(["u1"], { after_message_id: "u2e" })).toEqual(["a2e", "a3"]);
+  });
 });
