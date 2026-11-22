@@ -247,7 +247,8 @@ function chatIds(outcome: PastChatSearchOutcome): string[] {
   return outcome.result.results.map((result) => result.chatId);
 }
 
-describe("past-chat search SQL", () => {
+// About 6 000 passages: each case asserts results, and the latencies are logged apart, so a loaded host must not fail it.
+describe("past-chat search SQL", { timeout: 20_000 }, () => {
   it("seeds about 6 000 passages for the owner", () => {
     expect(fixture.passages).toBeGreaterThanOrEqual(6_000);
   });
