@@ -1,26 +1,9 @@
 "use client";
 
-import {
-  refreshMemorySettings,
-  useMemorySettingsStore
-} from "@/components/app-shell/memorySettingsStore";
-import {
-  applyMemorySearch,
-  beginCreateMemory,
-  beginEditMemory,
-  cancelMemoryDraft,
-  discardMemoryManagerDraft,
-  forgetCurrentMemory,
-  openMemoryDetail,
-  refreshMemoryList,
-  requestForgetMemory,
-  saveMemoryChanges,
-  saveNewMemory,
-  useMemoryManagerStore
-} from "@/components/app-shell/memoryManagerStore";
+import { useMemorySettingsStore } from "@/components/app-shell/memorySettingsStore";
 import { navigateChatRoute } from "@/components/app-shell/chatRoute";
 import { DiscardChangesConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
-import { memoryUiCopy } from "@/components/app-shell/memoryUiCopy";
+import { MEMORY_NOTE_COPY } from "@/components/app-shell/memoryNoteUiCopy";
 import { useBeforeUnloadGuard } from "@/components/app-shell/useBeforeUnloadGuard";
 import {
   refreshFileLibrary,
@@ -46,15 +29,13 @@ import { SkillLibrarySection } from "@/components/skills/SkillLibraryDialog";
 import { AssistantsTabV2, assistantsTabSubviewV2 } from "@/features/library-v2/assistants/AssistantsTabV2";
 import {
   FilesPanelV2,
-  LibraryV2,
-  MemoryPanelV2
+  LibraryV2
 } from "@/features/library-v2/LibraryV2";
 import type {
   FileSummaryV2,
   LibraryTabIdV2,
   LibraryTabV2,
-  LibrarySubviewV2,
-  MemoryOverviewV2
+  LibrarySubviewV2
 } from "@/features/library-v2/contracts";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useEventCallback } from "@/components/app-shell/useEventCallback";
@@ -73,7 +54,7 @@ import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnec
 import { ConnectComputersSection } from "@/features/connect/ConnectComputersSection";
 import { ShellNotice } from "@/components/app-shell/ShellNotice";
 import { loadChatNavigation } from "@/components/app-shell/chatNavigationActions";
-import { MemorySettingsRowsV2 } from "@/features/settings-v2/MemorySettingsRowsV2";
+import { MemoryNoteSettingsV2 } from "@/features/settings-v2/MemoryNoteSettingsV2";
 import {
   AccountSettingsSectionV2,
   ConnectedAppsSettingsSectionV2,
@@ -93,6 +74,7 @@ function formDiscardCopy(tab: LibraryTabIdV2) {
       "Unsaved account changes");
     case "proxies": return copy("Discard your unsaved proxy changes?", "Your unsaved proxy changes will be lost.",
       "Unsaved proxy changes");
+    case "memory": return copy(MEMORY_NOTE_COPY.unsavedTitle, MEMORY_NOTE_COPY.unsavedBody, "Unsaved note");
     default: return copy("Discard your unsaved instructions?", "Your unsaved instructions will be lost.", "Unsaved instructions");
   }
 }
@@ -104,24 +86,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 }>) {
   const { session, settings } = props;
   const memoryData = useMemorySettingsStore((state) => state.data);
-  const memoryLoadState = useMemorySettingsStore((state) => state.loadState);
-  const activeMemory = useMemoryManagerStore((state) => state.activeMemory);
-  const memoryDraft = useMemoryManagerStore((state) => state.draft.statement);
-  const memoryDraftDirty = useMemoryManagerStore((state) => state.draftDirty);
-  const memoryListError = useMemoryManagerStore((state) => state.listError);
-  const memoryListState = useMemoryManagerStore((state) => state.listLoadState);
-  const memories = useMemoryManagerStore((state) => state.memories);
-  const memoryMutationError = useMemoryManagerStore((state) => state.mutationError);
-  const memoryMutationOutcomeUnknown = useMemoryManagerStore((state) => state.mutationOutcomeUnknown);
-  const memoryBusy = useMemoryManagerStore((state) => state.mutationState);
-  const memoryResetPending = useMemoryManagerStore(state => state.resetPending);
-  const memoryNextCursor = useMemoryManagerStore((state) => state.nextCursor);
-  const memoryNotice = useMemoryManagerStore((state) => state.notice);
-  const memoryQueryApplied = useMemoryManagerStore((state) => state.queryApplied);
-  const memoryQuery = useMemoryManagerStore((state) => state.queryInput);
-  const memoryScreen = useMemoryManagerStore((state) => state.screen);
-  const setMemoryDraft = useMemoryManagerStore((state) => state.setDraft);
-  const setMemoryQuery = useMemoryManagerStore((state) => state.setQueryInput);
   const fileData = useFileLibraryStore((state) => state.data);
   const fileLoadState = useFileLibraryStore((state) => state.loadState);
   const fileMutations = useFileLibraryStore((state) => state.mutations);
@@ -191,7 +155,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     requestBrowserSignIn(chatId, host);
   };
   const [assistantExit, setAssistantExit] = useState<(() => void) | null>(null);
-  const [memoryExit, setMemoryExit] = useState<(() => void) | null>(null);
   // The open section's form (only one section is mounted at a time) reports
   // unsaved and saving states here. Unsaved changes and the saves of the
   // forms Settings always had also guard leaving the page.
@@ -212,7 +175,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   // section leaves to General and is no longer listed until the next load.
   const [computersOff, setComputersOff] = useState(false);
   useBeforeUnloadGuard(formDirty || formBusy);
-  useBeforeUnloadGuard(memoryDraftDirty);
   const assistantDirty = Boolean(assistantView?.dirty);
   useBeforeUnloadGuard(assistantDirty);
 
@@ -230,14 +192,13 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
   };
 
   const navigationBusy = Boolean(
-    assistantView?.busy || assistantView?.editor?.saving || memoryBusy || formBusy || sectionBusy || personalMcpBusy
+    assistantView?.busy || assistantView?.editor?.saving || formBusy || sectionBusy || personalMcpBusy
   );
   const requestNavigation = useEventCallback((proceed: () => void, remountForm: boolean = true) => {
     if (navigationBusy) return;
     if (activeTab === "assistants" && assistantDirty) {
       setAssistantExit(() => () => { assistantView?.onDiscardDrafts(); proceed(); });
-    } else if (activeTab === "memory" && memoryDraftDirty) setMemoryExit(() => proceed);
-    else if (activeTab === "skills" && skillDirty) setSkillExit(() => proceed);
+    } else if (activeTab === "skills" && skillDirty) setSkillExit(() => proceed);
     else if (formDirty) setFormExit({ proceed, remount: remountForm });
     else proceed();
   });
@@ -268,23 +229,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     savedAt: file.savedAt,
     status: file.status
   }));
-  const memory: MemoryOverviewV2 = memoryData ? {
-    administratorDisabled: memoryData.status === "NEEDS_ADMIN_SETUP",
-    automaticLearning: memoryData.settings.learnAutomatically,
-    explicitCrudAvailable: memoryData.capabilities.managementAvailable,
-    loadState: memoryLoadState,
-    referenceChatHistory: memoryData.settings.referenceChatHistory,
-    status: memoryData.status,
-    useMemoryFacts: memoryData.settings.useMemoryFacts
-  } : {
-    administratorDisabled: false,
-    automaticLearning: false,
-    explicitCrudAvailable: false,
-    loadState: memoryLoadState,
-    referenceChatHistory: false,
-    status: null,
-    useMemoryFacts: false
-  };
   const refreshChats = () => {
     void props.workspace.pane.actions.retry();
     void loadChatNavigation();
@@ -414,53 +358,7 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
     },
     {
       content: (
-        <MemoryPanelV2
-          settingsContent={<MemorySettingsRowsV2 onBusyChange={setFormBusy} />}
-          resetPending={memoryResetPending}
-          activeRef={activeMemory?.memoryRef ?? null}
-          busy={memoryBusy}
-          draft={memoryDraft}
-          hasMore={memoryNextCursor !== null}
-          items={memories}
-          listError={memoryListError}
-          listState={memoryListState}
-          memory={memory}
-          mutationError={memoryManagerErrorCopy(memoryMutationError)}
-          mutationOutcomeUnknown={memoryMutationOutcomeUnknown}
-          notice={memoryNotice ? memoryUiCopy(
-            memoryNotice === "forgotten"
-              ? "manager.forgotten"
-              : memoryNotice === "saved_use_off"
-                ? "manager.savedUseOff"
-                : "manager.saved"
-          ) : null}
-          onCancelRow={cancelMemoryDraft}
-          onConfirmForget={() => void forgetCurrentMemory().catch(() => undefined)}
-          onCreate={beginCreateMemory}
-          onDraftChange={(statement) => setMemoryDraft({ statement })}
-          onEdit={(memoryRef) => {
-            openMemoryDetail(memoryRef);
-            beginEditMemory();
-          }}
-          onForget={requestForgetMemory}
-          onLoadMore={() => void refreshMemoryList({ append: true }).catch(() => undefined)}
-          onQueryChange={setMemoryQuery}
-          onRetry={() => void Promise.all([
-            refreshMemorySettings(true).catch(() => null),
-            refreshMemoryList().catch(() => undefined)
-          ])}
-          onSave={() => void (
-            memoryScreen === "create"
-              ? saveNewMemory(memoryData?.settings.useMemoryFacts ?? false)
-              : saveMemoryChanges()
-          ).catch(() => undefined)}
-          onSubmitQuery={() => void applyMemorySearch().catch(() => undefined)}
-          query={memoryQuery}
-          searchActive={memoryQueryApplied.length > 0}
-          rowMode={memoryScreen === "create" || memoryScreen === "edit" || memoryScreen === "forget"
-            ? memoryScreen
-            : null}
-        />
+        <MemoryNoteSettingsV2 key={`${session.accountId}:${formKey}`} onBusyChange={setFormBusy} onDirtyChange={setFormDirty} />
       ),
       id: "memory",
       label: "Memory"
@@ -506,10 +404,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 
   return (
     <>
-      <MemoryListPollingV2
-        active={memoryListPollingActiveV2({ activeTab, memory: memoryData })}
-        onRefresh={refreshMemoryListInBackgroundV2}
-      />
       <LibraryV2
         activeTab={activeTab}
         busy={navigationBusy}
@@ -581,26 +475,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
           }}
         />
       ) : null}
-      {memoryExit ? (
-        <DiscardChangesConfirmationDialog
-          portal
-          copy={{
-            body: memoryUiCopy("manager.discardBody"),
-            cancelLabel: memoryUiCopy("manager.keepEditing"),
-            confirmLabel: memoryUiCopy("manager.discardDraft"),
-            dialogLabel: memoryUiCopy("manager.discardTitle"),
-            title: memoryUiCopy("manager.discardTitle")
-          }}
-          label="Memory draft"
-          onCancel={() => setMemoryExit(null)}
-          onConfirm={() => {
-            const proceed = memoryExit;
-            setMemoryExit(null);
-            discardMemoryManagerDraft();
-            proceed();
-          }}
-        />
-      ) : null}
     </>
   );
 }
@@ -614,104 +488,6 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 export function useStudioMcpAttentionV2(accountId: string): boolean {
   useEffect(() => observeMcpSettings(), [accountId]);
   return useMcpSettingsStore((state) => state.servers.some((server) => mcpSetupAttention(server) !== null));
-}
-
-/** Calm cadence for picking up facts saved after a chat finished. */
-export const MEMORY_LIST_POLL_INTERVAL_MS = 30_000;
-
-/**
- * Both automatic learning and "remember that…" requests commit in the
- * background worker after the answer, and the requests work with learning
- * off, so polling follows only the main switch being on and ready.
- */
-export function memoryListPollingActiveV2(input: Readonly<{
-  activeTab: LibraryTabIdV2;
-  memory: Readonly<{ status: string }> | null;
-}>): boolean {
-  return input.activeTab === "memory" && input.memory?.status === "ON";
-}
-
-/**
- * Background Memory writes finish in a worker after the chat run, with no
- * channel to the browser. While the Memory list is open, visible and Memory is
- * on, re-read it quietly on a calm interval and once when the page becomes
- * visible again. A hidden page schedules nothing.
- */
-export function MemoryListPollingV2({
-  active,
-  onRefresh
-}: Readonly<{
-  active: boolean;
-  onRefresh(): Promise<void>;
-}>) {
-  const refreshRef = useRef(onRefresh);
-
-  useEffect(() => {
-    refreshRef.current = onRefresh;
-  }, [onRefresh]);
-
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    let running = false;
-    let timer: number | null = null;
-
-    const clear = () => {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-    };
-    const schedule = (delay: number) => {
-      clear();
-      if (cancelled || document.visibilityState !== "visible") return;
-      timer = window.setTimeout(() => {
-        timer = null;
-        void run();
-      }, delay);
-    };
-    const run = async () => {
-      if (cancelled || running || document.visibilityState !== "visible") return;
-      running = true;
-      try {
-        await refreshRef.current();
-      } catch {
-        // A failed background read keeps the last known rows silently.
-      } finally {
-        running = false;
-        schedule(MEMORY_LIST_POLL_INTERVAL_MS);
-      }
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        clear();
-        return;
-      }
-      if (!running) {
-        clear();
-        void run();
-      }
-    };
-
-    schedule(MEMORY_LIST_POLL_INTERVAL_MS);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      cancelled = true;
-      clear();
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [active]);
-
-  return null;
-}
-
-function refreshMemoryListInBackgroundV2(): Promise<void> {
-  return refreshMemoryList({ background: true });
-}
-
-/** Only input validation reaches the user; Memory failures stay silent. */
-export function memoryManagerErrorCopy(code: string | null): string | null {
-  if (code === "memory_secret_rejected") return memoryUiCopy("manager.secretRejected");
-  if (code === "memory_changed") return memoryUiCopy("manager.draftStale");
-  return null;
 }
 
 export { LibrarySurfaceV2 };

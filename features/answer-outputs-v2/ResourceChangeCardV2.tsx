@@ -39,6 +39,24 @@ import {
   undoSubagentDefaultChange
 } from "@/features/library-v2/subagents/subagentsApi";
 import { InstructionPresetApiError, requestInstructionPreset, requestInstructionPresets } from "@/features/settings-v2/instructionPresetsApi";
+import {
+  MEMORY_LIBRARY_PATH,
+  MemoryNoteApiError,
+  decideMemoryNoteOffer,
+  readMemoryNote,
+  readMemoryNoteOffer,
+  saveMemoryNote
+} from "@/features/settings-v2/memoryNoteApi";
+import { MEMORY_NOTE_COPY as noteCopy } from "@/components/app-shell/memoryNoteUiCopy";
+import {
+  memoryNoteCardKey,
+  memoryNoteUndoUpdate,
+  type MemoryNoteChangeCard,
+  type MemoryNoteOfferCard,
+  type MemoryNoteOfferDecision,
+  type MemoryNoteOfferStatus,
+  type MemoryNoteOperation
+} from "@/lib/contracts/memoryNote";
 import { SKILL_LIBRARY_PATH } from "@/lib/contracts/skillSaves";
 import { formatAssistantEntryPath } from "@/lib/domain/chatRoute";
 import type { WorkspaceSecretKind } from "@/lib/contracts/workspaceSecrets";
@@ -724,8 +742,171 @@ function InstructionsCardV2({ card, live }: Readonly<{ card: InstructionsChangeC
   );
 }
 
+type MemoryNotePassageRow = Readonly<{ kind: "add" | "del"; label: string; text: string }>;
+
+/** The text a change or an offer moves in or out of the note, in full: the user decides on what it says. */
+function MemoryNotePassagesV2({ label, rows }: Readonly<{ label: string; rows: readonly MemoryNotePassageRow[] }>) {
+  return (
+    <dl className="v2-memory-note-passages" aria-label={label}>
+      {rows.map((row) => (
+        <div key={row.label} data-kind={row.kind}>
+          <dt>{row.label}</dt>
+          <dd>{row.text}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function notePassages(operation: MemoryNoteOperation, before: string | null, after: string | null,
+  labels: Readonly<{ add: string; remove: string; before: string; after: string }>): MemoryNotePassageRow[] {
+  if (operation === "add") return after ? [{ kind: "add", label: labels.add, text: after }] : [];
+  if (operation === "remove") return before ? [{ kind: "del", label: labels.remove, text: before }] : [];
+  return [
+    ...before ? [{ kind: "del" as const, label: labels.before, text: before }] : [],
+    ...after ? [{ kind: "add" as const, label: labels.after, text: after }] : []
+  ];
+}
+
+const CHANGE_PASSAGE_LABELS = { add: noteCopy.cardAddedText, remove: noteCopy.cardRemovedText, before: noteCopy.cardBefore, after: noteCopy.cardNow };
+const OFFER_PASSAGE_LABELS = { add: noteCopy.offerProposedAdd, remove: noteCopy.offerProposedRemove,
+  before: noteCopy.offerProposedReplace, after: noteCopy.offerProposedWith };
+const CHANGE_OPERATIONS = Object.freeze({ added: "add", replaced: "replace", removed: "remove" } satisfies Record<MemoryNoteChangeCard["action"], MemoryNoteOperation>);
+const CHANGE_HEADINGS = Object.freeze({
+  added: noteCopy.cardAdded, replaced: noteCopy.cardReplaced, removed: noteCopy.cardRemoved
+} satisfies Record<MemoryNoteChangeCard["action"], string>);
+
+/** Whether the note still has the revision the change left: only then Undo can apply. */
+async function readMemoryNoteRemote(revision: number, signal: AbortSignal): Promise<Remote> {
+  return (await readMemoryNote(signal)).revision === revision ? "current" : "changed";
+}
+
+/**
+ * A change the agent made to the user's memory note, or that accepting an offer made (`remembered`): what went in or
+ * out, and Undo, which writes the whole earlier note back guarded by the revision the change left
+ * (`memoryNoteUndoUpdate`), so it is refused once anything changed the note since.
+ */
+function MemoryNoteChangeCardV2({ card, live, remembered = false }: Readonly<{ card: MemoryNoteChangeCard; live: boolean; remembered?: boolean }>) {
+  const state = useCardState(card);
+  const { outcome, remote } = state;
+  const read = useCallback((signal: AbortSignal) => readMemoryNoteRemote(card.revision, signal), [card.revision]);
+  useRemoteRead(!live && !outcome ? read : null, state.setRemote);
+
+  function undo() {
+    void state.run(async () => {
+      try {
+        const update = memoryNoteUndoUpdate(card, await readMemoryNote());
+        if (!update) {
+          state.setRemote("changed");
+          return;
+        }
+        await saveMemoryNote(update);
+        state.finish({ heading: noteCopy.cardUndone, message: noteCopy.cardUndoneMessage });
+      } catch (failure) {
+        // The route refuses a revision that is no longer current.
+        if (failure instanceof MemoryNoteApiError && failure.code === "memory_note_conflict") state.setRemote("changed");
+        else state.setError(noteCopy.cardUndoFailed);
+      }
+    });
+  }
+
+  const changed = remote === "changed";
+  return (
+    <CardV2 error={state.error} heading={outcome?.heading ?? (remembered ? noteCopy.offerRemembered : CHANGE_HEADINGS[card.action])}
+      headingRef={state.headingRef} icon="memory" meta={outcome ? null : noteCopy.cardMeta} name={noteCopy.cardName} resource="memory_note"
+      state={outcome ? "done" : remote} status={outcome?.message ?? (changed ? noteCopy.cardUndoRefused : null)}
+      actions={<>
+        {outcome || changed ? null : <UndoButtonV2 busy={state.busy} label={noteCopy.cardUndoLabel} onClick={undo} />}
+        <CardLinkV2 href={MEMORY_LIBRARY_PATH} icon="memory" label={noteCopy.cardOpen} />
+      </>}>
+      {outcome ? null : (
+        <MemoryNotePassagesV2 label={CHANGE_HEADINGS[card.action]}
+          rows={notePassages(CHANGE_OPERATIONS[card.action], card.before, card.after, CHANGE_PASSAGE_LABELS)} />
+      )}
+    </CardV2>
+  );
+}
+
+/** Where a decided offer stands: accepted (with the change, when this page made it), dismissed, or no longer fitting. */
+type OfferSettlement = Readonly<{ kind: "accepted"; change: MemoryNoteChangeCard | null }> | Readonly<{ kind: "dismissed" | "stale" }>;
+
+/** Offers settled on this page, so the card a settling answer mounts again keeps showing them (as `outcomes` does). */
+const offerSettlements = new Map<string, OfferSettlement>();
+
+function offerSettlement(status: MemoryNoteOfferStatus, change: MemoryNoteChangeCard | null = null): OfferSettlement | null {
+  return status.state === "accepted" ? { kind: "accepted", change } : status.state === "dismissed" ? { kind: "dismissed" } : null;
+}
+
+/**
+ * An offer the agent made: "Remember this for future chats?" with the proposed text, Remember and No thanks. Nothing is
+ * written until the user accepts; acceptance shows the change it made, with Undo. The payload never changes, so a
+ * settled answer reads the offer's state from the server; an offer that no longer fits the note says so.
+ */
+function MemoryNoteOfferCardV2({ card, live }: Readonly<{ card: MemoryNoteOfferCard; live: boolean }>) {
+  const key = memoryNoteCardKey(card);
+  const headingRef = useRef<HTMLSpanElement>(null);
+  const [settled, setSettled] = useState<OfferSettlement | null>(() => offerSettlements.get(key) ?? null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const reads = !live && !settled;
+  useEffect(() => {
+    if (!reads) return;
+    const controller = new AbortController();
+    // A failed read keeps the verbs, whose own request then decides.
+    readMemoryNoteOffer(card.offerId, controller.signal).then((status) => {
+      const next = controller.signal.aborted ? null : offerSettlement(status);
+      if (next) setSettled((current) => current ?? next);
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [card.offerId, reads]);
+
+  function settle(next: OfferSettlement) {
+    offerSettlements.set(key, next);
+    setSettled(next);
+    // The verbs are gone: focus stays on the card, whose heading says what happened.
+    queueMicrotask(() => headingRef.current?.focus());
+  }
+  function decide(decision: MemoryNoteOfferDecision) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    decideMemoryNoteOffer(card.offerId, decision).then((result) => {
+      settle(offerSettlement(result.offer, result.change) ?? { kind: "stale" });
+    }, (failure: unknown) => {
+      const code = failure instanceof MemoryNoteApiError ? failure.code : null;
+      if (code === "memory_note_offer_stale" || code === "memory_note_offer_not_found") settle({ kind: "stale" });
+      else setError(code === "memory_disabled" ? noteCopy.offerMemoryOff : code === "memory_note_too_long" ? noteCopy.offerTooLong
+        : noteCopy.offerFailed);
+    }).finally(() => setBusy(false));
+  }
+
+  if (settled?.kind === "accepted" && settled.change) return <MemoryNoteChangeCardV2 card={settled.change} live={false} remembered />;
+  const link = <CardLinkV2 href={MEMORY_LIBRARY_PATH} icon="memory" label={noteCopy.cardOpen} />;
+  if (settled) {
+    const heading = settled.kind === "accepted" ? noteCopy.offerRemembered : settled.kind === "dismissed" ? noteCopy.offerDismissed
+      : noteCopy.offerStale;
+    return (
+      <CardV2 actions={settled.kind === "dismissed" ? null : link} error={null} heading={heading} headingRef={headingRef} icon="memory"
+        meta={settled.kind === "accepted" ? noteCopy.cardMeta : null} name={noteCopy.cardName} resource="memory_note"
+        state={settled.kind === "stale" ? "changed" : "done"} status={settled.kind === "stale" ? noteCopy.offerStaleMessage : null} />
+    );
+  }
+  return (
+    <CardV2 actions={link} error={error} heading={noteCopy.offerHeading} headingRef={headingRef} icon="memory" name={noteCopy.cardName}
+      resource="memory_note" state="asking" status={null}
+      confirm={(
+        <ConfirmV2 busy={busy} confirmLabel={noteCopy.offerRemember} keepLabel={noteCopy.offerDismiss} label={noteCopy.offerHeading}
+          text={noteCopy.offerExplanation} tone="primary" onConfirm={() => decide("accept")} onKeep={() => decide("dismiss")} />
+      )}>
+      <MemoryNotePassagesV2 label={noteCopy.offerHeading} rows={notePassages(card.operation, card.before, card.after, OFFER_PASSAGE_LABELS)} />
+    </CardV2>
+  );
+}
+
 function ResourceChangeCardV2({ card, live }: Readonly<{ card: ResourceChangeCard; live: boolean }>) {
   switch (card.resource) {
+    case "memory_note": return card.action === "offered"
+      ? <MemoryNoteOfferCardV2 card={card} live={live} /> : <MemoryNoteChangeCardV2 card={card} live={live} />;
     case "secret": return <SecretCardV2 card={card} live={live} />;
     case "skill": return <SkillDeleteCardV2 card={card} live={live} />;
     case "assistant": return <AssistantCardV2 card={card} live={live} />;
