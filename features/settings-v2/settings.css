@@ -156,39 +156,6 @@
   margin-top: 1.25rem;
 }
 
-.v2-memory-reset-confirm {
-  display: grid;
-  gap: 0.75rem;
-  margin: 0.75rem 0;
-  padding: 1rem;
-  border: 1px solid color-mix(in srgb, var(--v2-color-danger) 40%, transparent);
-  border-radius: var(--v2-radius-m);
-  color: var(--v2-color-text);
-  background: color-mix(in srgb, var(--v2-color-danger) 7%, transparent);
-}
-
-.v2-memory-reset-confirm h2,
-.v2-memory-reset-confirm p {
-  margin: 0;
-}
-
-.v2-memory-reset-confirm h2 {
-  font-size: 0.875rem;
-  font-weight: 650;
-}
-
-.v2-memory-reset-confirm p {
-  color: var(--v2-color-text2);
-  font-size: 0.8125rem;
-  line-height: 1.55;
-}
-
-.v2-memory-reset-confirm > div {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
 /* A Settings section that was a tab of the former Settings dialog. */
 .v2-settings-page {
   min-width: 0;
@@ -2039,4 +2006,35 @@
 .v2-proxy-fields textarea { resize: vertical; }
 @media (hover: none), (pointer: coarse) {
   .v2-proxy-fields input, .v2-proxy-fields textarea, .v2-proxy-actions .v2-button, .v2-proxy-toolbar .v2-button, .v2-proxy-password-state .v2-button { min-height: 2.75rem; }
+}
+
+/* Settings › Memory: the note as plain text, its switches, the earlier automatic memories. */
+.v2-memory-note { display: grid; min-width: 0; gap: 0.5rem; margin-top: 0.875rem; }
+.v2-memory-note-label { color: var(--v2-color-text); font-size: 0.8125rem; font-weight: 500; }
+.v2-memory-note-hint, .v2-memory-note-off, .v2-memory-note-temporary { margin: 0; color: var(--v2-color-text2); font-size: 0.78125rem; line-height: 1.5; overflow-wrap: anywhere; }
+.v2-memory-note-temporary { margin-top: 0.75rem; color: var(--v2-color-text3); }
+.v2-memory-note-editor { min-height: 14rem; max-height: 70dvh; resize: vertical; font-family: inherit; overflow-wrap: anywhere; }
+.v2-memory-note-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; }
+.v2-memory-note-meta { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; min-width: 0; color: var(--v2-color-text3); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+.v2-memory-note-counter[data-over] { color: var(--v2-color-danger); }
+.v2-memory-note-error, .v2-memory-note-notice { margin: 0; font-size: 0.78125rem; line-height: 1.5; overflow-wrap: anywhere; }
+.v2-memory-note-error { color: var(--v2-color-danger); }
+.v2-memory-note-notice { color: var(--v2-color-text2); }
+.v2-memory-note-conflict { display: grid; gap: 0.5rem; padding: 0.75rem; border: 1px solid color-mix(in srgb, var(--v2-color-warn) 40%, var(--v2-color-border2)); border-radius: var(--v2-radius-m); color: var(--v2-color-text); font-size: 0.8125rem; line-height: 1.5; }
+.v2-memory-note-conflict > p { margin: 0; overflow-wrap: anywhere; }
+.v2-memory-note-conflict summary { width: fit-content; cursor: pointer; color: var(--v2-color-text2); }
+.v2-memory-note-conflict pre { max-height: 14rem; margin: 0.5rem 0 0; overflow: auto; color: var(--v2-color-text2); font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v2-memory-note-conflict-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.v2-memory-legacy { display: grid; min-width: 0; gap: 0.5rem; margin-top: 1.5rem; }
+.v2-memory-legacy-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 0.5rem 0.75rem; }
+.v2-memory-legacy-heading > div { flex: 1 1 18rem; min-width: 0; }
+.v2-memory-legacy-heading h3 { margin: 0; color: var(--v2-color-text); font-size: 0.875rem; font-weight: 600; }
+.v2-memory-legacy-heading p { margin: 0.25rem 0 0; color: var(--v2-color-text2); font-size: 0.78125rem; line-height: 1.5; }
+.v2-memory-legacy > ul { margin: 0; padding: 0; list-style: none; }
+.v2-memory-legacy-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; min-width: 0; padding-block: 0.625rem; border-bottom: 1px solid var(--v2-color-border); }
+.v2-memory-legacy-row > p { flex: 1 1 16rem; min-width: 0; margin: 0; color: var(--v2-color-text); font-size: 0.8125rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.v2-memory-legacy-row > .v2-memory-note-error { flex: 1 1 100%; }
+.v2-memory-legacy-actions { display: flex; flex-wrap: wrap; gap: 0.25rem; margin-left: auto; }
+@media (hover: none), (pointer: coarse) {
+  .v2-memory-legacy-actions .v2-button, .v2-memory-note-footer .v2-button, .v2-memory-note-conflict-actions .v2-button { min-height: 2.75rem; }
 }
