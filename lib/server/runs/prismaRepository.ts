@@ -891,7 +891,8 @@ export function createPrismaRunRepository(
             content: sourceMessage.content,
             id: sourceMessage.id,
             scheduledTaskPrompt: sourceMessage.scheduledTaskPrompt,
-            ...(memory ? { scheduledTaskMemory: true as const } : {})
+            ...(memory ? { scheduledTaskMemory: true as const } : {}),
+            ...(isMessageSystemTurnKind(sourceMessage.systemTurnKind) ? { systemTurnKind: sourceMessage.systemTurnKind } : {})
           }
         };
       }
@@ -956,7 +957,8 @@ export function createPrismaRunRepository(
           content: question.content,
           id: question.id,
           scheduledTaskPrompt: question.scheduledTaskPrompt,
-          ...(memory ? { scheduledTaskMemory: true as const } : {})
+          ...(memory ? { scheduledTaskMemory: true as const } : {}),
+          ...(isMessageSystemTurnKind(question.systemTurnKind) ? { systemTurnKind: question.systemTurnKind } : {})
         }
       };
     },

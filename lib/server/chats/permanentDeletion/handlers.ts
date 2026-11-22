@@ -61,6 +61,7 @@ async function body(request: Request): Promise<unknown | Response> {
 function publicFailure(code: PermanentChatDeletionErrorCode): string {
   switch (code) {
     case "active_run_in_progress": return "BUSY";
+    case "chat_permanent_delete_reload_required": return "RELOAD";
     case "chat_permanent_delete_stale": return "CHANGED";
     case "chat_permanent_delete_temporary_forbidden":
     case "chat_permanent_delete_unavailable":
@@ -75,6 +76,7 @@ function statusFor(code: PermanentChatDeletionErrorCode): number {
     case "chat_not_found":
       return 404;
     case "active_run_in_progress":
+    case "chat_permanent_delete_reload_required":
     case "chat_permanent_delete_stale":
     case "chat_permanent_delete_temporary_forbidden":
       return 409;
@@ -85,10 +87,13 @@ function statusFor(code: PermanentChatDeletionErrorCode): number {
   }
 }
 
+/** What a page that predates this release reads of a refusal it has no words for. */
+const RELOAD_MESSAGE = "This page is out of date. Reload it, then delete the chat again.";
+
 function serviceError(error: unknown): Response {
-  return error instanceof PermanentChatDeletionError
-    ? json({ error: publicFailure(error.code) }, statusFor(error.code))
-    : json({ error: "FAILED" }, 500);
+  if (!(error instanceof PermanentChatDeletionError)) return json({ error: "FAILED" }, 500);
+  return json({ error: publicFailure(error.code),
+    ...(error.code === "chat_permanent_delete_reload_required" ? { message: RELOAD_MESSAGE } : {}) }, statusFor(error.code));
 }
 
 async function authAndChat(

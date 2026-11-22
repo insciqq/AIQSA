@@ -138,4 +138,25 @@ describe("permanent chat deletion handlers", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "CHANGED" });
   });
+
+  it("asks a page from before the note to reload when it asks to also forget saved memories", async () => {
+    const deps = dependencies();
+    deps.service.confirm.mockRejectedValueOnce(new PermanentChatDeletionError("chat_permanent_delete_reload_required"));
+    const response = await createPermanentChatDeleteConsumerHandler(deps.deps)(
+      new Request("https://example.test/api/chats/chat-1/delete-permanently", {
+        body: JSON.stringify({
+          alsoForgetOriginMemories: true,
+          confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+          requestId: "request-1"
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST"
+      }),
+      context
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "RELOAD",
+      message: "This page is out of date. Reload it, then delete the chat again." });
+  });
 });

@@ -174,6 +174,17 @@ describe("manage_memory", () => {
     expect(test.state.offers).toEqual([]);
   });
 
+  it("changes and offers nothing in a turn the server wrote, whatever the run's tool list held", async () => {
+    // A sub-agent wake-up, a sign-in request or a scheduled prompt, as the run's stored message says.
+    test.state.runs.set("run", { assistantMessageId: "answer-run", chatId: "chat", userId: "alice", userTurn: false });
+    for (const askFirst of [false, true]) {
+      const refused = json(await test.run({ action: "add", ask_first: askFirst, text: "Prefers short answers." }));
+      expect(refused).toMatchObject({ code: "memory_note_not_user_turn", saved: false });
+    }
+    expect(test.state.notes.size).toBe(0);
+    expect(test.state.offers).toEqual([]);
+  });
+
   it("changes nothing for a request only tool output made: a run the self-service fence refuses (an automation's) writes and offers nothing", async () => {
     // The fence refuses runs the user's own message did not start in this turn: scheduled occurrences and answers to a scheduled prompt.
     test.callStore.claim.mockResolvedValue({ kind: "unavailable" });

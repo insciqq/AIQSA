@@ -66,4 +66,15 @@ describe("permanent chat deletion client", () => {
         status: 409
       }));
   });
+
+  it("reads the server's refusal of the retired forget option as a page to reload", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(Response.json(
+      { error: "RELOAD", message: "This page is out of date. Reload it, then delete the chat again." }, { status: 409 })));
+
+    await expect(admitPermanentChatDeletion("chat-1", {
+      alsoForgetOriginMemories: true,
+      confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION,
+      requestId: "request-1"
+    })).rejects.toEqual(expect.objectContaining<Partial<PermanentChatDeletionApiError>>({ reason: "RELOAD", status: 409 }));
+  });
 });

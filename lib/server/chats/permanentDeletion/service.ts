@@ -55,6 +55,8 @@ export type PermanentChatDeletionErrorCode =
   | "active_run_in_progress"
   | "chat_not_found"
   | "chat_permanent_delete_failed"
+  /** A page from before the note replaced Memory asked to also forget this chat's saved memories, which no longer exist. */
+  | "chat_permanent_delete_reload_required"
   | "chat_permanent_delete_stale"
   | "chat_permanent_delete_temporary_forbidden"
   | "chat_permanent_delete_unavailable";
@@ -95,12 +97,15 @@ export function createPermanentChatDeletionService(input: Readonly<{
     async confirm(
       userId: string,
       chatId: string,
-      // The request id and copy version are validated by the route; "also forget origin memories" has nothing
-      // left to forget once Memory facts are replaced by the note, and is accepted for compatibility.
-      _request: MemoryConsumerPermanentChatDeleteInput,
+      // The request id and copy version are validated by the route.
+      request: MemoryConsumerPermanentChatDeleteInput,
       options: Readonly<{ condition?: PermanentChatDeletionCondition }> = {}
     ): Promise<MemoryConsumerPermanentChatDeleteResponse> {
       assertCapability(input.capability);
+      // "Also forget saved memories from this chat" comes only from a page opened before the note replaced Memory: the
+      // note keeps no record of the chat a line came from, so the request is refused before anything is fenced, never
+      // carried out with the memories silently kept. Reloading shows the dialog without the option.
+      if (request.alsoForgetOriginMemories) fail("chat_permanent_delete_reload_required");
       const snapshot = await input.repository.readSnapshot({ chatId, userId });
       if (!snapshot) fail("chat_not_found");
       if (snapshot.memoryMode === "TEMPORARY") fail("chat_permanent_delete_temporary_forbidden");

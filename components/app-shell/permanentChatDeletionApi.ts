@@ -21,6 +21,7 @@ export type PermanentChatDeletionFailureReason =
   | "BUSY"
   | "CHANGED"
   | "FAILED"
+  | "RELOAD"
   | "UNAVAILABLE";
 
 export type PermanentChatDeletionSnapshot = Readonly<{
@@ -45,6 +46,7 @@ function failureReason(value: unknown): PermanentChatDeletionFailureReason {
   switch (code) {
     case "BUSY": return "BUSY";
     case "CHANGED": return "CHANGED";
+    case "RELOAD": return "RELOAD";
     case "UNAVAILABLE": return "UNAVAILABLE";
     default:
       return "FAILED";

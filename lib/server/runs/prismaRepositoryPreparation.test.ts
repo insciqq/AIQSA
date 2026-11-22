@@ -73,14 +73,14 @@ type LockedChat = Readonly<{
 }>;
 
 /** A transaction for one admission of `chat-1`: the owner and the chat lock, the chat's messages and the new rows. */
-function admissionTransaction(chat: LockedChat, messageCount: number) {
+function admissionTransaction(chat: LockedChat, messageCount: number, options: Readonly<{ scheduledTaskPrompt?: boolean }> = {}) {
   return recordingTransaction({
     $queryRaw: (call) => {
       const text = (call as RecordedCall).text ?? "";
       if (text.includes("FROM \"User\"")) return [{ id: "user-1" }];
       if (text.includes("FROM \"Chat\"") && text.includes("FOR UPDATE")) return [chat];
       if (text.includes("AS \"userContent\"")) {
-        return [{ assistantParentId: "user-message-0", assistantRole: "assistant", scheduledTaskPrompt: false,
+        return [{ assistantParentId: "user-message-0", assistantRole: "assistant", scheduledTaskPrompt: options.scheduledTaskPrompt === true,
           userContent: { blocks: [{ text: "Again, please", type: "text" }] }, userRole: "user" }];
       }
       return [];
@@ -187,6 +187,32 @@ describe("a send's admission writes its chat without the old Memory", () => {
     });
     expect(recorder.calls.some(touchesOldMemory)).toBe(false);
     expect(recorder.marks()).toEqual([]);
+  });
+
+  it("refuses as stale a message prepared for another Memory mode than the locked chat's, sent or regenerated", async () => {
+    // Prepared in a Normal chat (the note frozen into the request), excluded from another tab before the lock.
+    const excluded = { ...normalChat, activeLeafMessageId: "assistant-message-0", memoryMode: "EXCLUDED" as const };
+    const send = admissionTransaction({ ...excluded, activeLeafMessageId: null }, 2);
+    await expect(admitPreparingRunWithClient(send.client as never, sendInput({ preparedChatMode: "NORMAL" })))
+      .rejects.toMatchObject({ message: "active_leaf_changed", name: "ActiveLeafConflictError" });
+    const regenerate = admissionTransaction(excluded, 2);
+    await expect(admitPreparingRunWithClient(regenerate.client as never,
+      { ...(regenerateInput() as object), preparedChatMode: "NORMAL" } as never))
+      .rejects.toMatchObject({ name: "ActiveLeafConflictError" });
+    // The mode it was prepared for, a first send's switch to Temporary included, is admitted.
+    await expect(admitPreparingRunWithClient(admissionTransaction(excluded, 2).client as never,
+      { ...(regenerateInput() as object), preparedChatMode: "EXCLUDED" } as never)).resolves.toMatchObject({ chatMemoryMode: "EXCLUDED" });
+    await expect(admitPreparingRunWithClient(admissionTransaction(normalChat, 0).client as never, sendInput({ preparedChatMode: "TEMPORARY",
+      initialChatMode: { chatMode: "TEMPORARY", temporaryRetentionPolicyVersion: "temporary-24h-v1" } })))
+      .resolves.toMatchObject({ chatMemoryMode: "TEMPORARY" });
+  });
+
+  it("lets an answer to a scheduled task's prompt go on whatever its chat's mode became", async () => {
+    const excluded = { ...normalChat, activeLeafMessageId: "assistant-message-0", memoryMode: "EXCLUDED" as const };
+    const recorder = admissionTransaction(excluded, 2, { scheduledTaskPrompt: true });
+    await expect(admitPreparingRunWithClient(recorder.client as never,
+      { ...(regenerateInput() as object), preparedChatMode: "NORMAL" } as never))
+      .resolves.toMatchObject({ chatMemoryMode: "EXCLUDED", scheduledPrompt: true });
   });
 });
 

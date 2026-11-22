@@ -90,8 +90,9 @@ export const RUN_SCOPED_RESULT_NOTE =
 
 /** The transcript record of an item: later turns read a note in place of a run-scoped result. */
 export function transcriptRecord(registry: ToolRegistry, item: TranscriptItem): TranscriptItem {
-  return item.kind === "tool_result" && registry.resolve(item.name)?.runScopedResult
-    ? { ...item, output: RUN_SCOPED_RESULT_NOTE } : item;
+  if (item.kind !== "tool_result") return item;
+  const tool = registry.resolve(item.name);
+  return tool?.runScopedResult ? { ...item, output: tool.runScopedNote ?? RUN_SCOPED_RESULT_NOTE } : item;
 }
 
 /** A call refused because an equivalent earlier call's effect is unknown and the user has not spoken since. */

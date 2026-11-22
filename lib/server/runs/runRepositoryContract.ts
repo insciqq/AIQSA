@@ -525,6 +525,8 @@ export type CreateRunInput = {
   defaults?: AcceptedRunDefaults;
   expectedActiveLeafId: string | null;
   initialChatMode?: MemoryInitialChatMode;
+  /** The chat's Memory mode the run was prepared for; admission refuses a chat whose mode changed since. */
+  preparedChatMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   mcpBindings?: McpRunPlanBinding[];
   /**
    * A Discord turn: it counts toward no per-user message limit, so no `UsageMessageAdmission` row is written (its
@@ -581,6 +583,8 @@ export type CreateRegenerationRunInput = {
   chatComputer?: import("../../contracts/computer").ChatComputerBinding | null;
   chatId: string;
   defaults?: AcceptedRunDefaults;
+  /** The chat's Memory mode the run was prepared for; admission refuses a chat whose mode changed since. */
+  preparedChatMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   mcpBindings?: McpRunPlanBinding[];
   skillBindings?: AcceptedSkillRun[];
   modelId: string;
@@ -782,6 +786,8 @@ export type RunRepository = {
        * which has no such run.
        */
       scheduledTaskMemory?: true;
+      /** The stored message is a turn the server wrote (`Message.systemTurnKind`): never the user's own words. */
+      systemTurnKind?: import("../../contracts/mcpApprovals").MessageSystemTurnKind;
     };
   } | null>;
   /**

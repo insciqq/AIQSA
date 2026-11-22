@@ -45,6 +45,15 @@ describe("permanent chat deletion service", () => {
     expect(order).toEqual(["admit", "stopSubagents"]);
   });
 
+  it("refuses to also forget saved memories, which only a page from before the note asks, before reading or fencing", async () => {
+    const { repository, service, stopSubagents } = fixture();
+    await expect(service.confirm("user-1", "chat-1", { ...request, alsoForgetOriginMemories: true }))
+      .rejects.toEqual(new PermanentChatDeletionError("chat_permanent_delete_reload_required"));
+    expect(repository.readSnapshot).not.toHaveBeenCalled();
+    expect(repository.admit).not.toHaveBeenCalled();
+    expect(stopSubagents).not.toHaveBeenCalled();
+  });
+
   it("refuses a missing, Temporary or busy chat before any change", async () => {
     for (const [value, code] of [
       [null, "chat_not_found"],
