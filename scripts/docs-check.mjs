@@ -5,10 +5,8 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  AGENT_DOC_BUDGETS,
   AGENT_RULES_DIRECTORY,
   HANDWRITTEN_AGENT_DOCS,
-  INSTRUCTION_BUDGETS,
   PRIVATE_LOCAL_PATHS,
   REQUIRED_DOCS
 } from "./docs-manifest.mjs";
@@ -132,61 +130,18 @@ function localLinkErrors(root, files) {
   return errors;
 }
 
-function textSize(body) {
-  return {
-    nonEmptyLines: body.split(/\r?\n/u).filter((line) => line.trim()).length,
-    words: body.match(/\S+/gu)?.length ?? 0
-  };
-}
-
-function documentationBudgetErrors(root, files) {
-  const errors = [];
+// Size is not checked (operator decision 2026-11-22): a document says what the code cannot, at the
+// length that takes. A new document must still be listed in the manifest deliberately.
+function orphanDocumentErrors(files) {
   const allowed = new Set(HANDWRITTEN_AGENT_DOCS);
-  const handwritten = files.filter(
-    (filename) => filename.startsWith("agent_docs/") &&
-      filename.endsWith(".md") &&
-      !filename.startsWith("agent_docs/generated/")
-  );
-  for (const filename of handwritten) {
-    if (!allowed.has(filename)) errors.push(`${filename}: orphan handwritten agent document; merge it into a core owner or add it deliberately`);
-  }
-  if (handwritten.length > AGENT_DOC_BUDGETS.files) {
-    errors.push(`agent_docs: ${handwritten.length} handwritten files exceed the ${AGENT_DOC_BUDGETS.files}-file budget`);
-  }
-  let total = 0;
-  let totalWords = 0;
-  for (const filename of handwritten) {
-    const { nonEmptyLines: lines, words } = textSize(readFileSync(path.join(root, filename), "utf8"));
-    total += lines;
-    totalWords += words;
-    if (lines > AGENT_DOC_BUDGETS.nonEmptyLinesPerFile) {
-      errors.push(`${filename}: ${lines} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLinesPerFile}-line file budget`);
-    }
-    if (words > AGENT_DOC_BUDGETS.wordsPerFile) {
-      errors.push(`${filename}: ${words} words exceed the ${AGENT_DOC_BUDGETS.wordsPerFile}-word file budget`);
-    }
-  }
-  if (total > AGENT_DOC_BUDGETS.nonEmptyLines) {
-    errors.push(`agent_docs: ${total} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLines}-line budget`);
-  }
-  if (totalWords > AGENT_DOC_BUDGETS.words) {
-    errors.push(`agent_docs: ${totalWords} words exceed the ${AGENT_DOC_BUDGETS.words}-word budget`);
-  }
-  return errors;
-}
-
-function instructionBudgetErrors(root) {
-  const errors = [];
-  for (const { filename, lines: maximum, words: maximumWords } of INSTRUCTION_BUDGETS) {
-    const target = path.join(root, filename);
-    if (!existsSync(target)) continue;
-    const body = readFileSync(target, "utf8");
-    const lines = body.split(/\r?\n/u).length;
-    if (lines > maximum) errors.push(`${filename}: ${lines} lines exceed the ${maximum}-line instruction budget`);
-    const { words } = textSize(body);
-    if (words > maximumWords) errors.push(`${filename}: ${words} words exceed the ${maximumWords}-word instruction budget`);
-  }
-  return errors;
+  return files
+    .filter(
+      (filename) => filename.startsWith("agent_docs/") &&
+        filename.endsWith(".md") &&
+        !filename.startsWith("agent_docs/generated/") &&
+        !allowed.has(filename)
+    )
+    .map((filename) => `${filename}: orphan handwritten agent document; merge it into a core owner or add it deliberately`);
 }
 
 // Claude Code reads only `paths` from rule frontmatter and loads a rule whose frontmatter does not
@@ -340,8 +295,7 @@ export function checkDocs(root = process.cwd()) {
     const target = path.join(root, filename);
     if (!existsSync(target) || !statSync(target).isFile()) errors.push(`missing required document: ${filename}`);
   }
-  errors.push(...documentationBudgetErrors(root, files));
-  errors.push(...instructionBudgetErrors(root));
+  errors.push(...orphanDocumentErrors(files));
   errors.push(...localLinkErrors(root, files));
   errors.push(...ruleErrors(root, citable));
   errors.push(...codePathErrors(root, citable));

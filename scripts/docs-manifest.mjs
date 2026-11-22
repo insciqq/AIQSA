@@ -21,22 +21,6 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
 // or edited. Each rule there is a symlink to the agent document that carries the frontmatter.
 export const AGENT_RULES_DIRECTORY = ".claude/rules";
 
-// Budgets are an alarm, not a target: when a document outgrows them, delete what the code already
-// says. A rule the code cannot show (an operator decision, an accepted risk, an invariant with its
-// reason) is never cut to fit; raise the budget instead (operator decision 2026-11-01).
-export const AGENT_DOC_BUDGETS = Object.freeze({
-  files: 16,
-  nonEmptyLines: 900,
-  nonEmptyLinesPerFile: 132,
-  words: 27200,
-  wordsPerFile: 7700
-});
-
-export const INSTRUCTION_BUDGETS = Object.freeze([
-  Object.freeze({ filename: "AGENTS.md", lines: 120, words: 1800 }),
-  Object.freeze({ filename: "CLAUDE.md", lines: 80, words: 100 })
-]);
-
 // Private checkout-local state the documents name on purpose; it never exists in a clean clone or a
 // `git archive` export, so citations of it are not checked.
 export const PRIVATE_LOCAL_PATHS = Object.freeze([

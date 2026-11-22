@@ -24,7 +24,7 @@ npx vitest run <files>                              # focused tests
 node node_modules/eslint/bin/eslint.js --max-warnings=0 --no-cache <files>   # lint changed files
 npx tsc --noEmit
 npm run check:hermetic   # full deterministic gate: prisma generate, typegen, docs, lint, types, vitest
-npm run docs:check       # agent docs: links, rule globs and symlinks, cited paths, budgets
+npm run docs:check       # agent docs: links, rule globs and symlinks, cited paths
 npm run task:check       # after any task ledger change
 ```
 
@@ -86,9 +86,9 @@ These are the invariants most likely to be broken by an otherwise reasonable cha
 
 ## Writing agent docs
 
-Code, schema, migrations and tests define behavior. The documents in `agent_docs/` record only what an agent cannot recover from the code and would otherwise get wrong: operator decisions (with their date), accepted risks, invariants with their reasons, and boundaries between subsystems. Do not mirror code (constants, limits, field lists, step-by-step flows); point to the file instead. Keep each rule in one place and link to it. When a document grows past its budget, delete what the code already says rather than compressing the prose; never cut a rule the code cannot show to fit a number, raise the budget instead (operator decision 2026-11-01). If code contradicts a documented rule, fix the code unless the operator changes the rule.
+Code, schema, migrations and tests define behavior. The documents in `agent_docs/` record only what an agent cannot recover from the code and would otherwise get wrong: operator decisions (with their date), accepted risks, invariants with their reasons, and boundaries between subsystems. Do not mirror code (constants, limits, field lists, step-by-step flows); point to the file instead. Keep each rule in one place and link to it. Documents have no size limit (operator decision 2026-11-22, replacing the word budgets of 2026-11-01): when one grows, delete what the code already says rather than compressing the prose, and never cut a rule the code cannot show. If code contradicts a documented rule, fix the code unless the operator changes the rule.
 
-Write plain sentences and cite code by repository path in backticks. A new area document needs `paths:` frontmatter, a symlink in `.claude/rules/` and an entry in `scripts/docs-manifest.mjs`; `npm run docs:check` verifies the globs, the symlinks, cited paths and size budgets. Add to an existing document before creating a new one.
+Write plain sentences and cite code by repository path in backticks. A new area document needs `paths:` frontmatter, a symlink in `.claude/rules/` and an entry in `scripts/docs-manifest.mjs`; `npm run docs:check` verifies the globs, the symlinks and cited paths. Add to an existing document before creating a new one.
 
 ## Before you report
 

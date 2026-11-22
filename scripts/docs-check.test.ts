@@ -14,12 +14,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error The checked CLI is intentionally plain Node ESM.
 import { checkDocs, runDocsCheck } from "./docs-check.mjs";
-import {
-  AGENT_DOC_BUDGETS,
-  HANDWRITTEN_AGENT_DOCS,
-  INSTRUCTION_BUDGETS,
-  REQUIRED_DOCS
-} from "./docs-manifest.mjs";
+import { REQUIRED_DOCS } from "./docs-manifest.mjs";
 
 const roots: string[] = [];
 
@@ -80,73 +75,13 @@ describe("documentation sanity check", () => {
     );
   });
 
-  it("enforces the per-document budget", () => {
+  it("sets no size limit on documents or instructions", () => {
     const root = fixture();
-    const lines = Array.from(
-      { length: AGENT_DOC_BUDGETS.nonEmptyLinesPerFile + 1 },
-      (_, index) => `line ${index}`
-    );
-    write(root, "agent_docs/TESTING.md", `${lines.join("\n")}\n`);
+    const long = `${Array.from({ length: 400 }, () => Array(40).fill("word").join(" ")).join("\n")}\n`;
+    write(root, "agent_docs/TESTING.md", long);
+    write(root, "AGENTS.md", long);
 
-    expect(checkDocs(root)).toContain(
-      `agent_docs/TESTING.md: ${lines.length} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLinesPerFile}-line file budget`
-    );
-  });
-
-  it("enforces the aggregate budget independently of per-document limits", () => {
-    const root = fixture();
-    const expanded = (HANDWRITTEN_AGENT_DOCS as readonly string[]).slice(
-      0,
-      Math.floor(AGENT_DOC_BUDGETS.nonEmptyLines / AGENT_DOC_BUDGETS.nonEmptyLinesPerFile) + 1
-    );
-    for (const relative of expanded) {
-      const lines = Array.from(
-        { length: AGENT_DOC_BUDGETS.nonEmptyLinesPerFile },
-        (_, index) => `line ${index}`
-      );
-      write(root, relative, `${lines.join("\n")}\n`);
-    }
-    const total =
-      expanded.length * AGENT_DOC_BUDGETS.nonEmptyLinesPerFile +
-      (HANDWRITTEN_AGENT_DOCS as readonly string[]).length - expanded.length;
-
-    expect(checkDocs(root)).toContain(
-      `agent_docs: ${total} nonempty lines exceed the ${AGENT_DOC_BUDGETS.nonEmptyLines}-line budget`
-    );
-  });
-
-  it("rejects an oversized paragraph even when it fits the line budget", () => {
-    const root = fixture();
-    const words = AGENT_DOC_BUDGETS.wordsPerFile + 1;
-    write(root, "agent_docs/TESTING.md", `  ${Array(words).fill("word").join(" \t ")}  \n`);
-
-    expect(checkDocs(root)).toEqual([
-      `agent_docs/TESTING.md: ${words} words exceed the ${AGENT_DOC_BUDGETS.wordsPerFile}-word file budget`
-    ]);
-  });
-
-  it("bounds total reading size even when each document is within budget", () => {
-    const root = fixture();
-    const docs = HANDWRITTEN_AGENT_DOCS as readonly string[];
-    const expanded = docs.slice(0, Math.ceil(AGENT_DOC_BUDGETS.words / AGENT_DOC_BUDGETS.wordsPerFile));
-    for (const relative of expanded) {
-      write(root, relative, Array(AGENT_DOC_BUDGETS.wordsPerFile).fill("word").join(" "));
-    }
-    const total = expanded.length * AGENT_DOC_BUDGETS.wordsPerFile + (docs.length - expanded.length) * 2;
-
-    expect(checkDocs(root)).toEqual([
-      `agent_docs: ${total} words exceed the ${AGENT_DOC_BUDGETS.words}-word budget`
-    ]);
-  });
-
-  it("also bounds instructions outside agent_docs", () => {
-    const root = fixture();
-    const budget = INSTRUCTION_BUDGETS.find(({ filename }) => filename === "AGENTS.md")!.words;
-    write(root, "AGENTS.md", Array(budget + 1).fill("word").join(" "));
-
-    expect(checkDocs(root)).toEqual([
-      `AGENTS.md: ${budget + 1} words exceed the ${budget}-word instruction budget`
-    ]);
+    expect(checkDocs(root)).toEqual([]);
   });
 
   describe("path-scoped rules", () => {
