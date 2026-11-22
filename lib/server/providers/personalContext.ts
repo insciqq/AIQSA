@@ -1,4 +1,4 @@
-import { PERSONAL_INSTRUCTIONS_PREVIEW } from "./responseReminder";
+import { MEMORY_NOTE_PREVIEW, PERSONAL_INSTRUCTIONS_PREVIEW } from "./responseReminder";
 import type { ProviderRunRequest } from "./types";
 import { memoryActionAnswerContract } from "./memoryActionAnswer";
 
@@ -305,8 +305,11 @@ export function assertPersonalContextEgressSafe(request: ProviderRunRequest): vo
   }
 }
 
-/** General trusted instructions stay first and personal context is sandwiched
- * between the reader contract and a compact trusted finalization reminder. */
+/** General trusted instructions stay first, then the user's personal Instructions and the answer rules, then the user's
+ * memory note as admission froze it (operator decision 2026-11-22): user content like the Instructions, the same across a
+ * chat's turns until the user changes it, so provider caches keep reading the prefix. A run admitted before the note may
+ * still carry Personal Memory's context, sandwiched between its reader contract and a compact trusted finalization
+ * reminder. */
 export function providerInstructionsWithPersonalContext(
   request: ProviderRunRequest,
   preview = false
@@ -317,6 +320,7 @@ export function providerInstructionsWithPersonalContext(
     request.prompt.personalInstructions
       ? preview ? PERSONAL_INSTRUCTIONS_PREVIEW : request.prompt.personalInstructions : null,
     request.prompt.developer ? `Developer instructions:\n${request.prompt.developer}` : null,
+    request.prompt.memoryNote ? preview ? MEMORY_NOTE_PREVIEW : request.prompt.memoryNote : null,
     request.memoryStandingVersion === 1 ? MEMORY_STANDING_READER_CONTRACT_V1
       : request.personalContext ? MEMORY_READER_CONTRACT_CURRENT : null,
     request.personalContext?.text ?? null,

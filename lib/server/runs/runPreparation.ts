@@ -63,9 +63,9 @@ import {
   type ProviderAdmissionPlan
 } from "../providerRuntime/admission";
 import { createProviderPreviewRuntimeBinding } from "../providers/runtimeFactory";
-import { MEMORY_ACTION_NO_COMMIT_RESULT } from "../providers/memoryActionAnswer";
-import { memorySearchTool, type MemorySearchSnapshot } from "../memory/search/contract";
-import { hasExplicitMemoryCommandBoundary } from "../memory/actions/actionAdmission";
+import { renderMemoryNoteForPrompt } from "../memoryNote/prompt";
+import type { MemoryNoteRunContext } from "../memoryNote/runContext";
+import { readPastChatTool, searchPastChatsTool } from "../tools/pastChats";
 import { connectorTurnRules, DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
 import { logEvent } from "../observability";
 import type {
@@ -221,9 +221,19 @@ export function scheduledRunContext(
   };
 }
 
+/** What admission reads of the user's Memory for one run (`RunPreparationDeps.memoryNote`). */
+export type RunMemoryAdmission = MemoryNoteRunContext & Readonly<{
+  /**
+   * Past-chat search may be offered in this chat: false in a chat bound to an Assistant that is not the user's own,
+   * where `memory_search` was never offered either, since its author's instructions steer the run.
+   */
+  searchAllowed: boolean;
+}>;
+
 export type RunPreparationDeps = Readonly<{
-  memorySearchAdmission?: Readonly<{
-    admit(userId: string, assistantId?: string | null, connectorTurn?: ConnectorTurn): Promise<MemorySearchSnapshot | null>;
+  /** The user's Memory switches and note (`loadMemoryNoteForRun`); without it no run reads Memory. */
+  memoryNote?: Readonly<{
+    load(input: Readonly<{ userId: string; assistantId: string | null }>): Promise<RunMemoryAdmission>;
   }>;
   artifacts?: import("../artifacts/service").ArtifactService;
   mcpGuard?: Pick<import("../mcp/guard").McpGuardService, "admit">;
@@ -1420,8 +1430,7 @@ export async function prepareRun(
     ...normalizedPrompt,
     ...(renderedInstructions ? { personalInstructions: renderedInstructions.personalInstructions,
       ...(renderedInstructions.overridesAnswerRules ? { developer: null } : {}) } : {}),
-    responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? "",
-    memoryActionAnswerResult: MEMORY_ACTION_NO_COMMIT_RESULT
+    responseReminder: normalizedPrompt.responseReminder ?? renderedInstructions?.responseReminder ?? ""
   };
   // The connector's fixed note, in the chat's own system prompt: every turn of such a chat is the connector's, so the
   // prompt stays the same across them (provider caches).
@@ -1886,37 +1895,42 @@ export async function prepareRun(
     }) === true;
   const toolObservationVersion: 0 | 1 = observationPolicy === "v1" && observationCapable ? 1 : 0;
   const generationBudget = admitModelGenerationBudget(admissionPlan.answer.snapshot);
-  // A task turn with Memory reads it like an ordinary personal turn whatever its chat's mode (an
-  // excluded chat keeps it out of learning, not its own reads), and never as a `/memory` command:
-  // its admission reads standing facts only, so such a prompt is answered as text.
-  const memoryStandingEligible = resolvedChatMode.mode !== "TEMPORARY" && connector?.memory !== false && (scheduledPromptAnswer
+  // The user's Memory (operator decision 2026-11-22): an ordinary personal, Telegram or Assistant turn in a chat that is
+  // neither Temporary nor Excluded reads the memory note, and so does a scheduled task's turn while its task has Memory
+  // on, whatever its chat's mode (an excluded task chat stays out of past-chat search, not out of its own reads); a
+  // Discord turn never does. Frozen here with the run like the Instructions, so a change applies from the next message
+  // and retries read the same text. A failed read answers without Memory, and users see nothing of it.
+  const memoryRead = resolvedChatMode.mode !== "TEMPORARY" && connector?.memory !== false && (scheduledPromptAnswer
     ? scheduledMemoryRead
-    : resolvedChatMode.mode === "NORMAL" && !hasExplicitMemoryCommandBoundary(textFromContentBlocks(content)));
-  const memorySearchAdmission = memoryStandingEligible && body?.tools !== "none" &&
-    modelCapabilities.toolCalling === true && toolBridge?.supportsToolCalling({
-      modelId: executionModelId, provider: executionProvider
-    }) === true ? deps.memorySearchAdmission : undefined;
-  let memorySearch: MemorySearchSnapshot | null = null;
-  if (memorySearchAdmission) {
+    : resolvedChatMode.mode === "NORMAL");
+  let memoryAdmission: RunMemoryAdmission | null = null;
+  if (memoryRead && deps.memoryNote) {
     try {
-      memorySearch = connectorTurn
-        ? await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null, connectorTurn)
-        : await memorySearchAdmission.admit(input.userId, assistantRun?.assistantId ?? null);
+      memoryAdmission = await deps.memoryNote.load({ assistantId: assistantRun?.assistantId ?? null, userId: input.userId });
     } catch (error) {
-      // Nothing is frozen before acceptance: the run proceeds without the
-      // optional tool, standing preparation is unchanged, and users see nothing.
-      logEvent("service_operation", { error, subsystem: "memory_search", stage: "preflight",
-        outcome: "degraded", action: "degrade", code: "memory_search_admission_skipped" });
+      logEvent("service_operation", { action: "degrade", code: "memory_note_unavailable", error, outcome: "degraded",
+        stage: "preflight", subsystem: "memory" });
     }
   }
+  const memoryNote = memoryAdmission?.switches.memoryEnabled === true ? memoryAdmission.note : null;
+  const memoryTools = body?.tools !== "none" && modelCapabilities.toolCalling === true &&
+    toolBridge?.supportsToolCalling({ modelId: executionModelId, provider: executionProvider }) === true;
+  // The note's own tool rides with the self-service tools of an interactive personal chat (`selfServiceToolsFor`): never
+  // an answer to a scheduled task's prompt, which reads and may search but never writes, nor an Assistant chat.
+  const memory: NormalizedRunRequest["memory"] = memoryAdmission && memoryNote ? Object.freeze({
+    changes: memoryTools && !scheduledPromptAnswer && !assistantRun,
+    offers: memoryAdmission.switches.memorySuggestionsEnabled,
+    pastChats: memoryTools && memoryAdmission.switches.pastChatSearchEnabled && memoryAdmission.searchAllowed,
+    version: 1 as const
+  }) : undefined;
+  if (memory && memoryNote) prompt = { ...prompt, memoryNote: renderMemoryNoteForPrompt(memoryNote) };
   // The owner's own message in an ordinary personal chat may create one
   // scheduled task. Never an answer to a scheduled task's prompt, a temporary,
   // or Assistant run, nor one without tool calling.
   // Frozen here: the settings the task takes from this run, never mutable chat
   // state read later, and only in the shape recovery decodes. The task reads
   // Memory only when this run itself was admitted to read it: an eligible
-  // chat, and the owner's Memory on (search admission, which every run that
-  // may create a task attempts, reads exactly that).
+  // chat, and the owner's Memory on (`memory` above).
   const scheduledTaskSettings = !scheduledPromptAnswer && !assistantRun && connector?.automations !== false &&
     resolvedChatMode.mode !== "TEMPORARY" && body?.tools !== "none" &&
     typeof deps.repository.createScheduledTaskForCall === "function" && modelCapabilities.toolCalling === true &&
@@ -1927,7 +1941,7 @@ export async function prepareRun(
         searchEnabled: admissionPlan.searches.length > 0,
         toolsEnabled: ordinaryMcpSelection !== null && ordinaryMcpSelection.mode !== "off",
         workspaceEnabled: workspaceAdmissionPlan !== undefined,
-        memoryEnabled: memoryStandingEligible && memorySearch !== null
+        memoryEnabled: memory !== undefined
       }
     : undefined;
   const scheduledTaskTool = isScheduledTaskToolSettings(scheduledTaskSettings) ? scheduledTaskSettings : undefined;
@@ -1976,8 +1990,7 @@ export async function prepareRun(
         serverIds: approvalServerIds, userId: input.userId }) ?? [], guard, input.mcpApprovalId)
     : undefined;
   const baseNormalizedRequest: NormalizedRunRequest = {
-    ...(memoryStandingEligible ? { memoryStandingVersion: 1 as const } : {}),
-    ...(memorySearch ? { memorySearch } : {}),
+    ...(memory ? { memory } : {}),
     toolObservationVersion,
     ...(workspaceCheckpoints ? { workspaceCheckpoints: true as const,
       workspaceCheckpointToolDescription: checkpointOutputsTool.description } : {}),
@@ -2074,7 +2087,7 @@ export async function prepareRun(
     ...skillSaveToolsForRequest(baseNormalizedRequest),
     ...fetchUrlToolsForRequest(baseNormalizedRequest),
     ...(baseNormalizedRequest.toolMode === "none" ? [] : [
-        ...(memorySearch ? [memorySearchTool(memorySearch)] : []),
+        ...(memory?.pastChats ? [searchPastChatsTool, readPastChatTool] : []),
         ...(workspaceCheckpoints ? [checkpointOutputsTool] : []),
         ...analyzeImageTools(baseNormalizedRequest),
         ...(workspaceImageView ? [viewWorkspaceImageTool] : []),

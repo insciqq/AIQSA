@@ -98,8 +98,8 @@ export type {
 } from "./runRepositoryContract";
 
 export type RunHandlerDeps = {
-  memorySearchAdmission?: RunPreparationDeps["memorySearchAdmission"];
-  memorySearch?: import("../memory/search/runtime").MemorySearchService;
+  memoryNote?: RunPreparationDeps["memoryNote"];
+  pastChats?: import("../tools/pastChats").PastChatTools;
   workspaceFollowup?: Readonly<{
     findAdmission(admissionKey: string, userId: string): Promise<PreparingRunAdmissionResponse | null>;
     kick(): void;

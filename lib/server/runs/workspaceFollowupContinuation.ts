@@ -16,7 +16,7 @@ import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResul
 import { WorkspaceFollowupError, type createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 import type { WorkspaceFollowupCoordinatorDependencies } from "./workspaceFollowupCoordinator";
 
-type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "memorySearch" | "skillTools" | "vision"> & Readonly<{
+type Dependencies = Pick<NativeRunServices, "artifacts" | "images" | "mcp" | "pastChats" | "skillTools" | "vision"> & Readonly<{
   chatTitleGenerator?: ChatTitleGenerator;
   followups: ReturnType<typeof createWorkspaceFollowupRepository>;
   kickPdf(): void;

@@ -287,6 +287,8 @@ export type RunAnswerV2Props = Readonly<{
   noticeSlot?: ReactNode;
   onPinSkill?(skillId: string): Promise<void>;
   pinnedSkillIds?: readonly string[];
+  /** Opens one of the answer's past-chat sources in the shell, at the turn it came from; without it the link loads the chat page. */
+  onOpenChatMessage?(chatId: string, messageId: string): void;
   onRefresh?(): MaybePromise;
   /** Continue on an interrupted answer; only the chat's latest answer offers it. */
   onContinue?(): unknown;
@@ -329,6 +331,7 @@ function RunAnswerBodyV2({
   noticeSlot = null,
   onPinSkill,
   pinnedSkillIds,
+  onOpenChatMessage,
   onRefresh,
   onContinue,
   onRegenerate,
@@ -389,6 +392,9 @@ function RunAnswerBodyV2({
       onPinSkill={onPinSkill}
       pinnedSkillIds={pinnedSkillIds}
       memorySources={settled ? artifact?.memorySources ?? [] : []}
+      // The past chats the answer's search used, as the settled answer's load found them still there.
+      pastChatSources={settled ? artifact?.pastChatSources ?? [] : []}
+      onOpenChatMessage={onOpenChatMessage}
       reasoningPending={reasoningShown && !settled && presentation.reasoningObserved === true}
       reasoningTexts={reasoningShown ? artifact?.reasoningText ?? [] : []}
       reasoningTruncated={reasoningShown && artifact?.reasoningTruncated === true}

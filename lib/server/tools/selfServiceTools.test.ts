@@ -39,7 +39,8 @@ const call = (name: string, args: Record<string, unknown>) => ({ arguments: args
 describe("self-service tools", () => {
   it("are the tools the prompt names, none of which needs approval or the VM", () => {
     expect(SELF_SERVICE_TOOLS.map((tool) => tool.name)).toEqual([SELF_SERVICE_TOOL_NAMES.guide, SELF_SERVICE_TOOL_NAMES.secrets,
-      SELF_SERVICE_TOOL_NAMES.skills, SELF_SERVICE_TOOL_NAMES.assistants, SELF_SERVICE_TOOL_NAMES.proxies, SELF_SERVICE_TOOL_NAMES.instructions]);
+      SELF_SERVICE_TOOL_NAMES.skills, SELF_SERVICE_TOOL_NAMES.assistants, SELF_SERVICE_TOOL_NAMES.proxies, SELF_SERVICE_TOOL_NAMES.instructions,
+      SELF_SERVICE_TOOL_NAMES.memory]);
     for (const tool of SELF_SERVICE_TOOLS) {
       expect(tool).toMatchObject({ needsApproval: false, requiresVm: false });
       expect(tool.tool.name).toBe(tool.name);
@@ -48,7 +49,7 @@ describe("self-service tools", () => {
     }
     expect(SELF_SERVICE_TOOLS.find((tool) => tool.name === "read_aiqsa_guide")?.effects).toBe("none");
     expect(SELF_SERVICE_TOOLS.filter((tool) => tool.effects === "local").map((tool) => tool.name))
-      .toEqual(["manage_secret", "manage_skill", "manage_assistant", "manage_proxy", "manage_instructions"]);
+      .toEqual(["manage_secret", "manage_skill", "manage_assistant", "manage_proxy", "manage_instructions", "manage_memory"]);
   });
 
   it("route a call to its tool with services built for that call, and leave other tools alone", async () => {

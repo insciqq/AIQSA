@@ -812,6 +812,7 @@ export function createFakeProviderAdapter(): ProviderAdapter {
         params: request.params,
         prompt: { ...request.prompt,
           ...(request.prompt.personalInstructions ? { personalInstructions: "[personal instructions omitted]" } : {}),
+          ...(request.prompt.memoryNote ? { memoryNote: "[memory note omitted]" } : {}),
           ...(request.prompt.responseReminder ? { responseReminder: "[response reminder omitted]" } : {}) },
         provider: "fake",
         replayedContext: conversationPreview(request),

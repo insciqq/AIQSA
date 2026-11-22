@@ -126,6 +126,20 @@ function detailChat(overrides: Record<string, unknown> = {}) {
 }
 
 describe("chat wire contracts", () => {
+  it("carries an answer's past-chat sources, decoded and each turn once", () => {
+    const source = { chatId: "chat-2", chatTitle: "Rollback plan", date: "2026-11-20T10:00:00.000Z", excerpt: "Keep the previous image tagged.",
+      messageId: "message-2" };
+    const answer = (pastChatSources: unknown) => ({ ...message, artifactSummary: { citations: [], pastChatSources, reasoningText: [],
+      sources: [] } });
+    const decoded = (pastChatSources: unknown) => decodeChatDetailResponse({ chat: detailChat({ messages: [answer(pastChatSources)],
+      usageStats }) })?.messages[0]?.artifactSummary;
+    expect(decoded([source, source, { ...source, messageId: "message-3" }])?.pastChatSources)
+      .toEqual([source, { ...source, messageId: "message-3" }]);
+    // A malformed entry is dropped, never the answer; none at all leaves the field out.
+    expect(decoded([{ ...source, chatId: "" }, source])?.pastChatSources).toEqual([source]);
+    expect(decoded([{ excerpt: "no ids" }])).not.toHaveProperty("pastChatSources");
+  });
+
   it("carries MCP approval cards, the not-sent mark and the server-written turn", () => {
     const card = { approvalId: "approval-1", canDecide: true, serverName: "Records", source: "model", state: "pending",
       toolName: "delete_record" };

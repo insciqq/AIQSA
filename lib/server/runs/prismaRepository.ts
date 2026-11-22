@@ -36,25 +36,15 @@ import {
 } from "../chats/legacyAnswerReviews";
 import { loadQuietCheckEffectRuns, loadQuietCheckTurnIds, visibleStandIn } from "../chats/quietScheduledChecks";
 import { omitQuietScheduledChecks } from "../../domain/quietScheduledChecks";
-import {
-  createPrismaMemoryRunRetrievalService,
-  type MemoryRunRetrievalService
-} from "../memory/retrieval";
 import type { MemoryExecutionAuthorityDependencies } from "../memory/execution";
 import { defaultMemoryExecutionAuthority } from "../memory/execution/defaultAuthority";
-import { loadMemoryRunActions } from "../memory/actions/runProjection";
 import { loadDeepResearchMarks } from "../chats/deepResearchProjection";
 import { prismaResearchedRunsReader, researchedRuns } from "../research/researchedRuns";
-import { loadMemoryRunSources } from "../memory/sources/runProjection";
-import { loadMemoryRunPresentationStatuses } from "../memory/retrieval/runProjection";
+import { loadPastChatSourcesByRun } from "../chats/pastChatSources";
 import { loadChatCreationDefaults } from "../chats/chatCreationDefaults";
 import { loadPersonalAssistantRowContext } from "../assistants/rowContext";
 import type { MemorySourceMutationHooks } from "../memory/sourceState";
 import { defaultMemorySourceMutationHooks } from "../memory/sourceHooks";
-import {
-  boundedMemoryAdmissionDeadlineMs,
-  MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS
-} from "../memory/admissionDeadline";
 import { signalRunTerminal } from "../push/runTerminalSignal";
 import { serializeRunAssistantIdentity } from "./prismaRepositoryBindings";
 import {
@@ -62,7 +52,6 @@ import {
   beginPreparingRunAttemptWithClient,
   completePreparingRunAttemptWithClient,
   createDormantPreparingRun,
-  MEMORY_STANDING_PREPARATION_TIMEOUT_MS,
   continuePdfPreparedRunWithClient,
   continueWorkspacePreparedRunWithClient,
   finalizePreparingRunWithClient,
@@ -194,9 +183,7 @@ export function conversationMessagesFromPathRows(rows: ConversationPathRow[]): P
 export function createPrismaRunRepository(
   prismaClient = prisma,
   options: Readonly<{
-    memoryAdmissionDeadlineMs?: number;
     memoryExecutionAuthority?: MemoryExecutionAuthorityDependencies;
-    memoryRetrieval?: MemoryRunRetrievalService;
     memorySourceHooks?: MemorySourceMutationHooks;
     workspaceAvailability?: WorkspaceAvailabilityService;
   }> = {}
@@ -204,10 +191,6 @@ export function createPrismaRunRepository(
   const memorySourceHooks = options.memorySourceHooks ?? defaultMemorySourceMutationHooks;
   const memoryExecutionAuthority = options.memoryExecutionAuthority ??
     defaultMemoryExecutionAuthority;
-  const memoryRetrieval = options.memoryRetrieval ??
-    createPrismaMemoryRunRetrievalService(prismaClient, {
-      authority: memoryExecutionAuthority
-    });
   const workspaceAvailability = options.workspaceAvailability ??
     defaultWorkspaceAvailabilityService;
   const toolLoopOperations = createPrismaRunToolLoopOperations(prismaClient);
@@ -219,13 +202,6 @@ export function createPrismaRunRepository(
     loadPinnedSkills: createPrismaScheduledTaskPinnedSkillLoader(prismaClient),
     workspacePolicy: createPrismaWorkspacePolicyRepository(prismaClient)
   };
-  async function loadMemoryAdmissionDeadlineMs(request?: { memoryStandingVersion?: 1 }): Promise<number> {
-    if (request?.memoryStandingVersion === 1) return MEMORY_STANDING_PREPARATION_TIMEOUT_MS;
-    if (options.memoryAdmissionDeadlineMs !== undefined) {
-      return boundedMemoryAdmissionDeadlineMs(options.memoryAdmissionDeadlineMs);
-    }
-    return MEMORY_ADMISSION_DEFAULT_TIMEOUT_MS;
-  }
   /**
    * A regenerated answer to a scheduled task's prompt reads Memory only while
    * the task, found through the scheduled run that posted the prompt in this
@@ -584,28 +560,22 @@ export function createPrismaRunRepository(
       }, (body) => prismaClient.$transaction(body)).catch(retainRunPrismaCode);
     },
     continuePdfPreparedRun: async (input) => {
-      const created = await continuePdfPreparedRunWithClient(prismaClient, input,
-        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        await loadMemoryAdmissionDeadlineMs(input.admission.normalizedRequest)).catch(retainRunPrismaCode);
+      const created = await continuePdfPreparedRunWithClient(prismaClient, input).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId,
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
     },
     continueWorkspacePreparedRun: async (input) => {
-      const created = await continueWorkspacePreparedRunWithClient(prismaClient, input,
-        memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        await loadMemoryAdmissionDeadlineMs(input.admission.normalizedRequest)).catch(retainRunPrismaCode);
+      const created = await continueWorkspacePreparedRunWithClient(prismaClient, input).catch(retainRunPrismaCode);
       return { assistantMessageId: created.assistantMessageId, runId: created.runId,
         userMessageId: created.userMessageId, ...(created.deferredPdf ? { deferredPdf: true as const } : {}),
         ...(created.materializedRequest ? { materializedRequest: created.materializedRequest } : {}) };
     },
     createRun: async (input) => {
-      const memoryAdmissionDeadlineMs = await loadMemoryAdmissionDeadlineMs(input.normalizedRequest);
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "NORMAL_SEND"
-      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
+      }, memorySourceHooks).catch(retainRunPrismaCode);
       return {
         acceptedAt: created.acceptedAt,
         assistantMessageId: created.assistantMessageId,
@@ -619,12 +589,10 @@ export function createPrismaRunRepository(
       };
     },
     createRegenerationRun: async (input) => {
-      const memoryAdmissionDeadlineMs = await loadMemoryAdmissionDeadlineMs(input.normalizedRequest);
       const created = await createDormantPreparingRun(prismaClient, {
         ...input,
         admissionKind: "REGENERATE"
-      }, memoryRetrieval, memoryExecutionAuthority, memorySourceHooks,
-        memoryAdmissionDeadlineMs).catch(retainRunPrismaCode);
+      }, memorySourceHooks).catch(retainRunPrismaCode);
       return {
         acceptedAt: created.acceptedAt,
         assistantMessageId: created.assistantMessageId,
@@ -1216,8 +1184,7 @@ export function createPrismaRunRepository(
           return null;
         }
 
-        const runIds = chat.messages.flatMap((message) =>
-          message.assistantModelRuns[0]?.id ? [message.assistantModelRuns[0].id] : []);
+        const runs = chat.messages.flatMap((message) => message.assistantModelRuns[0] ? [message.assistantModelRuns[0]] : []);
         // A send after an answer review recorded before the feature's removal may follow one of its steps,
         // which the transcript reads as the version standing for it, and a scheduled check may follow a quiet one,
         // which the transcript leaves out (`lib/server/chats/quietScheduledChecks.ts`).
@@ -1225,18 +1192,14 @@ export function createPrismaRunRepository(
         const visibleUserParentId = userParentId ? await visibleStandIn(tx, chatId, userParentId) : null;
         const [
           { contextStats, usageStats },
-          memoryActionsByRun,
-          memorySourcesByRun,
-          memoryStatusesByRun,
+          pastChatSourcesByRun,
           research
         ] = await Promise.all([
           loadChatBranchSnapshotStats(tx, {
             activeLeafMessageId: chat.activeLeafMessageId,
             chatId
           }),
-          loadMemoryRunActions(tx, { runIds, userId }),
-          loadMemoryRunSources(tx, { runIds, userId }),
-          loadMemoryRunPresentationStatuses(tx, { runIds, userId }),
+          loadPastChatSourcesByRun(tx, { runs, viewerUserId: userId }),
           // The page's marks, so a live answer's update never drops what a reload shows.
           loadDeepResearchMarks(tx, { chatId, userId }, chat.messages.map((message) => ({ content: message.content, id: message.id, role: message.role,
             runId: message.assistantModelRuns[0]?.id ?? null, systemTurnKind: message.systemTurnKind })))
@@ -1276,9 +1239,7 @@ export function createPrismaRunRepository(
               artifactSummary: modelRun
                 ? summarizeMessageRunArtifacts(
                     modelRun,
-                    memoryActionsByRun.get(modelRun.id) ?? null,
-                    memorySourcesByRun.get(modelRun.id) ?? [],
-                    memoryStatusesByRun.get(modelRun.id),
+                    pastChatSourcesByRun.get(modelRun.id) ?? [],
                     undefined,
                     userId
                   )

@@ -2,6 +2,8 @@ import type { ProviderRunRequest } from "./types";
 
 export const RESPONSE_REMINDER_PREVIEW = "[response reminder omitted]";
 export const PERSONAL_INSTRUCTIONS_PREVIEW = "[personal instructions omitted]";
+/** The memory note's place in a stored request preview: the note is the user's own text and never kept there. */
+export const MEMORY_NOTE_PREVIEW = "[memory note omitted]";
 
 /** The reminder is the final block of this run's original user input. Tool
  * continuations reuse that input; neither the DAG nor request.content changes. */

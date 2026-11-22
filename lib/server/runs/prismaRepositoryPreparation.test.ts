@@ -2,8 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   completePreparingRunAttemptWithClient,
   finalizePreparingRunWithClient,
-  finalizeUnavailablePreparingRunAdmission,
-  finalizeTemporaryPreparingRunAdmission,
+  finalizeDispatchablePreparingRunAdmission,
   insertAcceptedWorkspaceRunBinding,
   memorySpeculativeQueryResolverInventoryDeclared,
   sameMemoryReadOnlyControlRetryScope,
@@ -11,7 +10,6 @@ import {
   validMemoryRetrievalExecutionSequence
 } from "./prismaRepositoryPreparation";
 import {
-  createMemoryPreparingBaseSnapshot,
   decodeMemoryPreparingSettingsSnapshot
 } from "./preparingRun";
 import {
@@ -111,50 +109,14 @@ function input(chatMemoryMode: "NORMAL" | "EXCLUDED" | "TEMPORARY") {
   };
 }
 
-describe("Temporary run Memory preparation boundary", () => {
-  it("moves Temporary admission directly to streaming without a Memory attempt", async () => {
-    const update = vi.fn(async () => ({}));
-
-    await expect(finalizeTemporaryPreparingRunAdmission({
-      modelRun: { update }
-    } as never, input("TEMPORARY"))).resolves.toEqual({
-      assistantMessageId: "assistant-message-1",
-      attemptId: "",
-      chatMemoryMode: "TEMPORARY",
-      folderId: null,
-      memoryGeneration: 0,
-      memoryRevision: 0,
-      runId: "run-1",
-      settingsSnapshot,
-      userMessageId: "user-message-1"
-    });
-    expect(update).toHaveBeenCalledWith({
-      data: {
-        normalizedRequest: { privateMarker: "temporary-user-content" },
-        status: "streaming"
-      },
-      where: { id: "run-1" }
-    });
-  });
-
-  it.each(["NORMAL", "EXCLUDED"] as const)(
-    "leaves %s admission on the ordinary Memory preparation path",
-    async (chatMemoryMode) => {
-      const update = vi.fn();
-      await expect(finalizeTemporaryPreparingRunAdmission({
-        modelRun: { update }
-      } as never, input(chatMemoryMode))).resolves.toBeNull();
-      expect(update).not.toHaveBeenCalled();
-    }
-  );
-
-  it.each(["NORMAL", "EXCLUDED"] as const)(
-    "moves any answer to a scheduled task's prompt in a %s chat to streaming and reports it, so no Memory attempt follows",
+describe("admission without Memory preparation", () => {
+  it.each(["NORMAL", "EXCLUDED", "TEMPORARY"] as const)(
+    "moves a %s chat's admission directly to streaming without a Memory attempt",
     async (chatMemoryMode) => {
       const update = vi.fn(async () => ({}));
-      await expect(finalizeTemporaryPreparingRunAdmission({
+      await expect(finalizeDispatchablePreparingRunAdmission({
         modelRun: { update }
-      } as never, { ...input(chatMemoryMode), scheduledPrompt: true as const })).resolves.toEqual({
+      } as never, input(chatMemoryMode))).resolves.toEqual({
         assistantMessageId: "assistant-message-1",
         attemptId: "",
         chatMemoryMode,
@@ -162,96 +124,25 @@ describe("Temporary run Memory preparation boundary", () => {
         memoryGeneration: 0,
         memoryRevision: 0,
         runId: "run-1",
-        scheduledPrompt: true,
         settingsSnapshot,
         userMessageId: "user-message-1"
       });
       expect(update).toHaveBeenCalledWith({
-        data: { normalizedRequest: { privateMarker: "temporary-user-content" }, status: "streaming" },
+        data: {
+          normalizedRequest: { privateMarker: "temporary-user-content" },
+          status: "streaming"
+        },
         where: { id: "run-1" }
       });
     }
   );
-});
 
-describe("initial Memory admission deadline fallback", () => {
-  it("makes the ordinary run dispatchable with a durable zero-item unavailable receipt", async () => {
-    const attemptCreate = vi.fn(async () => ({}));
-    const attemptUpdate = vi.fn(async () => ({}));
-    const bindingCreate = vi.fn(async () => ({}));
-    const runUpdate = vi.fn(async () => ({}));
-    const normalizedRequest = {
-      prompt: {
-        memoryActionAnswerResult: {
-          operation: "NONE",
-          status: "UNAVAILABLE",
-          version: 1
-        }
-      }
-    } as never;
-    const baseSnapshot = createMemoryPreparingBaseSnapshot({
-      normalizedRequest,
-      providerRequestPreview: { request: "base" }
-    });
-
-    const result = await finalizeUnavailablePreparingRunAdmission({
-      memoryRetrievalAttempt: {
-        create: attemptCreate,
-        update: attemptUpdate
-      },
-      modelRun: { update: runUpdate },
-      modelRunMemoryBinding: { create: bindingCreate }
-    } as never, {
-      admissionKind: "NORMAL_SEND",
-      assistantIdSnapshot: null,
-      assistantMessageId: "assistant-message-1",
-      baseSnapshot,
-      chatId: "chat-1",
-      chatMemoryMode: "NORMAL",
-      folderId: null,
-      lifecycleSnapshot: {
-        activeLeafMessageId: "assistant-message-1",
-        memoryBranchGeneration: 3,
-        memorySourceRevision: 5
-      },
-      normalizedRequest,
-      now: new Date("2026-08-21T10:00:00.000Z"),
-      preSendActiveLeafMessageId: null,
-      runId: "run-1",
-      userId: "user-1",
-      userMessageId: "user-message-1"
-    });
-
-    expect(result).toMatchObject({
-      attemptId: expect.any(String),
-      chatMemoryMode: "NORMAL",
-      memoryGeneration: 0,
-      memoryRevision: 0,
-      runId: "run-1"
-    });
-    expect(attemptCreate).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        chatMemoryModeSnapshot: "NORMAL",
-        externalRolesUsed: [],
-        state: "PENDING",
-        utilityEgressMode: "LOCAL_ONLY"
-      })
-    }));
-    expect(attemptUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        degradationCode: "memory_admission_deadline_exceeded",
-        outcome: "FAILED_SAFE",
-        state: "CONSUMED"
-      })
-    }));
-    expect(bindingCreate).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({
-        degradationCode: "memory_admission_deadline_exceeded",
-        outcome: "FAILED_SAFE"
-      })
-    }));
-    expect(runUpdate).toHaveBeenCalledWith({
-      data: { normalizedRequest, status: "streaming" },
+  it("keeps an answer to a scheduled task's prompt marked as one", async () => {
+    const update = vi.fn(async () => ({}));
+    await expect(finalizeDispatchablePreparingRunAdmission({ modelRun: { update } } as never,
+      { ...input("EXCLUDED"), scheduledPrompt: true as const })).resolves.toMatchObject({ attemptId: "", scheduledPrompt: true });
+    expect(update).toHaveBeenCalledWith({
+      data: { normalizedRequest: { privateMarker: "temporary-user-content" }, status: "streaming" },
       where: { id: "run-1" }
     });
   });

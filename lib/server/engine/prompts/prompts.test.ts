@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { MCP_APPROVAL_BUTTON_LABELS } from "../../../contracts/mcpApprovals";
+import { READ_PAST_CHAT_TOOL_NAME, SEARCH_PAST_CHATS_TOOL_NAME } from "../../../contracts/pastChats";
 import { MCP_FIND_TOOLS_NAME } from "../../mcp/discovery";
 import type { NormalizedSearchPlanOption } from "../../providers/types";
 import { createSearchPlanToolRouter } from "../../search/toolExecutor";
@@ -12,7 +13,7 @@ import { LOAD_SKILL_TOOL_NAME } from "../../tools/skill";
 import { UPDATE_PLAN_TOOL_NAME } from "../../tools/updatePlan";
 import { CLAUDE_FAMILY_PROMPT } from "./claude";
 import { GPT_FAMILY_PROMPT } from "./gpt";
-import { HARNESS_ACCESS_DENIED_LINE, harnessBrowserLine } from "./harness";
+import { HARNESS_ACCESS_DENIED_LINE, HARNESS_PAST_CHATS_LINE, harnessBrowserLine } from "./harness";
 import { HARNESS_SEARCH_TOOL, HARNESS_TOOL_NAMES, systemPromptFamily, systemPromptFor } from "./index";
 import { NEUTRAL_FAMILY_PROMPT } from "./neutral";
 
@@ -110,8 +111,8 @@ describe("system prompt", () => {
       plan: { mode, options: [source("one"), source("two")] }, runtimes: {} })!.tools.map((tool) => tool.name);
     expect(HARNESS_TOOL_NAMES).toEqual({
       applyPatch: APPLY_PATCH_TOOL_NAME, fetchUrl: FETCH_URL_TOOL_NAME, findTools: MCP_FIND_TOOLS_NAME,
-      loadSkill: LOAD_SKILL_TOOL_NAME, readSecret: READ_SECRET_TOOL_NAME, readToolResult: READ_TOOL_RESULT_NAME,
-      updatePlan: UPDATE_PLAN_TOOL_NAME
+      loadSkill: LOAD_SKILL_TOOL_NAME, readPastChat: READ_PAST_CHAT_TOOL_NAME, readSecret: READ_SECRET_TOOL_NAME,
+      readToolResult: READ_TOOL_RESULT_NAME, searchPastChats: SEARCH_PAST_CHATS_TOOL_NAME, updatePlan: UPDATE_PLAN_TOOL_NAME
     });
     for (const name of [...toolNames("all_selected"), ...toolNames("model_choice")]) {
       expect(name).toMatch(HARNESS_SEARCH_TOOL);
@@ -125,6 +126,22 @@ describe("system prompt", () => {
     expect(prompt({ tools: ["search_selected_engines"] })).toContain("Search before you answer anything that may have changed");
     expect(prompt({ tools: ["search_engine_2"] })).toContain("# Web search");
     expect(prompt({ tools: [], webSearch: true })).toContain("# Web search");
+  });
+
+  // Operator decision 2026-11-22: past-chat search replaces `memory_search` and its reader contract's guidance.
+  it("says when to search past chats, and only where the search tools are offered", () => {
+    const prompt = (tools: readonly string[]) => systemPromptFor({ modelId: "gpt-5.5", provider: "openai" },
+      { environment: { now: new Date("2026-10-23T09:05:00Z"), timeZone: "Europe/Moscow" }, selfService: "", tools, workspace: false }).stable;
+    const offered = prompt([SEARCH_PAST_CHATS_TOOL_NAME, READ_PAST_CHAT_TOOL_NAME]);
+    expect(offered).toContain(HARNESS_PAST_CHATS_LINE);
+    for (const phrase of ["explicitly or implicitly, to earlier work, a previous result, a template, a style or a decision",
+      "before saying you do not know a past detail", "When an excerpt is not enough, read that chat with `read_past_chat`."]) {
+      expect(HARNESS_PAST_CHATS_LINE).toContain(phrase);
+    }
+    expect(prompt([])).not.toContain(SEARCH_PAST_CHATS_TOOL_NAME);
+    expect(prompt([])).not.toContain("memory_search");
+    // Byte-stable across a chat's turns: the line names no query, chat or time.
+    expect(prompt([SEARCH_PAST_CHATS_TOOL_NAME, READ_PAST_CHAT_TOOL_NAME])).toBe(offered);
   });
 
   it("reads a refused API or MCP call as missing access and keeps connected systems out of the browser", () => {

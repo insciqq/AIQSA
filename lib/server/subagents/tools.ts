@@ -25,6 +25,7 @@ import { CHECKPOINT_OUTPUTS_TOOL_NAME } from "../tools/checkpointOutputs";
 import type { HarnessToolDescriptor } from "../tools/harnessTool";
 import { MANAGE_ASSISTANT_TOOL_NAME } from "../tools/manageAssistant";
 import { MANAGE_INSTRUCTIONS_TOOL_NAME } from "../tools/manageInstructions";
+import { MANAGE_MEMORY_TOOL_NAME } from "../tools/manageMemory";
 import { MANAGE_PROXY_TOOL_NAME } from "../tools/manageProxy";
 import { MANAGE_SECRET_TOOL_NAME } from "../tools/manageSecret";
 import { MANAGE_SKILL_TOOL_NAME } from "../tools/manageSkill";
@@ -32,6 +33,7 @@ import { MONITORING_VERDICT_TOOL_NAME } from "../tools/monitoringVerdict";
 import { CREATE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskCreation";
 import { MANAGE_SCHEDULED_TASK_TOOL_NAME } from "../tools/scheduledTaskManagement";
 import { SAVE_SKILL_TOOL_NAME } from "../tools/skillSave";
+import { READ_PAST_CHAT_TOOL_NAME, SEARCH_PAST_CHATS_TOOL_NAME } from "../../contracts/pastChats";
 
 /**
  * The sub-agent tools as the native engine registry declares them: schemas,
@@ -361,7 +363,9 @@ export const SUBAGENT_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([
 export const SUBAGENT_EXCLUDED_TOOL_NAMES: readonly string[] = Object.freeze([
   ...SUBAGENT_TOOLS.map((tool) => tool.name),
   MANAGE_PROXY_TOOL_NAME, MANAGE_INSTRUCTIONS_TOOL_NAME, MANAGE_SECRET_TOOL_NAME, MANAGE_SKILL_TOOL_NAME, SAVE_SKILL_TOOL_NAME,
-  MANAGE_ASSISTANT_TOOL_NAME, ARTIFACT_TOOL_NAME,
+  MANAGE_ASSISTANT_TOOL_NAME, MANAGE_MEMORY_TOOL_NAME, ARTIFACT_TOOL_NAME,
+  // A sub-agent reads no Memory (operator decision 2026-11-22): neither the note nor the user's other chats.
+  SEARCH_PAST_CHATS_TOOL_NAME, READ_PAST_CHAT_TOOL_NAME,
   CREATE_SCHEDULED_TASK_TOOL_NAME, MANAGE_SCHEDULED_TASK_TOOL_NAME, MONITORING_VERDICT_TOOL_NAME, CHECKPOINT_OUTPUTS_TOOL_NAME,
   // A file attached from the user's computer goes on the answer, and only the main agent's run is shown there.
   COMPUTER_ATTACH_FILE_TOOL_NAME

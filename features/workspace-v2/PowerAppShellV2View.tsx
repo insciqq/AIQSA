@@ -1438,6 +1438,7 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
           workspaceActivity?.entries.some(entry => entry.phase === "requested" || entry.phase === "running")} />
       <RunAnswerV2
         processDisclosureId={source.runId ?? source.id}
+        onOpenChatMessage={workspace.pane.actions.openSearchMatch}
         actions={settled ? answerActions : undefined}
         actionsSlot={<>
               {settled ? <SentAttachmentsV2 blocks={copiedAttachments} canSave={!temporarySession} /> : null}

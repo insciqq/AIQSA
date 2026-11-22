@@ -20,7 +20,9 @@ export const HARNESS_TOOL_NAMES = Object.freeze({
   findTools: "find_tools",
   loadSkill: "load_skill",
   readSecret: "read_secret",
+  readPastChat: "read_past_chat",
   readToolResult: "read_tool_result",
+  searchPastChats: "search_past_chats",
   updatePlan: "update_plan"
 });
 
@@ -46,7 +48,17 @@ export type HarnessPromptInput = Readonly<{
   selfService?: string;
   /** What the "# Sub-agents" section lists, when `call_subagent` is offered (`./subagents.ts`). */
   subagents?: SubagentPromptFacts;
+  /** The user's memory suggestions are on, for the self-service section's memory line (`SelfServicePromptInput`). */
+  memoryOffers?: boolean;
 }>;
+
+/**
+ * When to search the user's earlier chats (operator decision 2026-11-22, in place of `memory_search`'s reader contract):
+ * users refer to earlier work without naming the chat, and an agent that does not look says it does not know.
+ */
+export const HARNESS_PAST_CHATS_LINE = "- When the user refers, explicitly or implicitly, to earlier work, a previous result, a template, a style or a " +
+  `decision ("like last time", "the report we did"), search their earlier chats with \`${HARNESS_TOOL_NAMES.searchPastChats}\` before ` +
+  `you answer, and before saying you do not know a past detail. When an excerpt is not enough, read that chat with \`${HARNESS_TOOL_NAMES.readPastChat}\`.`;
 
 /** One saved secret `read_secret` can read in this run. */
 export type SavedSecretFact = Readonly<{
@@ -132,6 +144,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "- Calls that may change data in other systems (MCP tools that are not read-only) are sent only after the user approves them on a card in the chat; the turn waits for that decision. Before such a call, say in one short sentence what it will do. The card's buttons read \"Allow once\", \"Always allow for this server\" and \"Deny\": when you mention them, quote these labels exactly as written, in English, and never translate them or name a button that is not there. When the user has already allowed calls of the same server in this chat, or you make several such calls at once, mention that \"Always allow for this server\" stops further cards for that server. Do not ask for the same approval in text.",
       ...tool(HARNESS_TOOL_NAMES.readToolResult, `- A large tool result arrives as its beginning and end with a handle. Read the omitted part with \`${HARNESS_TOOL_NAMES.readToolResult}\` instead of running the tool again; results stay readable later in the chat.`),
       ...tool(HARNESS_TOOL_NAMES.fetchUrl, `- Read a web page with \`${HARNESS_TOOL_NAMES.fetchUrl}\` when the user gives a link, a page, file or tool result names one, or a search result's snippet is not enough.`),
+      ...tool(HARNESS_TOOL_NAMES.searchPastChats, HARNESS_PAST_CHATS_LINE),
       ...tool(HARNESS_TOOL_NAMES.findTools, `- More tools from the user's MCP connections can be found with \`${HARNESS_TOOL_NAMES.findTools}\`; search there before saying a capability is missing.`),
       ...tool(HARNESS_TOOL_NAMES.loadSkill, `- The user's Skills are listed by name and description. Load a Skill's instructions with \`${HARNESS_TOOL_NAMES.loadSkill}\` before you follow it; this needs no Workspace.`),
       ...tool(HARNESS_TOOL_NAMES.updatePlan, `- \`${HARNESS_TOOL_NAMES.updatePlan}\` shows your plan to the user as progress; use it for work with several steps.`),

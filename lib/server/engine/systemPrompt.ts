@@ -145,6 +145,7 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
     upstreamModelId: input.snapshot.model.upstreamModelId }, {
     environment: { now: input.now, timeZone, ...(secrets ? { secrets } : {}) },
     ...(input.researchControl ? { researchControl: true } : {}),
+    ...(request.memory?.offers === true ? { memoryOffers: true } : {}),
     ...(input.selfService !== undefined ? { selfService: input.selfService } : {}),
     ...(input.subagents ? { subagents: input.subagents } : {}),
     tools,
