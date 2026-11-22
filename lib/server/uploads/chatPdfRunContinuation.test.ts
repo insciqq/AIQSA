@@ -56,7 +56,7 @@ function fixture(workspace = false) {
     providerAdmissionPlan: {}, sourceKind: "send" } as unknown as MaterializedPreparedRunData;
   const created = { assistantMessageId: "assistant", runId: "run", userMessageId: "user" };
   const loaded = { snapshot: chatPdfRunSnapshot(prepared), admissionResult: created, state: "preparing",
-    modelRun: { chatId: "chat", engine: "native", status: "preparing", normalizedRequest: null,
+    modelRun: { chatId: "chat", status: "preparing", normalizedRequest: null,
       workspaceRunBinding: workspace ? { modelRunId: "run" } : null,
       chatPdfAttachments: [{ attachmentId: "file", sourceChecksum, sourceByteSize: 8, state: "ready",
         pageCount: 2, route: "local_text", documentArtifactId: "document" }] } };
@@ -162,15 +162,6 @@ describe("accepted PDF answer continuation", () => {
     const original = await h.deps.pdfRepository.readArtifact();
     h.deps.pdfRepository.readArtifact.mockResolvedValue({ ...original, preparationGeneration: "another-run" });
     await expect(h.run()).rejects.toThrow("pdf_preparation_invalid");
-    expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
-    expect(h.deps.pdfRepository.markAnswerDispatched).not.toHaveBeenCalled();
-    expect(nativeRunResponse).not.toHaveBeenCalled();
-  });
-
-  it("ends a run the old core admitted before the upgrade without starting it", async () => {
-    const h = fixture();
-    Object.assign(h.loaded.modelRun, { engine: "v1" });
-    await expect(h.run()).rejects.toThrow("pdf_preparation_unavailable");
     expect(h.deps.repository.continuePdfPreparedRun).not.toHaveBeenCalled();
     expect(h.deps.pdfRepository.markAnswerDispatched).not.toHaveBeenCalled();
     expect(nativeRunResponse).not.toHaveBeenCalled();

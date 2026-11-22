@@ -937,7 +937,7 @@ function emptySummary(input: {
       matched: input.deletionJobIds.length,
       objectsDeleted: 0
     },
-    mcpHub: { dispatches: { expired: 0, removed: 0 }, discoveryAttempts: { expired: 0, removed: 0 } },
+    mcpHub: { dispatches: { expired: 0, removed: 0 } },
     authCutoff: input.authCutoff.toISOString(),
     authFlowTokens: {
       deleted: 0,

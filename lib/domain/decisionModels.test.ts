@@ -18,17 +18,10 @@ describe("optional Skill catalog decision policy", () => {
     expect(decisionFeatureEnabled({ ...historical, skillCatalogRelevance: true }, "skillCatalogRelevance")).toBe(true);
     expect(decodeDecisionFeatureOverrides({ ...historical, skillCatalogRelevance: false })).toEqual({ ...historical, skillCatalogRelevance: false });
   });
-  it("drops retired toolDiscovery, memoryRelevance and knowledgeRelevance overrides instead of disabling every feature", () => {
-    for (const stored of [{ toolDiscovery: false }, { toolDiscovery: "off", memoryRelevance: false, skillSuggestions: true },
-      { knowledgeRelevance: false }]) {
-      const decoded = decodeDecisionFeatureOverrides(stored);
-      expect(decoded).not.toBeNull();
-      expect(decoded).not.toHaveProperty("toolDiscovery");
-      expect(decoded).not.toHaveProperty("memoryRelevance");
-      expect(decoded).not.toHaveProperty("knowledgeRelevance");
-      expect(decisionFeatureEnabled(stored, "skillSuggestions")).toBe(true);
+  it("refuses the retired toolDiscovery, memoryRelevance and knowledgeRelevance overrides the upgrade removed", () => {
+    for (const stored of [{ toolDiscovery: false }, { memoryRelevance: false, skillSuggestions: true }, { knowledgeRelevance: false }]) {
+      expect(decodeDecisionFeatureOverrides(stored)).toBeNull();
     }
-    expect(decisionFeatureEnabled({ toolDiscovery: false, skillSuggestions: false }, "skillSuggestions")).toBe(false);
   });
   it("keeps malformed and unknown persisted overrides invalid", () => {
     for (const input of [null, [], { skillCatalogRelevance: 1 }, { skillSuggestions: "false" }, { unknown: true }]) {

@@ -20,12 +20,12 @@ const claim = { claimToken: "claim-token", runId: "follow-run", userId: "owner" 
 const admitted = { assistantMessageId: "answer-2", runId: "follow-run", userMessageId: "question-2" };
 const workspaceRequest = { workspace: { enabled: true, syncToolTimeoutSeconds: 30, turnTimeoutSeconds: 600 } as ProviderRunRequest["workspace"] };
 
-function loadedFollowup(input: Readonly<{ engine?: "native" | "v1"; native?: Readonly<{ approvalId?: string; telegram?: true }>;
+function loadedFollowup(input: Readonly<{ native?: Readonly<{ approvalId?: string; telegram?: true }>;
   request?: Readonly<Record<string, unknown>>; status?: "preparing" | "streaming" }> = {}): WorkspaceFollowupLoaded {
   return {
     admissionResult: { ...admitted },
     deadlineAt: new Date(Date.now() + 60_000),
-    modelRun: { chatId: "chat", createdAt: new Date(), engine: input.engine ?? "native", normalizedRequest: null, status: input.status ?? "preparing",
+    modelRun: { chatId: "chat", createdAt: new Date(), normalizedRequest: null, status: input.status ?? "preparing",
       workspaceWaitPending: true },
     predecessor: { status: "complete" },
     snapshot: { ...(input.native ? { native: input.native } : {}),
@@ -48,7 +48,7 @@ function recordingWorkspace(order: string[]) {
 function continuation(input: Readonly<{ adapter: ProviderAdapter; memory: ReturnType<typeof memoryNativeEngine>; order: string[] }>) {
   const secrets: RunSecretSource = { list: vi.fn(async () => []), read: vi.fn() };
   const nativeEngine: NativeEngineHandlerDeps = { engine: input.memory.engine,
-    findOrphans: async () => [], findRetiredRuns: async () => [], tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } } };
+    findOrphans: async () => [], tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } } };
   const repository = { ...nativeRunRepository(), continueWorkspacePreparedRun: vi.fn(async (activation: { created: typeof admitted }) => {
     input.order.push("activated");
     return { ...activation.created };
@@ -137,17 +137,6 @@ describe("a successor behind the previous answer's Workspace hand-off", () => {
     const { continueRun } = continuation({ adapter, memory, order });
     await expect(continueRun({ claim, loaded: loadedFollowup({ status: "streaming" }), releaseRegistry: vi.fn(),
       signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_invalid"));
-    expect(requests).toEqual([]);
-  });
-
-  it("fails visibly, starting nothing, when the old core admitted it before the upgrade", async () => {
-    const order: string[] = [];
-    const memory = memoryNativeEngine();
-    const { adapter, requests } = scriptedNativeAdapter([{ text: "Updated." }]);
-    const { continueRun, repository } = continuation({ adapter, memory, order });
-    await expect(continueRun({ claim, loaded: loadedFollowup({ engine: "v1" }), releaseRegistry: vi.fn(),
-      signal: new AbortController().signal })).rejects.toEqual(new WorkspaceFollowupError("workspace_followup_unavailable"));
-    expect(repository.continueWorkspacePreparedRun).not.toHaveBeenCalled();
     expect(requests).toEqual([]);
   });
 

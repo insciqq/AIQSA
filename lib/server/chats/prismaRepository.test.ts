@@ -14,7 +14,6 @@ describe("favoriteOnlyChatUpdate", () => {
       { activeLeafMessageId: null },
       { assistantId: null },
       { assistantOverrides: {} },
-      { defaultSearchPlan: null },
       { folderId: null },
       { folderId: "folder-1" },
       { title: "Renamed" },

@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
 import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
 import {
+  DROP_REMOVED_FEATURE_STORAGE_MIGRATION, dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql
+} from "./drop-removed-feature-storage-adoption";
+import {
   MEMORY_NOTE_ADOPTION_MIGRATION, memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql,
   memoryNoteAdoptionBareRepeatProofSql, memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql,
   memoryNoteAdoptionRepeatProofSql
@@ -583,9 +586,15 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
     DROP_OLD_MEMORY_MIGRATION);
   // The old subsystem goes with its data: runs it left preparing end interrupted, runs at a PDF or Workspace gate keep
   // waiting, and the note, the past-chat index, the worker's tables, settings, roles, inbound OAuth, other chats, runs
-  // and usage stay as they were. Nothing named after it is left in the catalog.
+  // and usage stay as they were. Nothing named after it is left in the catalog. Its proof reads usage and settings
+  // columns the next drop removes, so it ends before that drop.
   runForwardAdoptionProof(database, migrations, DROP_OLD_MEMORY_MIGRATION,
-    dropOldMemoryFixtureSql, dropOldMemoryProofSql, dropOldMemoryProofSql);
+    dropOldMemoryFixtureSql, dropOldMemoryProofSql, dropOldMemoryProofSql, DROP_REMOVED_FEATURE_STORAGE_MIGRATION);
+  // The removed features' storage goes with its retired values: the old core's active runs end once, Agent approval
+  // cards become model cards, retired Telegram buttons go, the Knowledge row and retired decision features leave
+  // stored overrides, and usage keeps every row and purpose. Nothing that stays names what went.
+  runForwardAdoptionProof(database, migrations, DROP_REMOVED_FEATURE_STORAGE_MIGRATION,
+    dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql, dropRemovedFeatureStorageProofSql);
 }
 
 function main(database: string, shadowDatabase: string): void {
@@ -603,7 +612,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

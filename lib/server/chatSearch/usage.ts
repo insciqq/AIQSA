@@ -6,8 +6,8 @@ import { loadProviderModelCostBasis, providerModelUsageCostMicros, storedTokenUs
 /**
  * Usage of past-chat search's own model calls: document embeddings when the index embeds passages
  * (`memory_indexing`) and query embeddings and reranking when a search runs (`memory_retrieval`). The purposes keep the
- * old Memory's identifiers so usage history stays continuous (integrator decision 2026-11-22); the rows carry no Memory
- * execution binding, which `UsageEvent_knowledge_shape_check` allows for rows without purpose flags.
+ * old Memory's identifiers so usage history stays continuous (integrator decision 2026-11-22); the rows carry no purpose
+ * flag, which `UsageEvent_shape_check` allows.
  *
  * Bookkeeping after the work (root `AGENTS.md`, "Answer first"): only what the provider reported is recorded, the
  * reported cost first, else the model's stored prices, else unknown; nothing is estimated. A call that reported

@@ -35,8 +35,6 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       throw new WorkspaceFollowupError("workspace_followup_invalid");
     }
     let prepared = snapshot.prepared;
-    // A successor the old core admitted has no engine left to run it; it ends at startup (`retiredEngineRuns.ts`).
-    if (loaded.modelRun.engine !== "native") throw new WorkspaceFollowupError("workspace_followup_unavailable");
     // An answer review step admitted before the feature's removal has no step left to run: it ends interrupted, never starts.
     if (isRetiredAnswerReviewStep(prepared.normalizedRequest)) throw new WorkspaceFollowupError("workspace_followup_interrupted");
     const admission = (): PreparingRunAdmissionInput => ({

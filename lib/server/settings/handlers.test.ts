@@ -403,9 +403,6 @@ describe("settings handler", () => {
 
   it("refuses the removed automatic review default as an unknown field and never reports a saved one", async () => {
     const data = baseSettingsData();
-    // A settings row the previous release wrote still carries its retired default.
-    data.settings = { ...data.settings, defaultAnswerReview: { enabled: true, maxRounds: 2,
-      reviewers: [{ modelId: "gpt-5.5", provider: "openai" }] } } as UserSettingsRecord;
     let captured: UserSettingsUpdate | null = null;
     const PATCH = createUpdateSettingsHandler({
       resolveAuth: auth.resolveAuth,

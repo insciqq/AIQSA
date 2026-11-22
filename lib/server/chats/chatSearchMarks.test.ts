@@ -21,7 +21,7 @@ const workspaceAvailability = {
 const summaryRow = (overrides: Record<string, unknown> = {}) => ({
   _count: { messages: 2 }, activeLeafMessageId: "answer-1", assistantId: null, computerCwd: null, computerDeviceId: null,
   continuationSource: null, createdAt: new Date("2026-11-01T09:00:00Z"), defaultProviderModel: null,
-  defaultSearchPlan: null, folderId: null, id: CHAT_ID, importSource: null, importSourceModel: null, pinned: false,
+  folderId: null, id: CHAT_ID, importSource: null, importSourceModel: null, pinned: false,
   receivedWorkspaceSeeds: [], title: "Trip plans", titleGeneration: null, titleRevision: 1,
   updatedAt: new Date("2026-11-01T10:00:00Z"), workspaceEnabled: true, workspaceSession: null, ...overrides
 });

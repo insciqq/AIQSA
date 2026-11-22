@@ -11,7 +11,7 @@ import { providerResponseFailure } from "../providers/responseFailure";
 function harness(workspace = false) {
   const controller = new AbortController();
   const claim = { claimToken: "lease", runId: "run", userId: "owner" };
-  const local = encodeChatPdfArtifact({ pageCount: 1, geometry: null, docling: null });
+  const local = encodeChatPdfArtifact({ pageCount: 1, geometry: null });
   const objects = new Map([["local", local.body], ["original", Buffer.from("original")]]);
   const artifacts = new Map<string, { id: string; storageKey: string; byteSize: number; checksum: string }>([
     ["local", { id: "local", storageKey: "local", byteSize: local.body.length, checksum: local.checksum }]

@@ -388,11 +388,9 @@ enum ModelRunToolCallState {
 }
 
 /// Where an MCP call refused for lack of the user's approval came from.
-/// `agent` (the removed Codex Agent) stays for the cards of its old answers.
 enum McpToolApprovalSource {
   model
   code
-  agent
 }
 
 enum McpToolApprovalDecision {
@@ -519,7 +517,6 @@ model User {
   inboundMcpOAuthGrants               InboundMcpOAuthGrant[]
   skillStoreOperations                SkillStoreOperation[]
   mcpHubDispatches                    McpHubDispatch[]
-  mcpHubDiscoveryAttempts             McpHubDiscoveryAttempt[]
   optionalDecisionAttempts           OptionalDecisionAttempt[]
   mcpGrants                           McpGrant[]
   mcpToolGrants                       McpToolUserGrant[]
@@ -1111,13 +1108,9 @@ model UserSettings {
   defaultSearchStrategyId String         @default("openai-native-web-search")
   defaultSearchPlan       Json?
   defaultControlValues    Json           @default("{}")
-  defaultKnowledgePlan    Json?
   defaultMcpMode          String         @default("auto")
   defaultSkillsMode       SkillsMode     @default(auto)
   defaultWorkspaceEnabled Boolean        @default(true)
-  /// Retired (Answer Review removed 2026-10-25): nothing reads or writes it;
-  /// dropped in a later release.
-  defaultAnswerReview     Json?
   defaultAssistantId      String?
   /// The custom sub-agent a new thread with no type runs; null is the built-in one. Admission freezes it per run
   /// (`lib/server/subagents/typeCatalog.ts`). The migration uses column-scoped SET NULL to clear only this column.
@@ -1297,9 +1290,6 @@ model ModelPolicy {
 model SystemModelPolicy {
   /// The administrator default image model; it is always published.
   imageProviderModelId    String?
-  /// Retired: published models own their parameters. Previous-release readers
-  /// may still read it during replacement; current code never reads or writes it.
-  imageParamsJson         Json           @default("{}")
   imageProviderModel      ProviderModel? @relation("ImageGenerationProviderModel", fields: [imageProviderModelId], references: [id], onDelete: Restrict)
   imagePublication        PublishedImageModel? @relation("DefaultImageModel", fields: [imageProviderModelId], references: [providerModelId], onDelete: Restrict, map: "SystemModelPolicy_imagePublication_fkey")
   id                      String         @id
@@ -1348,10 +1338,6 @@ model SystemModelPolicy {
   speechToTextCredentialVersionId String?
   /// Set by every explicit save or clear; also the role's own concurrency fence.
   speechToTextConfiguredAt        DateTime?
-  /// Existing installations are marked pending by the forward migration only.
-  decisionAdoptionVersion Int            @default(1)
-  /// Claimed before external verification; restarts never replay ambiguous probes.
-  decisionAdoptionReason String?         @db.VarChar(32)
   reasoningEffort         String?        @db.VarChar(32)
   version                 Int            @default(1)
   updatedByUserId         String?
@@ -1426,7 +1412,6 @@ model Folder {
   parentId             String?
   name                 String
   projectMemory        String   @default("")
-  defaultKnowledgePlan Json?
   sortOrder            Int      @default(0)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -1508,8 +1493,6 @@ model AssistantDefinition {
   /// Null means Inherit; a fixed model row requires a concrete model.
   providerModelId    String?
   systemPrompt       String
-  /// Retired and merged into systemPrompt; kept only for previous-release writers.
-  developerPrompt    String?
   answerRules        String?
   responseReminder   String                    @default("")
   skillsMode         SkillsMode                @default(auto)
@@ -1746,9 +1729,6 @@ model ProviderModel {
   modelId                     String
   displayName                 String
   modelClass                  ProviderModelClass              @default(answer)
-  inputTokenPriceMicros       Int                             @default(0)
-  outputTokenPriceMicros      Int                             @default(0)
-  /// Retained legacy integer columns above keep previous-release writers valid.
   inputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   cachedInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
   cacheWriteInputTokenPriceUsdPerMillion Decimal? @db.Decimal(18, 8)
@@ -2073,7 +2053,6 @@ model Chat {
   titleGeneration                 ChatTitleGeneration?
   activeLeafMessageId             String?
   defaultProviderModelId          String?
-  defaultKnowledgePlan            Json?
   defaultSearchPlan               Json?
   /// Lookups by Assistant use a SQL partial index over bound chats.
   assistantId                     String?
@@ -2113,9 +2092,6 @@ model Chat {
   /// keep both columns null or both set and bound the folder.
   computerDeviceId                String?
   computerCwd                     String?
-  /// Retired (Answer Review removed 2026-10-25): nothing reads or writes it;
-  /// dropped in a later release.
-  answerReviewConfig              Json?
   totalInputTokens                Int                  @default(0)
   totalOutputTokens               Int                  @default(0)
   totalReasoningTokens            Int                  @default(0)
@@ -2618,8 +2594,6 @@ model ModelRun {
   followupRevision             Int                                 @default(0)
   followupBudgetTokens         Int                                 @default(0)
   followupClosedAt             DateTime?
-  followupKnowledgeRevision    Int                                 @default(0)
-  followupKnowledgeOffset      Int                                 @default(0)
   workspaceFollowup            WorkspaceFollowup?                  @relation("WaitingWorkspaceRun")
   dependentWorkspaceFollowups   WorkspaceFollowup[]                 @relation("PreviousWorkspaceRun")
   chatTitleGeneration          ChatTitleGeneration?
@@ -3112,7 +3086,6 @@ model McpServer {
   enabled              Boolean              @default(false)
   archivedAt           DateTime?
   activeRevisionId     String?              @unique
-  legacyToolRecheckPending Boolean           @default(false)
   /// Trusted: a runtime that sees changed tools asks for an automatic Test & Save (operator decision 2026-10-24).
   autoApplyToolUpdates     Boolean              @default(true)
   toolUpdateCheckPending   Boolean              @default(false)
@@ -3295,7 +3268,7 @@ model McpToolApproval {
   userId          String
   chatId          String
   modelRunId      String
-  /// The refused call of the run's tool loop (or the removed Codex Agent's gateway); null for guest code.
+  /// The refused call of the run's tool loop; null for guest code.
   toolCallId      String?
   source          McpToolApprovalSource
   serverId        String
@@ -3498,28 +3471,6 @@ model McpHubDispatch {
   @@index([grantId, createdAt])
   @@index([state, createdAt])
   @@index([state, expiresAt])
-}
-
-model McpHubDiscoveryAttempt {
-  id                  String              @id @default(uuid())
-  userId              String
-  clientId            String              @db.VarChar(2048)
-  grantId             String              @db.VarChar(64)
-  resourcePath        String              @default("/mcp/hub") @db.VarChar(32)
-  connectionId        String
-  providerModelId     String
-  credentialVersionId String
-  state               McpHubDispatchState @default(DISPATCHED)
-  createdAt           DateTime            @default(now())
-  expiresAt           DateTime            @default(dbgenerated("(CURRENT_TIMESTAMP + '00:05:00'::interval)"))
-  completedAt         DateTime?
-  revision            Int                 @default(0)
-  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  usageEvent          UsageEvent?
-
-  @@index([userId, createdAt])
-  @@index([state, expiresAt])
-  @@index([createdAt])
 }
 
 /// Owned by a member's preference (`userServerId`); a SQL check enforces it.
@@ -4175,16 +4126,9 @@ model UsageEvent {
   visionAnalysis                  Boolean                        @default(false)
   visionAnalysisAttemptId          String?                        @unique
   visionAnalysisAttempt            VisionAnalysisAttempt?         @relation(fields: [visionAnalysisAttemptId], references: [toolCallId], onDelete: SetNull, onUpdate: Restrict)
-  /// The usage receipt of a Knowledge run's image observation, flagged `visionAnalysis`.
-  knowledgeImageObservationRunId   String?                        @unique
   optionalDecision                Boolean                        @default(false)
   optionalDecisionAttemptId       String?                        @unique
   optionalDecisionAttempt         OptionalDecisionAttempt?       @relation(fields: [optionalDecisionAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
-  knowledgeRelevance              Boolean                        @default(false)
-  knowledgeRelevanceAttemptId     String?                        @unique
-  mcpHubDiscovery                  Boolean                        @default(false)
-  mcpHubDiscoveryAttemptId         String?                        @unique
-  mcpHubDiscoveryAttempt           McpHubDiscoveryAttempt?        @relation(fields: [mcpHubDiscoveryAttemptId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   chatTitleGeneration             Boolean                        @default(false)
   chatTitleGenerationId           String?                        @unique
   chatTitle                       ChatTitleGeneration?           @relation(fields: [chatTitleGenerationId], references: [runId], onDelete: SetNull, onUpdate: Restrict)
@@ -4204,11 +4148,6 @@ model UsageEvent {
   provider                        String
   modelId                         String
   providerModelId                 String?
-  knowledgeBaseId                 String?
-  knowledgeIndexGenerationId      String?
-  knowledgeDocumentVersionId      String?
-  knowledgeBatchIndex             Int?
-  knowledgePdfProcessingAttemptId String?                        @unique
   operationCount                  Int?
   inputTokens                     Int?
   cachedInputTokens               Int?
@@ -4226,14 +4165,12 @@ model UsageEvent {
   modelRun                        ModelRun?                      @relation(fields: [modelRunId], references: [id], onDelete: SetNull)
   user                            User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([knowledgeIndexGenerationId, knowledgeDocumentVersionId, knowledgeBatchIndex])
   @@index([chatId])
   @@index([modelRunId])
   @@index([createdAt])
   @@index([userId, createdAt])
   @@index([provider, modelId])
   @@index([projectId, createdAt])
-  @@index([knowledgeBaseId, createdAt])
 }
 
 // One immutable Workspace image analysis dispatch per persisted tool call.
@@ -4447,17 +4384,6 @@ model SkillStoreOperation {
 enum ModelPriceSource {
   catalog
   admin
-}
-
-/// One-time, restart-safe historical accounting adoption; never a price refresh.
-model CatalogCostBackfill {
-  id String @id
-  cutoffAt DateTime @default(now())
-  prices Json
-  usageCursor String?
-  runCursor String?
-  usageFinished Boolean @default(false)
-  completedAt DateTime?
 }
 
 enum ScheduledTaskScheduleKind {
@@ -4951,9 +4877,6 @@ enum TelegramCallbackKind {
   select_model
   model_page
   toggle_search
-  toggle_workspace
-  // The removed Codex Agent's toggle: its old buttons have no handler and answer as expired.
-  toggle_agent
   stop_run
   unlink_confirm
   open_settings

@@ -566,7 +566,6 @@ describe("the tools a native run is offered by kind", () => {
   const native = (memory: ReturnType<typeof memoryNativeEngine>): NativeEngineHandlerDeps => ({
     engine: memory.engine,
     findOrphans: async () => [],
-    findRetiredRuns: async () => [],
     tools: { secrets, selfService: { assistants: {} as never, db: {} as never, storage: {} as never } }
   });
 

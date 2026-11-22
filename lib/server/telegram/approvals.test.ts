@@ -187,10 +187,10 @@ describe("Telegram MCP approvals: the message", () => {
   it("sends a pending card the live stream missed from the settled answer, once, after the answer", async () => {
     const h = harness();
     const run = await ask(h, "create the issue", 1);
-    const card = h.store.add(run, { details: undefined, source: "agent" });
+    const card = h.store.add(run, { details: undefined, source: "code" });
     run.summary = { citations: [], mcpApprovals: [card, { ...card, approvalId: "decided-1", canDecide: undefined, state: "denied" }],
       reasoningText: [], sources: [] };
-    run.token("Agent needs your approval.");
+    run.token("The script needs your approval.");
     run.complete();
     await h.settle();
     await h.approvals.idle();
@@ -199,11 +199,11 @@ describe("Telegram MCP approvals: the message", () => {
     expect(messages.at(-1)!.rich_message).toEqual({
       blocks: [
         { text: { text: "Jira · create_issue", type: "bold" }, type: "paragraph" },
-        { text: TELEGRAM_APPROVAL_COPY.pendingAgent, type: "paragraph" }
+        { text: TELEGRAM_APPROVAL_COPY.pendingCode, type: "paragraph" }
       ],
       skip_entity_detection: true
     });
-    expect(messages.at(-2)!.rich_message).toEqual(renderTelegramAnswer("Agent needs your approval.").messages[0]);
+    expect(messages.at(-2)!.rich_message).toEqual(renderTelegramAnswer("The script needs your approval.").messages[0]);
   });
 
   it("bounds the request to 1 500 characters without splitting a character, and words each source and decision", () => {

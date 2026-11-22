@@ -85,7 +85,6 @@ describe("Prisma run repository search evidence", () => {
       _count: { messages: 2 },
       activeLeafMessageId: "assistant-active",
       createdAt: now,
-      defaultKnowledgePlan: null,
       defaultProviderModel: null,
       folderId: null,
       id: "chat-1",

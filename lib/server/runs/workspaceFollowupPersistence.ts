@@ -119,8 +119,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
   return {
     async claim(now = new Date(), liveRunIds: readonly string[] = []): Promise<WorkspaceFollowupClaim | null> {
       return prisma.$transaction(async (tx) => {
-        // A successor of either engine, behind a predecessor of either engine:
-        // the continuation dispatches through the successor's own engine.
+        // A successor behind its predecessor, whichever engine ran that one.
         const [row] = await tx.$queryRaw<Array<{ runId: string; userId: string }>>(Prisma.sql`
           SELECT f."modelRunId" AS "runId", r."userId" FROM "WorkspaceFollowup" f
           JOIN "ModelRun" r ON r."id" = f."modelRunId"
@@ -166,7 +165,7 @@ export function createWorkspaceFollowupRepository(prisma: PrismaClient) {
         leaseExpiresAt: { gt: new Date() }, modelRun: { userId: claim.userId, chat: { userId: claim.userId } }
       }, include: {
         predecessor: { select: { errorPayload: true, status: true } },
-        modelRun: { select: { chatId: true, createdAt: true, engine: true, status: true, normalizedRequest: true,
+        modelRun: { select: { chatId: true, createdAt: true, status: true, normalizedRequest: true,
           workspaceWaitPending: true } }
       } });
     },

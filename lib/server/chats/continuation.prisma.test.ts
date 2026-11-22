@@ -134,9 +134,7 @@ it.each(["exposed", "unexposed", "absent"] as const)("preserves the model defaul
     const original = modelIds[0]!;
     const selected = template.id;
     await fixture(async ({ userId, chatId, leafId }) => {
-      // A Knowledge default stored before Knowledge was removed stays behind with its source.
-      const knowledge = { version: 1, mode: "explicit", baseIds: [randomUUID()], sourceIds: [] };
-      await prisma.chat.update({ where: { id: chatId }, data: { defaultProviderModelId: original, defaultKnowledgePlan: knowledge } });
+      await prisma.chat.update({ where: { id: chatId }, data: { defaultProviderModelId: original } });
       if (selectionState === "exposed") {
         await prisma.accessGrant.create({ data: { userId, providerModelId: selected } });
       }
@@ -154,7 +152,7 @@ it.each(["exposed", "unexposed", "absent"] as const)("preserves the model defaul
       if (result.status !== "complete") throw new Error("summary missing");
       expect(await prisma.chat.findUnique({ where: { id: result.chatId } })).toMatchObject({
         defaultProviderModelId: selectionState === "exposed" ? selected : original,
-        defaultKnowledgePlan: null, workspaceEnabled: false, userId, memoryMode: "NORMAL"
+        workspaceEnabled: false, userId, memoryMode: "NORMAL"
       });
       expect(await prisma.workspaceSession.count({ where: { chatId: result.chatId } })).toBe(0);
       const reopened = await createPrismaChatRepository(prisma).getChat({ chatId: result.chatId, userId });

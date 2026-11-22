@@ -812,17 +812,9 @@ describe("Prisma-backed message branch repository", () => {
           systemPrompt: "Analyze the supplied context."
         }
       });
-      const knowledgePlan = {
-        baseIds: ["base-policies"],
-        mode: "explicit" as const,
-        sourceIds: ["source-handbook"],
-        version: 1 as const
-      };
-
       try {
         const sourceChat = await prisma.chat.create({
           data: {
-            defaultKnowledgePlan: knowledgePlan,
             title: "Provenance source",
             userId
           }
@@ -923,10 +915,6 @@ describe("Prisma-backed message branch repository", () => {
         const branched = await createPrismaMessageBranchRepository(prisma)
           .createChatBranchFromMessage({ sourceMessageId: assistantMessage.id, userId });
         if (!branched) throw new Error("branch_not_created");
-        // A Knowledge default stored before Knowledge was removed stays behind with its source.
-        expect(branched).not.toHaveProperty("defaultKnowledgePlan");
-        await expect(prisma.chat.findUniqueOrThrow({ select: { defaultKnowledgePlan: true }, where: { id: branched.id } }))
-          .resolves.toEqual({ defaultKnowledgePlan: null });
 
         await prisma.assistantDefinition.update({ where: { id: assistant.id },
           data: { name: "Future branch analyst", systemPrompt: "Future instructions only" } });
@@ -964,7 +952,6 @@ describe("Prisma-backed message branch repository", () => {
             }]
           }
         });
-        expect(detail).not.toHaveProperty("defaultKnowledgePlan");
         expect(detail?.usageStats).toEqual({
           hasCompletedAnswer: true,
           recordCount: 0,

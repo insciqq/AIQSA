@@ -5,11 +5,9 @@ import { createS3StorageAdapter } from "../uploads/storage";
 import { workspaceCoordinatorForStorage } from "../workspace/defaultServices";
 import { createPrismaRunRepository } from "./prismaRepository";
 import { RunRecoveryScheduler } from "./recoveryScheduler";
-import { createRetiredEngineRunFinder, createRetiredEngineRunSweep } from "./retiredEngineRuns";
 import { createPrismaChatTitleWorker } from "../chats/titleGenerationWorker";
 import { defaultNativeRecoveryDeps } from "../engine/defaultEngine";
 import { reconcileNativeRuns } from "../engine/recovery";
-import { prisma } from "../prisma";
 import { getDefaultSubagentBackground } from "./subagentBackground/default";
 
 const globalForRecoveryScheduler = globalThis as unknown as {
@@ -28,19 +26,12 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
     const subagents = getDefaultSubagentBackground();
     const native = { ...defaultNativeRecoveryDeps({ repository, workspace }),
       subagents: (input: Readonly<{ chatId?: string; userId?: string }>) => subagents.reconcile(input) };
-    // The old core's runs still active after the upgrade end first, so their
-    // document and Workspace jobs never wait for an engine that is gone.
-    const retired = createRetiredEngineRunSweep({ findRuns: createRetiredEngineRunFinder(prisma), repository, workspace });
     globalForRecoveryScheduler.__aiqsaRunRecoveryScheduler = new RunRecoveryScheduler({
       recoverChatTitles: (signal) => titles.reconcile(signal),
       reconcile: async () => {
-        try {
-          await retired();
-        } finally {
-          getDefaultChatPdf().kick();
-          getDefaultWorkspaceFollowup().kick();
-          await reconcileNativeRuns(native);
-        }
+        getDefaultChatPdf().kick();
+        getDefaultWorkspaceFollowup().kick();
+        await reconcileNativeRuns(native);
       },
       recoverWorkspaceExports: async (signal) => {
         await (await defaultWorkspaceCheckpoints()).recover(signal);
@@ -52,9 +43,8 @@ export function getDefaultRunRecoveryScheduler(): RunRecoveryScheduler {
 }
 
 /**
- * Starts recovery at startup: runs the old core left active end once, and the
- * agent engine's runs this process does not own end interrupted
- * (`reconcileNativeRuns`), on every pass.
+ * Starts recovery at startup: the agent engine's runs this process does not
+ * own end interrupted (`reconcileNativeRuns`), on every pass.
  */
 export function startDefaultRunRecoveryScheduler(): void {
   getDefaultRunRecoveryScheduler().start();

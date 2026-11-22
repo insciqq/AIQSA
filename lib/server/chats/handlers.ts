@@ -1,5 +1,4 @@
 import type { RunProviderWait } from "../../contracts/runs";
-import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
 import type { ChatImportSource } from "../../contracts/chatImport";
 import type { ChatComputerBinding } from "../../contracts/computer";
 import type { ChatPdfPreparationWire } from "../../contracts/chatPdfPreparation";
@@ -89,7 +88,6 @@ export type ChatMessageRecord = {
 };
 
 export type ChatSummaryRecord = {
-  defaultSearchPlan?: SearchPlan | null;
   titlePending?: boolean;
   hasContinuationSource?: boolean;
   /** Imported chats and their copies; absent reads as not imported. */
@@ -184,7 +182,6 @@ export type ChatRepository = {
     userId: string;
   }): Promise<FolderRecord | null>;
   updateChat(input: {
-    defaultSearchPlan?: SearchPlan | null;
     activeLeafMessageId?: string | null;
     /** A string binds the Assistant, null removes it; either clears the overrides. */
     assistantId?: string | null;
@@ -597,11 +594,7 @@ export function createUpdateChatHandler(deps: ChatHandlerDeps) {
       return bodyError;
     }
     // Search is one personal default for every chat (operator decision
-    // 2026-10-24): a per-chat plan from an older client is validated and ignored.
-    const search = body?.defaultSearchPlan == null ? null : decodeSearchPlan(body.defaultSearchPlan);
-    if (search && !search.ok) {
-      return chatRouteErrorJson({ error: "search_plan_invalid" }, { status: 400 });
-    }
+    // 2026-10-24): a per-chat plan a tab of an earlier release still sends is ignored.
     const workspaceEnabled = workspaceEnabledValue(body);
     if (!workspaceEnabled.ok) {
       return chatRouteErrorJson({ error: "workspace_state_invalid" }, { status: 400 });

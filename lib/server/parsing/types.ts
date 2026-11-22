@@ -6,9 +6,6 @@ import type { DocumentParserErrorCode } from "./errors";
 
 export type SidecarParserEngine = RegistrySidecarParserEngine;
 export type DocumentParserEngine =
-  /** Only the layouts that chat PDF preparations stored before the docling
-   * sidecar was removed; nothing produces new ones. */
-  | "docling"
   | "inline"
   | "native_pdf"
   | "spreadsheet"

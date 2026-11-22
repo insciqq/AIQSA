@@ -17,18 +17,16 @@ function summary(input: Partial<WorkspaceChatSummary> & Pick<WorkspaceChatSummar
 }
 
 describe("workspace draft reconciliation", () => {
-  it.each(["2026-08-22T00:00:00.000Z", "2026-08-22T00:00:01.000Z"])(
-    "retains pending or acknowledged Search at %s against an older read", (updatedAt) => {
-      const current = summary({ id: "chat-1", updatedAt, defaultSearchPlan: { mode: "all_selected", optionIds: [] } });
-      const stale = summary({ id: current.id, defaultSearchPlan: { mode: "model_choice", optionIds: ["search-source"] } });
-      const merged = mergeWorkspaceDrafts({ currentChats: [current], incomingChats: [stale] });
-      expect(merged.chats[0]).toMatchObject({ defaultSearchPlan: current.defaultSearchPlan, updatedAt });
+  it("keeps an acknowledged change against an older read and takes a newer one", () => {
+    const current = summary({ id: "chat-1", title: "Renamed", updatedAt: "2026-08-22T00:00:01.000Z" });
+    const stale = summary({ id: current.id, title: "Old title" });
+    const merged = mergeWorkspaceDrafts({ currentChats: [current], incomingChats: [stale] });
+    expect(merged.chats[0]).toMatchObject({ title: "Renamed", updatedAt: current.updatedAt });
 
-      const newer = { ...stale, updatedAt: "2026-08-22T00:00:02.000Z" };
-      expect(mergeWorkspaceDrafts({ currentChats: merged.chats, incomingChats: [newer] }).chats[0])
-        .toMatchObject({ defaultSearchPlan: newer.defaultSearchPlan, updatedAt: newer.updatedAt });
-    }
-  );
+    const newer = { ...stale, title: "Newest", updatedAt: "2026-08-22T00:00:02.000Z" };
+    expect(mergeWorkspaceDrafts({ currentChats: merged.chats, incomingChats: [newer] }).chats[0])
+      .toMatchObject({ title: "Newest", updatedAt: newer.updatedAt });
+  });
 
   it("preserves a personal first-send reservation and promotes its persisted row", () => {
     const draft = summary({

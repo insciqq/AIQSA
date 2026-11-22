@@ -80,26 +80,18 @@ describe("what the agent engine can run", () => {
   });
 });
 
-// Regression (codex review): an old-core run the startup sweep could not end held its chat until a restart.
 describe("before a user's admission", () => {
-  it("ends the user's old-core runs and then their native orphans, and a failure of either never blocks the message", async () => {
-    const order: string[] = [];
-    const failRun = vi.fn(async (runId: string) => {
-      order.push(runId);
-      return true;
-    });
+  it("ends the user's native orphans, and a failure never blocks the message", async () => {
+    const failRun = vi.fn(async () => true);
     const native = {
       engine: { runs: { complete: vi.fn(async () => true) } },
       findOrphans: vi.fn(async () => [{ answerCompletedAt: null, assistantMessageId: "answer-native", chatId: "chat-1", id: "native-run",
-        normalizedRequest: {}, userId: "user-1" }]),
-      findRetiredRuns: vi.fn(async () => [{ assistantMessageId: "answer-old", id: "old-run", normalizedRequest: {}, userId: "user-1" }])
+        normalizedRequest: {}, userId: "user-1" }])
     } as unknown as NativeEngineHandlerDeps;
     await recoverUserNativeRuns(native, { repository: { failRun } }, "user-1");
-    expect(native.findRetiredRuns).toHaveBeenCalledWith({ limit: 100, skip: [], userId: "user-1" });
-    expect(failRun).toHaveBeenCalledWith("old-run", "answer-old", RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
-    expect(order).toEqual(["old-run", "native-run"]);
+    expect(native.findOrphans).toHaveBeenCalledWith(expect.objectContaining({ userId: "user-1" }));
+    expect(failRun).toHaveBeenCalledWith("native-run", "answer-native", RUN_INTERRUPTED_FAILURE, { recoveryTerminal: true });
 
-    vi.mocked(native.findRetiredRuns).mockRejectedValueOnce(new Error("synthetic_read_failure"));
     vi.mocked(native.findOrphans).mockRejectedValueOnce(new Error("synthetic_read_failure"));
     await expect(recoverUserNativeRuns(native, { repository: { failRun } }, "user-1")).resolves.toBeUndefined();
   });

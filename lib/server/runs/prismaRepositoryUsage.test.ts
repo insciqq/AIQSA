@@ -14,8 +14,8 @@ describe("run attribution usage rows", () => {
 
   it("owns only unflagged rows of the run's attribution purposes", () => {
     expect(runAttributionUsageWhere("run-1")).toEqual({
-      chatPdfPreparation: false, chatTitleGeneration: false, imageGeneration: false, knowledgeRelevance: false,
-      mcpHubDiscovery: false, optionalDecision: false, visionAnalysis: false,
+      chatPdfPreparation: false, chatTitleGeneration: false, imageGeneration: false, optionalDecision: false,
+      visionAnalysis: false,
       modelRunId: "run-1",
       purpose: { in: ["chat_answer", "web_search", "knowledge_retrieval", "subagent"] }
     });

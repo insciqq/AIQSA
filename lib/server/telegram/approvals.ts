@@ -163,8 +163,7 @@ function stateText(card: McpApprovalCard, expired: boolean): string {
     case "denied": return TELEGRAM_COPY.denied;
     case "pending":
       if (expired) return TELEGRAM_COPY.approvalExpired;
-      return card.source === "code" ? TELEGRAM_APPROVAL_COPY.pendingCode
-        : card.source === "agent" ? TELEGRAM_APPROVAL_COPY.pendingAgent : TELEGRAM_APPROVAL_COPY.pendingModel;
+      return card.source === "code" ? TELEGRAM_APPROVAL_COPY.pendingCode : TELEGRAM_APPROVAL_COPY.pendingModel;
   }
 }
 

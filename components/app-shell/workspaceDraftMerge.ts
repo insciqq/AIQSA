@@ -27,13 +27,10 @@ export function mergeWorkspaceDrafts(input: Readonly<{
       const current = currentById.get(chat.id);
       const revisionOrder = current && !current.pendingPersonalDraft
         ? Date.parse(current.updatedAt) - Date.parse(chat.updatedAt) : -1;
-      // A delayed read cannot undo an acknowledged mutation. Equal revisions
-      // retain optimistic Search edits while their save is still pending.
+      // A delayed read cannot undo an acknowledged mutation.
       return {
         ...current,
         ...(revisionOrder > 0 && current ? current : chat),
-        ...(revisionOrder === 0 && current?.defaultSearchPlan
-          ? { defaultSearchPlan: current.defaultSearchPlan } : {}),
         pendingPersonalDraft: undefined
       };
     })

@@ -1951,15 +1951,14 @@ export function createPrismaMcpRepository(input: {
     },
 
     enqueueAutomaticToolChecks: async () => {
-      // Two markers ask for one automatic Test & Save: the upgrade marks the
-      // servers it found with name-only evidence, and a runtime marks a trusted
-      // server whose tools changed upstream. Consuming a marker and recording
-      // the ordinary activation are one transaction, so a restart cannot lose
-      // the work or repeatedly retry a failed upstream check.
+      // A runtime marks a trusted server whose tools changed upstream, asking for
+      // one automatic Test & Save. Consuming the marker and recording the
+      // ordinary activation are one transaction, so a restart cannot lose the
+      // work or repeatedly retry a failed upstream check.
       while (await client.$transaction(async (tx) => {
         const [candidate] = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id" FROM "McpServer"
-          WHERE ("legacyToolRecheckPending" = true OR "toolUpdateCheckPending" = true)
+          WHERE "toolUpdateCheckPending" = true
             AND "ownerUserId" IS NULL
           ORDER BY "id"
           FOR UPDATE SKIP LOCKED
@@ -1972,14 +1971,11 @@ export function createPrismaMcpRepository(input: {
         });
         // A raw write keeps updatedAt, so an administrator's open page can still save.
         await tx.$executeRaw`
-          UPDATE "McpServer" SET "legacyToolRecheckPending" = false, "toolUpdateCheckPending" = false
+          UPDATE "McpServer" SET "toolUpdateCheckPending" = false
           WHERE "id" = ${server.id}
         `;
         if (!server.enabled || server.archivedAt || !server.activeRevision) return true;
-        const legacy = server.legacyToolRecheckPending &&
-          mcpPublishedToolDefinitions(server.activeRevision.validationEvidence).kind === "names";
-        const toolUpdate = server.toolUpdateCheckPending && server.autoApplyToolUpdates;
-        if (!legacy && !toolUpdate) return true;
+        if (!server.autoApplyToolUpdates) return true;
         if (server.activationJob && LIVE_ACTIVATION_STAGES.includes(
           server.activationJob.stage as (typeof LIVE_ACTIVATION_STAGES)[number]
         )) return true;
@@ -2013,14 +2009,11 @@ export function createPrismaMcpRepository(input: {
         }
 
         // An automatic check must not publish unrelated settings somebody left
-        // in a draft. A tool update waits quietly for the administrator's own
-        // Test & Save, which the changed tools' attention item asks for; the
-        // upgrade check records the refusal. Manual Test & Save stays the
-        // recovery path.
-        if (!legacy && draftHash !== server.activeRevision.draftHash) return true;
-        const result: ActivationEnqueueResult = draftHash !== server.activeRevision.draftHash
-          ? { kind: "draft_changed" }
-          : !validationUserId ? { kind: "invalid_values", issues: [{
+        // in a draft: it waits quietly for the administrator's own Test & Save,
+        // which the changed tools' attention item asks for.
+        if (draftHash !== server.activeRevision.draftHash) return true;
+        const result: ActivationEnqueueResult = !validationUserId
+          ? { kind: "invalid_values", issues: [{
               code: draft.auth.mode === "oauth" ? "mcp_oauth_validation_unavailable" : "validation_identity_invalid",
               path: draft.auth.mode === "oauth" ? "auth.mode" : "activation"
             }] }

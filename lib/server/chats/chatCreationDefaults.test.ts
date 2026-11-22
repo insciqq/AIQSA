@@ -78,8 +78,6 @@ function availableProviderModel(id: string): CatalogProviderModelRow {
     cachedInputTokenPriceUsdPerMillion: null,
     cacheWriteInputTokenPriceUsdPerMillion: null,
     priceSource: "catalog",
-    inputTokenPriceMicros: 0,
-    outputTokenPriceMicros: 0,
     modelClass: "answer",
     modelId: `unavailable:${id}`,
     outputTokenPriceUsdPerMillion: null,

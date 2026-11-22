@@ -393,18 +393,13 @@ describe("Prisma-backed chat repository", () => {
     });
   });
 
-  it("persists a private chat Search choice without changing new-chat defaults or other chats", async () => {
+  it("neither reads nor projects the retired per-chat Search plan an earlier release stored", async () => {
     await withFolderUser(async ({ fakeProviderModelId, userId }) => {
       const repository = createPrismaChatRepository(prisma);
-      const defaults = await prisma.userSettings.findUniqueOrThrow({ where: { userId }, select: { defaultSearchPlan: true } });
-      const chat = await prisma.chat.create({ data: { userId, title: "Search choices", defaultProviderModelId: fakeProviderModelId } });
-      const plan = { mode: "model_choice" as const, optionIds: ["first-search", "second-search"] };
-      expect(await repository.updateChat({ chatId: chat.id, userId, defaultSearchPlan: plan })).toMatchObject({ defaultSearchPlan: plan });
-      expect(await repository.getChat({ chatId: chat.id, userId })).toMatchObject({ defaultSearchPlan: plan });
-      expect(await prisma.userSettings.findUniqueOrThrow({ where: { userId }, select: { defaultSearchPlan: true } })).toEqual(defaults);
-      expect(await repository.updateChat({ chatId: chat.id, userId: randomUUID(), defaultSearchPlan: { mode: "all_selected", optionIds: [] } })).toBeNull();
-      expect(await repository.getChat({ chatId: chat.id, userId })).toMatchObject({ defaultSearchPlan: plan });
-      expect(await repository.updateChat({ chatId: chat.id, userId, defaultSearchPlan: { mode: "all_selected", optionIds: [] } })).toMatchObject({ defaultSearchPlan: { mode: "all_selected", optionIds: [] } });
+      const chat = await prisma.chat.create({ data: { userId, title: "Search choices", defaultProviderModelId: fakeProviderModelId,
+        defaultSearchPlan: { mode: "model_choice", optionIds: ["first-search"] } } });
+      expect(await repository.getChat({ chatId: chat.id, userId })).not.toHaveProperty("defaultSearchPlan");
+      expect(await repository.updateChat({ chatId: chat.id, pinned: true, userId })).not.toHaveProperty("defaultSearchPlan");
     });
   });
 

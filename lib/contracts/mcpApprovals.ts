@@ -26,8 +26,8 @@ export const MCP_APPROVAL_BUTTON_LABELS: Readonly<Record<McpApprovalDecision, st
 /** Cards one answer shows at most. */
 export const MCP_APPROVAL_CARDS_LIMIT = 16;
 
-/** Where the refused call came from: the model's tool loop, Workspace guest code, or Agent. */
-export type McpApprovalSource = "agent" | "code" | "model";
+/** Where the refused call came from: the model's tool loop or Workspace guest code. */
+export type McpApprovalSource = "code" | "model";
 
 /** A pending card or its decision. */
 export type McpApprovalState = "allowed_automatically" | "allowed_once" | "allowed_server" | "denied" | "pending";
@@ -80,7 +80,7 @@ const id = (value: unknown): value is string => typeof value === "string" && /^[
 const display = (value: unknown): value is string =>
   typeof value === "string" && value.trim().length > 0 && Array.from(value).length <= 160 && !value.includes("\0");
 const ordinal = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
-const SOURCES: readonly unknown[] = ["agent", "code", "model"];
+const SOURCES: readonly unknown[] = ["code", "model"];
 const STATES: readonly unknown[] = ["allowed_automatically", "allowed_once", "allowed_server", "denied", "pending"];
 
 export function decodeMcpApprovalCard(value: unknown): McpApprovalCard | null {

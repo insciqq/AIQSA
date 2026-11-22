@@ -2,7 +2,6 @@ import { Prisma } from "@prisma/client";
 import { ADMIN_HEALTH_CODE_PATTERN } from "../../../contracts/adminHealth";
 import { normalizeRunReference, RUN_ID_LENGTH } from "../../../contracts/runReference";
 import { RUN_FAILURE_USER_INPUT_CODES } from "../attention/healthRules";
-import { RETIRED_ENGINE_FAILURE_CODES } from "../../runs/retiredEngineRuns";
 import { ADMIN_HEALTH_QUEUE_STATEMENT_TIMEOUT_MS } from "./queueThresholds";
 import type { AdminHealthQueueClient } from "./queuesRepository";
 
@@ -47,6 +46,12 @@ export type FailedRunQuery = Readonly<{
   /** Leaves out the old core's runs the upgrade ended (`RETIRED_ENGINE_FAILURE_CODES`). */
   withoutRetiredEngineEnds?: boolean;
 }>;
+
+/**
+ * The failure codes the upgrades wrote on the old core's runs (`ModelRun.engine = v1`), the last of them in
+ * `prisma/migrations/20261123010000_drop_removed_feature_storage`: an upgrade ended them, nothing in AIQSA failed.
+ */
+const RETIRED_ENGINE_FAILURE_CODES: readonly string[] = ["agent_mode_removed", "run_interrupted"];
 
 const MAX_PER_CODE = 100;
 const MAX_GROUPS = 1_000;
