@@ -1,6 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { normalizeBrowserSignInHost } from "../../contracts/browserSignIn";
+import { parseBrowserStepLine } from "../../contracts/browserStepLine";
 import { BROWSER_HANDOFF_SIGN_IN_REASONS, BROWSER_HANDOFF_TOOL_NAME, browserHandoffNeededSignIn } from "../tools/browserHandoff";
+import { storedCommandStdout } from "../workspace/commandStdout";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 
 /** The Workspace tools that run a command or read its output, whose results carry the browser's step lines. */
@@ -17,14 +19,6 @@ const BROWSER_COMMAND = /(?:^|[\s;&|(])(?:\/usr\/local\/bin\/)?aiqsa-browser(?=$
 
 const argumentStrings = (value: unknown): string[] => typeof value === "string" ? [value]
   : Array.isArray(value) ? value.flatMap(argumentStrings) : isRecord(value) ? Object.values(value).flatMap(argumentStrings) : [];
-/**
- * One action's step line exactly as the guest prints it (`ops/workspace-guest/python/aiqsa/browser/_format.py`, parsed the
- * same way by `features/run-lifecycle-v2/workspaceActivityPresentation.ts`), optionally naming the agent:
- * `[browser #3 · lab] click: button "Add" @ shop.example/cart`. The host is the text after the last ` @ ` up to its path,
- * which the guest percent-encodes, so a quote in it means the ` @ ` stood inside a quoted name from the page.
- */
-const STEP_LINE = /^\[browser #\d{1,5}(?: · [^\]\n]{1,64})?\] [a-z_]{1,20}(?:: [^\n]*)? @ ([^\s/@"]+)(?:\/[^\s"]*)?$/u;
-
 type ToolCallReader = Pick<Prisma.TransactionClient, "modelRunToolCall">;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -32,44 +26,13 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /**
- * A Workspace command result's `stdout`: the guest MCP server's envelope `{ ok, data: { stdout, … } }`, or a failed
- * command's `{ ok: false, error: { details: { stdout } } }` (both read the same way by `lib/server/workspace/operationFailure.ts`),
- * or a bare `{ stdout }`. Reading only the bare form left every production sign-in failure without its host.
- */
-function stdoutOf(value: unknown): readonly string[] {
-  if (!isRecord(value)) return [];
-  for (const holder of [value.data, isRecord(value.error) ? value.error.details : undefined, value]) {
-    if (isRecord(holder) && typeof holder.stdout === "string") return [holder.stdout];
-  }
-  return [];
-}
-
-/**
- * What a stored command result printed to stdout: each text part's JSON `stdout`, or the part itself when it is no JSON;
- * decoded once, never unescaped further.
- */
-function printedStdout(result: unknown): readonly string[] {
-  const content = isRecord(result) && Array.isArray(result.content) ? result.content as unknown[] : [];
-  return content.flatMap((part) => {
-    if (!isRecord(part)) return [];
-    if (part.type === "json") return stdoutOf(part.value);
-    if (part.type !== "text" || typeof part.text !== "string") return [];
-    try {
-      return stdoutOf(JSON.parse(part.text));
-    } catch {
-      return [part.text];
-    }
-  });
-}
-
-/**
  * The host of the step line a command's output opens with. An action prints its step line first, before any page text,
  * and the guest indents page text that would read as one; only that first line counts, so text a page or a file carries
- * further down can never name the site.
+ * further down can never name the site. The host is the where's, with its port left out; a ` @ ` inside a quoted name from
+ * the page is no where (`lib/contracts/browserStepLine.ts`).
  */
 function stepHost(stdout: string): string | null {
-  const firstLine = stdout.split("\n", 1)[0]!.replace(/\r$/u, "");
-  const shown = STEP_LINE.exec(firstLine)?.[1];
+  const shown = parseBrowserStepLine(stdout)?.host;
   return shown ? normalizeBrowserSignInHost(shown.replace(/:\d{1,5}$/u, "")) : null;
 }
 
@@ -102,7 +65,7 @@ export async function runBrowserSignIn(tx: ToolCallReader, runId: string): Promi
   });
   for (const command of commands) {
     if (!argumentStrings(command.arguments).some((text) => BROWSER_COMMAND.test(text))) continue;
-    const host = printedStdout(command.result).map(stepHost).find(Boolean);
+    const host = storedCommandStdout(command.result).map(stepHost).find(Boolean);
     if (host) return { host };
   }
   return { host: null };

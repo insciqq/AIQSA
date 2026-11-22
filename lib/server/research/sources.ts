@@ -1,3 +1,4 @@
+import { browserStepLines } from "../../contracts/browserStepLine";
 import {
   CHANGE_RESEARCH_FRAME_TOOL_NAME,
   PROPOSE_RESEARCH_PLAN_TOOL_NAME,
@@ -17,6 +18,7 @@ import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import type { ToolExecutionResult } from "../tools/types";
 import { UPDATE_PLAN_TOOL_NAME } from "../tools/updatePlan";
 import { normalizeFetchUrl, withoutFetchUrlAttribution } from "../webFetch/urls";
+import { printedResultTexts } from "../workspace/commandStdout";
 import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import type { ResearchOpenedSource } from "./gates";
 import { researchSiteHost } from "./sourceQuality";
@@ -44,9 +46,6 @@ export const RESEARCH_WRITE_SOURCE_LIMITS = Object.freeze({ browserCalls: 200, c
 /** The Workspace tools that run a command or read its output, and so may show the browser at work. */
 const COMMAND_TOOLS: readonly string[] = (["sandbox_exec", "sandbox_exec_poll", "sandbox_exec_start", "sandbox_shell"] as const).map(namespacedWorkspaceToolName);
 
-/** A managed-browser step line at a line's start, any action (`ops/workspace-guest/python/aiqsa/browser/_format.py`): `[browser #3] click: … @ shop.example/cart`. */
-const BROWSER_STEP_HOST = /^\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
-
 /**
  * A navigation a command names with its link (`ops/workspace-guest/python/aiqsa/browser/cli.py`): `aiqsa-browser open` or `new-tab`
  * and a link after it on that line, past any flags, or the Python helper's `.open("…")` or `.new_tab("…")`. `proxied` and `proxies`
@@ -57,19 +56,10 @@ const COMMAND_NAVIGATION = /aiqsa-browser\s+(?:open|new-tab)\b[^\n]*?(https?:\/\
 const stringsOf = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(stringsOf)
   : isObject(value) ? Object.values(value).flatMap(stringsOf) : [];
 
-/** What a command printed: a Workspace result is JSON whose `stdout` holds the step lines, so each of its strings is read on its own lines. */
-function printedText(text: string): string {
-  try {
-    return stringsOf(JSON.parse(text)).join("\n");
-  } catch {
-    return text;
-  }
-}
-
 /**
- * The hosts one command call shows the browser tried: the step lines its output carries, whatever ran them (a CLI call, a script
- * file, `bash -lc`, a redirect), and the links its own navigation names, which a refused open leaves as its only trace. Its
- * arguments are read as one text, so a shell line, a program's argument list and inline code all count alike.
+ * The hosts one command call shows the browser tried: the step lines its output carries (`lib/contracts/browserStepLine.ts`),
+ * whatever ran them (a CLI call, a script file, `bash -lc`, a redirect), and the links its own navigation names, which a refused open
+ * leaves as its only trace. Its arguments are read as one text, so a shell line, a program's argument list and inline code all count alike.
  *
  * Accepted risk (integrator decision 2026-11-05): text that only prints a step line or a navigation command (`echo`, a heredoc, a quoted
  * string) counts too. The agent is cooperative, and the worst a wrong match does is let a site close without a real attempt, which is
@@ -80,15 +70,13 @@ function attemptedHosts(call: ResearchAgentCall): readonly string[] {
   const asRun = isObject(call.arguments) ? { command: call.arguments.command, args: call.arguments.args, ...call.arguments } : call.arguments;
   const named = [...stringsOf(asRun).join(" ").matchAll(COMMAND_NAVIGATION)].map((match) => match[1] ?? match[2]!);
   const result = parsePersistedToolExecutionResult({ id: call.providerCallId, name: call.toolName }, call.result as ToolLoopJsonValue);
-  const shown = result ? [...printedText(toolResultOutputText(result)).matchAll(BROWSER_STEP_HOST)].map((match) => match[1]!) : [];
+  const printed = result ? printedResultTexts(toolResultOutputText(result)) : [];
+  const shown = printed.flatMap((text) => browserStepLines(text).flatMap((step) => step.host ?? []));
   return [...named, ...shown].flatMap((site) => researchSiteHost(site) ?? []);
 }
 
 /** A command that drives the Workspace browser: the same reading as `drivesBrowser` in `lib/server/engine/toolRegistry.ts`. Reads such as its `text` print no step line. */
 const BROWSER_COMMAND = /aiqsa-browser|from\s+aiqsa\s+import\s+browser|aiqsa\.browser/u;
-
-/** A browser action's step line (`ops/workspace-guest/python/aiqsa/browser/_format.py`), at a line's start in a result stringified or not. */
-const BROWSER_STEP_START = /(?:^|"|\\n)\[browser #\d/mu;
 
 /**
  * What a stored result proves. `page`: `fetch_url`, or what a browser command printed. `search`: results a page was found
@@ -101,7 +89,8 @@ export function researchEvidenceKind(source: Pick<ResearchOpenedSource, "browser
   if (source.toolName === FETCH_URL_TOOL_NAME) return "page";
   if (HARNESS_SEARCH_TOOL.test(source.toolName)) return "search";
   if (AGENT_WRITTEN.has(source.toolName)) return "agent_written";
-  return source.browser === true || BROWSER_STEP_START.test(source.text) ? "page" : "other";
+  // A browser action's step line, at a line's start in a result stringified or not.
+  return source.browser === true || browserStepLines(source.text, { withinJson: true }).length > 0 ? "page" : "other";
 }
 
 /**

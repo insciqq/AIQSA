@@ -1,3 +1,4 @@
+import { browserStepLines } from "@/lib/contracts/browserStepLine";
 import type { RunEventView } from "@/lib/contracts/runs";
 import {
   decodeThreadWorkspaceActivityEntry,
@@ -133,14 +134,6 @@ function commandSummary(preview: string): string {
 }
 
 /**
- * One step line of the Workspace browser helper, exactly as it prints it
- * (`ops/workspace-guest/python/aiqsa/browser/_format.py`):
- * `[browser #3] click: button "Add to cart" @ shop.example/cart`, with a
- * sub-agent's name after the number (`[browser #3 · shop-amazon] …`). A
- * presentation hint read from the command's own output, never authority.
- */
-const BROWSER_STEP = /^\[browser #(\d{1,5})(?: · [^\]\n]{1,64})?\] ([a-z_]{1,20})(?:: (.+?))?(?: @ (\S+))?$/u;
-/**
  * Only a command that runs the helper reports steps, as the guide shows it: `aiqsa-browser …` (after
  * optional variable assignments) or `python3 -c "from aiqsa import browser …"`. Output of any other
  * command that imitates a step line stays output. The model could still print such lines itself.
@@ -160,18 +153,15 @@ export function isWorkspaceBrowserCommandV2(entry: ThreadWorkspaceActivityEntry)
 
 export type WorkspaceBrowserStepV2 = Readonly<{ number: number; action: string; target?: string; where?: string }>;
 
-/** The browser steps a finished command reported, in order. */
+/**
+ * The browser steps a finished command reported, in order, from the step lines the helper printed
+ * (`lib/contracts/browserStepLine.ts`). A presentation hint read from the command's own output, never authority.
+ */
 export function workspaceBrowserStepsV2(entry: ThreadWorkspaceActivityEntry): WorkspaceBrowserStepV2[] {
   const output = entry.kind === "command" ? entry.command?.stdoutPreview : undefined;
-  if (!output || !output.includes("[browser #") || !isWorkspaceBrowserCommandV2(entry)) return [];
-  const steps: WorkspaceBrowserStepV2[] = [];
-  for (const line of output.split("\n")) {
-    const match = BROWSER_STEP.exec(line.trimEnd());
-    if (!match) continue;
-    steps.push({ number: Number(match[1]), action: match[2]!, ...(match[3] ? { target: match[3] } : {}),
-      ...(match[4] ? { where: match[4] } : {}) });
-  }
-  return steps;
+  if (!output || !isWorkspaceBrowserCommandV2(entry)) return [];
+  return browserStepLines(output).map((step) => ({ number: step.number, action: step.action,
+    ...(step.target ? { target: step.target } : {}), ...(step.where ? { where: step.where } : {}) }));
 }
 
 /**

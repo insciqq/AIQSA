@@ -1,3 +1,4 @@
+import { browserStepLines } from "../../contracts/browserStepLine";
 import type { ResearchFinding, ResearchRating } from "../../contracts/research";
 import { normalizeFetchUrl } from "../webFetch/urls";
 import type { ResearchOpenedSource } from "./gates";
@@ -155,15 +156,14 @@ function hostOf(link: string): string | null {
 }
 
 /**
- * The hosts a stored result shows the browser on, from its step lines (`ops/workspace-guest/python/aiqsa/browser/_format.py`):
+ * The hosts a stored result shows the browser on, from its step lines (`lib/contracts/browserStepLine.ts`):
  * `[browser #3] click: button "Add" @ shop.example/cart`. Only an action prints one at a line's start, or as the first
  * thing in a stringified result. A page faking one earns at most `not_checked`, and the verifier still reads that claim.
  */
-const BROWSER_STEP = /(?:^|")\[browser #\d+[^\]\n]*\][^\n]* @ ([^\s/"]+)/gmu;
-
 export function browserHosts(text: string): readonly string[] {
   if (!text.includes("[browser #")) return [];
-  return [...unescaped(text).matchAll(BROWSER_STEP)].map((match) => match[1]!.replace(/:\d+$/u, "").replace(/^www\./u, "").toLowerCase());
+  return browserStepLines(unescaped(text), { withinJson: true })
+    .flatMap((step) => step.host?.replace(/:\d+$/u, "").replace(/^www\./u, "").toLowerCase() ?? []);
 }
 
 /**

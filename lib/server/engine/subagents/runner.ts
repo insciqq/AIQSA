@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { browserStepLines } from "../../../contracts/browserStepLine";
 import { CHANGE_RESEARCH_FRAME_TOOL_NAME, RECORD_EVIDENCE_TOOL_NAME } from "../../../contracts/research";
 import {
   CALL_SUBAGENT_TOOL_NAME,
@@ -52,6 +53,7 @@ import type { McpApprovalRequest } from "../../mcp/writeApproval";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 import { COMPUTER_TURN_GUIDANCE_PREFIX } from "../../tools/computerBinding";
 import type { ModelToolCall, RunTool } from "../../tools/types";
+import { printedResultTexts } from "../../workspace/commandStdout";
 import type { RunSecretSource } from "../../workspace/secrets/runSecrets";
 import { rendersToolResultImages } from "../../workspace/directImageView";
 import { engineItemRules, type ToolResultClearingPolicy } from "../compaction";
@@ -275,13 +277,6 @@ export const WORKSPACE_TURN_GUIDANCE_PREFIX = "This turn's output directory: ";
 const WRITTEN_FILE_KINDS = new Set(["file_write", "file_copy", "file_move", "file_change"]);
 const WORKSPACE_LIFECYCLE_KINDS = new Set(["attachments_prepare", "execution_status", "outputs_export", "workspace_recreated",
   "workspace_start", "workspace_stopped"]);
-/**
- * A browser action's step line (`ops/workspace-guest/python/aiqsa/browser/_format.py`), tested on one printed line: only an
- * action prints one at a line's start, and a sub-agent's names it after the number (`[browser #3 · shop] open @ shop.example/`).
- * The guide quotes one mid-line, so reading it with `cat` once made a sub-agent's first step "click Add to cart". Lines split
- * on `\n` alone, as the guest indents page text, so a page's CR or U+2028 never starts one, and neither ends up in the line.
- */
-const BROWSER_STEP_LINE = /^\[browser #\d{1,5}(?: · [^\]\n]{1,64})?\] [a-z_]{1,20}(?=[: ]|$)[^\r\u2028\u2029]*/u;
 const OUTCOME_LINE = /^\s*\**\s*outcome\s*\**\s*:\s*\**\s*(done|partial|blocked)\b\s*(?:\(\s*([a-z][a-z0-9_]{0,63})\s*\))?/iu;
 /** Attempts to end a turn's row; one that stays unsettled ends with its run's next admission (`threadStore.ts`). */
 const SETTLE_ATTEMPTS = 3;
@@ -379,29 +374,17 @@ export function parseSubagentOutcome(report: string): Readonly<{ outcome: Subage
   return { outcome, ...(reason && isSubagentCode(reason) ? { reason } : {}) };
 }
 
-const printedStrings = (value: unknown): string[] => typeof value === "string" ? [value]
-  : Array.isArray(value) ? value.flatMap(printedStrings)
-  : value !== null && typeof value === "object" ? Object.values(value).flatMap(printedStrings) : [];
-
-/** What a result printed, line by line. A Workspace result is JSON whose `stdout` holds the step lines. */
-function printedLines(output: string): string[] {
-  try {
-    return printedStrings(JSON.parse(output)).flatMap((text) => text.split("\n"));
-  } catch {
-    // An excerpt of a long result no longer parses: its stdout's lines end at an escaped newline, never at the escaped
-    // backslash and `n` a script's own JSON holds, and each line reads as it printed.
-    const stdout = /"stdout":\s*"/u.exec(output);
-    if (!stdout) return output.split("\n");
-    return output.slice(stdout.index + stdout[0].length).split(/(?<!\\)\\n/u).map((line) => line.replace(/\\(["\\])/gu, "$1"));
-  }
-}
-
-/** The first step line a call that drives the browser printed. */
+/**
+ * The first step line a call that drives the browser printed (`lib/contracts/browserStepLine.ts`), read from a Workspace
+ * result's JSON or an excerpt of it (`printedResultTexts`): only an action prints one at a line's start, and a sub-agent's
+ * names it after the number (`[browser #3 · shop] open @ shop.example/`). The guide quotes one mid-line, so reading it with
+ * `cat` once made a sub-agent's first step "click Add to cart"; a page's CR or U+2028 never starts one.
+ */
 function browserStepLine(call: ModelToolCall, output: string): string | undefined {
   if (!output.includes("[browser #") || !drivesBrowser(call)) return undefined;
-  for (const line of printedLines(output)) {
-    const step = BROWSER_STEP_LINE.exec(line)?.[0];
-    if (step) return step;
+  for (const text of printedResultTexts(output)) {
+    const step = browserStepLines(text)[0];
+    if (step) return step.line;
   }
   return undefined;
 }
