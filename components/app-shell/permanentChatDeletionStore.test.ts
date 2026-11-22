@@ -34,14 +34,7 @@ describe("permanent chat deletion store", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    window.sessionStorage.setItem(
-      "aiqsa:chat-permanent-deletion:v1:account-a",
-      JSON.stringify({ chatId: "chat-1", deletionId: "legacy-private", version: 1 })
-    );
     await activatePermanentChatDeletionAccount("account-a", reconciled);
-    expect(window.sessionStorage.getItem(
-      "aiqsa:chat-permanent-deletion:v1:account-a"
-    )).toBeNull();
     openPermanentChatDeletion({
       chatId: "chat-1",
       location: "WORKSPACE",

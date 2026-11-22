@@ -29,8 +29,6 @@ const scimFailureMessages: Record<string, string> = {
   admin_disabled: "an administrator disabled the account, so SCIM could not re-enable it",
   invalid_request: "the identity provider sent a request AIQSA could not accept",
   last_admin: "the deactivation would have left no active administrator",
-  // Recorded before the upgrade that removed shared ownership; kept readable.
-  owner_transfer_required: "the deactivation waited for an ownership transfer",
   request_failed: "AIQSA could not complete the request",
   token_invalid: "the bearer token is unknown or revoked",
   uniqueness: "a user or group with that name or external ID already exists"

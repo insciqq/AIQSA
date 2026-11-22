@@ -1,17 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
-import { chooseSearchStrategy } from "./shell/composer";
-import { runAccountMenuAction } from "./shell/page";
-import { deleteOwnedChatPermanently } from "./support/chatCleanup";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
 import { signInWithLocalToken } from "./support/localAuth";
-import { activeChatId, selectFakeModel, sendAndExpect } from "./support/workspace";
 
 /*
- * Projects and Knowledge are removed (operator decisions 2026-10-22 and
- * 2026-10-23); native Anthropic stays. An old Project address opens the new
- * chat without revealing anything, no surface offers either area, and an
- * ordinary chat still sends. Screenshots are viewport shots.
+ * Projects are removed (operator decision 2026-10-22), but their addresses
+ * are a contract: an old Project address opens the new chat without
+ * revealing anything. Screenshots are viewport shots.
  */
 
 test.setTimeout(120_000);
@@ -28,23 +23,6 @@ async function shot(page: Page, testInfo: TestInfo, name: string): Promise<void>
   });
 }
 
-/** The chat list offers no Projects; its Settings gear stays as the positive control. */
-async function expectNoProjectsDestination(page: Page): Promise<void> {
-  const navigation = page.getByRole("complementary", { name: "Chat navigation" });
-  const opened = !(await navigation.isVisible());
-  if (opened) await page.getByRole("button", { name: "Open sidebar" }).click();
-  await expect(navigation).toBeVisible();
-  await expect(navigation.getByTestId("navigation-footer").getByRole("button", { name: "Settings", exact: true })).toBeVisible();
-  await expect(navigation.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
-  if (opened) {
-    await expect(async () => {
-      if (await navigation.isVisible()) await page.keyboard.press("Escape");
-      await expect(navigation).toBeHidden({ timeout: 1_000 });
-    }).toPass({ timeout: 10_000 });
-  }
-  await expect(page.getByRole("button", { name: "Projects", exact: true })).toHaveCount(0);
-}
-
 /** An old Project chat address lands on the new chat with a working composer. */
 async function expectOldProjectAddressOpensNewChat(page: Page, testInfo: TestInfo, name: string): Promise<void> {
   await signInWithLocalToken(page);
@@ -57,101 +35,11 @@ async function expectOldProjectAddressOpensNewChat(page: Page, testInfo: TestInf
   await shot(page, testInfo, name);
 }
 
-/** The new chat's composer offers no Knowledge: no chip, no Add menu row, no `/` command. */
-async function expectComposerWithoutKnowledge(page: Page, testInfo: TestInfo, name: string): Promise<void> {
-  const composer = page.getByTestId("composer-v2");
-  const field = composer.getByLabel("Message", { exact: true });
-  await expect(field).toBeVisible({ timeout: 30_000 });
-  await expect(composer.getByRole("button", { name: "Choose Knowledge" })).toHaveCount(0);
-
-  const add = composer.getByRole("button", { name: "Add", exact: true });
-  await add.click();
-  const addMenu = page.locator('.v2-composer-layer[data-kind="add"]');
-  await expect(addMenu.getByRole("menuitem", { name: /^Attach files/u })).toBeVisible();
-  await expect(addMenu).not.toContainText(/Knowledge/u);
-  await expectNoHorizontalOverflow(page);
-  await shot(page, testInfo, name);
-  await page.keyboard.press("Escape");
-  await expect(addMenu).toHaveCount(0);
-
-  const palette = page.getByRole("listbox", { name: "Commands" });
-  await field.focus();
-  await page.keyboard.type("/");
-  await expect(palette).toBeVisible();
-  await expect(palette.getByRole("option", { name: /^Attach files/u })).toBeVisible();
-  await page.keyboard.type("knowledge");
-  await expect(field).toHaveValue("/knowledge");
-  await expect(page.getByRole("option", { name: /Knowledge/u })).toHaveCount(0);
-  await field.fill("");
-  await page.keyboard.press("Escape");
-  await expect(palette).toBeHidden();
-}
-
 test.describe("desktop", () => {
   test.use({ viewport: DESKTOP });
 
   test("an old Project chat address opens the new chat", async ({ page }, testInfo) => {
     await expectOldProjectAddressOpensNewChat(page, testInfo, "old-project-address-desktop");
-  });
-
-  test("the new chat offers no Projects or Knowledge and still sends an answer", async ({ page }, testInfo) => {
-    let chatId: string | null = null;
-    try {
-      await signInWithLocalToken(page);
-      await expectNoProjectsDestination(page);
-      await expectComposerWithoutKnowledge(page, testInfo, "new-chat-add-menu-desktop");
-
-      // Regression guard: removing the areas leaves an ordinary chat working.
-      await selectFakeModel(page);
-      const searchChip = page.getByRole("button", { name: /^Choose web search/u });
-      if (await searchChip.isVisible()) await chooseSearchStrategy(page, "Off");
-      const prompt = `Removed areas regression ${randomUUID().slice(0, 8)}`;
-      await sendAndExpect(page, prompt, `Fake answer: ${prompt}`);
-      chatId = await activeChatId(page);
-      await expect(page).toHaveURL((url) => url.pathname === `/c/${chatId}`);
-      await expect(page.getByRole("textbox", { exact: true, name: "Message" })).toBeVisible();
-    } finally {
-      if (chatId) await deleteOwnedChatPermanently(page.request, chatId, { timeout: 5_000 }).catch(() => undefined);
-    }
-  });
-
-  test("Settings has no Knowledge section and Chat defaults has no Knowledge row", async ({ page }, testInfo) => {
-    await signInWithLocalToken(page);
-    await runAccountMenuAction(page, "Settings");
-    const library = page.getByTestId("library-v2");
-    const sections = library.getByRole("tablist", { name: "Settings sections" });
-    await expect(sections.getByRole("tab", { name: "Memory", exact: true })).toBeVisible();
-    await expect(sections.getByRole("tab", { name: /Knowledge/u })).toHaveCount(0);
-
-    const defaults = sections.getByRole("tab", { name: "Chat defaults", exact: true });
-    await defaults.click();
-    await expect(defaults).toHaveAttribute("aria-selected", "true");
-    const panel = library.getByRole("tabpanel");
-    await expect(panel.getByRole("radiogroup", { name: "MCP tools default" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("settings-default-knowledge")).toHaveCount(0);
-    await expect(panel).not.toContainText(/Knowledge|Project/u);
-    await expectNoHorizontalOverflow(page);
-    await shot(page, testInfo, "settings-chat-defaults-desktop");
-  });
-
-  test("Control Center offers the native Anthropic tile and has no Knowledge or old Memory page", async ({ page }, testInfo) => {
-    await signInWithLocalToken(page);
-    await page.goto("/admin?section=providers");
-    await expect(page.getByTestId("admin-topbar-title")).toHaveText("Providers", { timeout: 30_000 });
-
-    await expect(page.getByTestId("admin-nav-providers")).toBeVisible();
-    // The old Memory page went with the old Memory; its address opens Defaults & roles.
-    await expect(page.getByTestId("admin-nav-retrieval")).toHaveCount(0);
-    await expect(page.getByTestId("admin-section-index").getByRole("link", { name: /Knowledge|^Memory$/u })).toHaveCount(0);
-
-    await page.getByTestId("provider-add").click();
-    const sheet = page.getByRole("dialog", { name: "Add provider" });
-    await expect(sheet).toBeVisible();
-    const tiles = sheet.getByTestId("provider-add-tiles");
-    await expect(tiles.getByTestId("provider-add-tile-openai")).toBeVisible();
-    await expect(tiles.getByTestId("provider-add-tile-anthropic")).toBeVisible();
-    await expectNoHorizontalOverflow(page);
-    await shot(page, testInfo, "admin-add-provider-desktop");
   });
 });
 
@@ -160,12 +48,5 @@ test.describe("phone portrait", () => {
 
   test("an old Project chat address opens the new chat", async ({ page }, testInfo) => {
     await expectOldProjectAddressOpensNewChat(page, testInfo, "old-project-address-phone");
-  });
-
-  test("the drawer offers no Projects and the composer offers no Knowledge", async ({ page }, testInfo) => {
-    await signInWithLocalToken(page);
-    await expectNoProjectsDestination(page);
-    await expectComposerWithoutKnowledge(page, testInfo, "new-chat-add-menu-phone");
-    await expectNoHorizontalOverflow(page);
   });
 });

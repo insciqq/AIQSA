@@ -28,7 +28,6 @@ type PermanentChatDeletionStore = {
 };
 
 const STORAGE_PREFIX = "aiqsa:chat-permanent-deletion:v2:";
-const LEGACY_STORAGE_PREFIX = "aiqsa:chat-permanent-deletion:v1:";
 
 const initialState: PermanentChatDeletionStore = {
   accountId: null,
@@ -88,17 +87,6 @@ function validTarget(target: PermanentChatDeletionTarget): boolean {
 
 function storageKey(accountId: string): string {
   return `${STORAGE_PREFIX}${encodeURIComponent(accountId)}`;
-}
-
-function purgeLegacyReference(accountId: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(
-      `${LEGACY_STORAGE_PREFIX}${encodeURIComponent(accountId)}`
-    );
-  } catch {
-    // Legacy tab state expires with the session when storage is unavailable.
-  }
 }
 
 function readReference(accountId: string): Readonly<{ chatId: string }> | null {
@@ -184,7 +172,6 @@ export async function activatePermanentChatDeletionAccount(
     usePermanentChatDeletionStore.setState({ ...initialState, accountId }, true);
   }
   reconcileAdmission = onAdmission ?? null;
-  purgeLegacyReference(accountId);
   const stored = readReference(accountId);
   if (!stored) return;
   usePermanentChatDeletionStore.setState({ reference: stored });
