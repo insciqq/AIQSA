@@ -276,11 +276,14 @@ type BeforeToolCall =
   | Readonly<{
     /** The run's reserved report, asked for the first time: it does not count against the call budget. */
     exempt?: true;
-    /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it. */
-    retry?: Readonly<{ approval: McpApprovalRequest; approvalAfter: Date; approvedBy?: string }>;
+    /** An equivalent earlier call's effect is unknown: this call needs the user's approval of exactly it (`resolveApproval`). */
+    retry?: RetryApproval;
     kind: "run";
     tool: EngineTool;
   }>;
+
+/** The exact-call approval an unknown-outcome retry needs, valid only if given after the earlier call's attempt (`approvalAfter`). */
+type RetryApproval = Readonly<{ approval: McpApprovalRequest; approvalAfter: Date }>;
 
 function jsonError(call: Pick<ModelToolCall, "id" | "name">, value: Record<string, unknown>): ToolLoopJsonValue {
   return { callId: call.id, content: [{ type: "json", value: value as { [key: string]: ToolLoopJsonValue } }], name: call.name,
@@ -358,10 +361,7 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
     if (unknown) {
       // It may have happened already: the user decides, in the card where the tool has one.
       const approval = tool.retryApproval?.(call);
-      if (approval) {
-        const approvedBy = approved && approved.callId === call.id ? approved.approvalId : undefined;
-        return { kind: "run", retry: { approval, approvalAfter: unknown.after, ...(approvedBy ? { approvedBy } : {}) }, tool };
-      }
+      if (approval) return { kind: "run", retry: { approval, approvalAfter: unknown.after }, tool };
       if (!unknown.userSpokeSince) {
         // The model can do what this asks (check the state with a read-only call), so tools stay open for it.
         return { correctable: true, kind: "refuse", output: UNKNOWN_OUTCOME_REPEAT_OUTPUT, toolName: call.name,
@@ -457,6 +457,29 @@ async function settleCancelledResult(deps: ToolBatchDeps, tool: EngineTool, exec
   }
 }
 
+/**
+ * The approval a call that passed its checks is recorded under, decided in one place, after its links and before its
+ * record: an unknown-outcome retry's exact-call approval (`beforeToolCall`) or the tool's own, the decision that names it,
+ * whether a person already gave it, and else the guard's verdict. `begin` consumes or requests it in the call's recording
+ * transaction; a sub-agent hands back a call that would wait (`approvalHandBack`).
+ */
+async function resolveApproval(deps: ToolBatchDeps, tool: EngineTool, call: ModelToolCall, retry: RetryApproval | undefined,
+  approved: ApprovedToolCall | undefined): Promise<Readonly<{ approval: McpApprovalRequest | undefined; approvalAfter: Date | undefined;
+    approvedBy: string | undefined; humanApproved: boolean }>> {
+  let approval = retry?.approval ?? tool.approval?.(call);
+  const approvalAfter = retry?.approvalAfter;
+  // The user's Allow the continuation names for exactly this call, else the decision admission named (`tool.approvedBy`),
+  // which counts for an unknown-outcome retry too: the exact-call match and `approvalAfter` still refuse a stale or
+  // different decision, so a fresh Always allow on the retry card is honoured.
+  const approvedBy = (approved?.callId === call.id ? approved.approvalId : undefined) ?? (approval ? tool.approvedBy : undefined);
+  // A person's existing approval is honoured before any model check; a retry of an unknown effect never goes to the guard.
+  const humanApproved = Boolean(approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
+    userId: deps.userId, approval, approvalAfter, approvedBy }));
+  if (!retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
+  deps.signal.throwIfAborted();
+  return { approval, approvalAfter, approvedBy, humanApproved };
+}
+
 async function executeWithRetries(deps: ToolBatchDeps, tool: EngineTool, execution: EngineToolExecution): Promise<ToolExecutionResult> {
   for (let attempt = 0; ; attempt += 1) {
     try {
@@ -489,7 +512,8 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
 
   // Each call that settles here (refused, held for approval, or run) logs one `tool_call` record once its outcome is
-  // known and before its bookkeeping; a call whose run stopped before it was recorded logs none.
+  // known and before its bookkeeping; a call whose run stopped before it was recorded logs none. Every exit goes through
+  // `notRun` (nothing was sent) or `ran` (it was sent), which own that bookkeeping.
   const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
     const kind = engineToolCallKind(deps.registry.resolve(call.name)?.definition);
     const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
@@ -498,63 +522,58 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (before.kind === "run" && before.exempt) state.reservedCalled = true;
     const record = { arguments: call.arguments, chatId: deps.chatId, ordinal, providerCallId: call.id, roundIndex: input.round,
       runId: deps.runId, ...(deps.thread ? { thread: deps.thread } : {}), userId: deps.userId };
+    const turn = deps.turnBudget;
+    /** What the turn's own budget has left once this call counted; null: the call does not count against it. */
+    let left: number | null = null;
+    /**
+     * A call that was not sent. One refused before sending is recorded refused here (`refused.toolName` is the
+     * record's, which names an unknown tool in its plain form); one gated for approval already has the record `begin`
+     * wrote. A call that never runs (its connection gone, handed back for approval, waiting for one) gives its turn's
+     * count back: the budget is for work done (review finding 2026-11-03). `onWait` hands over a call that waits
+     * for approval (its card's id, or the call itself back to the main agent), last and with no await before it.
+     */
+    const notRun = async (exit: Readonly<{ output: string; refused?: Readonly<{ result: ToolLoopJsonValue; toolName: string }>;
+      settled: SettledToolCall; onWait?: () => void }>): Promise<TranscriptToolResultItem> => {
+      if (left !== null && turn) turn.spent.calls -= 1;
+      left = null;
+      if (exit.refused) {
+        const row = await deps.store.refuse({ ...record, result: exit.refused.result, toolName: exit.refused.toolName });
+        if (!row) throw new ToolBatchInactiveError();
+        recordToolCall({ toolName: call.name, kind, settled: exit.settled });
+        deps.history.record(row);
+      } else {
+        recordToolCall({ toolName: call.name, kind, settled: exit.settled });
+      }
+      exit.onWait?.();
+      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: exit.output };
+    };
     if (before.kind === "refuse") {
       if (before.budget) budgetExhausted = true;
       if (before.budget === "time") timeExhausted = true;
       if (before.correctable) correctable += 1;
-      const row = await deps.store.refuse({ ...record, result: before.result, toolName: before.toolName });
-      if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ toolName: call.name, kind, settled: { kind: "result", result: before.result } });
-      deps.history.record(row);
-      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: before.output };
+      return notRun({ output: before.output, refused: { result: before.result, toolName: before.toolName },
+        settled: { kind: "result", result: before.result } });
     }
     const tool = before.tool;
     if (!before.exempt) state.calls += 1;
     // Counted before anything awaits, as the run's count is, so the calls of one response take what is left in their order.
-    const turn = deps.turnBudget;
-    let left: number | null = null;
     if (!before.exempt && turn && !turn.exempt.has(call.name)) {
       turn.spent.calls += 1;
       left = turn.limit - turn.spent.calls;
     }
-    // A call that never runs (its connection gone, handed back for approval, waiting for one) gives its turn's count back: the budget is
-    // for work done (review finding 2026-11-03).
-    const refund = () => {
-      if (left !== null && turn) turn.spent.calls -= 1;
-      left = null;
-    };
     const links = tool.links ? tool.links(call) : {};
     if (links === null) {
-      refund();
       const message = TOOL_BINDING_UNAVAILABLE_OUTPUT(deps.registry.mcpLoadCall?.(call.name, call.id)?.arguments.query);
       const result = jsonError(call, { error: "tool_binding_unavailable", message });
-      const row = await deps.store.refuse({ ...record, result, toolName: call.name });
-      if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ toolName: call.name, kind, settled: { kind: "result", result } });
-      deps.history.record(row);
-      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: message };
+      return notRun({ output: message, refused: { result, toolName: call.name }, settled: { kind: "result", result } });
     }
-    let approval = before.retry?.approval ?? tool.approval?.(call);
-    const approvalAfter = before.retry?.approvalAfter;
-    // The decision admission named (`tool.approvedBy`) counts for an unknown-outcome retry too: the exact-call match and
-    // `approvalAfter` still refuse a stale or different decision, so a fresh Always allow on the retry card is honoured.
-    const approvedBy = before.retry?.approvedBy ?? (input.approved?.callId === call.id ? input.approved.approvalId : undefined) ??
-      (approval ? tool.approvedBy : undefined);
-    const humanApproved = approval && await deps.store.hasApproval?.({ chatId: deps.chatId, runId: deps.runId,
-      userId: deps.userId, approval, approvalAfter, approvedBy });
-    if (!before.retry && !humanApproved && tool.guardedApproval) approval = await tool.guardedApproval(call, deps.signal);
-    deps.signal.throwIfAborted();
+    const { approval, approvalAfter, approvedBy, humanApproved } = await resolveApproval(deps, tool, call, before.retry,
+      input.approved);
     // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
     if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
-      refund();
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
-      const row = await deps.store.refuse({ ...record, result, toolName: call.name });
-      if (!row) throw new ToolBatchInactiveError();
-      recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
-      deps.history.record(row);
-      deps.approvalHandBack(call, approval);
-      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
-        output: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT };
+      return notRun({ output: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT, refused: { result, toolName: call.name },
+        settled: { kind: "awaiting_approval" }, onWait: () => deps.approvalHandBack?.(call, approval) });
     }
     const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
       ...(approvalAfter ? { approvalAfter } : {}),
@@ -562,38 +581,47 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
-      refund();
-      recordToolCall({ toolName: call.name, kind, settled: { kind: "awaiting_approval" } });
-      approvals.push(begun.approvalId);
-      return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error",
-        output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT };
+      const approvalId = begun.approvalId;
+      return notRun({ output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT,
+        settled: { kind: "awaiting_approval" }, onWait: () => approvals.push(approvalId) });
     }
     executed += 1;
     const activity = { ...tool.activity(call), round: input.round };
     deps.onLiveEvent(liveToolCallStatus(call, activity, { ordinal }));
     const execution: EngineToolExecution = { call, ordinal, persistedToolCallId: begun.row.id, round: input.round, signal: deps.signal };
     const startedAt = performance.now();
-    let durationMs = 0;
-    const settled = (outcome: SettledToolCall) => {
-      durationMs = performance.now() - startedAt;
+    /** Logs the call's one `tool_call` record and returns how long it ran. */
+    const logSettled = (outcome: SettledToolCall): number => {
+      const durationMs = performance.now() - startedAt;
       recordToolCall({ toolName: call.name, durationMs, kind, settled: outcome });
+      return durationMs;
     };
-    // The live step settles once the call's record and outputs have; an unknown effect never reads as success, and a
-    // stopped call gets nothing here, since the run's end settles it.
-    let result: ToolExecutionResult;
-    // A call that ran ends its result with what its turn has left; a refusal keeps its exact words, which other code reads.
-    const finished = (item: TranscriptToolResultItem, status: "complete" | "error"): TranscriptToolResultItem => {
+    /**
+     * A call that was sent and settled with `result`: its `tool_call` record, its effect for later equivalent calls
+     * (`effect` "unknown": it may have taken effect, so its outcome stays unknown and it is never sent again on its own),
+     * the result's bookkeeping (`afterToolCall`), then the live step, which settles once the call's record and outputs
+     * have, and an unknown effect never reads as success. A call that ran ends its result with what its turn has left;
+     * a refusal keeps its exact words, which other code reads.
+     */
+    const ran = async (result: ToolExecutionResult, settled: SettledToolCall,
+      effect?: "unknown"): Promise<TranscriptToolResultItem> => {
+      const durationMs = logSettled(settled);
+      deps.unknownEffects.record(call, effect ?? result.status);
+      const item = await hooks.afterToolCall(execution, tool, begun.row, result);
       const facts = activity.origin === "web_fetch" ? fetchUrlActivityFacts(call.name, call.arguments, result)
         : activity.origin === "computer" ? computerActivityFacts(call.name, call.arguments, result) : {};
-      deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status } }));
-      return left === null ? item : { ...item, output: `${item.output}\n\n${turnCallsLeftLine(left)}` };
+      deps.onLiveEvent(liveToolCallStatus(call, { ...activity, ...facts }, { ordinal, settled: { durationMs, status: result.status } }));
+      const settledItem = effect ? { ...item, outcome: effect } : item;
+      return left === null ? settledItem : { ...settledItem, output: `${settledItem.output}\n\n${turnCallsLeftLine(left)}` };
     };
+    let result: ToolExecutionResult;
     try {
       result = await executeWithRetries(deps, tool, execution);
     } catch (error) {
-      // Stop or the deadline: the run's ending closes the record with an unknown outcome.
+      // Stop or the deadline: the run's ending closes the record with an unknown outcome, and the stopped call gets no
+      // live step here, since the run's end settles it.
       if (deps.signal.aborted) {
-        settled({ kind: "aborted", reason: deps.signal.reason });
+        logSettled({ kind: "aborted", reason: deps.signal.reason });
         // A stopped Search keeps what its settled engines reported (usage, sources) before the stop goes on;
         // nothing else runs meanwhile.
         if (error instanceof SearchToolCancelledError) await settleCancelledResult(deps, tool, execution, error.result);
@@ -610,25 +638,19 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
           : timedOut ? workspaceOperationFailureMessage("workspace_tool_timeout")
             : "The call failed after it may have been sent; its effect is unknown and it was not repeated. " +
               "Check its effect before trying again.";
-        result = { callId: call.id, content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name,
-          status: "error" };
-        deps.unknownEffects.record(call, "unknown");
-        settled(timedOut ? { code, kind: "timed_out" } : { effectUnknown: true, error, kind: "thrown", result });
-        const item = await hooks.afterToolCall(execution, tool, begun.row, result);
-        return finished({ ...item, outcome: "unknown" }, "error");
+        const unknownResult: ToolExecutionResult = { callId: call.id,
+          content: [{ type: "json", value: { error: code, message, outcome: "unknown" } }], name: call.name, status: "error" };
+        return ran(unknownResult, timedOut ? { code, kind: "timed_out" }
+          : { effectUnknown: true, error, kind: "thrown", result: unknownResult }, "unknown");
       }
       // A tool that knows its failures (MCP) says why and what to try next; its effect is known to be none here.
       const guidance = tool.failureGuidance?.(error);
-      result = { callId: call.id, content: [{ type: "json", value: guidance
+      const failed: ToolExecutionResult = { callId: call.id, content: [{ type: "json", value: guidance
         ? { error: code, message: guidance.message, reason: guidance.reason }
         : { error: code, message: "The tool failed; nothing changed." } }], name: call.name, status: "error" };
-      settled({ effectUnknown: false, error, kind: "thrown", result });
-      deps.unknownEffects.record(call, result.status);
-      return finished(await hooks.afterToolCall(execution, tool, begun.row, result), "error");
+      return ran(failed, { effectUnknown: false, error, kind: "thrown", result: failed });
     }
-    settled({ kind: "result", result });
-    deps.unknownEffects.record(call, result.status);
-    return finished(await hooks.afterToolCall(execution, tool, begun.row, result), result.status);
+    return ran(result, { kind: "result", result });
   };
 
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);

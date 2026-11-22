@@ -26,10 +26,7 @@ import type { ModelRunUsage } from "../../../domain/modelRunEvents";
 import { logEvent, runWithContext } from "../../observability";
 import { gatewayRoutingLane } from "../../providers/gatewayRouting";
 import type { ProviderHistoryItem } from "../../providers/history";
-import { isProviderEmptyAnswer } from "../../providers/emptyAnswer";
-import { isProviderDeadlineExceededError } from "../../providers/network";
 import { observedFailure } from "../../providers/providerObservability";
-import { isProviderResponseFailure } from "../../providers/responseFailure";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
@@ -61,9 +58,7 @@ import { compactionModelCall } from "../compactionCalls";
 import { turnContextItem } from "../conversation";
 import { detachedCompactions } from "../detachedCompactions";
 import { NO_ENGINE_TEST_FAULTS, type EngineTestFaults } from "../faults";
-import {
-  ANSWER_NOW_INSTRUCTION, isNoMoreToolsOutput, runAgentLoop, toolsClosedInstruction, type LoopToolChoice, type ToolsClosedBy
-} from "../loop";
+import { isNoMoreToolsOutput, runAgentLoop, type LoopToolChoice, type ToolsClosedBy } from "../loop";
 import { callModel, MODEL_CALL_RESEARCH_RETRY, type ModelCallRetryPolicy } from "../modelCall";
 import {
   subagentAgentMessageText,
@@ -72,6 +67,7 @@ import {
   subagentRoleSection,
   subagentTurnText
 } from "../prompts";
+import { providerFailureCode, roundInstruction, withRoundInstruction } from "../roundFailure";
 import { createRunContext, type RunContext } from "../runContext";
 import { splitTurnGuidance, withNativeSystemPrompt } from "../systemPrompt";
 import {
@@ -620,16 +616,11 @@ function endingOf(error: unknown, turn: TurnRecord, host: SubagentHost): Readonl
 
 /**
  * The cause a turn that failed on its own ends with, by the code a main-agent run that failed the same way shows
- * (`failurePayload` in `../execution.ts`): a classified failure keeps its code, and a provider stream that dropped or a
- * response the provider failed, which carry none once retries ran out, take the generic code of their kind. Codes come
- * only from the closed observed set (`failureCodes.json`), never from exception text; anything else is `subagent_failed`.
+ * (`providerFailureCode`, shared with `failurePayload` in `../execution.ts`); a code a sub-agent's ending cannot carry, and
+ * anything unclassified, is `subagent_failed`.
  */
 export function subagentFailureCode(error: unknown): string {
-  if (isProviderDeadlineExceededError(error)) return "provider_request_timed_out";
-  if (isProviderEmptyAnswer(error)) return "model_answer_empty";
-  const failure = observedFailure(error);
-  const code = failure.code !== "unknown" ? failure.code : isProviderResponseFailure(error) ? "provider_response_failed"
-    : failure.stream_drop !== undefined ? "provider_stream_failed" : "subagent_failed";
+  const code = providerFailureCode(error, "subagent_failed");
   return isSubagentCode(code) ? code : "subagent_failed";
 }
 
@@ -1044,10 +1035,8 @@ export function createSubagentRunner(host: SubagentHost): HostedSubagentRunner {
             parallelToolCalls: true, previousProviderResponseId: undefined, providerToolMessages: undefined, toolChoice,
             tools: [...registry.definitions()] });
           // A handed-back question closes tools too, and its report needs no word on tool time.
-          const instruction = answerNow ? ANSWER_NOW_INSTRUCTION
-            : toolsClosedBy && handBack.question === null ? toolsClosedInstruction(toolsClosedReader, toolsClosedBy) : null;
-          return instruction ? { ...prepared, history: [...(prepared.history ?? []), { text: instruction, type: "user" as const }] }
-            : prepared;
+          return withRoundInstruction(prepared, roundInstruction({ answerNow, reader: toolsClosedReader,
+            toolsClosedBy: handBack.question === null ? toolsClosedBy : undefined }));
         },
         responseItems: (result) => modelResponseItems({ estimate: estimateApproxTokens, history: result.history ?? fallbackHistory(result),
           nextId: randomUUID, origin: target, requestAnchor: activeContext.requestAnchor(result.usage), usage: result.usage }),
