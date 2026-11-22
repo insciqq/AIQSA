@@ -10,15 +10,11 @@ import { z } from "zod";
 
 /**
  * Protocol 2: the agent works on the user's computer through `op` commands.
- * Protocol 2 clients send {@link CONNECT_PROTOCOL_HEADER} on every device API
- * request and expect {@link connectHelloV2Schema}. Protocol 1 (the terminal
- * relay) is gone: a stream request without the header answers 426
- * `connect_client_outdated` and its client updates itself from the legacy
- * manifest ({@link connectLegacyClientManifestSchema}, D-03).
+ * The client sends {@link CONNECT_PROTOCOL_HEADER} on every device API request
+ * and expects {@link connectHelloV2Schema}; a stream request without the
+ * header answers 426 `connect_client_outdated`.
  */
 export const CONNECT_PROTOCOL_VERSION = 2;
-/** The protocol of terminal clients, which no longer get a stream. */
-export const CONNECT_LEGACY_PROTOCOL_VERSION = 1;
 
 // Limits. Byte limits count UTF-8 bytes; text limits count Unicode code points so Go and TypeScript agree.
 export const CONNECT_MAX_DEVICES_PER_USER = 10;
@@ -38,8 +34,6 @@ export const CONNECT_MAX_ACCOUNT_LABEL_LENGTH = 400;
 export const CONNECT_MAX_URL_LENGTH = 2_048;
 export const CONNECT_MAX_CLIENT_BINARY_BYTES = 134_217_728;
 export const CONNECT_MAX_CLIENT_TARGETS = 6;
-/** What a protocol 1 client accepts in a manifest: it decodes strictly, so it gets only {@link CONNECT_LEGACY_CLIENT_TARGETS}. */
-export const CONNECT_LEGACY_MAX_CLIENT_TARGETS = 4;
 /** The largest size, duration or count the protocol carries. */
 export const CONNECT_MAX_SEQ = Number.MAX_SAFE_INTEGER;
 
@@ -129,15 +123,8 @@ export type ConnectEventsStreamClosedCode = (typeof CONNECT_EVENTS_STREAM_CLOSED
 
 export const CONNECT_OS_VALUES = ["darwin", "linux", "windows"] as const;
 export type ConnectOs = (typeof CONNECT_OS_VALUES)[number];
-/** The systems a protocol 1 client knows; its manifest names no others (D-03). */
-export const CONNECT_LEGACY_OS_VALUES = ["darwin", "linux"] as const satisfies readonly ConnectOs[];
-export type ConnectLegacyOs = (typeof CONNECT_LEGACY_OS_VALUES)[number];
 export const CONNECT_ARCH_VALUES = ["amd64", "arm64"] as const;
 export type ConnectArch = (typeof CONNECT_ARCH_VALUES)[number];
-/** The four targets of the manifest a protocol 1 client gets, in this order. */
-export const CONNECT_LEGACY_CLIENT_TARGETS: readonly Readonly<{ os: ConnectLegacyOs; arch: ConnectArch }>[] = Object.freeze(
-  CONNECT_LEGACY_OS_VALUES.flatMap((os) => CONNECT_ARCH_VALUES.map((arch) => Object.freeze({ os, arch })))
-);
 
 /** Agent operations of protocol 2, the `op` of an `op` command. */
 export const CONNECT_OPS = [
@@ -233,11 +220,7 @@ export const CONNECT_CLIENT_MANIFEST_PATH = `${CONNECT_DEVICE_API_PREFIX}/client
 export const CONNECT_DEVICE_SELF_PATH = `${CONNECT_DEVICE_API_PREFIX}/device`;
 /** The client version on every device API request; the server records it on the device when the stream opens. */
 export const CONNECT_CLIENT_VERSION_HEADER = "X-AIQSA-Connect-Version";
-/**
- * `2` on every device API request of a protocol 2 client. A stream request
- * without it answers 426 `connect_client_outdated` and a manifest request
- * without it gets the legacy manifest (D-03).
- */
+/** {@link CONNECT_PROTOCOL_VERSION} on every device API request; a stream request without it answers 426 `connect_client_outdated`. */
 export const CONNECT_PROTOCOL_HEADER = "X-AIQSA-Connect-Protocol";
 
 // Browser API: the AIQSA cookie session.
@@ -850,22 +833,6 @@ export const connectClientManifestSchema = z.strictObject({
     .max(CONNECT_MAX_CLIENT_TARGETS)
     .refine(uniqueBy((target: { os: string; arch: string }) => `${target.os}-${target.arch}`), "duplicate target")
 });
-/**
- * The manifest a protocol 1 client gets (no {@link CONNECT_PROTOCOL_HEADER}):
- * what its strict decoder accepts, at most four darwin and linux targets.
- */
-export const connectLegacyClientManifestSchema = z.strictObject({
-  version: versionSchema,
-  targets: z.array(z.strictObject({
-    os: z.enum(CONNECT_LEGACY_OS_VALUES),
-    arch: archSchema,
-    sha256: z.string().regex(CONNECT_SHA256_PATTERN),
-    size: boundedInt(1, CONNECT_MAX_CLIENT_BINARY_BYTES)
-  }))
-    .min(1)
-    .max(CONNECT_LEGACY_MAX_CLIENT_TARGETS)
-    .refine(uniqueBy((target: { os: string; arch: string }) => `${target.os}-${target.arch}`), "duplicate target")
-});
 
 /** HTTP status of each refusal; the body is always `{code}`. Clients decide by `code`, not by status. */
 export const CONNECT_REASON_HTTP_STATUS = Object.freeze({
@@ -920,7 +887,6 @@ export type ConnectPairingDecisionResponse = z.infer<typeof connectPairingDecisi
 export type ConnectDeviceStreamClosed = z.infer<typeof connectDeviceStreamClosedSchema>;
 export type ConnectClientTarget = z.infer<typeof connectClientTargetSchema>;
 export type ConnectClientManifest = z.infer<typeof connectClientManifestSchema>;
-export type ConnectLegacyClientManifest = z.infer<typeof connectLegacyClientManifestSchema>;
 export type ConnectHelloV2 = z.infer<typeof connectHelloV2Schema>;
 export type ConnectCancelCommand = z.infer<typeof connectCancelCommandSchema>;
 export type ConnectRunEndedCommand = z.infer<typeof connectRunEndedCommandSchema>;

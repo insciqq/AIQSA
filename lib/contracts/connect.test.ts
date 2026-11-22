@@ -27,10 +27,6 @@ import {
   CONNECT_ID_PATTERN,
   CONNECT_INSTALL_SCRIPT_PATH,
   CONNECT_JOB_ID_PATTERN,
-  CONNECT_LEGACY_CLIENT_TARGETS,
-  CONNECT_LEGACY_MAX_CLIENT_TARGETS,
-  CONNECT_LEGACY_OS_VALUES,
-  CONNECT_LEGACY_PROTOCOL_VERSION,
   CONNECT_LINE_ENDINGS,
   CONNECT_MAX_ACCOUNT_LABEL_LENGTH,
   CONNECT_MAX_BYTES_CHUNK,
@@ -102,7 +98,6 @@ import {
   connectDeviceEventV2Schema,
   connectDeviceStreamEventV2Schema,
   connectErrorResponseSchema,
-  connectLegacyClientManifestSchema,
   connectOpArgsSchemas,
   connectOpResultSchemas,
   connectPairingByCodePath,
@@ -156,8 +151,7 @@ const fixtureSchemas: Readonly<Record<string, z.ZodType>> = {
     return { op: value.op, result };
   }),
   deviceEventV2: connectDeviceEventV2Schema,
-  deviceEventBatchV2: connectDeviceEventBatchV2Schema,
-  legacyClientManifest: connectLegacyClientManifestSchema
+  deviceEventBatchV2: connectDeviceEventBatchV2Schema
 };
 
 type Fixture = Readonly<{ name: string; schema: string; value: unknown }>;
@@ -216,7 +210,6 @@ describe("connect contract constants", () => {
     });
     expect({
       protocolVersion: CONNECT_PROTOCOL_VERSION,
-      legacyProtocolVersion: CONNECT_LEGACY_PROTOCOL_VERSION,
       limits: {
         maxDevicesPerUser: CONNECT_MAX_DEVICES_PER_USER,
         maxEventsPerPost: CONNECT_MAX_EVENTS_PER_POST,
@@ -234,7 +227,6 @@ describe("connect contract constants", () => {
         maxClientBinaryBytes: CONNECT_MAX_CLIENT_BINARY_BYTES,
         maxClientTargets: CONNECT_MAX_CLIENT_TARGETS,
         maxSeq: CONNECT_MAX_SEQ,
-        legacyMaxClientTargets: CONNECT_LEGACY_MAX_CLIENT_TARGETS,
         maxConcurrentOps: CONNECT_MAX_CONCURRENT_OPS,
         maxJobs: CONNECT_MAX_JOBS,
         maxReplyBytes: CONNECT_MAX_REPLY_BYTES,
@@ -274,9 +266,7 @@ describe("connect contract constants", () => {
       deviceStreamClosedCodes: CONNECT_DEVICE_STREAM_CLOSED_CODES,
       eventsStreamClosedCodes: CONNECT_EVENTS_STREAM_CLOSED_CODES,
       os: CONNECT_OS_VALUES,
-      legacyOs: CONNECT_LEGACY_OS_VALUES,
       arch: CONNECT_ARCH_VALUES,
-      legacyClientTargets: CONNECT_LEGACY_CLIENT_TARGETS,
       ops: CONNECT_OPS,
       shellKinds: CONNECT_SHELL_KINDS,
       grepModes: CONNECT_GREP_MODES,
@@ -414,14 +404,8 @@ describe("connect protocol 2", () => {
     }
   });
 
-  it("names Windows release files with .exe and keeps the legacy targets", () => {
+  it("names Windows release files with .exe", () => {
     expect(connectClientBinaryName("windows", "arm64")).toBe("aiqsa-connect-windows-arm64.exe");
     expect(connectClientBinaryName("linux", "amd64")).toBe("aiqsa-connect-linux-amd64");
-    expect(CONNECT_LEGACY_CLIENT_TARGETS.map(({ arch, os }) => connectClientBinaryName(os, arch))).toEqual([
-      "aiqsa-connect-darwin-amd64",
-      "aiqsa-connect-darwin-arm64",
-      "aiqsa-connect-linux-amd64",
-      "aiqsa-connect-linux-arm64"
-    ]);
   });
 });

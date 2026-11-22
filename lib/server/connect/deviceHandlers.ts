@@ -34,11 +34,7 @@ import { CONNECT_DEVICE_STREAM_QUEUE_BYTES, createConnectSseStream } from "./sse
 
 /** The application version, announced in `hello`; an unstamped build announces `dev`. */
 export const CONNECT_SERVER_VERSION = CONNECT_VERSION_PATTERN.test(packageMetadata.version) ? packageMetadata.version : "dev";
-/**
- * The oldest client version this server announces in `hello`. The protocol
- * header already keeps terminal clients out (D-03), so this rises only when
- * protocol 2 clients themselves must be cut off.
- */
+/** The oldest client version this server announces in `hello`; it rises only when clients of the current protocol must be cut off. */
 export const CONNECT_MIN_CLIENT_VERSION = "0.3.20";
 /** `lastSeenAt` moves at most this often, so an online device does not rewrite its row per heartbeat. */
 export const CONNECT_LAST_SEEN_INTERVAL_MS = 60_000;
@@ -112,8 +108,8 @@ function record(device: ConnectStreamDevice): ConnectDeviceRecord {
  * The device API under `/connect-api/v1`: pairing (no credential, limited per
  * address), the command stream, event posts and the device's own revocation
  * (the device's Bearer token only). Requests from browsers, which carry
- * `Origin`, are refused; a stream of a terminal client (no protocol 2 header)
- * answers 426 so it updates itself (D-03).
+ * `Origin`, are refused; a stream request without the protocol header
+ * answers 426 `connect_client_outdated`.
  */
 export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
   const clock = deps.now ?? (() => new Date());
@@ -251,7 +247,6 @@ export function createConnectDeviceHandlers(deps: ConnectDeviceHandlerDeps) {
       const token = connectDeviceToken(request);
       if (!token) return connectRefusal("connect_unauthorized", headers);
       if (!isConnectProtocol2(request)) {
-        // A terminal client: it installs the manifest's version on this answer.
         logConnect({ action: "skip", code: "connect_client_outdated", outcome: "skipped", stage: "preflight" });
         return connectRefusal("connect_client_outdated", headers);
       }

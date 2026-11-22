@@ -6,17 +6,15 @@ import {
   CONNECT_ARCH_VALUES,
   CONNECT_CLIENT_CHECKSUMS_PATH,
   CONNECT_CLIENT_DOWNLOAD_PREFIX,
-  CONNECT_LEGACY_OS_VALUES,
   CONNECT_MAX_CLIENT_BINARY_BYTES,
   CONNECT_OS_VALUES,
   CONNECT_WINDOWS_EXECUTABLE_SUFFIX,
   connectClientBinaryName,
   connectClientManifestSchema,
-  connectLegacyClientManifestSchema,
   type ConnectArch,
   type ConnectOs
 } from "@/lib/contracts/connect";
-import { CONNECT_DEVICE_HEADERS, connectRefusal, connectUnavailable, isConnectProtocol2 } from "./http";
+import { CONNECT_DEVICE_HEADERS, connectRefusal, connectUnavailable } from "./http";
 import { logConnect } from "./observability";
 import type { ConnectPolicyGate } from "./policy";
 
@@ -359,9 +357,7 @@ function text(body: string): Response {
  * The public client distribution: `/connect/install.sh`, the six
  * `/connect/download/<binary>` files, `/connect/checksums.txt` and the device
  * API manifest `/connect-api/v1/client`. They exist only while AIQSA Connect
- * is on; without built binaries they answer `connect_client_unavailable`. A
- * manifest request without the protocol 2 header comes from a terminal
- * client, which decodes four darwin and linux targets only (D-03).
+ * is on; without built binaries they answer `connect_client_unavailable`.
  */
 export function createConnectDistributionHandlers(deps: ConnectDistributionDeps) {
   /** The distribution, or the refusal: hidden (public paths) or `connect_disabled` (device API) while off. */
@@ -409,16 +405,11 @@ export function createConnectDistributionHandlers(deps: ConnectDistributionDeps)
       return origin ? text(connectInstallScript(origin)) : connectUnavailable(PUBLIC_HEADERS);
     },
 
-    async manifest(request: Request): Promise<Response> {
+    async manifest(): Promise<Response> {
       const loaded = await load(() => connectRefusal("connect_disabled", PUBLIC_HEADERS));
       if (loaded instanceof Response) return loaded;
       const targets = loaded.files.map(({ arch, os, sha256, size }) => ({ arch, os, sha256, size }));
-      const manifest = isConnectProtocol2(request)
-        ? connectClientManifestSchema.parse({ targets, version: deps.version })
-        : connectLegacyClientManifestSchema.parse({
-          targets: targets.filter((target) => (CONNECT_LEGACY_OS_VALUES as readonly ConnectOs[]).includes(target.os)),
-          version: deps.version
-        });
+      const manifest = connectClientManifestSchema.parse({ targets, version: deps.version });
       return Response.json(manifest, { headers: PUBLIC_HEADERS });
     }
   };

@@ -6,13 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import legacyManifestFixture from "../../../connect/internal/protocol/testdata/valid/legacyClientManifest.four-targets.json";
-import {
-  CONNECT_PROTOCOL_HEADER,
-  connectClientBinaryName,
-  connectClientManifestSchema,
-  connectLegacyClientManifestSchema
-} from "@/lib/contracts/connect";
+import { connectClientBinaryName, connectClientManifestSchema } from "@/lib/contracts/connect";
 import {
   canonicalConnectOrigin,
   CONNECT_CLIENT_SUMS_FILE,
@@ -63,10 +57,6 @@ function handlers(overrides: Partial<{ enabled: boolean | Error; origin: string 
 
 const file = (name: string) => ({ params: Promise.resolve({ file: name }) });
 const request = () => new Request("https://untrusted-host.example/connect/install.sh");
-/** A manifest request of a protocol 2 client, or of a terminal client without the header. */
-const manifestRequest = (protocol2 = true) => new Request("https://untrusted-host.example/connect-api/v1/client", {
-  headers: protocol2 ? { [CONNECT_PROTOCOL_HEADER]: "2" } : {}
-});
 
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), "aiqsa-connect-dist-"));
@@ -90,7 +80,7 @@ describe("AIQSA Connect client distribution", () => {
       expect(response.status).toBe(404);
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
-    const manifest = await off.manifest(manifestRequest());
+    const manifest = await off.manifest();
     expect(manifest.status).toBe(403);
     await expect(manifest.json()).resolves.toEqual({ code: "connect_disabled" });
   });
@@ -107,7 +97,7 @@ describe("AIQSA Connect client distribution", () => {
     for (const response of [
       await on.installScript(),
       await on.checksums(),
-      await on.manifest(manifestRequest()),
+      await on.manifest(),
       await on.download(request(), file(NAMES[2]))
     ]) {
       expect(response.status).toBe(503);
@@ -130,7 +120,7 @@ describe("AIQSA Connect client distribution", () => {
   ])("refuses an incomplete distribution when %s", async (_case, damage) => {
     writeDist();
     damage();
-    const response = await handlers().manifest(manifestRequest());
+    const response = await handlers().manifest();
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({ code: "connect_client_unavailable" });
   });
@@ -138,16 +128,16 @@ describe("AIQSA Connect client distribution", () => {
   it("notices a rebuilt distribution", async () => {
     writeDist();
     const on = handlers();
-    expect((await on.manifest(manifestRequest())).status).toBe(200);
+    expect((await on.manifest()).status).toBe(200);
     writeFileSync(path.join(dist, NAMES[0]), "rebuilt");
     const later = new Date(Date.now() + 5_000);
     utimesSync(path.join(dist, NAMES[0]), later, later);
-    expect((await on.manifest(manifestRequest())).status).toBe(503);
+    expect((await on.manifest()).status).toBe(503);
   });
 
   it("serves the manifest with every target", async () => {
     writeDist();
-    const response = await handlers().manifest(manifestRequest());
+    const response = await handlers().manifest();
     expect(response.status).toBe(200);
     const manifest = connectClientManifestSchema.parse(await response.json());
     expect(manifest.version).toBe(VERSION);
@@ -164,20 +154,6 @@ describe("AIQSA Connect client distribution", () => {
         size: Buffer.byteLength(body)
       });
     }
-  });
-
-  it("gives a terminal client the four-target legacy manifest it decodes", async () => {
-    writeDist();
-    const response = await handlers().manifest(manifestRequest(false));
-    expect(response.status).toBe(200);
-    const manifest = connectLegacyClientManifestSchema.parse(await response.json());
-    expect(manifest.targets.map((target) => `${target.os}-${target.arch}`))
-      .toEqual(["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"]);
-    // The same shape as the shared fixture the old Go decoder accepts.
-    expect(Object.keys(manifest).sort()).toEqual(Object.keys(legacyManifestFixture).sort());
-    expect(Object.keys(manifest.targets[0]!).sort()).toEqual(Object.keys(legacyManifestFixture.targets[0]!).sort());
-    const wrongProtocol = new Request("https://untrusted-host.example/connect-api/v1/client", { headers: { [CONNECT_PROTOCOL_HEADER]: "1" } });
-    expect(connectLegacyClientManifestSchema.safeParse(await (await handlers().manifest(wrongProtocol)).json()).success).toBe(true);
   });
 
   it("serves checksums.txt in sha256sum format", async () => {
