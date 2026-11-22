@@ -191,8 +191,6 @@ async function main() {
 
     const searchIndicator = page.getByRole("button", { name: "Turn off Search" });
     if (await searchIndicator.isVisible()) await searchIndicator.click();
-    const knowledgeIndicator = page.getByRole("button", { name: "Turn off Knowledge" });
-    if (await knowledgeIndicator.isVisible()) await knowledgeIndicator.click();
 
     await (await openModelPicker(page)).getByTestId("composer-v2-model-parameters").click();
     const parameters = page.getByRole("dialog", { name: "Model parameters" });

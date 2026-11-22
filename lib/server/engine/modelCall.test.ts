@@ -486,8 +486,7 @@ describe("native model call", () => {
       keys.push(options?.routingKey);
       return stream(value, options);
     };
-    const routing = gatewayRoutingLane({ chatId: "chat-model-call", name: "loop" },
-      { env: { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: Buffer.alloc(32, 9).toString("base64") } });
+    const routing = gatewayRoutingLane({ chatId: "chat-model-call", name: "loop" });
     const first = routing.key();
     await callModel(ports(provider, { routing }), request);
     // The chat's next round goes on with the key its retry took.
@@ -515,8 +514,7 @@ describe("native model call", () => {
         keys.push(options?.routingKey);
         return stream(value, options);
       };
-      const routing = gatewayRoutingLane({ chatId: "chat-connection-expired", name: "loop" },
-        { env: { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: Buffer.alloc(32, 7).toString("base64") } });
+      const routing = gatewayRoutingLane({ chatId: "chat-connection-expired", name: "loop" });
       await expect(callModel(ports(provider, { routing }), request)).resolves.toMatchObject({ finalText: "Checked" });
       expect(provider.calls).toBe(2);
       expect(keys[1]).not.toBe(keys[0]);

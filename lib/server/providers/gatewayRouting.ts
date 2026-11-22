@@ -1,4 +1,4 @@
-import { createHmac, createSecretKey, randomUUID, type KeyObject } from "node:crypto";
+import { createHmac, createSecretKey, randomBytes, type KeyObject } from "node:crypto";
 
 /**
  * Stable gateway routing keys for model calls that never overlap
@@ -11,14 +11,13 @@ import { createHmac, createSecretKey, randomUUID, type KeyObject } from "node:cr
  * A lane is a sequence of model calls of which never two are in flight at
  * once, such as a chat's agent loop (one active run per chat, rounds in
  * order). Its requests share one key: an HMAC of the chat, the lane and its
- * generation under a key derived from the installation's routing key with
- * its own label, so the key reveals no id. A failed request's fate upstream
- * is unknown, so its lane moves to the next generation and no later request
- * shares the key it may still hold; the move holds for `unsettledMs` after
- * the lane's last failure, longer than any request runs. A process starts
- * its lanes over under a fresh epoch, so nothing a stopped process left
- * running shares a key either. Without the installation's routing key a lane
- * has no key and every request gets a fresh one, as before.
+ * generation under a random secret the process creates once, so the key
+ * reveals no id. A failed request's fate upstream is unknown, so its lane
+ * moves to the next generation and no later request shares the key it may
+ * still hold; the move holds for `unsettledMs` after the lane's last failure,
+ * longer than any request runs. A process starts its lanes over under its own
+ * secret, so nothing a stopped process left running shares a key either, and
+ * no installation secret is needed: keys never had to survive a restart.
  */
 export const GATEWAY_ROUTING = Object.freeze({
   /** How long a failed request may still run upstream: its lane keeps a new key that long after its last failure. */
@@ -27,45 +26,21 @@ export const GATEWAY_ROUTING = Object.freeze({
   sweepAt: 1_024
 });
 
-const LABEL = "aiqsa.provider.gateway-routing.v1";
-
 export type GatewayRoutingLane = Readonly<{
-  /** The key the lane's next request carries; undefined without the installation's routing key. */
-  key(): string | undefined;
+  /** The key the lane's next request carries. */
+  key(): string;
   /** The lane's latest request failed: whatever it left upstream keeps its key, and the lane's later requests take another. */
   failed(): void;
 }>;
 
 type MovedLane = Readonly<{ generation: number; until: number }>;
-type Registry = Readonly<{ epoch: string; moved: Map<string, MovedLane> }>;
+type Registry = Readonly<{ secret: KeyObject; moved: Map<string, MovedLane> }>;
 
 const globalForGatewayRouting = globalThis as unknown as { __aiqsaGatewayRouting?: Registry };
 
-/** Shared on `globalThis`, so every route bundle of the process moves a lane for all of them. */
+/** Shared on `globalThis`, so every route bundle of the process uses one secret and moves a lane for all of them. */
 function registry(): Registry {
-  return globalForGatewayRouting.__aiqsaGatewayRouting ??= { epoch: randomUUID(), moved: new Map() };
-}
-
-/**
- * The installation's routing key: exactly 32 bytes in canonical base64. The variable keeps the name it had when it also
- * keyed a retired Memory search index, so existing `.env` files keep working (`agent_docs/ENV_VARIABLES.md`).
- */
-function installationRoutingKeyFromEnv(env: Readonly<Record<string, string | undefined>>): KeyObject {
-  const value = env.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY;
-  const decoded = value && /^[A-Za-z0-9+/]{43}=$/u.test(value) ? Buffer.from(value, "base64") : null;
-  if (!decoded || decoded.byteLength !== 32 || decoded.toString("base64") !== value) {
-    throw new Error("gateway_routing_key_invalid");
-  }
-  return createSecretKey(decoded);
-}
-
-/** The lanes' own key, derived from the installation's routing key; null without a valid one. */
-function laneSecret(env: Readonly<Record<string, string | undefined>>): KeyObject | null {
-  try {
-    return createSecretKey(createHmac("sha256", installationRoutingKeyFromEnv(env)).update(LABEL, "utf8").digest());
-  } catch {
-    return null;
-  }
+  return globalForGatewayRouting.__aiqsaGatewayRouting ??= { secret: createSecretKey(randomBytes(32)), moved: new Map() };
 }
 
 /** A digest in the shape of the fresh keys (a version 4 UUID), so a gateway sees one format. */
@@ -82,12 +57,10 @@ function uuidShaped(digest: Buffer): string {
  * requests of the lane in flight at once may use its key.
  */
 export function gatewayRoutingLane(lane: Readonly<{ chatId: string; name: string }>, options: Readonly<{
-  env?: Readonly<Record<string, string | undefined>>;
   now?: () => number;
 }> = {}): GatewayRoutingLane {
-  const secret = laneSecret(options.env ?? process.env);
   const now = options.now ?? Date.now;
-  const { epoch, moved } = registry();
+  const { secret, moved } = registry();
   const id = JSON.stringify([lane.chatId, lane.name]);
   const generation = () => {
     const state = moved.get(id);
@@ -98,12 +71,9 @@ export function gatewayRoutingLane(lane: Readonly<{ chatId: string; name: string
   };
   return {
     key() {
-      if (!secret) return undefined;
-      return uuidShaped(createHmac("sha256", secret).update(JSON.stringify([epoch, lane.chatId, lane.name, generation()]), "utf8")
-        .digest());
+      return uuidShaped(createHmac("sha256", secret).update(JSON.stringify([lane.chatId, lane.name, generation()]), "utf8").digest());
     },
     failed() {
-      if (!secret) return;
       moved.set(id, { generation: generation() + 1, until: now() + GATEWAY_ROUTING.unsettledMs });
       if (moved.size <= GATEWAY_ROUTING.sweepAt) return;
       const at = now();

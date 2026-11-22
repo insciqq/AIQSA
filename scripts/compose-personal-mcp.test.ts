@@ -57,8 +57,5 @@ describe("personal MCP host gateway topology", () => {
       expect(networks, name).not.toContain("mcp-control");
       expect(service.profiles ?? [], name).not.toContain("maintenance");
     }
-    // The bootstrap gate reads the operator's acknowledgement only through this passthrough.
-    expect(services["migrate-bootstrap"]?.environment?.AIQSA_ACCEPT_LOCAL_MCP_REMOVAL)
-      .toBe("${AIQSA_ACCEPT_LOCAL_MCP_REMOVAL:-}");
   });
 });

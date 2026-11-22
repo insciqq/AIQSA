@@ -17,7 +17,7 @@ const toolNames = ["awk", "basename", "bash", "cat", "chmod", "cp", "cut", "date
   "head", "id", "ln", "ls", "mkdir", "mktemp", "mv", "od", "openssl", "readlink", "rm", "rmdir", "sed", "sh", "sha256sum",
   "sleep", "sort", "stat", "tail", "tee", "timeout", "touch", "tr", "uname", "wc"];
 const generatedKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_ENCRYPTION_KEY",
-  "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY", "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
+  "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
 const directories: string[] = [];
 let toolbox = "";
 let journalSocket = "";
@@ -157,8 +157,7 @@ class Fixture {
       { match: " exec -T app node", stdout: "200\n" },
       { match: " exec -T workspace-runner node", stdout: "200 ready \n" },
       { match: " port app 3000", exit: 1 },
-      { match: "^volume inspect", exit: 1 },
-      { match: "^image inspect", exit: 1 }
+      { match: "^volume inspect", exit: 1 }
     ];
     writeFileSync(path.join(this.state, "docker.rules"), [...this.rules, ...defaults]
       .map((rule) => [rule.match, rule.exit ?? 0, escape(rule.stdout ?? ""), escape(rule.stderr ?? ""), rule.delay ?? ""].join("\x1f")).join("\n") + "\n");
@@ -254,10 +253,11 @@ describe("configure", () => {
     const parsed = values(body);
     const hexKeys = ["AIQSA_INITIAL_ADMIN_PASSWORD", "AIQSA_AUTH_SESSION_SECRET", "AIQSA_POSTGRES_PASSWORD", "AIQSA_S3_SECRET_ACCESS_KEY"];
     for (const key of hexKeys) expect(parsed[key]).toMatch(/^[a-f0-9]{64}$/u);
-    const base64Keys = ["AIQSA_ENCRYPTION_KEY", "AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY"];
+    const base64Keys = ["AIQSA_ENCRYPTION_KEY"];
     for (const key of base64Keys) expect(Buffer.from(parsed[key], "base64")).toHaveLength(32);
-    // The retired Memory fingerprint keyring is no longer generated.
+    // The retired Memory fingerprint keyring and the gateway routing key are no longer generated.
     expect(parsed).not.toHaveProperty("AIQSA_MEMORY_FINGERPRINT_KEYRING");
+    expect(parsed).not.toHaveProperty("AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY");
     const secrets = [...hexKeys, ...base64Keys].map((key) => parsed[key]);
     expect(new Set(secrets).size).toBe(secrets.length);
     for (const secret of secrets) expect(result.output).not.toContain(secret);
@@ -362,7 +362,8 @@ describe("configure", () => {
 describe("doctor", () => {
   it("passes a healthy host and stack without printing secrets", () => {
     const fixture = new Fixture();
-    const body = fixture.writeEnv();
+    // An upgraded .env may still set the retired gateway routing key; nothing reads it.
+    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: secretOf("AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY") });
     const result = fixture.run(["doctor"]);
     expect(result.status).toBe(0);
     for (const line of ["PASS docker: Engine 27.3.1", "PASS compose: Compose 2.29.7",
@@ -451,8 +452,6 @@ describe("doctor", () => {
       f.writeEnv({ COMPOSE_PROFILES: "workspace", AIQSA_WORKSPACE_RUNNER_URL: "http://workspace-runner:4310",
         AIQSA_WORKSPACE_RUNNER_TOKEN: secretOf("TOKEN"), AIQSA_KVM_GID: "424242" });
     }, expected: [/PASS workspace: enabled/u, /FAIL kvm-gid: AIQSA_KVM_GID is '424242' but/u] },
-    { name: "legacy storage-migration profile", status: 4, setup: (f) => { f.writeEnv({ COMPOSE_PROFILES: "storage-migration" }); },
-      expected: [/FAIL legacy-storage: COMPOSE_PROFILES contains storage-migration/u, /UPGRADING_FROM_MINIO\.md/u] },
     { name: "public URL behind a loopback bind", status: 0, setup: (f) => { f.writeEnv({ AIQSA_APP_BASE_URL: "https://chat.example.com" }); },
       expected: [/INFO base-url: https:\/\/chat\.example\.com with a loopback bind: a reverse proxy is expected/u,
         /AIQSA_TRUST_PROXY_HEADERS=1/u, /upstream read timeout/u] },
@@ -564,69 +563,6 @@ describe("doctor", () => {
     expectNoSecrets(result.output, readFileSync(fixture.file(".env"), "utf8"));
   });
 
-  it("lists ToolHive leftovers with exact removal commands and stays quiet without them", () => {
-    const fixture = new Fixture();
-    fixture.writeEnv();
-    const clean = fixture.run(["doctor", "--stack-only"]);
-    expect(clean.status).toBe(0);
-    expect(clean.stdout).not.toContain("toolhive");
-    fixture.rules.push(
-      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=toolhive-runtime", stdout: "c99\n" },
-      { match: "^volume inspect aiqsa-test_toolhive_data", stdout: "[]\n" },
-      { match: "^ps -a --format \\{\\{\\.Names\\}\\}", stdout: "aiqsa-test-app-1\naiqsa-0123456789abcdef-0123456789abcdefghijklmn\n" },
-      { match: "^images --format", stdout: "postgres:18\ntoolhivelocal/example-mcp:1.0.0\n" }
-    );
-    const result = fixture.run(["doctor", "--stack-only"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("WARN toolhive-leftovers: local MCP servers were removed");
-    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the toolhive-runtime container");
-    expect(result.stdout).toContain("docker volume rm aiqsa-test_toolhive_data");
-    expect(result.stdout).toContain("docker rm -f aiqsa-0123456789abcdef-0123456789abcdefghijklmn\n");
-    expect(result.stdout).not.toContain("rm -f aiqsa-test-app-1");
-    expect(result.stdout).toContain("docker image rm toolhivelocal/example-mcp:1.0.0\n");
-    expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm|image rm) /mu);
-  });
-
-  it("lists search index and Knowledge leftovers with exact removal commands and stays quiet without them", () => {
-    const fixture = new Fixture();
-    fixture.writeEnv();
-    const clean = fixture.run(["doctor", "--stack-only"]);
-    expect(clean.status).toBe(0);
-    expect(clean.stdout).not.toContain("search-leftovers");
-    fixture.rules.push(
-      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=opensearch", stdout: "c97\n" },
-      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=memory-search-worker", stdout: "c98\n" },
-      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=knowledge-search-worker", stdout: "c42\n" },
-      { match: "^volume inspect aiqsa-test_opensearch_data", stdout: "[]\n" }
-    );
-    const result = fixture.run(["doctor", "--stack-only"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("WARN search-leftovers: the search index and Knowledge services were removed");
-    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the opensearch container");
-    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the memory-search-worker container");
-    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the knowledge-search-worker container");
-    expect(result.stdout).toContain("docker volume rm aiqsa-test_opensearch_data");
-    expect(fixture.dockerLog).not.toMatch(/^(rm|volume rm) /mu);
-  });
-
-  it("lists docling leftovers with exact removal commands and stays quiet without them", () => {
-    const fixture = new Fixture();
-    fixture.writeEnv();
-    const clean = fixture.run(["doctor", "--stack-only"]);
-    expect(clean.status).toBe(0);
-    expect(clean.stdout).not.toContain("docling-leftovers");
-    fixture.rules.push(
-      { match: "^ps -aq --filter label=com.docker.compose.project=aiqsa-test --filter label=com.docker.compose.service=docling", stdout: "c51\n" },
-      { match: "^image inspect ghcr.io/insciqq/aiqsa:docling", stdout: "[]\n" }
-    );
-    const result = fixture.run(["doctor", "--stack-only"]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("WARN docling-leftovers: the docling parser was removed");
-    expect(result.stdout).toContain("./aiqsa.sh up   # --remove-orphans removes the docling container");
-    expect(result.stdout).toContain("docker image rm ghcr.io/insciqq/aiqsa:docling");
-    expect(fixture.dockerLog).not.toMatch(/^(rm|image rm) /mu);
-  });
-
   it("reads .env strictly: quotes, CRLF, spaces, export and shell metacharacters", () => {
     const fixture = new Fixture();
     const secret = "pa$$ word`id`$(touch pwned)\"'";
@@ -685,7 +621,7 @@ describe("up and install", () => {
     expectNoSecrets(result.output, body);
   });
 
-  it("exits 5 with a masked bootstrap log tail and the local MCP removal remedy", () => {
+  it("exits 5 with a masked bootstrap log tail", () => {
     const fixture = new Fixture();
     const keyring = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg=";
     const body = fixture.writeEnv({ AIQSA_MEMORY_FINGERPRINT_KEYRING: `current=v1,v1=${keyring}` });
@@ -693,14 +629,14 @@ describe("up and install", () => {
     fixture.rules.push(
       { match: " up -d ", exit: 1, stderr: "service \"migrate-bootstrap\" didn't complete successfully: exit 1\n" },
       { match: " ps -a --format", stdout: "migrate-bootstrap|exited||1|c2\npostgres|running|healthy|0|c3\napp|created||0|c1\n" },
-      { match: " logs --no-color --tail 60 migrate-bootstrap", stdout: `connecting with ${password}\nkey ${keyring}\nError: local_mcp_removal_acknowledgement_required\n` }
+      { match: " logs --no-color --tail 60 migrate-bootstrap", stdout: `connecting with ${password}\nkey ${keyring}\nError: bootstrap failed\n` }
     );
     const result = fixture.run(["up"]);
     expect(result.status).toBe(5);
     expect(result.stderr).toContain("Last 60 log lines of migrate-bootstrap:");
     expect(result.stderr).toContain("connecting with ***");
     expect(result.stderr).toContain("key ***");
-    expect(result.stderr).toContain("set AIQSA_ACCEPT_LOCAL_MCP_REMOVAL=1 in .env, then rerun ./aiqsa.sh up");
+    expect(result.stderr).toContain("Error: bootstrap failed");
     expectNoSecrets(result.output, body);
   });
 
@@ -878,10 +814,6 @@ describe("upgrade", () => {
 
   it.each([
     ["a dirty tree", (f: Fixture) => writeFileSync(f.file("compose.yaml"), "services: {x: {}}\n"), [], /local changes to tracked files/u],
-    ["the legacy storage profile", (f: Fixture) => f.writeEnv({ COMPOSE_PROFILES: "storage-migration" }), [], /storage-migration/u],
-    ["a MinIO-era volume without a valid marker", (f: Fixture) => {
-      f.rules.push({ match: "^volume inspect aiqsa-test_minio_data", exit: 0 }, { match: "storage-init status", exit: 3 });
-    }, [], /aiqsa-test_minio_data volume exists/u],
     ["a missing backup confirmation", () => undefined, null, /backup was not confirmed\.\nRerun with --backup to create one first/u],
     ["a downgrade", () => undefined, ["--to", "v0.2.0"], /older than the current 0\.3\.0/u],
     ["an unknown tag", () => undefined, ["--to", "v9.9.9"], /tag v9\.9\.9 does not exist/u]
@@ -1016,15 +948,15 @@ describe("upgrade", () => {
   it("never appends a key that the process environment provides", () => {
     const { fixture, git, seed } = repository();
     release(seed, git);
-    const routingKey = "cHJvdmlkZWQtYnktdGhlLWVudmlyb25tZW50LTAxMjM0NQ==";
-    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: null });
+    const encryptionKey = Buffer.alloc(32, 3).toString("base64");
+    const body = fixture.writeEnv({ AIQSA_ENCRYPTION_KEY: null });
     const result = fixture.run(["upgrade", "--backup-confirmed", "--add-missing-keys"],
-      { AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: routingKey });
+      { AIQSA_ENCRYPTION_KEY: encryptionKey });
     expect(result.status).toBe(0);
     const appended = readFileSync(fixture.file(".env"), "utf8").slice(body.length);
     expect(values(appended)).toEqual({ AIQSA_NEW_SETTING: "on" });
-    expect(result.stdout).toContain("Keys in .env.example provided by the environment, not .env: AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY");
-    expect(result.output).not.toContain(routingKey);
+    expect(result.stdout).toContain("Keys in .env.example provided by the environment, not .env: AIQSA_ENCRYPTION_KEY");
+    expect(result.output).not.toContain(encryptionKey);
   });
 
   it("appends missing keys only with --add-missing-keys and to a pinned tag", () => {
@@ -1032,7 +964,7 @@ describe("upgrade", () => {
     release(seed, git);
     git(seed, "tag", "v0.3.1");
     git(seed, "push", "--quiet", "origin", "v0.3.1");
-    const body = fixture.writeEnv({ AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY: null }).replace(/\n$/u, "");
+    const body = fixture.writeEnv({ AIQSA_ENCRYPTION_KEY: null }).replace(/\n$/u, "");
     writeFileSync(fixture.file(".env"), body);
     const result = fixture.run(["upgrade", "--backup-confirmed", "--add-missing-keys", "--to", "v0.3.1"]);
     expect(result.status).toBe(0);
@@ -1040,9 +972,9 @@ describe("upgrade", () => {
     expect(after.startsWith(`${body}\n`)).toBe(true);
     const appended = values(after.slice(body.length));
     expect(appended.AIQSA_NEW_SETTING).toBe("on");
-    expect(Buffer.from(appended.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY, "base64")).toHaveLength(32);
+    expect(Buffer.from(appended.AIQSA_ENCRYPTION_KEY, "base64")).toHaveLength(32);
     expect(appended).not.toHaveProperty("AIQSA_COMMENTED_SETTING");
-    expect(result.output).not.toContain(appended.AIQSA_MEMORY_OPENSEARCH_ROUTING_KEY);
+    expect(result.output).not.toContain(appended.AIQSA_ENCRYPTION_KEY);
     expect(git(fixture.project, "describe", "--tags")).toBe("v0.3.1");
   });
 

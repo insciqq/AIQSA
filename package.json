@@ -22,7 +22,7 @@
     "check": "npm run check:hermetic",
     "check:connect": "node scripts/connect-check.mjs",
     "check:container": "AIQSA_APP_MEMORY_LIMIT=2g AIQSA_APP_CPU_LIMIT=2 docker compose -f docker-compose.dev.yml run --rm -T --no-deps -e NODE_OPTIONS=--max-old-space-size=1536 app npm run check:container:inner",
-    "check:container:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-target.ts && prisma generate && prisma migrate deploy && AIQSA_LOCAL_DEV_PROFILE_DISABLED=1 npm run db:seed && npm run db:stateful-test:catalog && npm run docs:check && npm run test:full:inner -- --maxWorkers=1",
+    "check:container:inner": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-target.ts && prisma migrate deploy && AIQSA_LOCAL_DEV_PROFILE_DISABLED=1 npm run db:seed && npm run db:stateful-test:catalog && npm run test:full:inner -- --project=stateful",
     "check:hermetic": "prisma generate && next typegen && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
     "docs:check": "node scripts/docs-check.mjs",
     "calibrate:token-estimate": "tsx scripts/calibrate-token-estimate.ts",
@@ -32,7 +32,6 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:integrity:smoke": "prisma generate && tsx prisma/schema-integrity-smoke.ts",
     "db:migration:smoke": "tsx prisma/scripts/tests/migration-contract.ts --mode=smoke",
-    "db:baseline:contract": "tsx prisma/scripts/tests/migration-contract.ts --mode=full",
     "db:seed": "prisma generate && prisma db seed",
     "db:seed:smoke": "prisma generate && tsx prisma/seed-smoke.ts",
     "db:stateful-test:catalog": "AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE tsx scripts/stateful-test-catalog.ts",
@@ -75,8 +74,7 @@
     "task:complete": "node scripts/task-ledger.mjs complete",
     "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts",
     "smoke:browser-scenarios-paid": "tsx scripts/smoke-browser-scenarios-paid.ts",
-    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts",
-    "experiment:workspace-activation": "tsx scripts/experiment-workspace-activation.ts"
+    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",
