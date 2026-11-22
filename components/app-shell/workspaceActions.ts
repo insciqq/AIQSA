@@ -209,7 +209,6 @@ export function useWorkspaceActions({
       activeLeafMessageId: detail.activeLeafMessageId,
       ...(detail.computer !== undefined ? { computer: detail.computer } : {}),
       createdAt: detail.createdAt,
-      ...(detail.defaultSearchPlan ? { defaultSearchPlan: detail.defaultSearchPlan } : {}),
       defaultModelId: detail.defaultModelId,
       defaultProvider: detail.defaultProvider,
       folderId: detail.folderId,
@@ -670,7 +669,6 @@ export function useWorkspaceActions({
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
     // A chat keeps no Search plan of its own (operator decision 2026-10-24):
     // every chat searches with the user's personal or organization default.
-    // A stored `defaultSearchPlan` from older releases is ignored.
     const searchPlan = resolvePreferredSearchPlan(
       catalogOverride?.defaults.searchPlan,
       catalogOverride?.searchStrategies

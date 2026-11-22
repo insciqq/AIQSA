@@ -1202,9 +1202,9 @@ describe("chat Assistant overrides", () => {
   it("decodes stored overrides, the deleted marker and an empty column", () => {
     expect(decodeStoredChatAssistantOverrides(null)).toEqual({ kind: "overrides", overrides: {} });
     expect(decodeStoredChatAssistantOverrides(overrides)).toEqual({ kind: "overrides", overrides });
-    // A Knowledge row stored before Knowledge was removed is ignored, whatever it holds.
+    // v0.5.0 removed the retired Knowledge row from stored overrides, so one naming it is not a valid shape.
     for (const knowledge of [{ mode: "all_my_knowledge" }, { mode: "inherit" }, null]) {
-      expect(decodeStoredChatAssistantOverrides({ ...overrides, knowledge })).toEqual({ kind: "overrides", overrides });
+      expect(decodeStoredChatAssistantOverrides({ ...overrides, knowledge })).toBeNull();
     }
     expect(decodeStoredChatAssistantOverrides({ search: { mode: "all_selected", optionIds: ["web"] } }))
       .toEqual({ kind: "overrides", overrides: { search: { mode: "all_selected", optionIds: ["web"] } } });

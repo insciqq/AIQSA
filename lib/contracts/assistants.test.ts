@@ -437,17 +437,11 @@ describe("assistant wire decoders", () => {
     ).toBeNull();
   });
 
-  it("requires and decodes bounded content Skill ids, ignoring the retired Knowledge selection", () => {
+  it("requires and decodes bounded content Skill ids, and refuses the retired Knowledge row", () => {
     const content = validContent();
-    // Definitions stored before Knowledge was removed still carry a selection and its row.
-    const decoded = decodeAssistantContent({
-      ...content,
-      knowledgeSelection: { baseIds: ["base-a"], mode: "explicit", sourceIds: [], version: 1 },
-      rows: { ...validRows(), knowledge: { policy: "fixed", value: { mode: "none" } } }
-    });
-    expect(decoded).not.toBeNull();
-    expect(decoded).not.toHaveProperty("knowledgeSelection");
-    expect(decoded?.rows).not.toHaveProperty("knowledge");
+    expect(decodeAssistantContent(content)).not.toBeNull();
+    expect(decodeAssistantContent({ ...content, rows: { ...validRows(), knowledge: { policy: "fixed", value: { mode: "none" } } } }))
+      .toBeNull();
     const withoutSkills: Record<string, unknown> = { ...content };
     delete withoutSkills.skillIds;
     expect(decodeAssistantContent(withoutSkills)).toBeNull();
@@ -601,12 +595,10 @@ describe("Assistant rows", () => {
     }))).toMatchObject({ ok: true });
   });
 
-  it("ignores the Knowledge row of rows stored before Knowledge was removed", () => {
+  it("refuses the retired Knowledge row: nothing stores or sends it", () => {
     for (const knowledge of [{ policy: "fixed", value: { mode: "none" } },
       { policy: "adjustable", value: { mode: "all_my_knowledge" } }, null]) {
-      const decoded = decodeAssistantRows({ ...draftRows(), knowledge });
-      expect(decoded).toMatchObject({ ok: true });
-      expect(decoded.ok && decoded.rows).not.toHaveProperty("knowledge");
+      expect(decodeAssistantRows({ ...draftRows(), knowledge })).toEqual({ code: "assistant_rows_invalid", ok: false });
     }
   });
 

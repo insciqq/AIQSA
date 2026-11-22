@@ -33,10 +33,9 @@ export const TELEGRAM_HEALTH_CODES = ["telegram_poll_conflict", "telegram_token_
 export type TelegramHealthCode = (typeof TELEGRAM_HEALTH_CODES)[number];
 
 /**
- * Server-owned kinds of the rows an inline button's callback data names.
- * `toggle_workspace` and `toggle_agent` are retired settings: stored rows and
- * old messages still name them, no handler answers them, and a press answers
- * like any expired button.
+ * Server-owned kinds of the rows an inline button's callback data names. A
+ * button of a retired setting has no row left, so a press answers like any
+ * expired button.
  */
 export const TELEGRAM_CALLBACK_KINDS = [
   "approval_allow_once",
@@ -47,8 +46,6 @@ export const TELEGRAM_CALLBACK_KINDS = [
   "select_model",
   "model_page",
   "toggle_search",
-  "toggle_workspace",
-  "toggle_agent",
   "stop_run",
   "unlink_confirm",
   "open_settings",

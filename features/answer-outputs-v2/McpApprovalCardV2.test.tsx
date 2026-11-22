@@ -77,15 +77,12 @@ describe("McpApprovalCardsV2", () => {
     expect(screen.queryAllByRole("button")).toEqual([]);
   });
 
-  it("explains guest-code and Agent refusals, and renders inside the answer outputs", () => {
+  it("explains guest-code refusals, and renders inside the answer outputs", () => {
     render(<AnswerOutputsV2 artifact={{ citations: [], reasoningText: [], sources: [], mcpApprovals: [
-      { ...pending, approvalId: "approval-code", details: undefined, source: "code" },
-      { ...pending, approvalId: "approval-agent", details: undefined, source: "agent" }
+      { ...pending, approvalId: "approval-code", details: undefined, source: "code" }
     ] }} runId="run-1" />);
-    const [code, agent] = screen.getAllByTestId("mcp-approval-card");
+    const [code] = screen.getAllByTestId("mcp-approval-card");
     expect(code).toHaveTextContent("Code in the Workspace called this tool, which may change data. Nothing was sent.");
-    expect(agent).toHaveTextContent("Agent called this tool, which may change data. Nothing was sent.");
-    expect(agent).not.toHaveTextContent(/continues/u);
     expect(screen.getByRole("region", { name: "Tool approvals" })).toBeVisible();
   });
 

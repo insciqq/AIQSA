@@ -139,8 +139,6 @@ for (const width of [1440, 390]) {
     await installMatrixCatalogFixture(page, { chats: [source, target], folders: [] }, { catalog });
     await page.route("**/api/chats/source", async route => {
       if (route.request().method() !== "PATCH") return route.fallback();
-      source.defaultSearchPlan = route.request().postDataJSON().defaultSearchPlan;
-      target.defaultSearchPlan = source.defaultSearchPlan;
       await route.fulfill({ json: { chat: source } });
     });
     await page.route("**/api/me/mcp", (route) => route.fulfill({ json: { servers: [] } }));

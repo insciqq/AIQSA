@@ -1,4 +1,3 @@
-import { decodeSearchPlan } from "../../domain/search";
 import { runFollowupSelect } from "../runs/prismaRepositoryFollowups";
 import { projectMessageFollowups } from "../runs/runFollowups";
 import { runProviderWait } from "../runs/providerWaits";
@@ -311,7 +310,6 @@ const chatSummarySelect = {
   computerCwd: true,
   computerDeviceId: true,
   createdAt: true,
-  defaultSearchPlan: true,
   defaultProviderModel: {
     select: {
       activeConfig: true,
@@ -1088,7 +1086,6 @@ function serializeChatDetail(input: {
     activeLeafMessageId: input.visibleLeafMessageId,
     assistantId: chat.assistantId,
     createdAt: chat.createdAt,
-    defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
@@ -1137,11 +1134,6 @@ function serializeAssistantIdentity(modelRun: {
   return decodeAssistantIdentity(modelRun?.assistantIdentity);
 }
 
-function storedSearchPlan(value: unknown) {
-  const decoded = decodeSearchPlan(value);
-  return decoded.ok ? decoded.plan : null;
-}
-
 /** An imported chat (or a copy of one) names its source; others carry nothing. */
 function importProjection(chat: Pick<ChatSummaryRow, "importSource" | "importSourceModel">) {
   return chat.importSource
@@ -1161,7 +1153,6 @@ export function favoriteOnlyChatUpdate(
     patch.activeLeafMessageId === undefined &&
     patch.assistantId === undefined &&
     patch.assistantOverrides === undefined &&
-    patch.defaultSearchPlan === undefined &&
     patch.folderId === undefined &&
     !patch.title &&
     patch.workspaceEnabled === undefined;
@@ -1180,7 +1171,6 @@ function serializeChatSummary(
     // The owner's computer choice; a stored pair the contract no longer accepts reads as none.
     computer: decodeChatComputerBinding({ cwd: chat.computerCwd, deviceId: chat.computerDeviceId }),
     createdAt: chat.createdAt,
-    defaultSearchPlan: storedSearchPlan(chat.defaultSearchPlan),
     defaultModelId: chat.defaultProviderModel?.id ?? null,
     defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
     folderId: chat.folderId,
@@ -2527,7 +2517,6 @@ export function createPrismaChatRepository(
       assistantId,
       assistantOverrides,
       chatId,
-      defaultSearchPlan,
       folderId,
       pinned,
       title,
@@ -2628,14 +2617,12 @@ export function createPrismaChatRepository(
           });
         }
 
-        const hasMetadataUpdate = defaultSearchPlan !== undefined ||
-          pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
+        const hasMetadataUpdate = pinned !== undefined || Boolean(title) || workspaceEnabled !== undefined ||
           Object.keys(assistantData).length > 0;
         const updated = hasMetadataUpdate
           ? await tx.chat.update({
               data: {
                 ...assistantData,
-                ...(defaultSearchPlan !== undefined ? { defaultSearchPlan: defaultSearchPlan === null ? Prisma.DbNull : { mode: defaultSearchPlan.mode, optionIds: [...defaultSearchPlan.optionIds] } } : {}),
                 ...(pinned !== undefined ? { pinned } : {}),
                 // The owner's rename also keeps the chat from a scheduled task's history retention.
                 ...(title ? { ownerKeptAt: new Date(), title: title.trim(), titleRevision: { increment: 1 } } : {}),
@@ -2643,7 +2630,7 @@ export function createPrismaChatRepository(
                 // Favoriting is not activity: the chat keeps its place by time
                 // (operator decision 2026-10-26).
                 ...(favoriteOnlyChatUpdate({
-                  activeLeafMessageId, assistantId, assistantOverrides, defaultSearchPlan,
+                  activeLeafMessageId, assistantId, assistantOverrides,
                   folderId, pinned, title, workspaceEnabled
                 })
                   ? { updatedAt: chats[0].updatedAt }

@@ -738,8 +738,7 @@ describe("workspace actions", () => {
       defaults: { ...catalog.defaults, searchPlan: selected },
       searchStrategies: selected.optionIds.map(strategyId => ({ strategyId, kind: "web_search", displayName: strategyId }))
     } });
-    // A plan an older release stored on the chat is ignored (operator decision 2026-10-24).
-    await state.actions.activateChat({ ...state.chatA, defaultSearchPlan: off }, { resumeRuns: false });
+    await state.actions.activateChat(state.chatA, { resumeRuns: false });
     expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(selected.optionIds, "all_selected", "system");
 
     state.actions.activateBlankWorkspace(folderId);
@@ -747,7 +746,7 @@ describe("workspace actions", () => {
 
     useWorkspaceStore.getState().setCatalog(current => current
       ? { ...current, defaults: { ...current.defaults, searchPlan: off } } : current);
-    await state.actions.activateChat({ ...state.chatB, defaultSearchPlan: selected }, { resumeRuns: false });
+    await state.actions.activateChat(state.chatB, { resumeRuns: false });
     expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith([], "all_selected", "system");
     state.actions.activateBlankWorkspace(folderId);
     expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith([], "all_selected", "system");

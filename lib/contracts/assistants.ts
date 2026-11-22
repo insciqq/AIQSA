@@ -351,8 +351,8 @@ export const ASSISTANT_ROW_KEYS = ["model", "controls", "search", "tools", "skil
 
 /**
  * The row Knowledge had before its removal (operator decision 2026-10-23).
- * Stored chat overrides, run snapshots and clients from that time may still
- * carry it; readers ignore it.
+ * Only run snapshots accepted before then may still carry it, and their
+ * reader ignores it; v0.5.0 removed it from stored chat overrides.
  */
 export const RETIRED_ASSISTANT_ROW_KEY = "knowledge";
 
@@ -626,16 +626,15 @@ export function assistantRowPolicyViolation(rows: AssistantRows): AssistantDecod
   return null;
 }
 
-/** Strict decoder for all five rows, including the policy rules; a retired Knowledge row is ignored. */
+/** Strict decoder for all five rows, including the policy rules. */
 export function decodeAssistantRows(
   value: unknown,
   mode: AssistantRowDecodeMode = "draft"
 ): { ok: true; rows: AssistantRows } | AssistantDecodeError {
-  const retired = isRecord(value) && Object.hasOwn(value, RETIRED_ASSISTANT_ROW_KEY) ? 1 : 0;
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== ASSISTANT_ROW_KEYS.length + retired ||
-    !hasOnlyKeys(value, [...ASSISTANT_ROW_KEYS, RETIRED_ASSISTANT_ROW_KEY])
+    Object.keys(value).length !== ASSISTANT_ROW_KEYS.length ||
+    !hasOnlyKeys(value, ASSISTANT_ROW_KEYS)
   ) {
     return { code: "assistant_rows_invalid", ok: false };
   }

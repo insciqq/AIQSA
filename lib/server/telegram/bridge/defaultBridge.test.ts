@@ -44,9 +44,6 @@ describe("default chat bridge", () => {
       "change_cancel"] as const) {
       expect(registry.callbackHandler(kind), kind).toBeTruthy();
     }
-    // Removed Agent and Workspace toggles' old buttons find no handler and answer as expired.
-    expect(registry.callbackHandler("toggle_agent")).toBeUndefined();
-    expect(registry.callbackHandler("toggle_workspace")).toBeUndefined();
     // Approvals, change messages, the Workspace status and answer files follow every run.
     expect(runListeners()).toBe(4);
     // Recovery starts at once and waits while the bot is off.

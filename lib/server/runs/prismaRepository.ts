@@ -1,7 +1,6 @@
 import { modelSearchPricing, modelSearchPricingSelect } from "../providers/modelTokenPricing";
 import { loadProviderModelCostBasis } from "../usage";
 import { loadWorkspaceInboxFacts } from "../workspace/inboxFacts";
-import { decodeSearchPlan } from "../../domain/search";
 import { decodeChatComputerBinding } from "../../contracts/computer";
 import { decodeFrozenComputerBinding } from "../tools/computerBinding";
 import { chatTitleMetadataSelect, chatTitlePending } from "../chats/titleMetadata";
@@ -1019,7 +1018,6 @@ export function createPrismaRunRepository(
           computerCwd: true,
           computerDeviceId: true,
           createdAt: true,
-          defaultSearchPlan: true,
           defaultProviderModel: {
             select: {
               activeConfig: true,
@@ -1182,7 +1180,6 @@ export function createPrismaRunRepository(
             computer: decodeChatComputerBinding({ cwd: chat.computerCwd, deviceId: chat.computerDeviceId }),
             contextStats,
             createdAt: chat.createdAt,
-            defaultSearchPlan: (() => { const decoded = decodeSearchPlan(chat.defaultSearchPlan); return decoded.ok ? decoded.plan : null; })(),
             defaultModelId: chat.defaultProviderModel?.id ?? null,
             defaultProvider: chat.defaultProviderModel?.connectionId ?? null,
             folderId: chat.folderId,

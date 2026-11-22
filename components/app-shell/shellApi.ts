@@ -290,7 +290,6 @@ export function chatSummaryFromApi(chat: WorkspaceChatSummaryWire): WorkspaceCha
     ...(chat.assistantId !== undefined ? { assistantId: chat.assistantId } : {}),
     ...(chat.computer !== undefined ? { computer: chat.computer } : {}),
     createdAt: chat.createdAt,
-    ...(chat.defaultSearchPlan ? { defaultSearchPlan: chat.defaultSearchPlan } : {}),
     defaultModelId: chat.defaultModelId ?? "",
     defaultProvider: chat.defaultProvider ?? "",
     folderId: chat.folderId,

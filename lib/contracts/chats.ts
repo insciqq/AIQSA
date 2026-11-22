@@ -2,7 +2,6 @@ import { isMemorySearchActivityOutcome, type MemorySearchActivityOutcome } from 
 import { decodeFetchUrlActivity, type FetchUrlActivityFacts } from "./fetchUrlActivity";
 import { BROWSER_HANDOFF_OUTCOMES, type BrowserHandoffOutcome } from "./browserLive";
 import { normalizeBrowserSignInHost } from "./browserSignIn";
-import { decodeSearchPlan, type SearchPlan } from "./search";
 import { foldPastChatSources, type PastChatSource } from "./pastChats";
 import { decodeRunFollowupState, type RunFollowupState } from "./runFollowups";
 import { isRunProviderWait, type RunProviderWait } from "./runs";
@@ -45,8 +44,7 @@ import {
   type AssistantRunControls,
   type AssistantSearchValue,
   type AssistantSkillsValue,
-  type AssistantToolsValue,
-  RETIRED_ASSISTANT_ROW_KEY
+  type AssistantToolsValue
 } from "./assistants";
 import { isAssistantReferenceId } from "./chatDefaults";
 import {
@@ -448,7 +446,6 @@ export type WorkspaceChatSummary = {
   computer?: ChatComputerBinding | null;
   createdAt: string;
   defaultModelId: string;
-  defaultSearchPlan?: SearchPlan | null;
   defaultProvider: string;
   folderId: string | null;
   id: string;
@@ -741,7 +738,6 @@ export type UpdateChatRequestWire = {
   /** Binds the Assistant for the next messages; null removes it. Either clears the overrides. */
   assistantId?: string | null;
   assistantOverrides?: ChatAssistantOverridesPatch;
-  defaultSearchPlan?: SearchPlan | null;
   activeLeafMessageId?: string | null;
   folderId?: string | null;
   pinned?: boolean;
@@ -1553,8 +1549,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     value.defaultModelId,
     value.defaultProvider
   );
-  const search = value.defaultSearchPlan == null ? null : decodeSearchPlan(value.defaultSearchPlan);
-  if (search && !search.ok) return null;
   const folderId = nullableId(value.folderId);
   const messageCount = nonNegativeInteger(value.messageCount);
   const title = requiredString(value.title);
@@ -1587,7 +1581,6 @@ function decodeWorkspaceChatSummaryWire(value: unknown): WorkspaceChatSummaryWir
     ...(value.hasContinuationSource === true ? { hasContinuationSource: true } : {}),
     ...importMarker,
     ...(value.titlePending === true ? { titlePending: true } : {}),
-    ...(search?.ok ? { defaultSearchPlan: search.plan } : {}),
     defaultModelId: defaultSelection.defaultModelId,
     defaultProvider: defaultSelection.defaultProvider,
     folderId,
@@ -2013,6 +2006,7 @@ function decodeArchivedChatSummary(value: unknown): ArchivedChatSummaryWire | nu
       "title",
       "updatedAt",
       ...(Object.hasOwn(value, "assistantId") ? ["assistantId"] : []),
+      // The retired per-chat Search plan of servers before v0.5.0: accepted, never read.
       ...(Object.hasOwn(value, "defaultSearchPlan") ? ["defaultSearchPlan"] : []),
       ...(Object.hasOwn(value, "hasContinuationSource") ? ["hasContinuationSource"] : []),
       ...(Object.hasOwn(value, "importSource") ? ["importSource"] : []),
@@ -2313,8 +2307,6 @@ function decodeOverrideEntries(
 ): { ok: true; value: ChatAssistantOverridesPatch } | { ok: false; row?: AssistantRowKey } {
   const decoded: Record<string, unknown> = {};
   for (const [name, entry] of Object.entries(value)) {
-    // Stored overrides and clients from before Knowledge was removed may still name its row.
-    if (name === RETIRED_ASSISTANT_ROW_KEY) continue;
     const key = decodeAssistantRowKey(name);
     if (!key) return { ok: false };
     if (entry === null && allowNull) {

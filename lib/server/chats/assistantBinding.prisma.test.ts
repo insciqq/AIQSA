@@ -146,7 +146,6 @@ async function bindingColumns(chatId: string) {
       assistantId: true,
       assistantOverrides: true,
       defaultProviderModelId: true,
-      defaultSearchPlan: true,
       updatedAt: true
     },
     where: { id: chatId }
@@ -163,11 +162,6 @@ describe("chat Assistant binding", () => {
       const chats = repository();
       const created = await chats.createChat({ title: "Bound chat", userId });
       const chatId = created!.id;
-      await chats.updateChat({
-        chatId,
-        defaultSearchPlan: { mode: "all_selected", optionIds: [] },
-        userId
-      });
       const ordinary = await bindingColumns(chatId);
 
       await expect(chats.updateChat({ assistantId: assistants.own, chatId, userId }))
@@ -202,8 +196,7 @@ describe("chat Assistant binding", () => {
       expect(removed).toMatchObject({
         assistantId: null,
         assistantOverrides: null,
-        defaultProviderModelId: ordinary.defaultProviderModelId,
-        defaultSearchPlan: ordinary.defaultSearchPlan
+        defaultProviderModelId: ordinary.defaultProviderModelId
       });
 
       // "Continue without the Assistant" also clears a deleted Assistant's marker.
@@ -286,17 +279,11 @@ describe("chat Assistant binding", () => {
         assistantOverrides: { search: { mode: "off" } }
       });
 
-      // A Knowledge override stored before Knowledge was removed is ignored and
-      // dropped by the next write.
-      await prisma.chat.update({
-        data: { assistantOverrides: { knowledge: { mode: "all_my_knowledge" }, search: { mode: "off" } } },
-        where: { id: chatId }
-      });
+      // Another row's change keeps the stored ones.
       await expect(code({ assistantOverrides: { skills: { mode: "off" } }, chatId, userId })).resolves.toBeNull();
       await expect(bindingColumns(chatId)).resolves.toMatchObject({
         assistantOverrides: { search: { mode: "off" }, skills: { mode: "off" } }
       });
-      expect((await bindingColumns(chatId)).assistantOverrides).not.toHaveProperty("knowledge");
 
       // A binding that stopped being available cannot be adjusted.
       await chats.updateChat({ assistantId: assistants.installation, chatId, userId });

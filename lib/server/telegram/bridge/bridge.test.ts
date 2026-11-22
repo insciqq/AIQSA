@@ -569,13 +569,10 @@ describe("Telegram chat bridge: commands", () => {
 
   it("answers a Workspace button of an old settings menu as expired and changes nothing", async () => {
     const h = harness();
-    // A settings menu sent before the switch was removed: its stored button row still names the retired kind.
-    await h.session.outbound.sendText({
-      chatId: h.user.id, keyboard: [[{ callback: { kind: "toggle_workspace" }, text: "Workspace: off" }]], linkId: h.linkRecord.id,
-      text: TELEGRAM_BRIDGE_COPY.settingsTitle
-    });
+    // A settings menu sent before the switch was removed: the upgrade deleted its button's row.
+    await h.session.outbound.sendText({ chatId: h.user.id, linkId: h.linkRecord.id, text: TELEGRAM_BRIDGE_COPY.settingsTitle });
     const old = h.fake.botMessages(h.user.id).at(-1)!;
-    const press = h.fake.inject.callback(h.user, old.message_id, buttonData(old, "Workspace: off"));
+    const press = h.fake.inject.callback(h.user, old.message_id, "c:RetiredWorkspaceButton");
     await h.deliver(press);
     expect(h.fake.callbackAnswer((press.callback_query as { id: string }).id)).toMatchObject({ text: TELEGRAM_COPY.buttonExpired });
     expect(h.links.records.get("user-1")).toEqual(h.linkRecord);

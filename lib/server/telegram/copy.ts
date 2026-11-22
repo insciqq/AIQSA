@@ -256,7 +256,6 @@ export function telegramAlwaysAllowedText(serverName: string): string {
 export const TELEGRAM_APPROVAL_COPY = {
   pendingModel: "This tool may change data, so nothing was sent. If you allow it, the answer continues.",
   pendingCode: "Code in the Workspace called this tool, which may change data. Nothing was sent. If you allow it, the next run repeats the script.",
-  pendingAgent: "Agent called this tool, which may change data. Nothing was sent.",
   stillRunning: "The answer is still finishing. Try again in a moment.",
   notSaved: "Your decision couldn't be saved. Try again.",
   unavailable: "This approval is no longer available."
