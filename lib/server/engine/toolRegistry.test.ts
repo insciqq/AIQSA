@@ -116,7 +116,7 @@ describe("native tool registry", () => {
       expect(without.resolve("read_past_chat")).toBeUndefined();
     }
     // A run admitted with `memory_search` before past-chat search offers neither.
-    const legacy = await buildToolRegistry(input({ request: request({ memorySearch: { version: "memory-search-v1" } }), services }));
+    const legacy = await buildToolRegistry(input({ request: request({ memorySearch: { version: "memory-search-v1" } } as unknown as Partial<ProviderRunRequest>), services }));
     expect(legacy.resolve("memory_search")).toBeUndefined();
   });
 

@@ -1267,8 +1267,7 @@ describe("published image models", () => {
     });
     const catalog = await createAdminSystemModelPolicyService(prisma, {
       loadRole: vi.fn().mockRejectedValue(new ProviderAdmissionError("model_not_available")), loadImageRole,
-      resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent, resolveChatTitleRole: absent, resolveVisionRole: absent,
-      resolveMemoryRole: absent
+      resolveRole: absent, resolveChatPdfRole: absent, resolveRerankerRole: absent, resolveChatTitleRole: absent, resolveVisionRole: absent
     }).list();
     return { catalog, loadImageRole };
   }

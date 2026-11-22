@@ -5006,7 +5006,7 @@ describe("Discord turns through the ordinary send handler", () => {
     expect(tools.some((name) => name.startsWith("sandbox_") || name.startsWith("computer_") || name === "browser_handoff")).toBe(false);
     expect(provider.requests[0]!.prompt.system).toContain(DISCORD_CONNECTOR_NOTE);
     expect(state.created).toMatchObject({ messageLimitExempt: true });
-    expect(state.created?.normalizedRequest.memorySearch).toBeUndefined();
+    expect((state.created?.normalizedRequest as Record<string, unknown> | undefined)?.memorySearch).toBeUndefined();
     expect(state.created?.normalizedRequest.mcpApproval).toBeUndefined();
   });
 
