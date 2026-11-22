@@ -80,7 +80,6 @@ class QuickSetupCatalogUnavailableError extends Error { override name = "QuickSe
 const MAX_QUICK_SETUP_PRESERVED_MODELS = 64;
 const ANTHROPIC_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001405";
 const ANTHROPIC_SEARCH_OPTION_ID = "anthropic-web-search";
-const DEEPSEEK_SEARCH_OPTION_ID = "deepseek-native-web-search";
 const OPENAI_SEARCH_OPTION_DATABASE_ID = "00000000-0000-4000-8000-000000001402";
 const OPENAI_SEARCH_OPTION_ID = "openai-native-web-search";
 const OPENAI_SEARCH_OPTION_TEMPLATE_KEY = "search:openai";
@@ -863,8 +862,6 @@ export async function lockAdminProviderQuickSetupState(
        )
        OR (${plan.provider === "anthropic"} AND
          grant_row."searchStrategy" = ${ANTHROPIC_SEARCH_OPTION_ID})
-       OR (${plan.provider === "deepseek"} AND
-         grant_row."searchStrategy" = ${DEEPSEEK_SEARCH_OPTION_ID})
        OR (${plan.provider === "openai"} AND
          grant_row."searchStrategy" = ${OPENAI_SEARCH_OPTION_ID})
        OR (${plan.provider === "gemini"} AND

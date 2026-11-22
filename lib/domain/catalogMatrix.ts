@@ -17,7 +17,6 @@ type SearchCombinationOption = {
   executionModes?: readonly SearchPlanMode[];
   kind: SearchStrategyCatalogEntry["kind"] |
     "anthropic_native_web_search" |
-    "deepseek_native_web_search" |
     "openai_native_web_search" |
     "provider_model_web_search";
   strategyId: string;

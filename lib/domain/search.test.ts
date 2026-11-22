@@ -97,7 +97,7 @@ describe("automatic Search source", () => {
 
   it("runs only OpenAI hosted Search inside a tool-calling answer", () => {
     expect(hostedSearchProtocolUsable("openai_responses_web_search")).toBe(true);
-    for (const protocol of ["anthropic_web_search", "gemini_google_search", "deepseek_responses_web_search"]) {
+    for (const protocol of ["anthropic_web_search", "gemini_google_search"]) {
       expect(hostedSearchProtocolUsable(protocol)).toBe(false);
     }
   });

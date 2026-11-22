@@ -593,14 +593,13 @@ describe("AdminSearchSection", () => {
   it("adds the DeepSeek Search API on a DeepSeek connection with its own name and query bound", async () => {
     const deepSeek = {
       connectionDisplayName: "DeepSeek", connectionId: "conn-deepseek", displayName: "DeepSeek V4 Flash", enabled: true,
-      id: "model-flash", responseTimeoutSeconds: 300, searchReasoningSupported: true
+      id: "model-flash", responseTimeoutSeconds: 300, searchReasoningSupported: false
     } as const;
     state.current = {
       ...state.current,
       providerModels: [
         ...state.current.providerModels,
-        { ...deepSeek, searchKind: "deepseek_web_search" },
-        { ...deepSeek, searchKind: "deepseek_search_api", searchReasoningSupported: false }
+        { ...deepSeek, searchKind: "deepseek_search_api" }
       ]
     };
     const calls = mockFetch(state, ({ method, url }) => method === "POST" && url === "/api/admin/search"

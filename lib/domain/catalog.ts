@@ -63,7 +63,7 @@ export type SearchStrategyRouteCatalogEntry = {
   config: Record<string, unknown>;
   credentialMode: "answer_provider" | "provider_model";
   executionModes: readonly SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
   physicalStrategyId: string;
   protocol: SearchProtocol;
   providerModelId?: string;

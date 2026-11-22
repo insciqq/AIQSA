@@ -453,11 +453,10 @@ type ProviderSearchPolicy = Readonly<{
   displayName: string;
   description: string;
   hostedId: string;
-  hostedKind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search";
+  hostedKind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search";
   hostedStrategyId: string;
   modelAdapterKind:
     | "anthropic_messages"
-    | "deepseek_responses_native"
     | "gemini_interactions_native"
     | "openai_responses_compatible"
     | "openai_responses_native";
@@ -465,8 +464,8 @@ type ProviderSearchPolicy = Readonly<{
   optionKind: "gemini_google_search" | "web_search";
   optionRowId: string;
   optionTemplateKey: string | null;
-  protocol: "anthropic_web_search" | "deepseek_responses_web_search" | "gemini_google_search" | "openai_responses_web_search";
-  provider: "anthropic" | "deepseek" | "gemini" | "openai" | "openai_compatible";
+  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search";
+  provider: "anthropic" | "gemini" | "openai" | "openai_compatible";
 }>;
 
 function providerSearchPolicy(connection: Readonly<{
@@ -557,7 +556,7 @@ async function publishProviderSearchRoute(
     draft: AdminSearchDraft;
     evidence: Record<string, unknown>;
     existing: null | Readonly<{ draft: unknown; id: string }>;
-    kind: "anthropic_native_web_search" | "deepseek_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
+    kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
     modelId: string | null;
     now: Date;
     option: Readonly<{ description: string; displayName: string; id: string }>;

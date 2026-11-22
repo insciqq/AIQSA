@@ -1,14 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ValidatedSearchQuery } from "../../domain/search";
 import { buildDeepSeekResponsesRequest } from "./deepSeekResponsesRequest";
 import {
   createDeepSeekResponsesAdapter
 } from "./deepSeekResponses";
-import {
-  buildDeepSeekResponsesSearchRequest,
-  createDeepSeekResponsesSearchAdapter,
-  lowestSupportedDeepSeekSearchEffort
-} from "./deepSeekResponsesSearch";
 import {
   createFetchDeepSeekResponsesClient,
   DeepSeekHttpError,
@@ -18,7 +12,7 @@ import {
 import { modelCallRetryDecision } from "../engine/modelCall";
 import { providerResponseFailure } from "./responseFailure";
 import { markProviderStreamDrop } from "./streamDrop";
-import { ProviderSearchExecutionError, type ProviderRunRequest, type ProviderSearchRequest } from "./types";
+import type { ProviderRunRequest } from "./types";
 import { observedFailure } from "./providerObservability";
 import {
   buildDeepSeekResponsesStructuredOutputRequest,
@@ -89,6 +83,7 @@ describe("DeepSeek Responses provider", () => {
         [{ content: [{ text: "private reasoning", type: "reasoning_text" }], type: "reasoning" }],
         { call_id: "call-1", output: "tool output", type: "function_call_output" }
       ],
+      // DeepSeek's hosted Search is retired (2026-10-24): a plan frozen with it declares no hosted tool.
       searchPlan: {
         mode: "model_choice",
         options: [{
@@ -98,7 +93,7 @@ describe("DeepSeek Responses provider", () => {
           executionModes: ["model_choice"],
           modelId: null,
           optionId: "deepseek-native-web-search",
-          protocol: "deepseek_responses_web_search",
+          protocol: "deepseek_responses_web_search" as ProviderRunRequest["searchPlan"]["options"][number]["protocol"],
           provider: "deepseek",
           providerModelId: null,
           revisionId: "revision-deepseek",
@@ -117,7 +112,6 @@ describe("DeepSeek Responses provider", () => {
 
     expect(body.input).toHaveLength(5);
     expect(body.tools).toEqual([
-      { type: "web_search" },
       {
         description: longDescription,
         name: "mcp__search",
@@ -335,86 +329,6 @@ describe("DeepSeek Responses provider", () => {
     expect(result.providerResponseId).toBe("response-stream");
   });
 
-  it("accepts confirmed DeepSeek web search without inventing source URLs", async () => {
-    let requestBody: Record<string, unknown> | undefined;
-    const client: DeepSeekResponsesClient = {
-      create: async (body) => {
-        requestBody = body;
-        return {
-          id: "response-search",
-          output: [
-            { id: "search-1", status: "completed", type: "web_search_call" },
-            { content: [{ text: "Verified finding", type: "output_text" }], type: "message" }
-          ],
-          status: "completed",
-          usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 }
-        };
-      },
-      stream: async () => { throw new Error("unexpected stream"); }
-    };
-    const searchRequest: ProviderSearchRequest = {
-      correlationId: "search-test",
-      query: "official DeepSeek" as ValidatedSearchQuery,
-      searchPolicy: {
-        maxOutputTokens: 1_024,
-        modelCapabilities: {
-          nativePdfInput: false,
-          nativeSearch: true,
-          pdf: true,
-          reasoning: true,
-          reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          vision: false
-        },
-        modelId: "deepseek-v4-pro",
-        provider: "deepseek",
-        reasoningPolicy: "lowest_supported",
-        strategyId: "deepseek-responses-web-search"
-      },
-      strategyId: "deepseek-native-web-search"
-    };
-    const result = await createDeepSeekResponsesSearchAdapter({ client }).search(searchRequest);
-    expect(result).toMatchObject({
-      findings: "Verified finding",
-      sourceAttribution: "provider_unavailable",
-      sources: [],
-      // DeepSeek reports its search calls; it publishes no fee, so only a configured price charges them.
-      usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6, webSearchCount: 1 }
-    });
-    expect(requestBody).toMatchObject({
-      tool_choice: "auto",
-      tools: [{ type: "web_search" }]
-    });
-    expect(result.artifacts).toMatchObject([{
-      data: { payload: { provider: "deepseek", sourceAttribution: "provider_unavailable" } }
-    }]);
-  });
-
-  it.each([
-    { efforts: undefined, expected: { effort: "none" }, label: "a row without listed efforts takes the model's lowest level" },
-    { efforts: ["low", "high"], expected: { effort: "low" }, label: "listed efforts win" },
-    { efforts: undefined, expected: undefined, label: "no reasoning sends no effort", reasoning: false }
-  ])("asks DeepSeek Search for the lowest effort: $label", ({ efforts, expected, reasoning = true }) => {
-    // Without an explicit effort DeepSeek thinks by default and often answers
-    // a simple query without searching (observed on deepseek-v4-pro, 2026-10-18).
-    const body = buildDeepSeekResponsesSearchRequest({
-      correlationId: "search-test",
-      query: "OpenAI official website" as ValidatedSearchQuery,
-      searchPolicy: {
-        maxOutputTokens: 1_024,
-        modelCapabilities: { nativePdfInput: false, nativeSearch: true, pdf: true, reasoning,
-          ...(efforts ? { reasoningEfforts: efforts } : {}), vision: false },
-        modelId: "deepseek-v4-pro",
-        provider: "deepseek",
-        reasoningPolicy: "lowest_supported",
-        strategyId: "deepseek-responses-web-search"
-      },
-      strategyId: "deepseek-native-web-search"
-    });
-    expect(body.reasoning).toEqual(expected);
-    expect(lowestSupportedDeepSeekSearchEffort({ nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true,
-      vision: false }, "custom-deepseek-model")).toBe("none");
-  });
-
   it("marks hosted Search artifacts as source-unavailable in ordinary answers", async () => {
     const client: DeepSeekResponsesClient = {
       create: async () => ({
@@ -493,18 +407,6 @@ describe("DeepSeek non-completed responses", () => {
       usage: { input_tokens: 9, output_tokens: 10 } })).error).code).not.toBe("provider_budget_exhausted");
   });
 
-  it("names the exhausted budget cause of an incomplete Search response", async () => {
-    const search = createDeepSeekResponsesSearchAdapter({ client: client({ id: "search-cap", output: reasoningOnly,
-      status: "incomplete", usage: { input_tokens: 4, output_tokens: 1_024 } }) });
-    const error = await search.search({ correlationId: "search-test", query: "official DeepSeek" as ValidatedSearchQuery,
-      searchPolicy: { maxOutputTokens: 1_024, modelCapabilities: { nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true,
-        reasoningEfforts: ["none", "minimal", "low", "medium", "high", "xhigh", "max"], vision: false },
-      modelId: "deepseek-v4-pro", provider: "deepseek", reasoningPolicy: "lowest_supported", strategyId: "deepseek-responses-web-search" },
-      strategyId: "deepseek-native-web-search" }).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(ProviderSearchExecutionError);
-    expect(error).toMatchObject({ code: "deepseek_response_incomplete", providerStatus: "incomplete", reason: "max_output_tokens" });
-    expect(observedFailure(error)).toMatchObject({ cause: "max_output_tokens", reason: "safety_limit" });
-  });
 });
 
 describe("DeepSeek failure naming", () => {

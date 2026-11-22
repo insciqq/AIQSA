@@ -186,6 +186,9 @@ export function searchExecutionsFromToolResult(
         ? value.sourceAttribution
         : null;
     if (sourceAttribution === null) return [];
+    // DeepSeek's hosted Search, retired 2026-10-24, returned findings without
+    // source links. Its stored results keep decoding, so the transcripts of
+    // the answers that used it still rehydrate; nothing writes them any more.
     const providerSourcesUnavailable =
       sourceAttribution === "provider_unavailable" &&
       value.provider === "deepseek" &&

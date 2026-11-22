@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import { SEARCH_NO_RESULTS_FINDINGS } from "../search/evidence";
 import {
-  createDeepSeekSearchAdapter,
   createDeepSeekSearchApiAdapter,
   createFetchDeepSeekSearchApiClient,
   createSlidingWindowRateLimiter,
@@ -282,6 +281,11 @@ describe("DeepSeek binding Search adapter", () => {
     expect(searched.sources.map((source) => source.url)).toEqual(["https://example.com/page-1"]);
     expect(String(fetchFn.mock.calls[0]?.[0])).toBe("https://api.deepseek.com/v1/tools/search");
     expect(new Headers(fetchFn.mock.calls[0]?.[1]?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
+  });
+
+  it("refuses the retired hosted Search policy without a request, even on a model with native Search", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () => json({ results: [result(1)] }));
+    const runtime = createProviderRuntimeBinding({ options: { allowFake: false, fetchFn }, secret: KEY, snapshot: snapshot(true) });
     await expect(runtime.searchAdapter!.search({
       ...request(),
       searchPolicy: {
@@ -291,19 +295,8 @@ describe("DeepSeek binding Search adapter", () => {
         provider: "deepseek",
         reasoningPolicy: "lowest_supported",
         strategyId: "deepseek-responses-web-search"
-      }
-    })).rejects.toThrow("search_adapter_not_available");
-  });
-
-  it("routes each policy to its own adapter", async () => {
-    const responses = { buildRequestPreview: vi.fn(() => ({})), search: vi.fn(async () => { throw new Error("hosted"); }) };
-    const searchApi = { buildRequestPreview: vi.fn(() => ({})), search: vi.fn(async () => { throw new Error("api"); }) };
-    const routed = createDeepSeekSearchAdapter({ responses, searchApi });
-    await expect(routed.search(request())).rejects.toThrow("api");
-    await expect(routed.search({ ...request(), searchPolicy: {
-      maxOutputTokens: 1_024, modelCapabilities: hostedCapabilities, modelId: "deepseek-v4-flash",
-      provider: "deepseek", reasoningPolicy: "lowest_supported", strategyId: "deepseek-responses-web-search"
-    } })).rejects.toThrow("hosted");
-    expect(createDeepSeekSearchAdapter({ searchApi }).buildRequestPreview).toBeDefined();
+      } as unknown as ProviderSearchRequest["searchPolicy"]
+    })).rejects.toThrow("deepseek_search_policy_invalid");
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });

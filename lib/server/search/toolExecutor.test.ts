@@ -124,7 +124,6 @@ function runtime(input: Readonly<{
   onOptions?(options: ProviderSearchOptions | undefined): void;
   onRequest?(request: ProviderSearchRequest): void;
   responseTimeoutMs?: number;
-  sourceAttribution?: "available" | "provider_unavailable";
   sources?: readonly SearchSource[];
   sourceUrl?: string;
 }> = {}): ProviderRuntimeBinding {
@@ -156,7 +155,6 @@ function runtime(input: Readonly<{
           },
           findings: input.findings ?? `Finding from ${modelId}`,
           requestPreview: { queryCharacters: request.query.length },
-          ...(input.sourceAttribution ? { sourceAttribution: input.sourceAttribution } : {}),
           sources: input.sources ?? [{
             rank: 1,
             title: `Source ${modelId}`,
@@ -282,26 +280,34 @@ describe("Search execution diagnostics", () => {
     ]);
   });
 
-  it("reports returned engine failures and allowed source-less evidence without a run failure", async () => {
+  it("reports returned engine failures and a retired frozen protocol without a run failure", async () => {
     const records = captureToolEvents();
     const failure = Object.assign(new ProviderSearchExecutionError({
       artifacts: [], code: "openai_response_incomplete", providerStatus: "incomplete",
       reason: "max_output_tokens", usage: { inputTokens: 2 }
     }), { statusCode: 503 });
+    const retiredRequest = vi.fn();
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [option("failed"), option("deepseek", {
-        protocol: "deepseek_responses_web_search", provider: "deepseek"
-      })] },
-      runtimes: { failed: runtime({ fail: failure }), deepseek: runtime({
-        findings: "PRIVATE_FINDINGS_CANARY", sourceAttribution: "provider_unavailable", sources: []
-      }) }
+        // DeepSeek's hosted Search, retired 2026-10-24, in a plan frozen before then.
+        protocol: "deepseek_responses_web_search" as NormalizedSearchPlanOption["protocol"], provider: "deepseek"
+      }), option("working")] },
+      runtimes: { failed: runtime({ fail: failure }), deepseek: runtime({ onRequest: retiredRequest }),
+        working: runtime({ findings: "PRIVATE_FINDINGS_CANARY" }) }
     })!;
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
     expect(result.status).toBe("complete");
+    expect(retiredRequest).not.toHaveBeenCalled();
+    expect(searchExecutionsFromToolResult(result).map(({ failure: failed, optionId, status }) =>
+      ({ code: failed?.code, optionId, status }))).toEqual([
+      { code: "openai_response_incomplete", optionId: "failed", status: "error" },
+      { code: "search_protocol_not_supported", optionId: "deepseek", status: "error" },
+      { code: undefined, optionId: "working", status: "complete" }
+    ]);
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
       stage: "execution", engine_index: 1, outcome: "failed", code: "openai_response_incomplete", httpStatus: 503 }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
-      stage: "execution", engine_index: 2, outcome: "degraded", code: "provider_sources_unavailable", action: "degrade" }));
+      stage: "execution", engine_index: 2, outcome: "failed", code: "search_protocol_not_supported" }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result", outcome: "degraded" }));
     expect(JSON.stringify(records())).not.toContain("PRIVATE_FINDINGS_CANARY");
     expect(records().some(record => record.event === "run_execution")).toBe(false);
@@ -776,51 +782,13 @@ describe("Search plan tool router", () => {
     expect(JSON.stringify(result)).not.toContain("javascript:");
   });
 
-  it("accepts source-less evidence only for the dedicated DeepSeek protocol", async () => {
-    const selected = option("deepseek-source-less", {
-      protocol: "deepseek_responses_web_search",
-      provider: "deepseek"
-    });
+  it("rejects source-less findings from every engine", async () => {
     const router = createSearchPlanToolRouter({
-      plan: { mode: "model_choice", options: [selected] },
-      runtimes: {
-        "deepseek-source-less": runtime({
-          sourceAttribution: "provider_unavailable",
-          sources: []
-        })
-      }
-    });
-    if (!router) throw new Error("expected Search router");
-
-    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
-    expect(result.status).toBe("complete");
-    expect(result.content[0]).toMatchObject({
-      text: expect.stringContaining("provider_sources_unavailable")
-    });
-    expect(searchExecutionsFromToolResult(result)).toEqual([
-      expect.objectContaining({
-        provider: "deepseek",
-        protocol: "deepseek_responses_web_search",
-        sourceAttribution: "provider_unavailable",
-        sources: [],
-        status: "complete",
-        warning: "provider_sources_unavailable"
-      })
-    ]);
-
-    const wrongProvider = createSearchPlanToolRouter({
-      plan: { mode: "model_choice", options: [option("wrong-provider")] },
-      runtimes: {
-        "wrong-provider": runtime({
-          sourceAttribution: "provider_unavailable",
-          sources: []
-        })
-      }
+      plan: { mode: "model_choice", options: [option("source-less")] },
+      runtimes: { "source-less": runtime({ sources: [] }) }
     })!;
-    const rejected = await wrongProvider.execute(
-      call(wrongProvider.tools[0]!.name),
-      answerRequest()
-    );
+    const rejected = await router.execute(call(router.tools[0]!.name), answerRequest());
+    expect(rejected.status).toBe("error");
     expect(searchExecutionsFromToolResult(rejected)).toEqual([
       expect.objectContaining({
         failure: { code: "search_sources_invalid" },

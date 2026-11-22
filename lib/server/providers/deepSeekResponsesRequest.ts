@@ -193,11 +193,9 @@ function buildBody(
     input.push(...continuationItems(request.providerToolMessages, options.preview));
   }
 
-  const hostedTools = deepSeekResponsesToolBridge.serializeHostedTools?.(request) ?? [];
-  const functionTools = (request.tools ?? []).map(
+  const tools = (request.tools ?? []).map(
     (tool) => deepSeekResponsesToolBridge.serializeTool(tool).tool
   );
-  const tools = [...hostedTools, ...functionTools];
   const instructions = providerInstructionsWithPersonalContext(request, options.preview);
   const effort = params.reasoning.effort;
   return {

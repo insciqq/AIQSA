@@ -1,15 +1,12 @@
 import { normalizeTokenUsage } from "../lib/domain/usage";
 import { existsSync, readFileSync } from "node:fs";
 import sharp from "sharp";
-import type { ValidatedSearchQuery } from "../lib/domain/search";
 import { createAdminProviderCredentialTester } from
   "../lib/server/admin/providers/credentialTester";
 import {
   createDeepSeekResponsesAdapter,
   createFetchDeepSeekResponsesClient
 } from "../lib/server/providers/deepSeekResponses";
-import { createDeepSeekResponsesSearchAdapter } from
-  "../lib/server/providers/deepSeekResponsesSearch";
 import { DeepSeekHttpError } from "../lib/server/providers/deepSeekResponsesTransport";
 import { createProviderSafeFetch } from "../lib/server/providers/providerSafeFetch";
 import {
@@ -268,33 +265,10 @@ async function main(): Promise<void> {
     checks.vision = vision.finalText.trim() === "AIQSA_VISION_OK";
     if (!checks.vision) throw new Error("deepseek_smoke_vision_mismatch");
 
-    stage = "search";
-    const search = await createDeepSeekResponsesSearchAdapter({ client }).search({
-      correlationId: "deepseek-smoke-search",
-      query: "What is the title of the DeepSeek API documentation home page?" as ValidatedSearchQuery,
-      searchPolicy: {
-        maxOutputTokens: 1_024,
-        modelCapabilities: capabilities,
-        modelId: "deepseek-v4-pro",
-        provider: "deepseek",
-        reasoningPolicy: "lowest_supported",
-        strategyId: "deepseek-responses-web-search"
-      },
-      strategyId: "deepseek-smoke-search"
-    }, { timeoutMs: connection.responseTimeoutMs });
-    checks.search = search.findings.length > 0 &&
-      search.sourceAttribution === "provider_unavailable" &&
-      search.sources.length === 0;
-    const searchTokens = normalizeTokenUsage(search.usage).totalTokens;
-    if (searchTokens === null) throw new Error("deepseek_smoke_usage_unavailable");
-    aggregateTokens += searchTokens;
-    if (!checks.search) throw new Error("deepseek_smoke_search_mismatch");
-
     console.log(JSON.stringify({
       aggregateTokens,
       checks,
       officialModelCount: observedModels.length,
-      sourceUrlsAvailable: false,
       status: "passed"
     }, null, 2));
   } catch (error) {

@@ -191,8 +191,9 @@ export function providerModelCatalogAuthorityInclude(userId: string) {
 }
 
 const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["kind"]>([
-  // People choose it as web search; its stored kind keeps it a separate
-  // source beside the same DeepSeek connection's hosted Search.
+  // People choose it as web search; its stored kind keeps it apart from a
+  // `web_search` source on the same connection, such as the archived rows of
+  // DeepSeek's retired hosted Search.
   ["deepseek_search_api", "web_search"],
   ["gemini_google_search", "gemini_google_search"],
   ["none", "none"],
@@ -454,7 +455,6 @@ function routeBelongsToOption(
 ): boolean {
   if (storedKind === "web_search") {
     return route.protocol === "anthropic_web_search" ||
-      route.protocol === "deepseek_responses_web_search" ||
       route.protocol === "openai_responses_web_search";
   }
   if (storedKind === "deepseek_search_api") {

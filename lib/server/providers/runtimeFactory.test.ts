@@ -529,8 +529,8 @@ describe("provider runtime factory", () => {
     })).toThrow("provider_safe_fetch_required");
   });
 
-  // DeepSeek's hosted Search keeps this rule inside its binding's Search
-  // adapter (deepSeekSearchApi.test.ts); the binding also carries the API.
+  // A DeepSeek binding always carries the DeepSeek Search API, whose model
+  // only lends its key (deepSeekSearchApi.test.ts).
   it.each([
     "anthropic_messages",
     "gemini_interactions_native",

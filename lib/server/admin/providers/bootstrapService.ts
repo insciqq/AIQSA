@@ -15,7 +15,7 @@ import { DEFAULT_DECISION_FEATURES, JEV_MODEL_ID } from "../../../domain/decisio
 
 const searchProtocols = {
   anthropic_web_search: "anthropic_web_search", deepseek_search_api: "deepseek_search_api",
-  deepseek_web_search: "deepseek_responses_web_search", gemini_google_search: "gemini_google_search",
+  gemini_google_search: "gemini_google_search",
   perplexity_search: "openrouter_perplexity_chat", web_search: "openai_responses_web_search"
 } as const satisfies Record<AdminSearchProviderModelOption["searchKind"], AdminSearchDraft["protocol"]>;
 

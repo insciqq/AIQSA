@@ -83,17 +83,6 @@ export function adminSearchProviderPolicy(input: Readonly<{
       strategyId: DEEPSEEK_SEARCH_API_STRATEGY_ID
     };
   }
-  if (input.draft.protocol === "deepseek_responses_web_search") {
-    if (input.provider !== "deepseek") throw new Error("search_protocol_not_supported");
-    return {
-      maxOutputTokens: maxOutputTokens,
-      modelCapabilities: input.capabilities,
-      modelId: input.modelId,
-      provider: "deepseek",
-      reasoningPolicy: input.draft.reasoningPolicy,
-      strategyId: "deepseek-responses-web-search"
-    };
-  }
   if (input.draft.protocol === "anthropic_web_search") {
     if (input.provider !== "anthropic") throw new Error("search_protocol_not_supported");
     return {
@@ -229,18 +218,13 @@ export function createAdminSearchTester(prisma: PrismaClient, options: Readonly<
         });
         deadline.signal.throwIfAborted();
         const normalizedSourceCount = result.sources.length;
-        const providerSourcesUnavailable = draft.protocol === "deepseek_responses_web_search" &&
-          result.sourceAttribution === "provider_unavailable";
 
         return {
           method: "provider_search",
           normalizedSourceCount,
           probeBinding: role.authority,
           protocol: draft.protocol,
-          ...(providerSourcesUnavailable ? { sourceAttribution: "provider_unavailable" as const } : {}),
-          status: normalizedSourceCount > 0 || providerSourcesUnavailable
-            ? "available"
-            : "unavailable"
+          status: normalizedSourceCount > 0 ? "available" : "unavailable"
         };
       } finally {
         deadline.clear();

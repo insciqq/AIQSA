@@ -6,7 +6,6 @@ export type SearchAdapterKind = "answer_provider_hosted" | "provider_model_clien
 export type SearchCredentialMode = "answer_provider" | "provider_model";
 export type SearchProtocol =
   | "anthropic_web_search"
-  | "deepseek_responses_web_search"
   | "deepseek_search_api"
   | "gemini_google_search"
   | "openai_responses_web_search"
