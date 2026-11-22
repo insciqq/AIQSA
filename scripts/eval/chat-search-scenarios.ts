@@ -34,6 +34,7 @@
  *   docker compose -f docker-compose.dev.yml exec -T -e AIQSA_STATEFUL_TEST_TARGET=DISPOSABLE \
  *     -e AIQSA_CHAT_SEARCH_SCENARIOS=DISPOSABLE app npx tsx scripts/eval/chat-search-scenarios.ts
  */
+import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { writeSync } from "node:fs";
 import { performance } from "node:perf_hooks";
@@ -176,6 +177,11 @@ async function cleanup(created: Created): Promise<Readonly<{ ok: boolean; step?:
   if (owners.length === 0) return { ok: true };
   const steps: Array<[string, () => Promise<unknown>]> = [
     ["usage", () => prisma.usageEvent.deleteMany({ where: { userId: { in: owners } } })],
+    // A Temporary chat is deleted only after its deadline (`aiqsa_temporary_chat_delete_guard`): move it into the past.
+    ["temporary", () => prisma.$executeRaw`
+      UPDATE "Chat" SET "createdAt" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '2 days',
+        "temporaryRetentionDeadline" = (clock_timestamp() AT TIME ZONE 'UTC') - INTERVAL '1 minute'
+      WHERE "userId" IN (${Prisma.join(owners)}) AND "memoryMode" = 'TEMPORARY'::"MemoryChatMode"`],
     ["chats", () => prisma.chat.deleteMany({ where: { userId: { in: owners } } })],
     ["attachments", () => prisma.attachment.deleteMany({ where: { userId: { in: owners } } })],
     ["users", () => prisma.user.deleteMany({ where: { id: { in: owners } } })]
