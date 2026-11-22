@@ -81,6 +81,8 @@ const SOURCE_SIZES: readonly CaptureSize[] = [{ height: 900, width: 1440 }, { he
 const DEFAULTS_SELECT = {
   defaultMcpMode: true, defaultProviderModelId: true, defaultSearchPlan: true, defaultSkillsMode: true, defaultWorkspaceEnabled: true
 } satisfies Prisma.UserSettingsSelect;
+/** The Temporary chat retention policy the composer shows and sends (`lib/contracts/memoryClient.ts`). */
+const TEMPORARY_RETENTION_POLICY_VERSION = "temporary-24h-v1";
 /** 4200 as an answer may write it: 4200, 4 200, 4,200 or 4.200. */
 const BUDGET = /4[\s.,\u00a0\u202f]?200/u;
 
@@ -280,7 +282,10 @@ async function apiTurn(request: APIRequestContext, chatId: string, text: string,
     content: { blocks: [{ text, type: "text" }] }, expectedActiveLeafId: leaf, mcp: { mode: "off" }, modelId: model().modelId,
     params: model().params, provider: model().connectionId, searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" },
     timeZone: "UTC", workspace: { enabled: false },
-    ...(options.temporary ? { chatMode: "TEMPORARY", personalDraft: { folderId: null, memoryMode: "TEMPORARY" } } : {})
+    // What the composer's Temporary Chat sends with a new chat's first message (`temporaryAdmissionPayload` in
+    // `components/app-shell/messageRunActions.ts`): the mode with the retention policy it was shown, and the draft.
+    ...(options.temporary ? { chatMode: "TEMPORARY", personalDraft: { folderId: null, memoryMode: "TEMPORARY" },
+      temporaryRetentionPolicyVersion: TEMPORARY_RETENTION_POLICY_VERSION } : {})
   } });
   expect(response.ok(), `the turn is accepted (${response.status()})`).toBe(true);
   await response.body();
@@ -366,6 +371,8 @@ async function attachShots(testInfo: TestInfo, shots: readonly { path: string }[
 }
 
 const ACCEPT_VERB = { add: "Remember", remove: "Forget", replace: "Update" } as const;
+/** A dismissed offer's heading by its operation (`offerDismissed` in `components/app-shell/memoryNoteUiCopy.ts`). */
+const DISMISSED_HEADING = { add: "Not remembered", remove: "Not changed", replace: "Not changed" } as const;
 
 // ---------------------------------------------------------------------------
 
@@ -546,7 +553,7 @@ test("lasting context said in passing is only offered, and written only after Re
       const card = page.locator("[data-resource='memory_note']").first();
       await expect(card.getByRole("button", { name: "No thanks" })).toBeVisible({ timeout: 60_000 });
       await card.getByRole("button", { name: "No thanks" }).click();
-      await expect(page.getByRole("listitem", { name: "Not changed" })).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByRole("listitem", { name: DISMISSED_HEADING[secondOffers[0]!.operation] })).toBeVisible({ timeout: 60_000 });
       const status = await (await request.get(`/api/me/memory/offers/${secondOffers[0]!.offerId}`)).json() as { state?: unknown };
       stand.evidence.dismissedState = typeof status.state === "string" ? status.state : null;
       expect((await readNote(request)).revision, "No thanks wrote nothing").toBe(beforeSecond.revision);
@@ -573,8 +580,14 @@ test("past-chat search finds an earlier chat by its facts, by a paraphrase, and 
   await scenario(page.request, testInfo, "past-chat-search", async (stand) => {
     const request = page.request;
     const chatA = await newChat(request, stand, `Campaign notes ${randomUUID().slice(0, 8)}`);
-    const recorded = await apiTurn(request, chatA, "For the record: campaign code QX-7731, winter launch, budget 4200 EUR, owner Mira.");
-    stand.evidence.recorded = turnFacts(recorded);
+    // Ordinary work the model answers, not a request to keep anything ("for the record" read as a remember request).
+    const recorded = await apiTurn(request, chatA,
+      "Draft a three-line kickoff note for campaign QX-7731: winter launch, budget 4200 EUR, owner Mira.");
+    stand.evidence.recorded = { ...turnFacts(recorded), manageMemoryCalls: callsOf(recorded, MANAGE_MEMORY_TOOL_NAME).length };
+    // Chat B must find the facts in chat A, never in the note: a note change the model made anyway is undone first.
+    stand.evidence.noteClearedBeforeSearch = (await readNote(request)).text !== "";
+    const cleared = await writeNote(request, "");
+    expect(cleared.text === "" && !/QX-7731/iu.test(cleared.text), "the note holds nothing about the campaign before chat B").toBe(true);
     const indexStarted = Date.now();
     const passages = await pollUntil(INDEX_WAIT_MS, async () => {
       const count = await prisma.chatSearchPassage.count({ where: { chatId: chatA } });
