@@ -94,6 +94,12 @@ const eslintConfig = [
     rules: {
       "aiqsa-architecture/architecture-boundaries": architectureBoundary("providers")
     }
+  },
+  {
+    files: [`lib/server/redaction/${architectureModules}`],
+    rules: {
+      "aiqsa-architecture/architecture-boundaries": architectureBoundary("redaction")
+    }
   }
 ];
 

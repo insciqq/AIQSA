@@ -1,4 +1,4 @@
-import { redactMemorySecrets } from "../memory/explicit/secretParser";
+import { redactSecrets } from "../redaction/secrets";
 
 /**
  * Secret redaction for everything Discord Connect sends out (PRD D-22, O-12):
@@ -120,9 +120,9 @@ function afterUrlScheme(text: string, start: number): boolean {
     (lead.endsWith("://") || text.startsWith("//", start));
 }
 
-/** Spans worth removing: the Memory parser's redacting spans, its high-entropy runs right after `=` or `:`, the label rules. */
+/** Spans worth removing: the secret parser's redacting spans, its high-entropy runs right after `=` or `:`, the label rules. */
 function secretRanges(text: string): Range[] {
-  const parsed = redactMemorySecrets(text);
+  const parsed = redactSecrets(text);
   const ranges: Range[] = parsed.spans.map(span => ({ start: span.start, end: span.end }));
   for (const span of parsed.detections) {
     if (span.finding !== "HIGH_ENTROPY_TOKEN") continue;
@@ -164,5 +164,5 @@ export function redactOutgoing(text: string): DiscordRedaction {
 
 /** True when a server-provided address carries a recognized secret (a token, a JWT, credentials). */
 export function containsOutgoingSecret(text: string): boolean {
-  return redactMemorySecrets(text).containsSecret;
+  return redactSecrets(text).containsSecret;
 }

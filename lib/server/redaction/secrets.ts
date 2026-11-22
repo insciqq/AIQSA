@@ -1,13 +1,17 @@
 /**
- * Local, format-aware secret screening for Memory text.
+ * Local, format-aware secret screening for text that leaves the chat: stored
+ * or embedded derivatives, provider requests and public sinks.
  *
  * This parser deliberately does not inspect semantic labels (for example,
  * words such as "password" or "token").  It only recognizes syntax with a
  * documented format/checksum or a conservative structural entropy rule.  The
- * result is used before any Memory derivative or provider request is created.
+ * result is used before any derivative or provider request is created.
+ *
+ * The thrown error codes keep their historical `memory_` prefix so behavior
+ * stays byte-identical for existing callers.
  */
 
-export const MEMORY_SECRET_FINDINGS = [
+export const SECRET_FINDINGS = [
   "CREDENTIAL_URL",
   "HIGH_ENTROPY_TOKEN",
   "JSON_WEB_TOKEN",
@@ -17,33 +21,33 @@ export const MEMORY_SECRET_FINDINGS = [
   "RECOVERY_CODE"
 ] as const;
 
-export type MemorySecretFinding = (typeof MEMORY_SECRET_FINDINGS)[number];
+export type SecretFinding = (typeof SECRET_FINDINGS)[number];
 
-export type MemorySecretConfidence = "HIGH" | "LOW" | "MEDIUM";
-export type MemorySecretDetectorClass =
+export type SecretConfidence = "HIGH" | "LOW" | "MEDIUM";
+export type SecretDetectorClass =
   | "CHECKSUM"
   | "HEURISTIC_ENTROPY"
   | "KNOWN_FORMAT"
   | "STRUCTURAL_FORMAT";
-export type MemorySecretPolicyAction = "AUDIT_ONLY" | "REDACT";
+export type SecretPolicyAction = "AUDIT_ONLY" | "REDACT";
 
-export type MemorySecretParseResult = Readonly<{
+export type SecretParseResult = Readonly<{
   containsSecret: boolean;
-  findings: readonly MemorySecretFinding[];
-  spans: readonly MemorySecretSpan[];
+  findings: readonly SecretFinding[];
+  spans: readonly SecretSpan[];
 }>;
 
-export type MemorySecretSpan = Readonly<{
-  action: MemorySecretPolicyAction;
-  confidence: MemorySecretConfidence;
-  detectorClass: MemorySecretDetectorClass;
+export type SecretSpan = Readonly<{
+  action: SecretPolicyAction;
+  confidence: SecretConfidence;
+  detectorClass: SecretDetectorClass;
   end: number;
-  finding: MemorySecretFinding;
+  finding: SecretFinding;
   placeholder: string;
   start: number;
 }>;
 
-export type MemorySecretSourceMapEntry = Readonly<{
+export type SecretSourceMapEntry = Readonly<{
   kind: "REDACTION" | "SOURCE";
   outputEnd: number;
   outputStart: number;
@@ -51,23 +55,23 @@ export type MemorySecretSourceMapEntry = Readonly<{
   sourceStart: number;
 }>;
 
-export type MemorySecretRedactionResult = Readonly<{
+export type SecretRedactionResult = Readonly<{
   containsSecret: boolean;
-  detections: readonly MemorySecretSpan[];
-  findings: readonly MemorySecretFinding[];
+  detections: readonly SecretSpan[];
+  findings: readonly SecretFinding[];
   redactedText: string;
-  sourceMap: readonly MemorySecretSourceMapEntry[];
-  spans: readonly MemorySecretSpan[];
+  sourceMap: readonly SecretSourceMapEntry[];
+  spans: readonly SecretSpan[];
 }>;
 
 /** Redacts a JSON/object key and assigns a deterministic collision suffix.
  * The suffix loop must advance: a prior literal key can already occupy the
  * first generated suffix after two distinct secrets collapse to one key. */
-export function memorySecretSafeObjectKey(
+export function secretSafeObjectKey(
   key: string,
   usedKeys: Set<string>
 ): string {
-  const baseKey = redactMemorySecrets(key).redactedText;
+  const baseKey = redactSecrets(key).redactedText;
   let safeKey = baseKey;
   let suffix = 2;
   while (usedKeys.has(safeKey)) {
@@ -82,30 +86,30 @@ export function memorySecretSafeObjectKey(
  * still audit-only because the scalar parser reports containsSecret only for
  * v1 REDACT findings. Cycles are ignored after their first visit so defensive
  * callers can inspect arbitrary decoded objects without recursing forever. */
-export function memoryValueContainsRecognizedSecret(
+export function valueContainsRecognizedSecret(
   value: unknown,
   seen: WeakSet<object> = new WeakSet()
 ): boolean {
-  if (typeof value === "string") return redactMemorySecrets(value).containsSecret;
+  if (typeof value === "string") return redactSecrets(value).containsSecret;
   if (typeof value !== "object" || value === null || seen.has(value)) return false;
   seen.add(value);
   if (Array.isArray(value)) {
-    return value.some((entry) => memoryValueContainsRecognizedSecret(entry, seen));
+    return value.some((entry) => valueContainsRecognizedSecret(entry, seen));
   }
   return Object.entries(value).some(([key, entry]) =>
-    redactMemorySecrets(key).containsSecret ||
-    memoryValueContainsRecognizedSecret(entry, seen));
+    redactSecrets(key).containsSecret ||
+    valueContainsRecognizedSecret(entry, seen));
 }
 
-export const MEMORY_SECRET_REDACTION_PLACEHOLDER = "[REDACTED_SECRET]" as const;
+export const SECRET_REDACTION_PLACEHOLDER = "[REDACTED_SECRET]" as const;
 
-type MemorySecretCandidateSpan = Readonly<{
+type SecretCandidateSpan = Readonly<{
   end: number;
-  finding: MemorySecretFinding;
+  finding: SecretFinding;
   start: number;
 }>;
 
-const MEMORY_SECRET_POLICY = Object.freeze({
+const SECRET_POLICY = Object.freeze({
   CREDENTIAL_URL: Object.freeze({
     action: "REDACT",
     confidence: "HIGH",
@@ -148,14 +152,14 @@ const MEMORY_SECRET_POLICY = Object.freeze({
     detectorClass: "STRUCTURAL_FORMAT",
     placeholder: "[REDACTED:RECOVERY_CODE]"
   })
-} satisfies Readonly<Record<MemorySecretFinding, Readonly<{
-  action: MemorySecretPolicyAction;
-  confidence: MemorySecretConfidence;
-  detectorClass: MemorySecretDetectorClass;
+} satisfies Readonly<Record<SecretFinding, Readonly<{
+  action: SecretPolicyAction;
+  confidence: SecretConfidence;
+  detectorClass: SecretDetectorClass;
   placeholder: string;
 }>>>);
 
-const MEMORY_REDACTION_PLACEHOLDER_PATTERN = /\[REDACTED(?::[A-Z_]+|_SECRET)\]/gu;
+const REDACTION_PLACEHOLDER_PATTERN = /\[REDACTED(?::[A-Z_]+|_SECRET)\]/gu;
 
 const ASCII_DIGITS = "0123456789";
 const ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -329,8 +333,8 @@ function highEntropy(value: string): boolean {
     hasCharacter(compact, ASCII_DIGITS) && shannonEntropy(compact) >= 3.5;
 }
 
-function privateKeySpans(value: string): readonly MemorySecretCandidateSpan[] {
-  const spans: MemorySecretCandidateSpan[] = [];
+function privateKeySpans(value: string): readonly SecretCandidateSpan[] {
+  const spans: SecretCandidateSpan[] = [];
   let offset = 0;
   while (offset < value.length) {
     const start = value.indexOf(PEM_BEGIN, offset);
@@ -360,8 +364,8 @@ function privateKeySpans(value: string): readonly MemorySecretCandidateSpan[] {
   return spans;
 }
 
-function credentialUrlSpans(value: string): readonly MemorySecretCandidateSpan[] {
-  const spans: MemorySecretCandidateSpan[] = [];
+function credentialUrlSpans(value: string): readonly SecretCandidateSpan[] {
+  const spans: SecretCandidateSpan[] = [];
   const schemeCharacters = `${ASCII_DIGITS}${ASCII_LETTERS}+.-`;
   let searchFrom = 0;
   while (searchFrom < value.length) {
@@ -390,7 +394,7 @@ function credentialUrlSpans(value: string): readonly MemorySecretCandidateSpan[]
   return spans;
 }
 
-function jwtSpans(value: string): readonly MemorySecretCandidateSpan[] {
+function jwtSpans(value: string): readonly SecretCandidateSpan[] {
   return characterRunSpans(value, `${BASE64URL_CHARACTERS}.`).flatMap((run) => {
     const segments = run.text.split(".");
     if (segments.length !== 3 ||
@@ -403,8 +407,8 @@ function jwtSpans(value: string): readonly MemorySecretCandidateSpan[] {
   });
 }
 
-function knownTokenSpans(value: string): readonly MemorySecretCandidateSpan[] {
-  const spans: MemorySecretCandidateSpan[] = [];
+function knownTokenSpans(value: string): readonly SecretCandidateSpan[] {
+  const spans: SecretCandidateSpan[] = [];
   for (let start = 0; start < value.length; start += 1) {
     const previous = value[start - 1];
     if (isAsciiAlphanumeric(previous) || previous === "_") continue;
@@ -434,8 +438,8 @@ function knownTokenSpans(value: string): readonly MemorySecretCandidateSpan[] {
   return spans;
 }
 
-function recoveryCodeSpans(value: string): readonly MemorySecretCandidateSpan[] {
-  const spans: MemorySecretCandidateSpan[] = [];
+function recoveryCodeSpans(value: string): readonly SecretCandidateSpan[] {
+  const spans: SecretCandidateSpan[] = [];
   for (let start = 0; start < value.length; start += 1) {
     if (isAsciiAlphanumeric(value[start - 1])) continue;
     let cursor = start;
@@ -462,8 +466,8 @@ function recoveryCodeSpans(value: string): readonly MemorySecretCandidateSpan[] 
   return spans;
 }
 
-function paymentCardSpans(value: string): readonly MemorySecretCandidateSpan[] {
-  const spans: MemorySecretCandidateSpan[] = [];
+function paymentCardSpans(value: string): readonly SecretCandidateSpan[] {
+  const spans: SecretCandidateSpan[] = [];
   for (let start = 0; start < value.length; start += 1) {
     if (!isAsciiDigit(value[start]) || isAsciiDigit(value[start - 1])) continue;
     let end = start;
@@ -492,14 +496,14 @@ function paymentCardSpans(value: string): readonly MemorySecretCandidateSpan[] {
   return spans;
 }
 
-function highEntropySpans(value: string): readonly MemorySecretCandidateSpan[] {
+function highEntropySpans(value: string): readonly SecretCandidateSpan[] {
   return tokenRunSpans(value).flatMap((run) => highEntropy(run.text)
     ? [{ end: run.end, finding: "HIGH_ENTROPY_TOKEN" as const, start: run.start }]
     : []);
 }
 
 /** Detectors whose matches never cross URL_TERMINAL_DELIMITERS. */
-function singleLineCandidateSpans(value: string): readonly MemorySecretCandidateSpan[] {
+function singleLineCandidateSpans(value: string): readonly SecretCandidateSpan[] {
   return [
     ...credentialUrlSpans(value),
     ...jwtSpans(value),
@@ -510,7 +514,7 @@ function singleLineCandidateSpans(value: string): readonly MemorySecretCandidate
   ];
 }
 
-function secretSpans(value: string): readonly MemorySecretSpan[] {
+function secretSpans(value: string): readonly SecretSpan[] {
   return policySpans([
     ...privateKeySpans(value),
     ...singleLineCandidateSpans(value)
@@ -518,10 +522,10 @@ function secretSpans(value: string): readonly MemorySecretSpan[] {
 }
 
 function policySpans(
-  candidates: readonly MemorySecretCandidateSpan[],
+  candidates: readonly SecretCandidateSpan[],
   lowerBound: number,
   upperBound: number
-): readonly MemorySecretSpan[] {
+): readonly SecretSpan[] {
   const seen = new Set<string>();
   return Object.freeze(candidates.filter((span) => {
     if (span.start < lowerBound || span.end <= span.start || span.end > upperBound) {
@@ -531,21 +535,21 @@ function policySpans(
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).map((span): MemorySecretSpan => Object.freeze({
+  }).map((span): SecretSpan => Object.freeze({
     ...span,
-    ...MEMORY_SECRET_POLICY[span.finding]
+    ...SECRET_POLICY[span.finding]
   })).sort((left, right) => left.start - right.start || right.end - left.end ||
     left.finding.localeCompare(right.finding)));
 }
 
 function normalizedRedactionSpans(
-  detections: readonly MemorySecretSpan[]
-): readonly MemorySecretSpan[] {
+  detections: readonly SecretSpan[]
+): readonly SecretSpan[] {
   const longestFirst = detections.filter((span) => span.action === "REDACT")
     .sort((left, right) =>
       (right.end - right.start) - (left.end - left.start) ||
       left.start - right.start || left.finding.localeCompare(right.finding));
-  const selected: MemorySecretSpan[] = [];
+  const selected: SecretSpan[] = [];
   for (const candidate of longestFirst) {
     const overlaps = selected.some((span) =>
       candidate.start < span.end && candidate.end > span.start);
@@ -562,7 +566,7 @@ function normalizedRedactionSpans(
  * current conservative parser so callers can create a provider-safe boundary
  * without weakening existing write-path rejection.
  */
-export function redactMemorySecrets(value: string): MemorySecretRedactionResult {
+export function redactSecrets(value: string): SecretRedactionResult {
   if (typeof value !== "string" || value.length === 0) {
     return {
       containsSecret: false,
@@ -575,7 +579,7 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
   }
   const detections = secretSpans(value);
   const spans = normalizedRedactionSpans(detections);
-  const findings = MEMORY_SECRET_FINDINGS.filter((finding) =>
+  const findings = SECRET_FINDINGS.filter((finding) =>
     detections.some((span) => span.finding === finding));
   if (spans.length === 0) {
     return {
@@ -595,7 +599,7 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
   }
   let cursor = 0;
   let redactedText = "";
-  const sourceMap: MemorySecretSourceMapEntry[] = [];
+  const sourceMap: SecretSourceMapEntry[] = [];
   for (const span of spans) {
     if (cursor < span.start) {
       const outputStart = redactedText.length;
@@ -642,32 +646,32 @@ export function redactMemorySecrets(value: string): MemorySecretRedactionResult 
 
 /** Replaces source text that was withheld without a scan. It is a marker,
  * not a secret finding, and never carries any withheld character. */
-export const MEMORY_UNPROCESSED_TEXT_PLACEHOLDER = "[REDACTED:UNPROCESSED_TEXT]" as const;
+export const UNPROCESSED_TEXT_PLACEHOLDER = "[REDACTED:UNPROCESSED_TEXT]" as const;
 
-export type MemorySecretSourceRange = Readonly<{ end: number; start: number }>;
+export type SecretSourceRange = Readonly<{ end: number; start: number }>;
 
-export type MemorySecretWindowOptions = Readonly<{
+export type SecretWindowOptions = Readonly<{
   /** Scanned code units after which the remaining text is withheld. */
   maxCodeUnits: number;
   /** Largest source window one detector pass scans. */
   windowCodeUnits: number;
 }>;
 
-export type MemorySecretWindowedRedactionResult = Readonly<{
+export type SecretWindowedRedactionResult = Readonly<{
   containsSecret: boolean;
   redactedText: string;
-  sourceMap: readonly MemorySecretSourceMapEntry[];
-  spans: readonly MemorySecretSpan[];
+  sourceMap: readonly SecretSourceMapEntry[];
+  spans: readonly SecretSpan[];
   /** Unscanned source ranges, each replaced by the unprocessed placeholder. */
-  withheld: readonly MemorySecretSourceRange[];
+  withheld: readonly SecretSourceRange[];
 }>;
 
 type WindowedOutput = {
   outputLength: number;
   parts: string[];
-  sourceMap: MemorySecretSourceMapEntry[];
-  spans: MemorySecretSpan[];
-  withheld: MemorySecretSourceRange[];
+  sourceMap: SecretSourceMapEntry[];
+  spans: SecretSpan[];
+  withheld: SecretSourceRange[];
 };
 
 function emitSource(
@@ -721,7 +725,7 @@ function emitWindow(
   value: string,
   start: number,
   end: number,
-  spans: readonly MemorySecretSpan[]
+  spans: readonly SecretSpan[]
 ): void {
   let cursor = start;
   for (const span of spans) {
@@ -742,7 +746,7 @@ function emitWithheld(output: WindowedOutput, start: number, end: number): void 
     return;
   }
   output.withheld.push({ end, start });
-  emitReplacement(output, MEMORY_UNPROCESSED_TEXT_PLACEHOLDER, start, end);
+  emitReplacement(output, UNPROCESSED_TEXT_PLACEHOLDER, start, end);
 }
 
 /**
@@ -755,7 +759,7 @@ function emitWithheld(output: WindowedOutput, start: number, end: number): void 
  */
 function* windowCuts(
   value: string,
-  multiline: readonly MemorySecretCandidateSpan[],
+  multiline: readonly SecretCandidateSpan[],
   multilineIndex: number,
   from: number,
   to: number
@@ -789,16 +793,16 @@ function* windowCuts(
  * Redacts text of any length in bounded windows. Windows end only at cuts
  * that no detector can cross, and multi-line spans come from the whole text,
  * so a secret on a window boundary stays whole and every scanned window
- * equals one full pass (`redactMemorySecrets`) over the same range, including
+ * equals one full pass (`redactSecrets`) over the same range, including
  * overlap normalization. What cannot be scanned that way is withheld behind
  * the unprocessed placeholder, never passed on unscanned: a stretch longer
  * than a window without a cut (for example one opaque run, or an oversized
  * multi-line span), and everything after `maxCodeUnits` of scanned text.
  */
-export function redactMemorySecretsInWindows(
+export function redactSecretsInWindows(
   value: string,
-  options: MemorySecretWindowOptions
-): MemorySecretWindowedRedactionResult {
+  options: SecretWindowOptions
+): SecretWindowedRedactionResult {
   const { maxCodeUnits, windowCodeUnits } = options;
   if (!Number.isSafeInteger(windowCodeUnits) || windowCodeUnits < 1 ||
     !(maxCodeUnits === Number.POSITIVE_INFINITY || Number.isSafeInteger(maxCodeUnits)) ||
@@ -806,7 +810,7 @@ export function redactMemorySecretsInWindows(
     throw new Error("memory_secret_window_options_invalid");
   }
   if (typeof value !== "string" || value.length <= windowCodeUnits) {
-    const single = redactMemorySecrets(value);
+    const single = redactSecrets(value);
     return {
       containsSecret: single.containsSecret,
       redactedText: single.redactedText,
@@ -853,7 +857,7 @@ export function redactMemorySecretsInWindows(
       continue;
     }
     const windowStart = start;
-    const windowCandidates: MemorySecretCandidateSpan[] = singleLineCandidateSpans(
+    const windowCandidates: SecretCandidateSpan[] = singleLineCandidateSpans(
       value.slice(windowStart, end)
     ).map((span) => ({
       end: span.end + windowStart,
@@ -886,7 +890,7 @@ export function redactMemorySecretsInWindows(
  * any such span also marks one that neither redaction removed. This is a
  * boundary scan, not a length gate.
  */
-export function memorySecretJoinIsSafe(
+export function secretJoinIsSafe(
   left: string,
   separator: string,
   right: string
@@ -899,30 +903,30 @@ export function memorySecretJoinIsSafe(
 
 /** Whether exact copied source retains letters or numbers after redaction.
  * This is a structural check, not a judgment of meaning or usefulness. */
-export function memoryRedactionHasSourceText(
+export function redactionHasSourceText(
   value: string,
-  result: Readonly<{ sourceMap: readonly MemorySecretSourceMapEntry[] }> =
-    redactMemorySecrets(value)
+  result: Readonly<{ sourceMap: readonly SecretSourceMapEntry[] }> =
+    redactSecrets(value)
 ): boolean {
   const retained = result.sourceMap
     .filter((entry) => entry.kind === "SOURCE")
     .map((entry) => value.slice(entry.sourceStart, entry.sourceEnd))
     .join(" ");
-  return memoryProjectionHasSourceText(retained);
+  return redactedTextHasSourceText(retained);
 }
 
 /** Literal markers carry no source text, including when supplied as input. */
-export function memoryProjectionHasSourceText(value: string): boolean {
+export function redactedTextHasSourceText(value: string): boolean {
   return /[\p{L}\p{N}]/u.test(
-    value.replace(MEMORY_REDACTION_PLACEHOLDER_PATTERN, " ")
+    value.replace(REDACTION_PLACEHOLDER_PATTERN, " ")
   );
 }
 
-export function memoryProjectionContainsRedaction(value: string): boolean {
-  return value.search(MEMORY_REDACTION_PLACEHOLDER_PATTERN) !== -1;
+export function textContainsRedactionMarker(value: string): boolean {
+  return value.search(REDACTION_PLACEHOLDER_PATTERN) !== -1;
 }
 
-export function parseMemorySecret(value: string): MemorySecretParseResult {
+export function parseSecrets(value: string): SecretParseResult {
   if (typeof value !== "string" || value.length === 0) {
     return {
       containsSecret: false,
@@ -931,11 +935,17 @@ export function parseMemorySecret(value: string): MemorySecretParseResult {
     };
   }
   const spans = secretSpans(value);
-  const findings = MEMORY_SECRET_FINDINGS.filter((finding) =>
+  const findings = SECRET_FINDINGS.filter((finding) =>
     spans.some((span) => span.finding === finding));
   return {
     containsSecret: spans.some((span) => span.action === "REDACT"),
     findings: Object.freeze(findings),
     spans
   };
+}
+
+/** The conservative boolean a caller needs before derivatives or provider
+ * egress are created; format-aware, never semantic keyword routing. */
+export function containsSecret(text: string): boolean {
+  return parseSecrets(text).containsSecret;
 }

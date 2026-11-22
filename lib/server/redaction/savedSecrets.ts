@@ -1,13 +1,14 @@
-import { workspaceActivitySecretValues } from "../../workspace/activityText";
-import type { AcceptedWorkspaceSecret } from "../../workspace/secrets/store";
+import { workspaceActivitySecretValues } from "../workspace/activityText";
+import type { AcceptedWorkspaceSecret } from "../workspace/secrets/store";
 
 /**
- * How Memory recognizes the values of the owner's saved secrets (Settings >
- * Secrets) in its own text: fact writes refuse them (`./savedSecrets.ts`),
- * history indexing replaces them with a marker before anything is stored,
- * embedded or recalled (`../history/sourceProjection.ts`,
- * `../history/toolEvents.ts`), and saving a value removes it from what Memory
- * already holds (`../savedSecretScrub.ts`). Matching is exact and literal, on
+ * How derived text recognizes the values of the owner's saved secrets
+ * (Settings > Secrets): writes repeating one are refused, and indexing
+ * replaces them with a marker before anything is stored, embedded or recalled
+ * (today Memory: `lib/server/memory/persistence/savedSecrets.ts`,
+ * `lib/server/memory/history/sourceProjection.ts`,
+ * `lib/server/memory/history/toolEvents.ts`,
+ * `lib/server/memory/savedSecretScrub.ts`). Matching is exact and literal, on
  * each value and its trimmed form, so it behaves the same in every language.
  *
  * Only values that look like secrets are screened (review 2026-10-23): at
@@ -20,19 +21,19 @@ import type { AcceptedWorkspaceSecret } from "../../workspace/secrets/store";
 const SCREENED_ANY_MIN_LENGTH = 20;
 const SCREENED_MIXED_MIN_LENGTH = 8;
 
-/** Replaces a saved value in Memory text; a redaction marker, so Safety Lite treats it as removed text. */
-export const MEMORY_SAVED_SECRET_MARKER = "[REDACTED:SAVED_SECRET]";
+/** Replaces a saved value in derived text; a redaction marker, so secret screening treats it as removed text. */
+export const SAVED_SECRET_MARKER = "[REDACTED:SAVED_SECRET]";
 /** Reason code of a history text that had a saved value redacted. */
-export const MEMORY_SAVED_SECRET_REDACTION_REASON = "SECRET_REDACTED_SAVED_SECRET";
+export const SAVED_SECRET_REDACTION_REASON = "SECRET_REDACTED_SAVED_SECRET";
 
-export function memorySavedSecretValueIsScreened(value: string): boolean {
+export function savedSecretValueIsScreened(value: string): boolean {
   const length = [...value].length;
   return length >= SCREENED_ANY_MIN_LENGTH ||
     (length >= SCREENED_MIXED_MIN_LENGTH && /[^\p{L}\p{M}\s]/u.test(value));
 }
 
 /** The screened values of saved secrets: each typed value and its trimmed form, once. */
-export function memorySavedSecretScreenedValues(
+export function savedSecretScreenedValues(
   secrets: readonly Pick<AcceptedWorkspaceSecret, "name" | "value">[]
 ): readonly string[] {
   let extracted: readonly string[];
@@ -44,14 +45,14 @@ export function memorySavedSecretScreenedValues(
   const values = new Set<string>();
   for (const value of extracted) {
     for (const candidate of [value, value.trim()]) {
-      if (memorySavedSecretValueIsScreened(candidate)) values.add(candidate);
+      if (savedSecretValueIsScreened(candidate)) values.add(candidate);
     }
   }
   return [...values];
 }
 
 /** Whether any string in a value, object keys included, contains one of the saved values. */
-export function memoryValueContainsSavedSecret(
+export function valueContainsSavedSecret(
   value: unknown,
   savedValues: readonly string[],
   seen: WeakSet<object> = new WeakSet()
@@ -61,11 +62,11 @@ export function memoryValueContainsSavedSecret(
   if (typeof value !== "object" || value === null || seen.has(value)) return false;
   seen.add(value);
   if (Array.isArray(value)) {
-    return value.some((entry) => memoryValueContainsSavedSecret(entry, savedValues, seen));
+    return value.some((entry) => valueContainsSavedSecret(entry, savedValues, seen));
   }
   return Object.entries(value).some(([entryKey, entry]) =>
     savedValues.some((saved) => entryKey.includes(saved)) ||
-    memoryValueContainsSavedSecret(entry, savedValues, seen));
+    valueContainsSavedSecret(entry, savedValues, seen));
 }
 
 /**
@@ -73,7 +74,7 @@ export function memoryValueContainsSavedSecret(
  * Occurrences are found in the original text, the longest first, so a value
  * inside a longer one or inside the marker itself never splits a replacement.
  */
-export function redactMemorySavedSecretValues(
+export function redactSavedSecretValues(
   text: string,
   savedValues: readonly string[]
 ): Readonly<{ redacted: boolean; text: string }> {
@@ -95,7 +96,7 @@ export function redactMemorySavedSecretValues(
   let output = "";
   let cursor = 0;
   for (const span of selected) {
-    output += text.slice(cursor, span.start) + MEMORY_SAVED_SECRET_MARKER;
+    output += text.slice(cursor, span.start) + SAVED_SECRET_MARKER;
     cursor = span.end;
   }
   return { redacted: true, text: output + text.slice(cursor) };

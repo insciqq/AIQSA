@@ -37,9 +37,9 @@ import {
   type MemoryUserTestimonySpan
 } from "../memory/history/userTestimony";
 import {
-  memoryRedactionHasSourceText,
-  redactMemorySecrets
-} from "../memory/explicit/safety";
+  redactionHasSourceText,
+  redactSecrets
+} from "../redaction/secrets";
 import {
   memoryHistoryChunkSourceAuthorityPredicate,
   memoryHistoryRoundSourceAuthorityPredicate
@@ -385,16 +385,16 @@ type FactRetrievalContract = Readonly<{
 }>;
 
 function safeFactProjectionText(value: string): string | null {
-  const redaction = redactMemorySecrets(value);
+  const redaction = redactSecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasSourceText(value, redaction)) return null;
+    !redactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText;
 }
 
 function safeHistoryProjectionText(value: string): string | null {
-  const redaction = redactMemorySecrets(value);
+  const redaction = redactSecrets(value);
   if (redaction.containsSecret &&
-    !memoryRedactionHasSourceText(value, redaction)) return null;
+    !redactionHasSourceText(value, redaction)) return null;
   return redaction.redactedText.length <= 4_000 ? redaction.redactedText : null;
 }
 
@@ -767,8 +767,8 @@ async function resolveFact(
     coreEligible: row.coreEligible,
     coreSalience: row.coreSalience,
     dependencySnapshot,
-    factCanonicalKey: redactMemorySecrets(row.factCanonicalKey).redactedText,
-    factCategory: redactMemorySecrets(row.factCategory).redactedText,
+    factCanonicalKey: redactSecrets(row.factCanonicalKey).redactedText,
+    factCategory: redactSecrets(row.factCategory).redactedText,
     factId: row.factId,
     factState: row.factState,
     factVersionId: input.factVersionId,

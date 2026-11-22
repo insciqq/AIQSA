@@ -20,7 +20,7 @@ import {
   type MemoryRetrievalItemType,
   type MemorySafeProjectionKind
 } from "../../domain/memory/retrieval";
-import { memoryExplicitStatementContainsSecret } from "../memory/explicit/safety";
+import { containsSecret } from "../redaction/secrets";
 import type { NormalizedRunRequest } from "../providers/types";
 
 export const MEMORY_PREPARING_ATTEMPT_TTL_MS = 10 * 60_000;
@@ -56,7 +56,7 @@ const MEMORY_QUERY_SNAPSHOT_UNSAFE_CONTROL =
 function validMemoryQuerySnapshot(value: string): boolean {
   return value.length > 0 && value.length <= MEMORY_RETRIEVAL_QUERY_MAX_CODE_UNITS &&
     value.trim() === value && !MEMORY_QUERY_SNAPSHOT_UNSAFE_CONTROL.test(value) &&
-    !memoryExplicitStatementContainsSecret(value);
+    !containsSecret(value);
 }
 
 export type MemoryPreparingSettingsSnapshot = Readonly<{

@@ -37,7 +37,9 @@ const messages = {
   providerConsumer: "Provider adapters must not import app or component modules.",
   providerPrisma: "Provider adapters must not import Prisma.",
   providerRun: "Provider adapters must not import run orchestration, handlers, or repositories.",
-  appShellAdmin: "The app shell must not depend on the admin feature."
+  appShellAdmin: "The app shell must not depend on the admin feature.",
+  redactionMemory:
+    "Secret redaction must not depend on Memory, which it outlives."
 };
 
 const toPosixPath = (value) => value.split(path.sep).join("/");
@@ -210,6 +212,14 @@ const policyViolation = (policy, dependency) => {
     return null;
   }
 
+  if (policy === "redaction") {
+    return ["lib/server/memory", "lib/domain/memory"].some((prefix) =>
+      targets(dependency.target, prefix)
+    )
+      ? messages.redactionMemory
+      : null;
+  }
+
   return null;
 };
 
@@ -378,7 +388,7 @@ const architectureBoundariesRule = {
         type: "object",
         properties: {
           policy: {
-            enum: ["components", "app-shell", "contracts", "domain", "api", "providers"]
+            enum: ["components", "app-shell", "contracts", "domain", "api", "providers", "redaction"]
           }
         },
         required: ["policy"],
