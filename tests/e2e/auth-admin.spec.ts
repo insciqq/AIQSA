@@ -531,7 +531,7 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
     await invitePage.getByLabel("Name").fill("Invited E2E User");
     await invitePage.getByLabel("Password", { exact: true }).fill(invitePassword);
     await invitePage.getByRole("button", { name: "Create account" }).click();
-    await expect(invitePage.getByTestId("app-shell")).toBeVisible();
+    await expect(invitePage.getByTestId("app-shell")).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => (await listAuthEmails(page.request)).filter((message) => message.to === inviteEmail).length)
       .toBe(1);
@@ -726,8 +726,10 @@ test("admin manages approvals, rules, invites, session revocation, and disabling
 });
 
 test("admin console keeps all redesigned sections operable end to end", async ({ page }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(150_000);
   page.setDefaultTimeout(5_000);
+  // A section opened for the first time compiles under `next dev`; actions keep the short limit.
+  page.setDefaultNavigationTimeout(30_000);
 
   const id = randomUUID();
   const shortId = id.slice(0, 8);
