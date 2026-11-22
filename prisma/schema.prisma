@@ -70,44 +70,13 @@ enum MessageStatus {
 }
 
 /// A user message the server wrote for the user, never the user's own
-/// speech: Memory, chat titles and message search skip it. The two answer
-/// review kinds are retired (Answer Review removed 2026-10-25): nothing writes
-/// them, and only the legacy collapse (`lib/domain/answerReviewTranscript.ts`)
-/// reads them.
+/// speech: Memory, chat titles and message search skip it.
 enum MessageSystemTurnKind {
   mcp_approval_continuation
-  answer_review_request
-  answer_revision_request
   /// A wake-up turn: the callbacks of background sub-agents for an idle main agent (`SubagentTurn.callbackRunId`).
   subagent_callback
   /// A Sign in again request for one site (`lib/contracts/browserSignIn.ts`).
   browser_sign_in_request
-}
-
-/// How a retired answer review session advanced (see `AnswerReviewSession`).
-enum AnswerReviewMode {
-  manual
-  auto
-}
-
-enum AnswerReviewState {
-  running
-  finished
-  stopped
-}
-
-enum AnswerReviewStopReason {
-  clean
-  max_rounds
-  disagreement
-  budget
-  approval_required
-  user_stopped
-  superseded
-  review_unreadable
-  error
-  unsupported
-  time_limit
 }
 
 /// Why a user reported an answer (`AnswerProblemReport`); stable codes.
@@ -460,7 +429,6 @@ model User {
   memoryLegacySuggestions MemoryLegacySuggestion[]
   chatContinuations ChatContinuation[]
   scheduledTasks ScheduledTask[]
-  answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
   answerProblemReports AnswerProblemReport[]
   backgroundWorkItems BackgroundWorkItem[]
   signInRefusals SignInRefusal[]
@@ -2114,7 +2082,6 @@ model Chat {
   /// The migration uses column-scoped SET NULL so task deletion never clears userId.
   scheduledTask                   ScheduledTask?            @relation("ScheduledTaskCreatedChats", fields: [userId, scheduledTaskId], references: [userId, id], onDelete: SetNull, onUpdate: Restrict)
   scheduledTaskCarryovers         ScheduledTaskCarryover[]
-  answerReviewSessions            AnswerReviewSession[]
   telegramLinks                   TelegramLink[]            @relation("TelegramLinkCurrentChat")
   telegramMessageRefs             TelegramMessageRef[]
   discordConversations            DiscordConversation[]
@@ -2366,15 +2333,6 @@ model Message {
   scheduledTaskPrompt    Boolean           @default(false)
   /// A user message the server wrote (`MessageSystemTurnKind`); a CHECK keeps it on user messages.
   systemTurnKind         MessageSystemTurnKind?
-  /// A step of a retired answer review session (Answer Review removed
-  /// 2026-10-25): its server-written turn and that turn's answer. Nothing
-  /// writes it; only the legacy collapse reads it. Deleting the session clears
-  /// only this column.
-  answerReviewSessionId  String?
-  /// The step's round and ordinal in it, set on its turn only. Retired with
-  /// the session: nothing reads or writes them.
-  answerReviewRound      Int?
-  answerReviewStep       Int?
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
@@ -2387,9 +2345,6 @@ model Message {
   userModelRuns          ModelRun[]        @relation("UserMessageRun")
   scheduledTaskOccurrences ScheduledTaskOccurrence[]
   scheduledTaskCarryovers  ScheduledTaskCarryover[]
-  /// The migration uses column-scoped SET NULL so deleting a session never clears chatId.
-  answerReviewSession      AnswerReviewSession? @relation("AnswerReviewSessionMessages", fields: [chatId, answerReviewSessionId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Message_chatId_answerReviewSessionId_fkey")
-  answerReviewSources      AnswerReviewSession[] @relation("AnswerReviewSource")
   problemReports           AnswerProblemReport[]
   telegramMessageRefs      TelegramMessageRef[]
   searchPassagesAsQuestion ChatSearchPassage[]   @relation("ChatSearchPassageUserMessage")
@@ -2397,50 +2352,10 @@ model Message {
   memoryNoteOffers         MemoryNoteOffer[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
-  @@unique([answerReviewSessionId, answerReviewRound, answerReviewStep])
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
   @@index([authorUserId])
   @@index([branchSourceModelRunId])
-}
-
-/// A cross-model answer review the previous release recorded: reviewer models
-/// critiqued an answer and its author model revised it, each step a run of a
-/// turn the server wrote (`Message.answerReviewSessionId`). Retired (Answer
-/// Review removed 2026-10-25): nothing writes it, and only the legacy collapse
-/// reads `id` and `sourceAssistantMessageId`, so the chat reads as the source
-/// question and the latest version (`lib/domain/answerReviewTranscript.ts`).
-model AnswerReviewSession {
-  id                       String                  @id @default(uuid())
-  chatId                   String
-  /// The initiator; null once the account is deleted.
-  userId                   String?
-  sourceAssistantMessageId String
-  mode                     AnswerReviewMode
-  authorModel              Json
-  reviewers                Json
-  /// Null for a manual session.
-  maxRounds                Int?
-  round                    Int                     @default(1)
-  state                    AnswerReviewState       @default(running)
-  stopReason               AnswerReviewStopReason?
-  /// Automatic only: the controls the send froze for every step.
-  controls                 Json?
-  /// Automatic only: when the session's end was handled.
-  endNotifiedAt            DateTime?
-  createdAt                DateTime                @default(now())
-  updatedAt                DateTime                @updatedAt
-  chat                     Chat                    @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  /// A deleted initiator leaves the session and its steps in their chat.
-  user                     User?                   @relation("AnswerReviewInitiator", fields: [userId], references: [id], onDelete: SetNull)
-  sourceAssistantMessage   Message                 @relation("AnswerReviewSource", fields: [chatId, sourceAssistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict, map: "AnswerReviewSession_source_fkey")
-  messages                 Message[]               @relation("AnswerReviewSessionMessages")
-
-  @@unique([chatId, id])
-  @@unique([chatId, sourceAssistantMessageId])
-  @@index([chatId, state])
-  @@index([mode, state])
-  @@index([userId])
 }
 
 /// A user's report that a persisted answer went wrong, for administrators
