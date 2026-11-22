@@ -32,6 +32,11 @@ import { systemPromptFor, turnContextText, type SavedSecretFact, type SubagentPr
  * images, files and artifacts) leaves it and goes into the turn context the
  * engine sends just before the run's input (`turnContext`). Computed once per
  * run from the run's tools, so every request of the run repeats the same text.
+ *
+ * Admission writes every part through `appendPromptPart`, and a rewrite goes
+ * through `replacePromptSegment`, so `system` and the recorded lists never
+ * disagree; `splitTurnGuidance` is the one reader that finds the recorded
+ * parts in an admitted request.
  */
 
 /** The admitted baseline's own sentence: the template with its placeholders as one-line wildcards. */
@@ -56,6 +61,52 @@ export function admittedRunGuidance(prompt: ProviderRunRequest["prompt"]): strin
 }
 
 const SEPARATOR = "\n\n";
+
+type AdmittedPrompt = ProviderRunRequest["prompt"];
+
+/**
+ * Where an appended part belongs besides `system`: the chat's alone, this
+ * turn's (`turnGuidance`, which the native engine sends with the input), or
+ * the run's Workspace (`workspaceGuidance`, which stays in the system text and
+ * which a sub-agent turn without the Workspace leaves out).
+ */
+export type PromptPartScope = "chat" | "turn" | "workspace";
+
+/**
+ * The prompt with `part` appended to `system` and, for a turn's or the
+ * Workspace's part, recorded exactly as appended, in one write: a part added
+ * to one representation and not the other was the shape of several fixes.
+ * A part without text goes into neither. The stored shape stays `system` with
+ * the recorded lists, so a reader of an admitted request still finds each
+ * recorded part where it stands (`splitTurnGuidance`).
+ */
+export function appendPromptPart<Prompt extends AdmittedPrompt>(prompt: Prompt, part: string | null | undefined,
+  scope: PromptPartScope): Prompt {
+  if (!part?.trim()) return prompt;
+  const system = [prompt.system, part].filter(Boolean).join(SEPARATOR);
+  if (scope === "turn") return { ...prompt, system, turnGuidance: [...prompt.turnGuidance ?? [], part] };
+  if (scope === "workspace") return { ...prompt, system, workspaceGuidance: [...prompt.workspaceGuidance ?? [], part] };
+  return { ...prompt, system };
+}
+
+/**
+ * The prompt with the one place `segment` stands in `system` replaced by
+ * `replacement`, and every recorded part rewritten the same way, so each is
+ * still found where it stands; null when `segment` is not in `system`
+ * exactly once. A PDF retry rewrites its Workspace contract's server-owned
+ * segments with it (`preparePdfRetry`).
+ */
+export function replacePromptSegment<Prompt extends AdmittedPrompt>(prompt: Prompt, segment: string,
+  replacement: string): Prompt | null {
+  const system = prompt.system ?? "";
+  const at = system.indexOf(segment);
+  if (at < 0 || at !== system.lastIndexOf(segment)) return null;
+  const replaced = (parts: readonly string[] | undefined) => parts?.map((part) => part.split(segment).join(replacement));
+  const turnGuidance = replaced(prompt.turnGuidance);
+  const workspaceGuidance = replaced(prompt.workspaceGuidance);
+  return { ...prompt, system: system.slice(0, at) + replacement + system.slice(at + segment.length),
+    ...(turnGuidance ? { turnGuidance } : {}), ...(workspaceGuidance ? { workspaceGuidance } : {}) };
+}
 
 /** Where `part` stands whole in `text` between separators, from `from` on; -1 when nowhere. */
 function wholePartAt(text: string, part: string, from: number): number {

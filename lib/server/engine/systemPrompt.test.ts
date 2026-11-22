@@ -8,7 +8,7 @@ import type { RunSecretSource } from "../workspace/secrets/runSecrets";
 import { GPT_FAMILY_PROMPT } from "./prompts/gpt";
 import { environmentPromptSection } from "./prompts/harness";
 import { NEUTRAL_FAMILY_PROMPT } from "./prompts/neutral";
-import { admittedRunGuidance, splitTurnGuidance, withNativeSystemPrompt } from "./systemPrompt";
+import { admittedRunGuidance, appendPromptPart, replacePromptSegment, splitTurnGuidance, withNativeSystemPrompt } from "./systemPrompt";
 
 const admittedAt = new Date("2026-10-23T06:00:00Z");
 const now = new Date("2026-10-23T09:05:00Z");
@@ -61,6 +61,43 @@ describe("admitted run guidance", () => {
     // A part appears where admission appended it: after the one before.
     expect(splitTurnGuidance(`Same.\n\n${guidance}\n\nSame.`, [guidance, "Same."])).toEqual({ chat: "Same.", turn: [guidance, "Same."] });
     expect(splitTurnGuidance(guidance, undefined)).toEqual({ chat: guidance, turn: [] });
+  });
+});
+
+describe("admitted prompt parts", () => {
+  const output = "This turn's output directory: /workspace/outputs/run-1.";
+  const checkpoint = "Checkpoint your outputs.";
+
+  it("writes each part into the system text and its scope's record in one step, and a part without text into neither", () => {
+    const base = request(standard.renderedSystemPrompt).prompt;
+    const workspace = appendPromptPart(base, guidance, "workspace");
+    const turn = appendPromptPart(appendPromptPart(workspace, checkpoint, "workspace"), output, "turn");
+    const prompt = appendPromptPart(appendPromptPart(turn, "  \n", "turn"), mcpIndex, "chat");
+    expect(prompt).toEqual({ ...base, system: [standard.renderedSystemPrompt, guidance, checkpoint, output, mcpIndex].join("\n\n"),
+      turnGuidance: [output], workspaceGuidance: [guidance, checkpoint] });
+    // A chat part has no record, and nothing is written for null, empty or blank text.
+    expect(appendPromptPart(base, mcpIndex, "chat")).not.toHaveProperty("turnGuidance");
+    for (const empty of [null, undefined, "", " \n "]) expect(appendPromptPart(base, empty, "turn")).toBe(base);
+    expect(appendPromptPart(request(null).prompt, output, "turn").system).toBe(output);
+    // What the reader finds again is exactly what was written.
+    expect(splitTurnGuidance(admittedRunGuidance(prompt), prompt.turnGuidance))
+      .toEqual({ chat: [guidance, checkpoint, mcpIndex].join("\n\n"), turn: [output] });
+  });
+
+  it("rewrites a segment in the system text and in every recorded part together, only where it stands once", () => {
+    const prompt = { ...request([standard.renderedSystemPrompt, guidance, `${output}\nInternet: off.`, mcpIndex].join("\n\n")).prompt,
+      turnGuidance: [`${output}\nInternet: off.`], workspaceGuidance: [guidance] };
+    const next = "This turn's output directory: /workspace/outputs/run-2.";
+    const rewritten = replacePromptSegment(replacePromptSegment(prompt, output, next)!, guidance, "A Workspace v2.");
+    expect(rewritten).toEqual({ ...prompt, system: [standard.renderedSystemPrompt, "A Workspace v2.", `${next}\nInternet: off.`, mcpIndex]
+      .join("\n\n"), turnGuidance: [`${next}\nInternet: off.`], workspaceGuidance: ["A Workspace v2."] });
+    expect(splitTurnGuidance(admittedRunGuidance(rewritten!), rewritten!.turnGuidance).turn).toEqual([`${next}\nInternet: off.`]);
+    // A request admitted before the records keeps having none.
+    expect(replacePromptSegment(request(`${guidance}\n\n${output}`).prompt, output, next)).not.toHaveProperty("turnGuidance");
+    // Missing, twice, or no system text at all: nothing is rewritten.
+    expect(replacePromptSegment(prompt, "Gone.", next)).toBeNull();
+    expect(replacePromptSegment({ ...prompt, system: `${output}\n\n${output}` }, output, next)).toBeNull();
+    expect(replacePromptSegment(request(null).prompt, output, next)).toBeNull();
   });
 });
 
