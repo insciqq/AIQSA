@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FakeTelegramMessage } from "@/tests/support/fakeTelegramBotApi";
 import { buttonData, createBridgeHarness, createFakeGateway, type FakeRun } from "@/tests/support/telegramChatBridge";
 import type { ThreadArtifactSummary } from "../../../contracts/chats";
+import type { MemoryNoteOfferCard } from "../../../contracts/memoryNote";
 import type { SecretChangeCard } from "../../../contracts/resourceChanges";
 import type { SkillSaveCard } from "../../../contracts/skillSaves";
 import failureCodes from "../../observability/failureCodes.json";
@@ -196,6 +197,29 @@ describe("Telegram change messages", () => {
     const after = await press(h, second!, "Delete secret", h.user, confirm);
     expect(h.fake.callbackAnswer(after.queryId)).toMatchObject({ text: TELEGRAM_COPY.buttonExpired });
     expect(h.acts).toHaveLength(1);
+  });
+
+  it("asks about a memory note offer: Remember accepts it, No thanks closes it through the same route, either uses up both", async () => {
+    const h = harness();
+    const offer = (offerId: string): MemoryNoteOfferCard => ({ version: 1, resource: "memory_note", action: "offered", offerId, operation: "add",
+      before: null, after: "Prefers short answers." });
+    await answered(h, { resourceChanges: [offer("offer-1"), offer("offer-2")] });
+    const [first, second] = changeMessages(h);
+    expect(JSON.stringify(first!.rich_message)).toContain("Remember this for future chats?");
+    expect(keyboardTexts(first!)).toEqual([["Remember", "No thanks"]]);
+    const noThanks = buttonData(first, "No thanks");
+
+    await press(h, first!, "Remember");
+    expect(h.acts).toEqual([{ operation: { decision: "accept", kind: "memory_note_offer", offerId: "offer-1" }, userId: "user-1" }]);
+    expect(JSON.stringify(message(h, first!.message_id).rich_message)).toContain("Remembered");
+    const late = await press(h, first!, "No thanks", h.user, noThanks);
+    expect(h.fake.callbackAnswer(late.queryId)).toMatchObject({ text: TELEGRAM_COPY.buttonExpired });
+
+    await press(h, second!, "No thanks");
+    expect(h.acts.at(-1)).toEqual({ operation: { decision: "dismiss", kind: "memory_note_offer", offerId: "offer-2" }, userId: "user-1" });
+    expect(h.acts).toHaveLength(2);
+    expect(JSON.stringify(message(h, second!.message_id).rich_message)).toContain("Not saved");
+    expect(message(h, second!.message_id).reply_markup).toBeUndefined();
   });
 
   it("offers the buttons again after a failure, and the new ones work", async () => {

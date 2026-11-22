@@ -42,6 +42,10 @@ describe("native Memory search activity", () => {
       ({ origin: "tool", serverName: "Research", toolName })));
   });
 
+  it("shows the memory note's tool as a Memory step of the session, whatever the run's request holds", () => {
+    expect(toolActivityDescriptors({}).get("manage_memory")).toEqual({ origin: "session", serverName: "Memory", toolName: "manage_memory" });
+  });
+
   it("does not invent successful recall for an unrecognized completed result", () => {
     expect(memorySearchActivityEvent({ ordinal: 0, round: 1, state: "complete", result: {
       content: [{ type: "json", value: { version: "legacy", outcome: "results" } }]

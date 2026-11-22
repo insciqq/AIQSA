@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ThreadArtifactSummary } from "../../../contracts/chats";
+import type { MemoryNoteCard, MemoryNoteChangeCard, MemoryNoteOfferCard, MemoryNoteOfferDecision } from "../../../contracts/memoryNote";
 import {
   decodeResourceChangeCard, resourceChangeCardKey, type AssistantChangeCard, type AssistantChangeField, type InstructionsChangeCard,
   type ProxyChangeCard, type ResourceChangeCard, type SecretChangeCard, type SkillDeleteProposalCard, type SubagentChangeCard,
@@ -19,7 +20,9 @@ import type { WorkspaceSecretKind } from "../../../contracts/workspaceSecrets";
  * `ScheduledTaskCardV2.tsx`). Undo appears where the web card has it, and a
  * proposal asks Confirm or Cancel; each operation is the request the web card
  * sends to its Settings route, guarded by the version the card names
- * (`./defaultGateway.ts` sends it as the user). Pure: no I/O.
+ * (`./defaultGateway.ts` sends it as the user). A memory note offer is the one
+ * proposal whose Cancel is a request too: No thanks closes the offer, as the
+ * web card's does. Pure: no I/O.
  */
 
 export type TelegramChangeVerb = "undo" | "confirm" | "cancel";
@@ -45,7 +48,11 @@ export type TelegramChangeOperation =
   | Readonly<{ kind: "subagent_default_undo"; request: SubagentDefaultUndoRequest }>
   | Readonly<{ kind: "scheduled_task_delete"; taskId: string }>
   /** Reads the preset an update changed, then sends `instructionsUndoMutation`, as the web card does. */
-  | Readonly<{ kind: "instructions_undo"; card: InstructionsChangeCard }>;
+  | Readonly<{ kind: "instructions_undo"; card: InstructionsChangeCard }>
+  /** Reads the note, then sends `memoryNoteUndoUpdate`, as the web card does. */
+  | Readonly<{ kind: "memory_note_undo"; card: MemoryNoteChangeCard }>
+  /** Remember or No thanks on an offer the agent made. */
+  | Readonly<{ kind: "memory_note_offer"; offerId: string; decision: MemoryNoteOfferDecision }>;
 
 /** What the route answered, in the terms the card words. */
 export type TelegramChangeOutcome =
@@ -78,13 +85,22 @@ type Action = Readonly<{
   /** The message once the route did it; null reads as `changed`. */
   done(outcome: TelegramChangeOutcome): Result | null;
   failure: string;
+  /** This action's own words when the resource changed since, or is gone, in place of the plan's. */
+  changed?: Result;
+  missing?: Result;
+  /** A stable refusal this action words; null leaves it to the plan's. */
+  refused?(code: string): string | null;
 }>;
 
 /** Everything a change message offers and how each answer of its routes reads. */
 export type TelegramChangePlan = Readonly<{
   view: TelegramChangeView;
   undo: Action | null;
-  proposal: (Action & Readonly<{ confirmLabel: string; keepLabel: string; kept: string }>) | null;
+  proposal: (Action & Readonly<{
+    confirmLabel: string; keepLabel: string; kept: string;
+    /** Cancel's own request; without one, Cancel only answers in the message and asks no route. */
+    dismiss?: Action;
+  }>) | null;
   noun: string;
   Noun: string;
   /** Where to review a proposal the resource outran; null names no place. */
@@ -366,6 +382,84 @@ function instructionsPlan(card: InstructionsChangeCard): TelegramChangePlan {
   };
 }
 
+const MEMORY_NOTE_NAME = "Memory note";
+const MEMORY_NOTE_REVIEW = "Settings › Memory";
+/** Lines Telegram shows of a passage, and characters of each; Settings shows the whole note. */
+const MEMORY_NOTE_PASSAGE_LINES = 12;
+const MEMORY_NOTE_LINE_CHARS = 300;
+const MEMORY_NOTE_NOT_SAVED = "Not saved";
+const MEMORY_NOTE_CHANGE_HEADINGS = { added: "Saved to memory", removed: "Removed from memory", replaced: "Memory updated" } as const;
+const MEMORY_NOTE_OFFER_WORDS = {
+  add: { confirm: "Remember", done: "Remembered", heading: "Remember this for future chats?",
+    status: "Your chats include it from your next message. Change it any time in Settings › Memory." },
+  remove: { confirm: "Remove", done: "Removed from memory", heading: "Remove this from your memory note?",
+    status: "Your chats no longer include it from your next message." },
+  replace: { confirm: "Update", done: "Memory updated", heading: "Update your memory note?",
+    status: "Your chats include the new text from your next message. Change it any time in Settings › Memory." }
+} as const;
+
+/** One line of a passage, clipped to what a message shows. */
+function memoryNoteLine(mark: string, line: string): string {
+  const characters = Array.from(line);
+  return `${mark} ${characters.length > MEMORY_NOTE_LINE_CHARS ? `${characters.slice(0, MEMORY_NOTE_LINE_CHARS).join("")}…` : line}`;
+}
+
+/** "− taken out" and "+ put in" lines of a change, bounded, with a mark when there is more. */
+function memoryNotePassageDetails(before: string | null, after: string | null): string[] {
+  const lines = (mark: string, text: string | null) =>
+    (text ?? "").split("\n").filter((line) => line.trim().length > 0).map((line) => memoryNoteLine(mark, line));
+  const all = [...lines("−", before), ...lines("+", after)];
+  return all.length > MEMORY_NOTE_PASSAGE_LINES ? [...all.slice(0, MEMORY_NOTE_PASSAGE_LINES), "⋯ more"] : all;
+}
+
+/** The note routes' refusals as the web card words them. */
+function memoryNoteRefusal(code: string): string | null {
+  switch (code) {
+    case "memory_note_too_long": return "Your memory note is full. Make room in Settings › Memory, then try again.";
+    case "memory_disabled": return "Memory is off. Turn it on in Settings › Memory, then try again.";
+    case "memory_note_invalid": return "This text holds a password, token or key, which your memory note cannot keep. Keep it in Settings › Secrets.";
+    default: return null;
+  }
+}
+
+function memoryNoteChangePlan(card: MemoryNoteChangeCard): TelegramChangePlan {
+  return {
+    noun: "memory note", Noun: "Memory note", proposal: null, review: MEMORY_NOTE_REVIEW,
+    undoChanged: "Undo is not available: your memory note changed after this, and that change is kept.",
+    view: view(MEMORY_NOTE_CHANGE_HEADINGS[card.action], MEMORY_NOTE_NAME, "from your next message", memoryNotePassageDetails(card.before, card.after)),
+    undo: {
+      done: doneWith({ heading: "Change undone", status: "Your memory note is back to the previous text from your next message." }),
+      failure: "Undo failed. Try again.", operation: { card, kind: "memory_note_undo" }, refused: memoryNoteRefusal
+    }
+  };
+}
+
+function memoryNoteOfferPlan(card: MemoryNoteOfferCard): TelegramChangePlan {
+  const words = MEMORY_NOTE_OFFER_WORDS[card.operation];
+  const decision = (value: MemoryNoteOfferDecision): TelegramChangeOperation => ({ decision: value, kind: "memory_note_offer", offerId: card.offerId });
+  return {
+    noun: "memory note", Noun: "Memory note", review: MEMORY_NOTE_REVIEW, undo: null,
+    view: view(words.heading, MEMORY_NOTE_NAME, null, memoryNotePassageDetails(card.before, card.after)),
+    proposal: {
+      changed: { heading: MEMORY_NOTE_NOT_SAVED,
+        status: "Your memory note changed since this offer, or the offer was answered already, so nothing was saved. Review it in Settings › Memory." },
+      confirmLabel: words.confirm, done: doneWith({ heading: words.done, status: words.status }),
+      failure: "Your memory note could not be changed. Try again.", keepLabel: "No thanks", kept: MEMORY_NOTE_NOT_SAVED,
+      missing: { heading: MEMORY_NOTE_NOT_SAVED, status: "This offer no longer exists." },
+      operation: decision("accept"), refused: memoryNoteRefusal,
+      dismiss: {
+        changed: { heading: "Already saved", status: "You accepted this offer already. Change your note in Settings › Memory." },
+        done: doneWith({ heading: MEMORY_NOTE_NOT_SAVED, status: null }), failure: "That did not work. Try again.",
+        missing: { heading: MEMORY_NOTE_NOT_SAVED, status: null }, operation: decision("dismiss")
+      }
+    }
+  };
+}
+
+function memoryNotePlan(card: MemoryNoteCard): TelegramChangePlan {
+  return card.action === "offered" ? memoryNoteOfferPlan(card) : memoryNoteChangePlan(card);
+}
+
 function taskPlan(card: ScheduledTaskCard): TelegramChangePlan {
   return {
     missingIsDone: true, noun: "automation", Noun: "Automation", review: null, undo: null,
@@ -387,6 +481,7 @@ export function telegramChangePlan(change: TelegramChange): TelegramChangePlan {
     case "subagent": return subagentPlan(change.card);
     case "proxy": return proxyPlan(change.card);
     case "instructions": return instructionsPlan(change.card);
+    case "memory_note": return memoryNotePlan(change.card);
   }
 }
 
@@ -409,12 +504,13 @@ function assistantRefusal(code: string, skills: readonly string[] | undefined): 
 export function telegramChangeResult(plan: TelegramChangePlan, verb: TelegramChangeVerb, outcome: TelegramChangeOutcome):
   Readonly<{ view: TelegramChangeView; retry: boolean }> {
   const shown = (result: Result) => ({ retry: false, view: { ...plan.view, details: [], heading: result.heading, status: result.status } });
-  if (verb === "cancel") return shown({ heading: plan.proposal?.kept ?? plan.view.heading, status: null });
+  const dismiss = verb === "cancel" ? plan.proposal?.dismiss ?? null : null;
+  if (verb === "cancel" && !dismiss) return shown({ heading: plan.proposal?.kept ?? plan.view.heading, status: null });
   const undo = verb === "undo";
-  const action = undo ? plan.undo : plan.proposal;
+  const action = undo ? plan.undo : dismiss ?? plan.proposal;
   if (!action) return { retry: false, view: plan.view };
   const unchangedHeading = undo ? plan.view.heading : plan.publish ? "Not published" : `${plan.Noun} not deleted`;
-  const changed = () => shown({ heading: unchangedHeading, status: undo
+  const changed = () => shown(action.changed ?? { heading: unchangedHeading, status: undo
     ? plan.undoChanged ?? `Undo is not available: the ${plan.noun} changed after this, and that change is kept.`
     : `The ${plan.noun} changed after this proposal, so nothing was ${plan.publish ? "done" : "deleted"}.${plan.review ? ` Review it in ${plan.review}.` : ""}` });
   switch (outcome.kind) {
@@ -424,6 +520,7 @@ export function telegramChangeResult(plan: TelegramChangePlan, verb: TelegramCha
     }
     case "changed": return changed();
     case "missing":
+      if (action.missing) return shown(action.missing);
       if (undo) return shown({ heading: plan.view.heading, status: plan.undoMissing ?? `This ${plan.noun} no longer exists.` });
       if (plan.missingIsDone) return shown(action.done({ kind: "done" }) ?? { heading: unchangedHeading, status: null });
       return shown(plan.publish ? { heading: unchangedHeading, status: `This ${plan.noun} no longer exists.` }
@@ -431,7 +528,8 @@ export function telegramChangeResult(plan: TelegramChangePlan, verb: TelegramCha
     case "archived":
       return shown({ heading: unchangedHeading, status: `The ${plan.Noun} is archived; restore it in ${plan.review ?? "Settings"} first.` });
     // As on the web, the card keeps asking: the user may share the Skills first, or try again.
-    case "refused": return { retry: true, view: { ...plan.view, status: assistantRefusal(outcome.code, outcome.skills) ?? action.failure } };
+    case "refused": return { retry: true, view: { ...plan.view,
+      status: action.refused?.(outcome.code) ?? assistantRefusal(outcome.code, outcome.skills) ?? action.failure } };
     case "failed": return { retry: true, view: { ...plan.view, status: action.failure } };
   }
 }

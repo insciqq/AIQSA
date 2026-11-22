@@ -12,6 +12,7 @@ import {
   memoryLegacySuggestionPageSchema,
   memoryLegacySuggestionSchema,
   memoryNoteCardKey,
+  memoryNoteErrorResponseSchema,
   memoryNoteChangeAction,
   memoryNoteChangeCardSchema,
   memoryNoteCharacterCount,
@@ -189,5 +190,16 @@ describe("memory note errors", () => {
   it("gives every refusal a status", () => {
     for (const code of MEMORY_NOTE_ERROR_CODES) expect(MEMORY_NOTE_ERROR_HTTP_STATUS[code]).toBeGreaterThanOrEqual(400);
     expect(Object.keys(MEMORY_NOTE_ERROR_HTTP_STATUS).sort()).toEqual([...MEMORY_NOTE_ERROR_CODES].sort());
+  });
+
+  it("answers a refusal with its code and only the details that explain it", () => {
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_conflict" })).toBe(true);
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_invalid", message: "Keep credentials in Settings › Secrets.", reason: "secret" }))
+      .toBe(true);
+    expect(ok(memoryNoteErrorResponseSchema, { characters: 6_010, error: "memory_note_too_long", limit: MEMORY_NOTE_MAX_CHARACTERS })).toBe(true);
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_unavailable" })).toBe(false);
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_invalid", reason: "pii" })).toBe(false);
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_too_long", limit: 5_000 })).toBe(false);
+    expect(ok(memoryNoteErrorResponseSchema, { error: "memory_note_conflict", stack: "x" })).toBe(false);
   });
 });
