@@ -920,6 +920,8 @@ model User {
   artifactPublications ArtifactPublication[]
   artifactBlobs ArtifactBlob[]
   instructionPresets InstructionPreset[]
+  memoryNote UserMemoryNote?
+  memoryLegacySuggestions MemoryLegacySuggestion[]
   chatContinuations ChatContinuation[]
   scheduledTasks ScheduledTask[]
   answerReviewSessions AnswerReviewSession[] @relation("AnswerReviewInitiator")
@@ -1591,6 +1593,13 @@ model UserSettings {
   sendWithEnter           Boolean        @default(true)
   showCitations           Boolean        @default(true)
   showReasoningBlocks     Boolean        @default(false)
+  /// Memory's master switch (`lib/contracts/memoryNote.ts`): off, no turn reads the note and the agent neither
+  /// searches past chats nor changes or offers to change the note. Replaces the old Memory switches one to one.
+  memoryEnabled           Boolean        @default(true)
+  /// The agent may search and read the user's past chats; only while `memoryEnabled`.
+  pastChatSearchEnabled   Boolean        @default(true)
+  /// The agent may offer to remember a lasting rule the user stated; explicit requests work without it.
+  memorySuggestionsEnabled Boolean       @default(true)
   createdAt               DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
   user                    User           @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1621,6 +1630,93 @@ model InstructionPreset {
 
   @@unique([userId, id])
   @@unique([userId, name])
+}
+
+/// Who made a memory note's latest change: the user (Settings, a card's Undo, an accepted offer) or the agent
+/// (`manage_memory` on the user's explicit request).
+enum MemoryNoteAuthor {
+  USER
+  AGENT
+}
+
+/// The user's one short memory note (operator decision 2026-11-22): plain text every ordinary personal turn reads.
+/// The user edits it in Settings › Memory; the agent changes it only through `manage_memory`, which shows a card.
+/// No earlier versions are kept, so a change card carries the text its Undo writes back, guarded by `revision`. A SQL
+/// CHECK bounds `text` by `char_length` (Unicode code points), as `MEMORY_NOTE_MAX_CHARACTERS` counts.
+model UserMemoryNote {
+  userId        String           @id
+  /// May be empty: clearing the note keeps its row, so revisions keep increasing.
+  text          String
+  /// 1 on the first write; every change adds one. Settings saves and Undo are guarded by it.
+  revision      Int              @default(1)
+  lastChangedBy MemoryNoteAuthor
+  updatedAt     DateTime         @default(now()) @updatedAt
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// What a memory note offer proposes: append text, replace text in the note, or remove text from it.
+enum MemoryNoteOperation {
+  ADD
+  REPLACE
+  REMOVE
+}
+
+enum MemoryNoteOfferState {
+  PENDING
+  ACCEPTED
+  DISMISSED
+}
+
+/// An offer the agent made in an answer to change the user's memory note, after the user stated a lasting rule without
+/// asking to remember it: the card's "Remember this for future chats?". Nothing is written to the note until the user
+/// accepts; No thanks dismisses it. One per tool call (`runId`, `toolCallId`), written with that call's settlement, so a
+/// repeated delivery never offers twice. Keys carry the owner, chat and run, and it goes with its answer, run or chat.
+/// SQL CHECKs keep `beforeText` (the note text a replacement or removal takes out) and `afterText` (the text an
+/// addition or replacement puts in) to what `operation` needs, each within the note limit, and `decidedAt` set exactly
+/// when the offer is no longer pending.
+model MemoryNoteOffer {
+  id                 String               @id @default(uuid())
+  userId             String
+  chatId             String
+  runId              String
+  assistantMessageId String
+  /// The `manage_memory` call that made the offer (`ModelRunToolCall.id`).
+  toolCallId         String
+  operation          MemoryNoteOperation
+  beforeText         String?
+  afterText          String?
+  state              MemoryNoteOfferState @default(PENDING)
+  createdAt          DateTime             @default(now())
+  decidedAt          DateTime?
+  chat               Chat                 @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  run                ModelRun             @relation(fields: [userId, chatId, runId], references: [userId, chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  assistantMessage   Message              @relation(fields: [chatId, assistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  toolCall           ModelRunToolCall     @relation(fields: [runId, toolCallId], references: [modelRunId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  /// A tool call belongs to one run, so this is the call's own uniqueness.
+  @@unique([runId, toolCallId])
+  @@index([chatId, assistantMessageId])
+  @@index([userId, createdAt])
+}
+
+enum MemoryLegacySuggestionOrigin {
+  /// A fact the old Memory learned automatically.
+  AUTOMATIC
+  /// A fact the user saved in the old Memory that did not fit into the note.
+  SAVED_OVERFLOW
+}
+
+/// A fact from the old Memory waiting for its owner in Settings › Memory: Keep moves its text into the note, Remove
+/// deletes it. A SQL CHECK keeps `text` non-blank and within the note limit, so a kept suggestion can fit.
+model MemoryLegacySuggestion {
+  id        String                       @id @default(uuid())
+  userId    String
+  text      String
+  origin    MemoryLegacySuggestionOrigin
+  createdAt DateTime                     @default(now())
+  user      User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model SearchPolicy {
@@ -1697,6 +1793,11 @@ model SystemModelPolicy {
   rerankerProviderModelId String?
   /// Set only by an explicit administrator save or clear of the reranker role.
   rerankerConfiguredAt    DateTime?
+  /// The one embedding model of past-chat search (administrator role). Null: past-chat search is full-text only.
+  /// Passages record the model of their vectors as a plain value, so changing this re-embeds and never blocks it.
+  embeddingProviderModelId String?
+  /// Set only by an explicit administrator save or clear of the embedding role.
+  embeddingConfiguredAt   DateTime?
   decisionProviderModelId String?
   /// Explicit saves and clears prevent later automatic role adoption.
   decisionConfiguredAt    DateTime?
@@ -1728,12 +1829,14 @@ model SystemModelPolicy {
   chatPdfProviderModel    ProviderModel? @relation("ChatPdfProviderModel", fields: [chatPdfProviderModelId], references: [id], onDelete: Restrict)
   providerModel           ProviderModel? @relation("SystemUtilityProviderModel", fields: [providerModelId], references: [id], onDelete: Restrict)
   rerankerProviderModel   ProviderModel? @relation("MemoryRerankerProviderModel", fields: [rerankerProviderModelId], references: [id], onDelete: Restrict)
+  embeddingProviderModel  ProviderModel? @relation("PastChatEmbeddingProviderModel", fields: [embeddingProviderModelId], references: [id], onDelete: Restrict)
   decisionProviderModel   ProviderModel? @relation("SemanticDecisionProviderModel", fields: [decisionProviderModelId], references: [id], onDelete: Restrict)
   updatedBy               User?          @relation("SystemModelPolicyUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
 
   @@index([imageProviderModelId])
   @@index([providerModelId])
   @@index([rerankerProviderModelId])
+  @@index([embeddingProviderModelId])
   @@index([decisionProviderModelId])
   @@index([chatTitleProviderModelId])
   @@index([mcpGuardProviderModelId])
@@ -2197,6 +2300,7 @@ model ProviderModel {
   imageGenerationRoles       SystemModelPolicy[]             @relation("ImageGenerationProviderModel")
   imagePublication            PublishedImageModel?            @relation("PublishedImageModel")
   memoryRerankerRoles         SystemModelPolicy[]             @relation("MemoryRerankerProviderModel")
+  pastChatEmbeddingRoles      SystemModelPolicy[]             @relation("PastChatEmbeddingProviderModel")
   semanticDecisionRoles       SystemModelPolicy[]             @relation("SemanticDecisionProviderModel")
   userDefaults                UserSettings[]                  @relation("UserDefaultProviderModel")
 
@@ -2549,6 +2653,10 @@ model Chat {
   telegramMessageRefs             TelegramMessageRef[]
   discordConversations            DiscordConversation[]
   subagentThreads                 SubagentThread[]
+  /// At most one: `ChatSearchState.chatId` is its key.
+  searchStates                    ChatSearchState[]
+  searchPassages                  ChatSearchPassage[]
+  memoryNoteOffers                MemoryNoteOffer[]
 
   @@unique([userId, id])
   @@index([activeLeafMessageId])
@@ -2560,6 +2668,63 @@ model Chat {
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
   @@index([userId, assistantId, updatedAt])
+}
+
+/// Past-chat search's bookkeeping for one of the owner's chats: whether its passages reflect the chat as it is now.
+/// A change to the chat's searchable content (a finished turn, a branch switch, a deleted message, a new title) sets
+/// `dirtyAt`; the background indexer claims dirty rows whose `nextAttemptAt` has come, rewrites the chat's passages
+/// from its active branch and clears `dirtyAt`. `indexedLeafMessageId` is the active leaf the passages were built
+/// from, a plain value: a deleted leaf takes its passages by their own keys and just stops matching the chat's leaf.
+/// SQL CHECKs keep `attemptCount` non-negative, `nextAttemptAt` only on dirty rows and `lastErrorCode` a content-free
+/// code.
+model ChatSearchState {
+  chatId               String    @id
+  userId               String
+  indexedLeafMessageId String?
+  dirtyAt              DateTime?
+  attemptCount         Int       @default(0)
+  nextAttemptAt        DateTime?
+  lastErrorCode        String?   @db.VarChar(64)
+  updatedAt            DateTime  @default(now()) @updatedAt
+  chat                 Chat      @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@index([userId])
+  @@index([dirtyAt])
+}
+
+/// One searchable passage of a past chat: a turn of its active branch (a user message and its final answer), and a long
+/// turn as overlapping windows numbered by `ordinal` from 0. `text` is the window with the chat's title and the turn's
+/// file names, secret-redacted before it is stored. The key (`chatId`, `userMessageId`, `ordinal`) lets the indexer
+/// replace a turn's windows idempotently; a passage goes with its chat and with either message. SQL-only, as
+/// `MemorySearchEntry`'s: the generated `searchVectorSimple` (`to_tsvector('simple', "text")`) with its GIN index
+/// `ChatSearchPassage_simple_gin_idx`; the CHECKs that bound `text`, keep `contentHash` a SHA-256 hex digest and keep
+/// `embedding`, `embeddingProviderModelId` and `embeddingDimension` all set or all null with the vector's dimension;
+/// and the trigger that refuses a new passage in a chat fenced for permanent deletion. The embedding's model is a plain
+/// value, so removing or replacing the role's model never waits on passages; search uses only vectors of the current
+/// role. No approximate vector index: an exact scan of one owner's passages is fast at the measured sizes.
+model ChatSearchPassage {
+  id                       String                    @id @default(uuid())
+  userId                   String
+  chatId                   String
+  userMessageId            String
+  assistantMessageId       String
+  /// The turn's time: its user message's.
+  turnAt                   DateTime
+  ordinal                  Int
+  text                     String
+  contentHash              String                    @db.Char(64)
+  searchVectorSimple       Unsupported("tsvector")?
+  embedding                Unsupported("vector")?
+  embeddingProviderModelId String?
+  embeddingDimension       Int?
+  createdAt                DateTime                  @default(now())
+  chat                     Chat                      @relation(fields: [userId, chatId], references: [userId, id], onDelete: Cascade, onUpdate: Restrict)
+  userMessage              Message                   @relation("ChatSearchPassageUserMessage", fields: [chatId, userMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+  assistantMessage         Message                   @relation("ChatSearchPassageAssistantMessage", fields: [chatId, assistantMessageId], references: [chatId, id], onDelete: Cascade, onUpdate: Restrict)
+
+  @@unique([chatId, userMessageId, ordinal])
+  @@index([chatId, assistantMessageId])
+  @@index([userId, turnAt])
 }
 
 /// Installation usage limits: a pooled monthly cap for everyone plus per-user
@@ -2762,6 +2927,9 @@ model Message {
   answerReviewSources      AnswerReviewSession[] @relation("AnswerReviewSource")
   problemReports           AnswerProblemReport[]
   telegramMessageRefs      TelegramMessageRef[]
+  searchPassagesAsQuestion ChatSearchPassage[]   @relation("ChatSearchPassageUserMessage")
+  searchPassagesAsAnswer   ChatSearchPassage[]   @relation("ChatSearchPassageAssistantMessage")
+  memoryNoteOffers         MemoryNoteOffer[]
 
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@unique([answerReviewSessionId, answerReviewRound, answerReviewStep])
@@ -3051,6 +3219,7 @@ model ModelRun {
   problemReports               AnswerProblemReport[]
   telegramRunLinks             TelegramRunLink[]
   discordReplies               DiscordReply[]
+  memoryNoteOffers             MemoryNoteOffer[]
 
   @@unique([userId, id])
   @@unique([chatId, id], map: "ModelRun_chatId_id_key")
@@ -3945,6 +4114,7 @@ model ModelRunToolCall {
   codeInvocations            WorkspaceCodeInvocation[]
   mcpToolApprovals           McpToolApproval[]
   subagentTurns              SubagentTurn[]
+  memoryNoteOffer            MemoryNoteOffer?
   /// The sub-agent thread that made the call (`SubagentThread.id`), with rounds of its own; null for the main agent.
   /// A plain value, as on `RunTranscriptItem`.
   subagentThreadId           String?
