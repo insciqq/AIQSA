@@ -167,7 +167,6 @@ function renderInline(nodes: readonly MarkdownInline[], context: Context, inLink
       case "break": out += "\n"; break;
       case "inlineCode": out += inlineCode(node.value); break;
       case "inlineMath": out += inlineCode(node.source); break;
-      case "citation": out += escapeDiscordText(node.source); break;
       case "strong": out += wrap("**", renderInline(node.children, context, inLink, depth + 1), depth); break;
       case "emphasis": out += wrap("*", renderInline(node.children, context, inLink, depth + 1), depth); break;
       case "delete": out += wrap("~~", renderInline(node.children, context, inLink, depth + 1), depth); break;
@@ -196,7 +195,6 @@ function plainInline(nodes: readonly MarkdownInline[]): string {
       case "break": return " ";
       case "inlineCode": return node.value;
       case "inlineMath": return node.source;
-      case "citation": return node.source;
       case "strong": case "emphasis": case "delete": case "link": return plainInline(node.children);
     }
   }).join("").replace(/\s+/gu, " ").trim();

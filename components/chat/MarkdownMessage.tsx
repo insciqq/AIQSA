@@ -91,8 +91,6 @@ function plainText(nodes: readonly MarkdownInline[]): string {
         return "\n";
       case "inlineCode":
         return node.value;
-      case "citation":
-        return node.source;
       case "inlineMath":
         return node.raw;
       default:
@@ -155,8 +153,6 @@ function renderInline(
         return <code className={INLINE_CODE_CLASS} key={key}>{node.value}</code>;
       case "inlineMath":
         return <MathExpression displayMode={false} key={key} raw={node.raw} source={node.source} />;
-      case "citation":
-        return node.source;
       case "strong":
         return <strong className={inLink ? "font-semibold" : "font-semibold text-ink"} key={key}>{renderInline(node.children, key, context, inLink)}</strong>;
       case "emphasis":

@@ -81,8 +81,6 @@ function inlineSegments(nodes: readonly MarkdownInline[], out: Segment[]): void 
         // Short inline formulas read as their symbols; TeX markup is noise.
         pushText(node.source.replace(/\\[a-z]+|[\\{}$^_]/giu, " "));
         break;
-      case "citation":
-        break;
       case "strong":
       case "emphasis":
       case "delete":

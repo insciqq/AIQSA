@@ -23,7 +23,6 @@ export function renderTelegramAnswer(markdown: string, options: TelegramAnswerOp
         case "break": return "\n";
         case "inlineCode": return { type: "code", text: node.value };
         case "inlineMath": return { type: "mathematical_expression", expression: node.source };
-        case "citation": return node.source;
         case "strong": return { type: "bold", text: inline(node.children, inLink) };
         case "emphasis": return { type: "italic", text: inline(node.children, inLink) };
         case "delete": return { type: "strikethrough", text: inline(node.children, inLink) };

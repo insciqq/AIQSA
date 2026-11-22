@@ -27,7 +27,6 @@ export type MarkdownInline =
   | { type: "strong" | "emphasis" | "delete"; children: MarkdownInline[] }
   | { type: "inlineCode"; value: string }
   | { type: "link"; url: string; source: string; children: MarkdownInline[] }
-  | { type: "citation"; handle: string; source: string }
   | { type: "inlineMath"; source: string; raw: string };
 
 export type MarkdownBlock =
