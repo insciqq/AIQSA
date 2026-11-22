@@ -102,6 +102,7 @@ import { resolveChatAccess } from "./access";
 import type {
   ChatBranchGraphRecord,
   ChatDetailRecord,
+  ChatMessagesPageResult,
   ChatRepository,
   ChatSummaryRecord,
   ChatUsageStats,
@@ -1843,6 +1844,73 @@ async function assistantUpdateData(
   };
 }
 
+/** One page of a chat's active branch before the cursor; `where` picks live or archived chats. */
+function readMessagesPage(
+  prismaClient: typeof prisma,
+  input: Readonly<{
+    before: string;
+    chatId: string;
+    userId: string;
+    where: Pick<Prisma.ChatWhereInput, "archived" | "memoryMode">;
+  }>
+): Promise<ChatMessagesPageResult> {
+  const { before, chatId, userId } = input;
+  return prismaClient.$transaction(async (tx) => {
+    const chat = await tx.chat.findFirst({
+      select: {
+        activeLeafMessageId: true,
+        id: true,
+        updatedAt: true
+      },
+      where: { ...input.where, id: chatId, permanentDeletionAt: null, userId }
+    });
+    if (!chat) return { kind: "not_found" as const };
+    const cursor = decodeHistoryCursor(before);
+    if (!cursor || cursor.chatId !== chatId) return { kind: "cursor_invalid" as const };
+    if (
+      !chat.activeLeafMessageId ||
+      cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
+      cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
+    ) return { kind: "stale" as const };
+    const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
+      chat.activeLeafMessageId);
+    const activeMessages = branch.messages;
+    const boundary = activeMessages.findIndex(
+      (message) => message.id === cursor.beforeMessageId
+    );
+    if (boundary <= 0) return { kind: "stale" as const };
+    const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
+    const pagePath = activeMessages.slice(start, boundary);
+    const messages = await hydrateMessagePath(tx, chatId, pagePath, userId);
+    const hasOlder = start > 0;
+    return {
+      kind: "ok" as const,
+      page: {
+        messages: messages.messages.map((message) =>
+          serializeHydratedMessage(
+            message,
+            messages.pastChatSourcesByRun,
+            userId,
+            messages.scheduledTasks,
+            messages.parents
+          )),
+        pageInfo: {
+          activeLeafMessageId: branch.visibleLeafMessageId,
+          beforeCursor: pageCursor({
+            activeLeafMessageId: chat.activeLeafMessageId,
+            beforeMessageId: messages.messages[0]?.id,
+            chatId,
+            chatUpdatedAt: chat.updatedAt,
+            hasOlder
+          }),
+          hasOlder,
+          snapshotUpdatedAt: chat.updatedAt
+        }
+      }
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+}
+
 export function createPrismaChatRepository(
   prismaClient = prisma,
   options: Readonly<{
@@ -2060,68 +2128,9 @@ export function createPrismaChatRepository(
         });
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
-    getArchivedMessagesPage: async ({ before, chatId, userId }) => {
-      return prismaClient.$transaction(async (tx) => {
-        const chat = await tx.chat.findFirst({
-          select: {
-            activeLeafMessageId: true,
-            id: true,
-            updatedAt: true
-          },
-          where: {
-            archived: true,
-            id: chatId,
-            memoryMode: { not: "TEMPORARY" },
-            permanentDeletionAt: null,
-            userId
-          }
-        });
-        if (!chat) return { kind: "not_found" as const };
-        const cursor = decodeHistoryCursor(before);
-        if (!cursor || cursor.chatId !== chatId) return { kind: "cursor_invalid" as const };
-        if (
-          !chat.activeLeafMessageId ||
-          cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
-          cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
-        ) return { kind: "stale" as const };
-        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
-          chat.activeLeafMessageId);
-        const activeMessages = branch.messages;
-        const boundary = activeMessages.findIndex(
-          (message) => message.id === cursor.beforeMessageId
-        );
-        if (boundary <= 0) return { kind: "stale" as const };
-        const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
-        const pagePath = activeMessages.slice(start, boundary);
-        const messages = await hydrateMessagePath(tx, chatId, pagePath, userId);
-        const hasOlder = start > 0;
-        return {
-          kind: "ok" as const,
-          page: {
-            messages: messages.messages.map((message) =>
-              serializeHydratedMessage(
-                message,
-                messages.pastChatSourcesByRun,
-                userId,
-                messages.scheduledTasks,
-                messages.parents
-              )),
-            pageInfo: {
-              activeLeafMessageId: branch.visibleLeafMessageId,
-              beforeCursor: pageCursor({
-                activeLeafMessageId: chat.activeLeafMessageId,
-                beforeMessageId: messages.messages[0]?.id,
-                chatId,
-                chatUpdatedAt: chat.updatedAt,
-                hasOlder
-              }),
-              hasOlder,
-              snapshotUpdatedAt: chat.updatedAt
-            }
-          }
-        };
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    },
+    getArchivedMessagesPage: ({ before, chatId, userId }) => readMessagesPage(prismaClient, {
+      before, chatId, userId, where: { archived: true, memoryMode: { not: "TEMPORARY" } }
+    }),
     getChat: async ({ chatId, userId }) => {
       const workspaceSnapshot = await workspaceAvailability.snapshot();
       const read = await prismaClient.$transaction(async (tx) => {
@@ -2205,62 +2214,9 @@ export function createPrismaChatRepository(
         updatedAt: chat.updatedAt
       };
     },
-    getMessagesPage: async ({ before, chatId, userId }) => {
-      return prismaClient.$transaction(async (tx) => {
-        const chat = await tx.chat.findFirst({
-          select: {
-            activeLeafMessageId: true,
-            id: true,
-            updatedAt: true
-          },
-          where: { archived: false, id: chatId, permanentDeletionAt: null, userId }
-        });
-        if (!chat) return { kind: "not_found" as const };
-        const cursor = decodeHistoryCursor(before);
-        if (!cursor || cursor.chatId !== chatId) return { kind: "cursor_invalid" as const };
-        if (
-          !chat.activeLeafMessageId ||
-          cursor.activeLeafMessageId !== chat.activeLeafMessageId ||
-          cursor.snapshotUpdatedAt !== chat.updatedAt.toISOString()
-        ) return { kind: "stale" as const };
-        const branch = await visibleBranch(tx, chatId, await loadActiveBranchPath(tx, chatId, chat.activeLeafMessageId),
-          chat.activeLeafMessageId);
-        const activeMessages = branch.messages;
-        const boundary = activeMessages.findIndex(
-          (message) => message.id === cursor.beforeMessageId
-        );
-        if (boundary <= 0) return { kind: "stale" as const };
-        const start = Math.max(0, boundary - CHAT_HISTORY_PAGE_SIZE);
-        const pagePath = activeMessages.slice(start, boundary);
-        const messages = await hydrateMessagePath(tx, chatId, pagePath, userId);
-        const hasOlder = start > 0;
-        return {
-          kind: "ok" as const,
-          page: {
-            messages: messages.messages.map((message) =>
-              serializeHydratedMessage(
-                message,
-                messages.pastChatSourcesByRun,
-                userId,
-                messages.scheduledTasks,
-                messages.parents
-              )),
-            pageInfo: {
-              activeLeafMessageId: branch.visibleLeafMessageId,
-              beforeCursor: pageCursor({
-                activeLeafMessageId: chat.activeLeafMessageId,
-                beforeMessageId: messages.messages[0]?.id,
-                chatId,
-                chatUpdatedAt: chat.updatedAt,
-                hasOlder
-              }),
-              hasOlder,
-              snapshotUpdatedAt: chat.updatedAt
-            }
-          }
-        };
-      }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
-    },
+    getMessagesPage: ({ before, chatId, userId }) => readMessagesPage(prismaClient, {
+      before, chatId, userId, where: { archived: false }
+    }),
     getBranches: async ({ chatId, userId }) => {
       return prismaClient.$transaction(async (tx) => {
         const chat = await tx.chat.findFirst({
