@@ -1,6 +1,6 @@
 /**
- * The native engine's harness tools, for its registry. They are not part of
- * the old core's tool catalog, which is frozen.
+ * The native engine's harness tools, which the engine's registry builds
+ * itself; tests that cover every tool's schema read them from this list.
  *
  * - `apply_patch` (local, needs the Workspace VM): `executeApplyPatch` over
  *   `workspaceApplyPatchFiles`, which takes the registry's dispatcher of
@@ -18,33 +18,5 @@ import { applyPatchTool } from "./applyPatch";
 import type { HarnessToolDescriptor } from "./harnessTool";
 import { readSecretTool } from "./readSecret";
 import { updatePlanTool } from "./updatePlan";
-
-export {
-  APPLY_PATCH_LIMITS,
-  APPLY_PATCH_TOOL_NAME,
-  APPLY_PATCH_WORKSPACE_TOOLS,
-  ApplyPatchFileError,
-  applyPatchTool,
-  executeApplyPatch,
-  resolveApplyPatchPath,
-  workspaceApplyPatchFiles,
-  type ApplyPatchFiles,
-  type WorkspaceTextFile,
-  type WorkspaceToolCaller
-} from "./applyPatch";
-export { APPLY_PATCH_LARK_GRAMMAR } from "./applyPatchFormat";
-export { harnessToolError, type HarnessToolDescriptor, type HarnessToolEffects, type HarnessToolExecute } from "./harnessTool";
-export { READ_SECRET_LIMITS, READ_SECRET_TOOL_NAME, executeReadSecret, readSecretTool } from "./readSecret";
-export {
-  PLAN_STEP_STATUSES,
-  UPDATE_PLAN_LIMITS,
-  UPDATE_PLAN_TOOL_NAME,
-  executeUpdatePlan,
-  parsePlanUpdate,
-  updatePlanTool,
-  type PlanStepStatus,
-  type PlanUpdate
-} from "./updatePlan";
-export { createRunSecretSource, type RunSecretEntry, type RunSecretScope, type RunSecretSource } from "../workspace/secrets/runSecrets";
 
 export const HARNESS_TOOLS: readonly HarnessToolDescriptor[] = Object.freeze([applyPatchTool, updatePlanTool, readSecretTool]);

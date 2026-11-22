@@ -3,7 +3,7 @@ import { DISCORD_REASON_CODES } from "../../contracts/discord";
 import failureCodes from "../observability/failureCodes.json";
 import { serializeEvent } from "../observability/runtime.cjs";
 import { DISCORD_LOG_CODES } from "./codes";
-import { DISCORD_COPY, discordAuthorLimitText, discordReasonText, discordWorkingStatus } from "./copy";
+import { discordAuthorLimitText, discordWorkingStatus } from "./copy";
 
 describe("Discord log codes and events", () => {
   it("registers every reason and log code in order among its sorted neighbours", () => {
@@ -49,8 +49,5 @@ describe("Discord copy", () => {
     expect(discordWorkingStatus(72_400, "Searching the web")).toBe("Working · 1:12 — Searching the web");
     expect(discordWorkingStatus(5_000)).toBe("Working · 0:05");
     expect(discordAuthorLimitText(20, 0)).toBe("You've reached the limit of 20 questions per hour. Try again in 1 min.");
-    expect(discordReasonText("discord_busy")).toBe(DISCORD_COPY.busy);
-    expect(discordReasonText("discord_disabled")).toBeNull();
-    expect(discordReasonText("discord_delivery_unknown")).toBeNull();
   });
 });

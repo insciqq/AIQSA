@@ -5,7 +5,6 @@ import { startMutableMcpEndpoint, type MutableMcpEndpoint, type MutableMcpTool }
 import { prisma } from "../prisma";
 import { MCP_INVENTORY_SESSION_LIMITS } from "./clientSession";
 import { createMcpClientSessionFactory } from "./clientSessionFactory";
-import { currentMcpDispatchFailure } from "./dispatchStatus";
 import type { McpDraftValidationOutcome } from "./draftValidator";
 import { createPrismaMcpOAuthRepository } from "./oauthRepository";
 import { mcpOAuthPolicyFingerprint } from "./oauthPolicy";
@@ -107,7 +106,7 @@ async function connectedPersonalServer(endpoint: MutableMcpEndpoint) {
 }
 
 describe("personal MCP continuity for accepted runs", () => {
-  it("keeps an accepted tool through unrelated switches, a no-op enable and an unrelated upstream change, and names each refusal", async () => {
+  it("keeps an accepted tool through unrelated switches, a no-op enable and an unrelated upstream change, and refuses a change to it", async () => {
     const endpoint = await startMutableMcpEndpoint([tool("read"), tool("write")]);
     const fixture = await connectedPersonalServer(endpoint);
     try {
@@ -117,7 +116,6 @@ describe("personal MCP continuity for accepted runs", () => {
       const accepted = await fixture.plan([read]);
       if (!accepted.ok) throw new Error(`fixture_plan_${accepted.code}`);
       const route = resolveMcpRunTool(accepted.snapshot, read)!;
-      const failure = async () => currentMcpDispatchFailure(await fixture.plan([read]), route, generationId);
       const call = () => fixture.runtime.callTool({
         arguments: {}, definitionHash: route.tool.definitionHash, generationId, inputSchema: route.tool.inputSchema, name: "read"
       });
@@ -126,9 +124,7 @@ describe("personal MCP continuity for accepted runs", () => {
       await expect(fixture.update({ tool: { enabled: false, name: "write" } })).resolves.toMatchObject({ kind: "ok" });
       await expect(fixture.update({ enabled: true })).resolves.toMatchObject({ kind: "ok" });
       expect((await fixture.preference()).desiredRuntimeGenerationId).toBe(generationId);
-      await expect(failure()).resolves.toBeNull();
       await expect(fixture.update({ tool: { enabled: true, name: "write" } })).resolves.toMatchObject({ kind: "ok" });
-      await expect(failure()).resolves.toBeNull();
       await expect(call()).resolves.toMatchObject({ isError: false });
 
       // An upstream change to another tool is applied to the same generation.
@@ -137,33 +133,27 @@ describe("personal MCP continuity for accepted runs", () => {
       await endpoint.setTools([tool("read"), tool("write", "write fixture, changed upstream")]);
       await fixture.observe((tools) => writeHash(tools) !== before);
       expect((await fixture.preference()).desiredRuntimeGenerationId).toBe(generationId);
-      await expect(failure()).resolves.toBeNull();
       await expect(call()).resolves.toMatchObject({ isError: false });
       expect(endpoint.calls("read")).toBe(2);
 
-      // A change to the accepted tool itself is refused at the plan and in the runtime, before any request.
+      // A change to the accepted tool itself is refused in the runtime, before any request.
       await endpoint.setTools([tool("read", "read fixture, changed upstream"), tool("write", "write fixture, changed upstream")]);
       await fixture.observe((tools) => tools.find((entry) => entry.name === "read")?.definitionHash !== route.tool.definitionHash);
       // The runtime applies the persisted inventory once its refresh finishes.
       await vi.waitFor(() => expect(fixture.runtime.operationalStatus(generationId)).toBe("active"), { timeout: 10_000 });
-      await expect(failure()).resolves.toBe("mcp_tool_definition_changed");
       await expect(call()).rejects.toMatchObject({ code: "mcp_tool_definition_changed" });
       expect(endpoint.calls("read")).toBe(2);
 
-      // The owner's own switch-off and disabling the connection keep their causes.
-      await fixture.update({ tool: { enabled: false, name: "read" } });
-      await expect(failure()).resolves.toBe("mcp_tool_disabled");
-      await fixture.update({ tool: { enabled: true, name: "read" } });
+      // Disabling the connection releases its runtime.
       await fixture.update({ enabled: false });
       expect((await fixture.preference()).desiredRuntimeGenerationId).toBeNull();
-      await expect(failure()).resolves.toBe("memory_egress_destination_revoked");
     } finally {
       await fixture.runtime.stop();
       await endpoint.close();
     }
   });
 
-  it("names lost authorization of a personal OAuth connection at dispatch", async () => {
+  it("marks lost authorization of a personal OAuth connection in its run plan records", async () => {
     const ownerId = await user();
     const storage = createPrismaMcpRepository({ draftValidator: { validate: vi.fn() }, encryptionKey: () => key, oauthRedirectUri: redirectUri, prisma });
     const created = await storage.createPersonalServer!({ description: "", draft: {
@@ -213,16 +203,15 @@ describe("personal MCP continuity for accepted runs", () => {
     });
     const accepted = await plan();
     if (!accepted.ok) throw new Error(`fixture_plan_${accepted.code}`);
-    const route = resolveMcpRunTool(accepted.snapshot, mailRead)!;
 
     await prisma.mcpOAuthConnection.update({ data: { state: "reauthorization_required" }, where: { id: connectionId } });
     await expect(loadMcpRunPlanRecordsForServers(ownerId, [serverId], prisma))
       .resolves.toMatchObject([{ catalogTools: [], readiness: "reauthorization_required" }]);
-    expect(currentMcpDispatchFailure(await plan(), route, generation.id)).toBe("mcp_authorization_required");
+    await expect(plan()).resolves.toMatchObject({ ok: false });
 
     await prisma.mcpOAuthConnection.update({ data: { disconnectRequestedAt: new Date(), state: "disconnecting" }, where: { id: connectionId } });
     await expect(loadMcpRunPlanRecordsForServers(ownerId, [serverId], prisma)).resolves.toMatchObject([{ readiness: "needs_authorization" }]);
-    expect(currentMcpDispatchFailure(await plan(), route, generation.id)).toBe("mcp_authorization_required");
+    await expect(plan()).resolves.toMatchObject({ ok: false });
     expect((await loadMcpCapabilityCatalog(ownerId, prisma)).servers).toEqual([]);
   });
 

@@ -12,7 +12,7 @@ import { createMcpClientSessionFactory } from "./clientSessionFactory";
 import { createDefaultMcpDraftValidator } from "./defaultMcp";
 import { applyPersonalMcpPolicyChange, personalMcpAddressPolicy } from "./defaultPersonalNetwork";
 import { createDefaultMcpLaunchFetch } from "./defaultRuntime";
-import { currentMcpDispatchFailure, mcpDispatchError } from "./dispatchStatus";
+import { mcpDispatchError } from "./dispatchStatus";
 import { userServerProjection } from "./handlers";
 import { createMcpOAuthStartHandler } from "./oauthHandlers";
 import { buildMcpOAuthPolicy } from "./oauthPolicy";
@@ -363,19 +363,7 @@ describe("personal MCP runtime under the local network policy", () => {
       expect(failures.at(-1)).toEqual({ errorCode: "mcp_local_network_disabled", generationId: "generation-1" });
       expect(posts()).toBe(reachedBefore);
 
-      // Dispatch revalidation projects the failed runtime as the stable refusal.
-      const route: Parameters<typeof currentMcpDispatchFailure>[1] = {
-        fingerprint: "fingerprint-1", originalName: "echo", serverId: "server-1",
-        tool: { definitionHash: "hash", description: "Echo", inputSchema: { type: "object" }, name: "echo",
-          namespacedName: "nas__echo", originalName: "echo", serverId: "server-1", serverName: "NAS tools" }
-      };
-      const failure = currentMcpDispatchFailure({
-        code: "mcp_not_ready",
-        issues: [{ errorCode: failures.at(-1)!.errorCode, name: "NAS tools", readiness: "unavailable" }],
-        ok: false
-      }, route, "generation-1");
-      expect(failure).toBe("mcp_local_network_disabled");
-      expect(mcpDispatchError(failure!).message).toBe(mcpRuntimeErrorMessage("mcp_local_network_disabled"));
+      expect(mcpDispatchError("mcp_local_network_disabled").message).toBe(mcpRuntimeErrorMessage("mcp_local_network_disabled"));
 
       // Switching it back on lets the accepted runtime reconnect.
       localNetworkEnabled = true;

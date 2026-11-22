@@ -3,8 +3,6 @@ import type { PrismaClient } from "@prisma/client";
 
 const HEARTBEAT_ID = "installation";
 export const BACKGROUND_WORKER_HEARTBEAT_INTERVAL_MS = 30_000;
-/** A worker whose last beat is older than this is treated as gone. */
-export const BACKGROUND_WORKER_HEARTBEAT_FRESHNESS_MS = 150_000;
 
 type HeartbeatClient = Pick<PrismaClient, "backgroundWorkerHeartbeat">;
 
@@ -49,15 +47,4 @@ export function createPrismaBackgroundWorkerHeartbeat(
       });
     }
   });
-}
-
-/** Whether a ready background worker beat recently: for readers that need deletion or indexing to progress. */
-export async function backgroundWorkerAvailable(client: HeartbeatClient, now: Date): Promise<boolean> {
-  const row = await client.backgroundWorkerHeartbeat.findUnique({
-    select: { lastSeenAt: true, ready: true },
-    where: { id: HEARTBEAT_ID }
-  });
-  if (!row?.ready || !validDate(now)) return false;
-  const age = now.getTime() - row.lastSeenAt.getTime();
-  return age >= 0 && age <= BACKGROUND_WORKER_HEARTBEAT_FRESHNESS_MS;
 }

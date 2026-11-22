@@ -202,7 +202,7 @@ function doclingReasons(
   return reasons;
 }
 
-export function nativeAdaptivePdfPageReasons(
+function nativeAdaptivePdfPageReasons(
   page: NativePdfPageMetrics
 ): AdaptivePdfPageReason[] {
   const reasons: AdaptivePdfPageReason[] = [];

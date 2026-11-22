@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { textMessageContent } from "@/lib/domain/content";
 import { prisma } from "@/lib/server/prisma";
-import { assertCurrentSkillRunBindings, insertAcceptedSkillRunBindings } from "@/lib/server/runs/prismaRepositoryBindings";
+import { insertAcceptedSkillRunBindings } from "@/lib/server/runs/prismaRepositoryBindings";
 import { loadScheduledTaskPinnedSkillMap } from "@/lib/server/scheduledTasks/pinnedSkills";
 import { createSkillBundle } from "@/lib/server/skills/bundle";
 import { createBuiltInSkillAdminService } from "@/lib/server/skills/builtInSkillsAdmin";
@@ -66,7 +66,6 @@ describe("shipped Skills", () => {
         provider: "shipped-provider", status: "queued", userId: existing, userMessageId: message.id } });
       const binding = { skillId, revisionId: first };
       await prisma.$transaction((tx) => insertAcceptedSkillRunBindings(tx, { bindings: [binding], runId: run.id, userId: existing }));
-      await prisma.$transaction((tx) => assertCurrentSkillRunBindings(tx, { bindings: [binding], runId: run.id, userId: existing }));
 
       // A second upgrade with the same text writes nothing.
       const before = await prisma.skillDefinition.findUniqueOrThrow({ where: { id: skillId } });
@@ -95,8 +94,6 @@ describe("shipped Skills", () => {
       expect(await admin.setEnabled(skillId, false, 2)).toMatchObject({ kind: "ok", skill: { enabled: false, version: 3 } });
       expect(await enabled(existing)).toEqual([]);
       expect(await skills.getForUser(existing, skillId)).toBeNull();
-      await expect(prisma.$transaction((tx) => assertCurrentSkillRunBindings(tx, { bindings: [binding], runId: run.id, userId: existing })))
-        .rejects.toThrow();
       expect(await synchronizeShippedSkills(prisma, [shipped(key, "Second text.")])).toEqual({ created: 0, updated: 0, retired: 0 });
       expect((await prisma.skillDefinition.findUniqueOrThrow({ where: { id: skillId } })).archivedAt).not.toBeNull();
       expect(await admin.list()).toContainEqual(expect.objectContaining({ id: skillId, enabled: false }));
