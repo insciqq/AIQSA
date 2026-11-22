@@ -508,15 +508,12 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // A scheduled run's flat context is its prompt and previous shown result only.
         const beforeTurns = input.scheduled ? [] : (await engine.transcripts.nativeRunsBeforeTurns({ chatId: scope.chatId,
           userId: input.userId, userMessageIds: branchTurnIds })).filter((run) => !nativeRuns.has(run.assistantMessageId));
-        // A recorded answer review's stopped step stays off the branch; its calls still count for the effect guard below.
-        const stoppedRuns = beforeTurns.filter((run) => !run.reviewStep);
-        const hiddenSteps = beforeTurns.filter((run) => run.reviewStep);
-        for (const run of stoppedRuns) nativeRuns.set(run.assistantMessageId, run.runId);
+        for (const run of beforeTurns) nativeRuns.set(run.assistantMessageId, run.runId);
         // The run's own message is last in the branch, under the id a send gives it there.
-        const conversationMessages = withStoppedNativeAnswers(contextMessages, stoppedRuns.map((run) =>
+        const conversationMessages = withStoppedNativeAnswers(contextMessages, beforeTurns.map((run) =>
           run.nextUserMessageId === input.created.userMessageId ? { ...run, nextUserMessageId: contextMessages.at(-1)!.id } : run));
-        const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId,
-          runIds: [...nativeRuns.values(), ...hiddenSteps.map((run) => run.runId)], userId: input.userId });
+        const runItems = await engine.transcripts.loadRuns({ chatId: scope.chatId, runIds: [...nativeRuns.values()],
+          userId: input.userId });
         // A scheduled run's flat context takes its previous shown result as its saved text, like a carried copy: never that
         // run's tool calls, results, reasoning or intermediate text, which an hourly check would otherwise send again every
         // time, nor a compaction of what came before it or a follow-up. Its calls feed only the effect guard below.
@@ -572,7 +569,6 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         const quietItems = quietRuns.length > 0 ? await engine.transcripts.loadRuns({ chatId: scope.chatId,
           runIds: quietRuns.map((run) => run.runId), userId: input.userId }) : new Map<string, TranscriptItem[]>();
         const effectItems = withHiddenRunEffects(withRetiredEffects(conversation.items, contextMessages, retiredEffects), [
-          ...hiddenSteps.map((run) => ({ beforeItemId: `msg-${run.nextUserMessageId}`, items: runItems.get(run.runId) ?? [] })),
           ...quietRuns.map((run) => ({ beforeItemId: `msg-${run.nextMessageId === input.created.userMessageId
             ? contextMessages.at(-1)!.id : run.nextMessageId}`, items: unresolvedCallItems(quietItems.get(run.runId) ?? []) })),
           // A scheduled run's earlier native answers entered as text: their calls stand where each answer does.

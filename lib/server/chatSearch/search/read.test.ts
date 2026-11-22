@@ -112,7 +112,6 @@ function fakeDb(input: Readonly<{
 }>) {
   const inList = (filter: unknown, value: unknown) => !filter || (filter as { in: unknown[] }).in.includes(value);
   return {
-    answerReviewSession: { findMany: async () => [] },
     attachment: { findMany: async ({ where }: { where: Record<string, unknown> }) => (input.attachments ?? []).filter((row) =>
       (where.chatId === undefined || row.chatId === where.chatId) && inList(where.id, row.id) &&
       inList(where.producerModelRunId, row.producerModelRunId) && (!where.origin || row.origin !== "USER_UPLOAD")) },
@@ -123,7 +122,7 @@ function fakeDb(input: Readonly<{
     } },
     message: { findMany: async ({ where }: { where: { chatId: string; id?: { in: string[] } } }) => input.messages
       .filter((row) => row.chatId === where.chatId && inList(where.id, row.id))
-      .map((row) => ({ answerReviewSessionId: null, branchSourceModelRunId: null, chatId: row.chatId,
+      .map((row) => ({ branchSourceModelRunId: null, chatId: row.chatId,
         content: { blocks: [...(row.text ? [{ text: row.text, type: "text" }] : []), ...(row.blocks ?? [])] }, createdAt: at(row.minute),
         id: row.id, parentMessageId: row.parentMessageId, role: row.role, scheduledTaskPrompt: false, status: "complete",
         systemTurnKind: row.systemTurnKind ?? null })) },

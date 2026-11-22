@@ -7,7 +7,6 @@ import {
   projectPublicShareSnapshot
 } from "../../domain/shareSnapshot";
 import { prisma } from "../prisma";
-import { collapseChatAnswerReviews } from "../chats/legacyAnswerReviews";
 import { quietCheckOmission } from "../chats/quietScheduledChecks";
 import { getVisibleMessagePath, type MessageRole } from "../../domain/branching";
 import { isServiceAccount } from "../auth/serviceAccounts";
@@ -70,26 +69,16 @@ export function createPrismaShareRepository(prismaClient = prisma): ShareReposit
         const history = await tx.message.findMany({ where: { chatId: chat.id, role: "assistant" },
           select: { id: true, ...messageFollowupSelect } });
         const followups = new Map(history.map(message => [message.id, projectMessageFollowups(message)]));
-        // Only the shared leaf's own path is read: a review that went on past
-        // it (a later version) stays out. On that path each answer review
-        // recorded before the feature's removal reads as its answer: the
-        // latest version stands in the source answer's place; the review
-        // turns stay out of the snapshot.
+        // Only the shared leaf's own path is read.
         const path = getVisibleMessagePath(chat.messages.map((message) => ({ ...message, role: message.role as MessageRole })), leaf);
-        const collapse = await collapseChatAnswerReviews(tx, chat.id, path.map((message) => ({
-          answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
-          role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
-        })));
-        const collapsed = path.filter((message) => !collapse.removed.has(message.id)).map((message) => ({ ...message,
-          parentMessageId: collapse.parents.has(message.id) ? collapse.parents.get(message.id) ?? null : message.parentMessageId }));
         // A quiet check is no result: the share leaves it out as the chat's history does (`lib/server/chats/quietScheduledChecks.ts`).
-        const quiet = await quietCheckOmission(tx, chat.id, collapsed);
-        const kept = collapsed.filter((message) => !quiet.removed.has(message.id)).map((message) => ({ ...message,
+        const quiet = await quietCheckOmission(tx, chat.id, path);
+        const kept = path.filter((message) => !quiet.removed.has(message.id)).map((message) => ({ ...message,
           parentMessageId: quiet.parents.has(message.id) ? quiet.parents.get(message.id) ?? null : message.parentMessageId }));
         // A sub-agent wake-up turn and a Sign in again request are the server's, never the user's speech: the share leaves them out.
         const wakeUps = omitSubagentCallbackTurns(kept.map((message) => ({ id: message.id, parentId: message.parentMessageId,
           role: message.role, systemTurnKind: message.systemTurnKind })));
-        const shownLeaf = quiet.resolve(collapse.replacements.get(leaf) ?? leaf);
+        const shownLeaf = quiet.resolve(leaf);
         if (!shownLeaf) return { error: "invalid_active_leaf" as const };
         const built = buildPublicShareSnapshot({
           activeLeafMessageId: wakeUps.resolve(shownLeaf) ?? shownLeaf,

@@ -61,7 +61,7 @@ describe("bounded MCP guard", () => {
     expect(JSON.stringify(admission)).not.toContain("My earlier request");
     expect(f.findMessages).toHaveBeenCalledWith({ where: { id: { in: ["other", "own"] }, chatId: "chat",
       OR: [{ authorUserId: "user" }, { authorUserId: null, chat: { userId: "user", importSource: null } }],
-      role: "user", scheduledTaskPrompt: false, systemTurnKind: null, answerReviewSessionId: null }, select: { id: true } });
+      role: "user", scheduledTaskPrompt: false, systemTurnKind: null }, select: { id: true } });
     expect(f.execute).not.toHaveBeenCalled();
   });
   it("role unset preserves legacy consent; configured unavailable never allows standing consent", async () => {

@@ -28,12 +28,7 @@ import {
   type RunAttachmentRecord,
   type RunRepository
 } from "./runRepositoryContract";
-import { isAnswerReviewTurnKind } from "../../domain/answerReviewTranscript";
-import {
-  answerReviewVersionQuestion,
-  collapseChatAnswerReviews
-} from "../chats/legacyAnswerReviews";
-import { loadQuietCheckEffectRuns, loadQuietCheckTurnIds, visibleStandIn } from "../chats/quietScheduledChecks";
+import { loadQuietCheckEffectRuns, loadQuietCheckTurnIds, quietCheckStandIn } from "../chats/quietScheduledChecks";
 import { omitQuietScheduledChecks } from "../../domain/quietScheduledChecks";
 import { loadDeepResearchMarks } from "../chats/deepResearchProjection";
 import { prismaResearchedRunsReader, researchedRuns } from "../research/researchedRuns";
@@ -106,7 +101,6 @@ type ConversationPathSelector =
   | { kind: "explicit"; leafMessageId: string };
 
 type ConversationPathRow = {
-  messageAnswerReviewSessionId?: string | null;
   messageBranchSourceModelRunId?: string | null;
   messageScheduledTaskPrompt?: boolean | null;
   messageSystemTurnKind?: string | null;
@@ -246,7 +240,6 @@ export function createPrismaRunRepository(
           message."role",
           message."status"::text AS "status",
           message."branchFollowups",
-          message."answerReviewSessionId",
           message."systemTurnKind"::text AS "systemTurnKind",
           message."scheduledTaskPrompt",
           message."branchSourceModelRunId",
@@ -267,7 +260,6 @@ export function createPrismaRunRepository(
           parent."role",
           parent."status"::text AS "status",
           parent."branchFollowups",
-          parent."answerReviewSessionId",
           parent."systemTurnKind"::text AS "systemTurnKind",
           parent."scheduledTaskPrompt",
           parent."branchSourceModelRunId",
@@ -287,7 +279,6 @@ export function createPrismaRunRepository(
         path."role" AS "messageRole",
         path."status" AS "messageStatus",
         path."branchFollowups" AS "messageBranchFollowups",
-        path."answerReviewSessionId" AS "messageAnswerReviewSessionId",
         path."systemTurnKind" AS "messageSystemTurnKind",
         path."scheduledTaskPrompt" AS "messageScheduledTaskPrompt",
         path."branchSourceModelRunId" AS "messageBranchSourceModelRunId",
@@ -321,8 +312,7 @@ export function createPrismaRunRepository(
     }
     return {
       chatMatched: rows.length > 0,
-      messages: conversationMessagesFromPathRows(await collapsedAnswerReviewRows(
-        await withoutQuietChecks(rows, chatId, selector.kind === "explicit"), chatId))
+      messages: conversationMessagesFromPathRows(await withoutQuietChecks(rows, chatId, selector.kind === "explicit"))
     };
   }
 
@@ -348,24 +338,6 @@ export function createPrismaRunRepository(
     const { removed } = omitQuietScheduledChecks(path.map((message) => ({ id: message.id, parentId: message.parentMessageId,
       role: message.role })), quietTurns);
     return rows.filter((row) => !row.messageId || !removed.has(row.messageId));
-  }
-
-  /**
-   * The path as runs read it (Run contracts): an answer review recorded
-   * before the feature's removal reads as its source question followed by
-   * its latest version, never its steps.
-   */
-  async function collapsedAnswerReviewRows(rows: ConversationPathRow[], chatId: string): Promise<ConversationPathRow[]> {
-    if (!rows.some((row) => row.messageAnswerReviewSessionId)) return rows;
-    const collapse = await collapseChatAnswerReviews(prismaClient, chatId, rows.flatMap((row) => row.messageId ? [{
-      answerReviewSessionId: row.messageAnswerReviewSessionId ?? null,
-      id: row.messageId,
-      parentId: row.messageParentId ?? null,
-      role: row.messageRole ?? "",
-      status: row.messageStatus ?? "",
-      systemTurnKind: row.messageSystemTurnKind ?? null
-    }] : [])).catch(retainRunPrismaCode);
-    return rows.filter((row) => !row.messageId || !collapse.removed.has(row.messageId));
   }
 
   async function loadInternalRunControl(runId: string) {
@@ -830,8 +802,7 @@ export function createPrismaRunRepository(
         }
       }).catch(retainRunPrismaCode);
 
-      // A turn the server wrote for an answer review step is never answered again.
-      if (!sourceMessage || isAnswerReviewTurnKind(sourceMessage.systemTurnKind)) {
+      if (!sourceMessage) {
         return null;
       }
 
@@ -888,18 +859,8 @@ export function createPrismaRunRepository(
         };
       }
 
-      // A version of an answer review recorded before the feature's removal
-      // answers its source question, as every reader sees it: regenerating it
-      // answers that question again, never the revision request.
-      const question = sourceMessage.parent && isAnswerReviewTurnKind(sourceMessage.parent.systemTurnKind)
-        ? await answerReviewVersionQuestion(prismaClient, sourceMessage.chat.id, sourceMessage.id).then((questionId) => questionId
-          ? prismaClient.message.findFirst({
-            select: { content: true, id: true, role: true, scheduledTaskPrompt: true, systemTurnKind: true },
-            where: { chatId: sourceMessage.chat.id, id: questionId }
-          })
-          : null).catch(retainRunPrismaCode)
-        : sourceMessage.parent;
-      if (!question || question.role !== "user" || isAnswerReviewTurnKind(question.systemTurnKind)) {
+      const question = sourceMessage.parent;
+      if (!question || question.role !== "user") {
         return null;
       }
 
@@ -1153,11 +1114,10 @@ export function createPrismaRunRepository(
         }
 
         const runs = chat.messages.flatMap((message) => message.assistantModelRuns[0] ? [message.assistantModelRuns[0]] : []);
-        // A send after an answer review recorded before the feature's removal may follow one of its steps,
-        // which the transcript reads as the version standing for it, and a scheduled check may follow a quiet one,
-        // which the transcript leaves out (`lib/server/chats/quietScheduledChecks.ts`).
+        // A scheduled check may follow a quiet one, which the transcript leaves out
+        // (`lib/server/chats/quietScheduledChecks.ts`).
         const userParentId = chat.messages.find((message) => message.id === userMessageId)?.parentMessageId ?? null;
-        const visibleUserParentId = userParentId ? await visibleStandIn(tx, chatId, userParentId) : null;
+        const visibleUserParentId = userParentId ? await quietCheckStandIn(tx, chatId, userParentId) : null;
         const [
           { contextStats, usageStats },
           pastChatSourcesByRun,
@@ -1254,7 +1214,7 @@ export function createPrismaRunRepository(
       return context.messages;
     },
     loadVisibleLeafMessageId: (chatId, leafMessageId) =>
-      visibleStandIn(prismaClient, chatId, leafMessageId).catch(retainRunPrismaCode),
+      quietCheckStandIn(prismaClient, chatId, leafMessageId).catch(retainRunPrismaCode),
     loadQuietCheckEffectRuns: (input) => loadQuietCheckEffectRuns(prismaClient, input).catch(retainRunPrismaCode),
     loadSystemTurnMessageIds: async ({ chatId, messageIds }) => {
       const ids = [...new Set(messageIds)];

@@ -4,7 +4,6 @@ import { projectMessageFollowups } from "../runs/runFollowups";
 import { Prisma, type ChatImportSource, type MessageStatus, type ModelRunStatus } from "@prisma/client";
 import { prisma } from "../prisma";
 import { markChatSearchDirty } from "../chatSearch/index/dirty";
-import { collapseChatAnswerReviews, loadAnswerReviewDeletionPlan } from "../chats/legacyAnswerReviews";
 import {
   ActiveMessageMutationConflictError,
   MessageDeleteConflictError,
@@ -280,30 +279,19 @@ export function createPrismaMessageBranchRepository(
             role: true,
             scheduledTaskPrompt: true,
             status: true,
-            systemTurnKind: true,
-            answerReviewSessionId: true
+            systemTurnKind: true
           },
           where: {
             chatId: lockedChat.id
           }
         });
-        const ancestors = orderedAncestorPath(sourceMessages, sourceMessageId);
-        if (ancestors.length === 0) {
+        const path = orderedAncestorPath(sourceMessages, sourceMessageId);
+        if (path.length === 0) {
           return null;
         }
-        if (ancestors.some((message) => isActiveMessageStatus(message.status))) {
+        if (path.some((message) => isActiveMessageStatus(message.status))) {
           throw new ActiveMessageMutationConflictError();
         }
-        // The copy holds no answer review session: each one recorded before
-        // the feature's removal is copied as its question followed by the
-        // group's latest version, and a later message hangs from that version
-        // (as exports read it).
-        const reviewCollapse = await collapseChatAnswerReviews(tx, lockedChat.id, ancestors.map((message) => ({
-          answerReviewSessionId: message.answerReviewSessionId, id: message.id, parentId: message.parentMessageId,
-          role: message.role, status: message.status, systemTurnKind: message.systemTurnKind
-        })));
-        const path = ancestors.filter((message) => !reviewCollapse.removed.has(message.id));
-        // The branch's last message stands for its source when the source was a review step.
         const branchLeaf = path.at(-1)!;
 
         const sourceAnswerBinding =
@@ -416,10 +404,7 @@ export function createPrismaMessageBranchRepository(
         const idMap = new Map<string, string>();
         let activeLeafMessageId: string | null = null;
         for (const sourceMessage of path) {
-          const sourceParentId = reviewCollapse.parents.has(sourceMessage.id)
-            ? reviewCollapse.parents.get(sourceMessage.id) ?? null
-            : sourceMessage.parentMessageId;
-          const parentMessageId = sourceParentId ? idMap.get(sourceParentId) ?? null : null;
+          const parentMessageId = sourceMessage.parentMessageId ? idMap.get(sourceMessage.parentMessageId) ?? null : null;
           const clonedMessageId = randomUUID();
           const followups = projectMessageFollowups(sourceMessage);
           const clonedAttachmentIds = new Map(
@@ -652,12 +637,6 @@ export function createPrismaMessageBranchRepository(
         if (!root) {
           return null;
         }
-        // A chat holding an answer review recorded before Answer Review was
-        // removed deletes what its reader deletes; any other chat deletes the
-        // message's subtree.
-        const reviewPlan = await loadAnswerReviewDeletionPlan(tx, lockedChat, root.id);
-        if (reviewPlan === null) throw new MessageDeleteConflictError();
-        const rootIds = reviewPlan ? reviewPlan.roots : [root.id];
 
         const chatMessages = await tx.message.findMany({
           select: {
@@ -681,8 +660,8 @@ export function createPrismaMessageBranchRepository(
           ]);
         }
 
-        const deletedDepths = new Map<string, number>(rootIds.map((id) => [id, 0]));
-        const queue = [...rootIds];
+        const deletedDepths = new Map<string, number>([[root.id, 0]]);
+        const queue = [root.id];
         while (queue.length > 0) {
           const parentId = queue.shift()!;
           const parentDepth = deletedDepths.get(parentId) ?? 0;
@@ -707,8 +686,8 @@ export function createPrismaMessageBranchRepository(
           });
         }
         const activeLeafMessageId = lockedChat.activeLeafMessageId;
-        const nextActiveLeafMessageId = reviewPlan ? reviewPlan.leafId
-          : activeLeafMessageId && deletedDepths.has(activeLeafMessageId) ? root.parentMessageId : activeLeafMessageId;
+        const nextActiveLeafMessageId = activeLeafMessageId && deletedDepths.has(activeLeafMessageId)
+          ? root.parentMessageId : activeLeafMessageId;
 
         const deletedRunScope = deletedMessageRunScope(root.chatId, deletedMessageIds);
         // A background sub-agent of the subtree that started after its stop (the stop runs before this transaction):

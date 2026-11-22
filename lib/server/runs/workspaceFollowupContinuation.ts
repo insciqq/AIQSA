@@ -10,7 +10,6 @@ import { observedFailure } from "../providers/providerObservability";
 import { loadProviderAttachments } from "./runAttachmentMaterialization";
 import { getRunAttachmentLimits } from "./attachmentLimits";
 import { nativeEntryConnectorTurn, nativeEntryUserRequest, type AcceptedRunSnapshot } from "./acceptedRunSnapshot";
-import { isRetiredAnswerReviewStep } from "./retiredAnswerReview";
 import type { CreatedRun, PreparingRunAdmissionInput, PreparingRunAdmissionResult, RunRepository } from "./runRepositoryContract";
 import { WorkspaceFollowupError, type createWorkspaceFollowupRepository } from "./workspaceFollowupPersistence";
 import type { WorkspaceFollowupCoordinatorDependencies } from "./workspaceFollowupCoordinator";
@@ -35,8 +34,6 @@ export function createWorkspaceFollowupContinuation(deps: Dependencies): Workspa
       throw new WorkspaceFollowupError("workspace_followup_invalid");
     }
     let prepared = snapshot.prepared;
-    // An answer review step admitted before the feature's removal has no step left to run: it ends interrupted, never starts.
-    if (isRetiredAnswerReviewStep(prepared.normalizedRequest)) throw new WorkspaceFollowupError("workspace_followup_interrupted");
     const admission = (): PreparingRunAdmissionInput => ({
       ...prepared, admissionKind: "NORMAL_SEND", chatId: loaded.modelRun.chatId,
       content: prepared.normalizedRequest.content, expectedActiveLeafId: prepared.expectedActiveLeafId,

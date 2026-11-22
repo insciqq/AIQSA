@@ -80,9 +80,8 @@ export function withRetiredEffects(items: readonly TranscriptItem[], messages: r
 
 /**
  * The guard's items with the calls of runs the conversation leaves out (a
- * stopped step of an answer review recorded before the feature's removal,
- * `NativeRunBeforeTurn.reviewStep`, and the previous shown result a scheduled
- * run takes as text, `answerEffectAnchor`), for `unknownEffectsOf` only: each run's
+ * quiet check, and the previous shown result a scheduled run takes as text,
+ * `answerEffectAnchor`), for `unknownEffectsOf` only: each run's
  * calls and results just before the user item that followed its answer, or
  * last when that item is not in the conversation. The model never sees them.
  */

@@ -32,7 +32,6 @@ type PathRow = {
   createdAt: Date;
   systemTurnKind: string | null;
   scheduledTaskPrompt: boolean;
-  answerReviewSessionId: string | null;
 };
 
 /** A timestamp as the `timestamp(3)` columns hold it: UTC wall time, the zone ignored by the cast. */
@@ -145,19 +144,19 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
           WITH RECURSIVE path AS (
             SELECT message."id", message."parentMessageId", message."role", message."status"::text AS "status",
               message."content", message."createdAt", message."systemTurnKind"::text AS "systemTurnKind",
-              message."scheduledTaskPrompt", message."answerReviewSessionId", 0 AS "depth"
+              message."scheduledTaskPrompt", 0 AS "depth"
             FROM "Message" AS message
             WHERE message."chatId" = ${chatId} AND message."id" = ${chat.activeLeafMessageId}
             UNION ALL
             SELECT parent."id", parent."parentMessageId", parent."role", parent."status"::text,
               parent."content", parent."createdAt", parent."systemTurnKind"::text,
-              parent."scheduledTaskPrompt", parent."answerReviewSessionId", path."depth" + 1
+              parent."scheduledTaskPrompt", path."depth" + 1
             FROM path
             INNER JOIN "Message" AS parent ON parent."chatId" = ${chatId} AND parent."id" = path."parentMessageId"
             WHERE path."depth" < ${MAX_PATH_DEPTH}
           )
           SELECT "id", "parentMessageId", "role", "status", "content", "createdAt", "systemTurnKind",
-            "scheduledTaskPrompt", "answerReviewSessionId"
+            "scheduledTaskPrompt"
           FROM path ORDER BY "depth" DESC`);
         const files = path.length === 0 ? [] : await tx.attachment.findMany({
           orderBy: [{ createdAt: "asc" }, { id: "asc" }],

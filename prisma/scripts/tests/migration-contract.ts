@@ -12,6 +12,9 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDisposableStatefulDatabaseUrl } from "../../../scripts/stateful-test-target";
+import {
+  DROP_ANSWER_REVIEW_STORAGE_MIGRATION, dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql
+} from "./drop-answer-review-storage-adoption";
 import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
 import {
   DROP_REMOVED_FEATURE_STORAGE_MIGRATION, dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql
@@ -592,9 +595,15 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
     dropOldMemoryFixtureSql, dropOldMemoryProofSql, dropOldMemoryProofSql, DROP_REMOVED_FEATURE_STORAGE_MIGRATION);
   // The removed features' storage goes with its retired values: the old core's active runs end once, Agent approval
   // cards become model cards, retired Telegram buttons go, the Knowledge row and retired decision features leave
-  // stored overrides, and usage keeps every row and purpose. Nothing that stays names what went.
+  // stored overrides, and usage keeps every row and purpose. Nothing that stays names what went. Its proof digests
+  // whole messages, whose review columns the next drop removes, so it ends before that drop.
   runForwardAdoptionProof(database, migrations, DROP_REMOVED_FEATURE_STORAGE_MIGRATION,
-    dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql, dropRemovedFeatureStorageProofSql);
+    dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql, dropRemovedFeatureStorageProofSql,
+    DROP_ANSWER_REVIEW_STORAGE_MIGRATION);
+  // Answer Review's storage goes: its sessions' steps stay in their chats as ordinary turns, each branch as stored, the
+  // other server-written kinds as they were, and nothing that stays names what went.
+  runForwardAdoptionProof(database, migrations, DROP_ANSWER_REVIEW_STORAGE_MIGRATION,
+    dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql, dropAnswerReviewStorageProofSql);
 }
 
 function main(database: string, shadowDatabase: string): void {
@@ -612,7 +621,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

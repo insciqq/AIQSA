@@ -22,7 +22,6 @@ import type { WorkspaceRuntime } from "../workspace/runtime";
 import { captureWorkspaceProjectSeed } from "../workspace/projectSeedCapture";
 import { WORKSPACE_OPERATION_LEASE_MS } from "../workspace/sessionOperation";
 import { loadExposedChatModelId } from "./chatCreationDefaults";
-import { answerReviewStandIn, collapseChatAnswerReviews } from "./legacyAnswerReviews";
 
 const sourceSelect = {
   activeLeafMessageId: true, archived: true, assistantId: true, assistantOverrides: true,
@@ -31,16 +30,9 @@ const sourceSelect = {
   title: true, updatedAt: true, userId: true, workspaceEnabled: true
 } satisfies Prisma.ChatSelect;
 
-/**
- * The source chat under its row lock, still at `leafMessageId`. A displayed
- * leaf (`shownLeaf`, what the browser names) also matches a stored leaf that
- * is a step of an answer review recorded before the feature's removal and
- * reads as that message (`lib/server/chats/legacyAnswerReviews.ts`);
- * `leafMessageId` in the result is always the stored leaf, which every later
- * check compares.
- */
+/** The source chat under its row lock, still at `leafMessageId`, which every later check compares. */
 async function lockedSource(tx: Prisma.TransactionClient, input: {
-  chatId: string; userId: string; leafMessageId: string; updatedAt?: Date; lockAssistant?: boolean; shownLeaf?: boolean;
+  chatId: string; userId: string; leafMessageId: string; updatedAt?: Date; lockAssistant?: boolean;
 }) {
   const boundary = await tx.chat.findUnique({ select: { assistantId: true }, where: { id: input.chatId } });
   // A copied binding holds its definition before the chat row, in the order
@@ -53,9 +45,7 @@ async function lockedSource(tx: Prisma.TransactionClient, input: {
   const chat = access ? await tx.chat.findUnique({ select: sourceSelect, where: { id: input.chatId } }) : null;
   if (!chat || !actor || chat.archived || chat.permanentDeletionAt) throw new ChatContinuationError("chat_not_found", 404);
   const stored = chat.activeLeafMessageId;
-  const sameLeaf = stored === input.leafMessageId || Boolean(input.shownLeaf && stored &&
-    await answerReviewStandIn(tx, chat.id, stored) === input.leafMessageId);
-  if (!stored || !sameLeaf ||
+  if (!stored || stored !== input.leafMessageId ||
     input.updatedAt && chat.updatedAt.getTime() !== input.updatedAt.getTime() ||
     input.lockAssistant && chat.assistantId !== assistantId) throw new ChatContinuationError("chat_changed");
   const active = await tx.modelRun.findFirst({ select: { id: true, subagentTurnId: true }, where: {
@@ -230,29 +220,22 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
   return {
     loadSource: (input) => client.$transaction(async (tx) => {
       const { chat, leafMessageId } = await lockedSource(tx, { chatId: input.chatId, leafMessageId: input.expectedLeafMessageId,
-        shownLeaf: true, userId: input.userId });
+        userId: input.userId });
       // First load only bounded graph metadata. Sibling contents, tools, files and Workspace are never read.
-      const stored = await tx.$queryRaw<Array<{ answerReviewSessionId: string | null; id: string; parentMessageId: string | null;
-        bytes: number; role: string; status: string; systemTurnKind: string | null; depth: number }>>(Prisma.sql`
+      const path = await tx.$queryRaw<Array<{ id: string; parentMessageId: string | null; bytes: number; role: string;
+        status: string; depth: number }>>(Prisma.sql`
         WITH RECURSIVE branch AS (
-          SELECT "id", "parentMessageId", octet_length("content"::text) AS bytes, "role", "status", "answerReviewSessionId",
-            "systemTurnKind"::text AS "systemTurnKind", 1 AS depth
+          SELECT "id", "parentMessageId", octet_length("content"::text) AS bytes, "role", "status", 1 AS depth
           FROM "Message" WHERE "chatId" = ${chat.id} AND "id" = ${leafMessageId}
           UNION ALL
-          SELECT m."id", m."parentMessageId", octet_length(m."content"::text), m."role", m."status", m."answerReviewSessionId",
-            m."systemTurnKind"::text, b.depth + 1
+          SELECT m."id", m."parentMessageId", octet_length(m."content"::text), m."role", m."status", b.depth + 1
           FROM "Message" m JOIN branch b ON m."id" = b."parentMessageId"
           WHERE m."chatId" = ${chat.id} AND b.depth < 2001
         ) SELECT * FROM branch ORDER BY depth DESC
       `);
-      // An answer review recorded before the feature's removal reads as its question and latest version, here as in the
-      // chat: its steps' contents are never read.
-      const collapse = await collapseChatAnswerReviews(tx, chat.id, stored.map((row) => ({ answerReviewSessionId: row.answerReviewSessionId,
-        id: row.id, parentId: row.parentMessageId, role: row.role, status: row.status, systemTurnKind: row.systemTurnKind })));
-      const path = stored.filter((row) => !collapse.removed.has(row.id));
       if (!path.length || path.at(-1)?.id !== input.expectedLeafMessageId || path.at(-1)?.role !== "assistant" ||
         path.at(-1)?.status !== "complete") throw new ChatContinuationError("chat_changed");
-      if (stored[0]?.parentMessageId || stored.length > 2000 || path.reduce((total, row) => total + row.bytes, 0) > 4 * 1024 * 1024) {
+      if (path[0]?.parentMessageId || path.length > 2000 || path.reduce((total, row) => total + row.bytes, 0) > 4 * 1024 * 1024) {
         throw new ChatContinuationError("chat_summary_too_large", 413);
       }
       const messages = await tx.message.findMany({ where: { chatId: chat.id, id: { in: path.map((row) => row.id) } }, select: { id: true, content: true } });

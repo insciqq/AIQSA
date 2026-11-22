@@ -1,6 +1,5 @@
 import { Prisma } from "@prisma/client";
 import { omitQuietScheduledChecks, type QuietCheckOmission } from "../../domain/quietScheduledChecks";
-import { answerReviewStandIn } from "./legacyAnswerReviews";
 
 /**
  * Which scheduled turns are quiet checks, from durable facts only: the
@@ -180,16 +179,6 @@ export function quietTurnSql(alias: "message" | "parent"): Prisma.Sql {
       WHERE copy."chatId" = ${row}."chatId" AND copy."parentMessageId" = ${row}."id" AND copy."role" = 'assistant'
         AND source."scheduledOccurrenceId" IS NOT NULL AND source."scheduledOutcome" = ${QUIET_OUTCOME}
     )))`;
-}
-
-/**
- * What a stored message reads as wherever the browser names a message it was
- * shown: the version standing for a step of an answer review recorded before
- * that feature's removal, then past any quiet check.
- */
-export async function visibleStandIn(db: StandInClient & Pick<Prisma.TransactionClient, "answerReviewSession">, chatId: string,
-  messageId: string): Promise<string | null> {
-  return quietCheckStandIn(db, chatId, await answerReviewStandIn(db, chatId, messageId));
 }
 
 /**

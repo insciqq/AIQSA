@@ -15,7 +15,6 @@ export type FixtureTurn = Readonly<{
   status?: string;
   systemTurnKind?: string | null;
   scheduledTaskPrompt?: boolean;
-  answerReviewSessionId?: string | null;
   questionFiles?: readonly string[];
   answerFiles?: readonly string[];
 }>;
@@ -40,12 +39,12 @@ export function chatSnapshot(input: Readonly<{
     const questionId = `${prefix}-q${index}`;
     const answerId = `${prefix}-a${index}`;
     path.push({
-      answerReviewSessionId: turn.answerReviewSessionId ?? null, content: text(turn.question), createdAt: at(index * 2),
+      content: text(turn.question), createdAt: at(index * 2),
       id: questionId, parentMessageId: parent, role: "user", scheduledTaskPrompt: turn.scheduledTaskPrompt ?? false,
       status: "complete", systemTurnKind: turn.systemTurnKind ?? null
     });
     path.push({
-      answerReviewSessionId: turn.answerReviewSessionId ?? null, content: text(turn.answer), createdAt: at(index * 2 + 1),
+      content: text(turn.answer), createdAt: at(index * 2 + 1),
       id: answerId, parentMessageId: questionId, role: "assistant", scheduledTaskPrompt: false,
       status: turn.status ?? "complete", systemTurnKind: null
     });

@@ -140,8 +140,8 @@ describe("unknown effects the old core left on a branch", () => {
     expect(withFollowup.map((item) => item.id).slice(0, 5)).toEqual(["msg-q1", "msg-f1", "msg-a1", "call-r1", "result-r1-unknown"]);
   });
 
-  it("puts a hidden review step's calls, never its text, before the turn that followed it", () => {
-    const step = [{ id: "critique", kind: "assistant_text", text: "x" } as TranscriptItem, create("s1")];
+  it("puts a hidden run's calls, never its text, before the turn that followed it", () => {
+    const step = [{ id: "hidden-text", kind: "assistant_text", text: "x" } as TranscriptItem, create("s1")];
     const items = withHiddenRunEffects(branch, [{ beforeItemId: "msg-current", items: step }]);
     expect(items.map((item) => item.id).slice(-2)).toEqual(["call-s1", "msg-current"]);
     // Cut off before the user's words: unknown, and spoken since.

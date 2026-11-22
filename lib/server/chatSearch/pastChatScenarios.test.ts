@@ -158,7 +158,7 @@ const dirty = new Map<string, Date>();
 
 function sourcePath(chat: WorldChat): ChatSearchSourceMessage[] {
   return seedActivePath(chat.seed).map((message) => ({
-    answerReviewSessionId: null, content: { blocks: [{ text: message.text, type: "text" }] }, createdAt: message.createdAt,
+    content: { blocks: [{ text: message.text, type: "text" }] }, createdAt: message.createdAt,
     id: idOf(message.key), parentMessageId: message.parentKey ? idOf(message.parentKey) : null, role: message.role,
     scheduledTaskPrompt: false, status: "complete", systemTurnKind: null
   }));
