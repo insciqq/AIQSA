@@ -1,7 +1,5 @@
 {
   "AnswerProblemReport_messageId_userId_key": {"model": "AnswerProblemReport", "fields": ["messageId", "userId"]},
-  "AnswerReviewSession_chatId_id_key": {"model": "AnswerReviewSession", "fields": ["chatId", "id"]},
-  "AnswerReviewSession_chatId_sourceAssistantMessageId_key": {"model": "AnswerReviewSession", "fields": ["chatId", "sourceAssistantMessageId"]},
   "ArtifactBlob_ownerUserId_sha256_key": {"model": "ArtifactBlob", "fields": ["ownerUserId", "sha256"]},
   "ArtifactBlob_storageKey_key": {"model": "ArtifactBlob", "fields": ["storageKey"]},
   "ArtifactPublicationVersion_publicationId_position_key": {"model": "ArtifactPublicationVersion", "fields": ["publicationId", "position"]},
@@ -89,7 +87,6 @@
   "McpUserServer_desiredRuntimeGenerationId_key": {"model": "McpUserServer", "fields": ["desiredRuntimeGenerationId"]},
   "McpUserServer_userId_serverId_key": {"model": "McpUserServer", "fields": ["userId", "serverId"]},
   "MemoryNoteOffer_runId_toolCallId_key": {"model": "MemoryNoteOffer", "fields": ["runId", "toolCallId"]},
-  "Message_answerReviewSessionId_answerReviewRound_answerRevie_key": {"model": "Message", "fields": ["answerReviewSessionId", "answerReviewRound", "answerReviewStep"]},
   "Message_chatId_id_key": {"model": "Message", "fields": ["chatId", "id"]},
   "ModelRunEvent_modelRunId_sequence_key": {"model": "ModelRunEvent", "fields": ["modelRunId", "sequence"]},
   "ModelRunSkillBinding_modelRunId_alias_key": {"model": "ModelRunSkillBinding", "fields": ["modelRunId", "alias"]},

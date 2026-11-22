@@ -111,8 +111,8 @@ function userTurnKind(kind: string | null | undefined): boolean {
 
 /**
  * `TurnProvenance.userRequest` as a stored user message shows it, for the checks a change makes again as it commits (the
- * self-service fence, the memory note's service): a turn the server wrote (`Message.systemTurnKind`, retired kinds
- * included) or an answer to a scheduled task's prompt is never the user's own request.
+ * self-service fence, the memory note's service): a turn the server wrote (`Message.systemTurnKind`) or an answer to
+ * a scheduled task's prompt is never the user's own request.
  */
 export function storedUserRequest(message: Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>): boolean {
   return !message.scheduledTaskPrompt && userTurnKind(message.systemTurnKind);

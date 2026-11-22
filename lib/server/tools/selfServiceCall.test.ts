@@ -68,8 +68,7 @@ describe("the run fence of a self-service change", () => {
     [[{ ...allowed, scheduledTaskPrompt: null }]],
     // A turn the server wrote authorizes nothing, as the memory note's service reads it (`storedUserRequest`).
     [[{ ...allowed, systemTurnKind: "subagent_callback" }]],
-    [[{ ...allowed, systemTurnKind: "browser_sign_in_request" }]],
-    [[{ ...allowed, systemTurnKind: "answer_review_request" }]]
+    [[{ ...allowed, systemTurnKind: "browser_sign_in_request" }]]
   ])("refuses %j: another user's run or chat, a finished run, an inactive user, scheduled work or a turn the server wrote", async (rows) => {
     const tx = { $queryRaw: vi.fn(async () => rows) };
     expect(await selfServiceRunAllowedInTransaction(tx as never, scope)).toBe(false);
