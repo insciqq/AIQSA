@@ -49,13 +49,55 @@ export function savedSecretLineEndingForms(values: readonly string[]): readonly 
   return [...forms];
 }
 
-/** The screened values of saved secrets: each typed value and its trimmed form, with their LF forms, once. */
+/** Last name parts that mark an env variable as an identifier the answer may name: a login, an email, a region. */
+const IDENTIFIER_NAME_PARTS = new Set(["ACCOUNT", "BUCKET", "DOMAIN", "EMAIL", "HOST", "HOSTNAME", "LOGIN", "MAIL", "PORT", "PROJECT", "REGION", "USER", "USERNAME"]);
+/** Anywhere in a name, these keep the value masked, as in AWS_ACCESS_KEY_ID, DB_USER_PASSWORD or MAIL_URL. */
+const SECRET_NAME_PATTERN = /AUTH|BEARER|CERT|CODE|CONN|COOKIE|CRED|DSN|HASH|KEY|LICENSE|MFA|OTP|PASS|PIN|PRIVATE|PW|SALT|SECRET|SEED|SESSION|TOKEN|URI|URL/u;
+/** A value that carries a password itself, such as smtp://bob:pw@host or bob:pw@host. */
+const CREDENTIAL_VALUE = /(?:^|:\/\/)[^\s:@/]+:[^\s@/]+@/u;
+/** An http(s) address that is only an origin: no user, path, query or fragment that could carry a token. */
+const BARE_ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/iu;
+
+/**
+ * Whether an env variable is an identifier, not a credential: its name's last part names a login, an email, a host
+ * or a region (DB_USER, AWS_DEFAULT_REGION), no part of it names a secret (USER_PW, LOGIN_CODE stay secrets), and its
+ * value carries no password. `manage_secret` lets an answer name these (operator decision 2026-10-27).
+ */
+export function savedSecretIdentifierVariable(name: unknown, value: unknown): boolean {
+  if (typeof name !== "string" || typeof value !== "string" || CREDENTIAL_VALUE.test(value)) return false;
+  const upper = name.toUpperCase();
+  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(upper.split("_").at(-1) ?? "");
+}
+
+/**
+ * Whether derived text may hold an env variable's value as ordinary text: an identifier (`savedSecretIdentifierVariable`),
+ * or an address variable (JIRA_URL) whose value is a bare origin, with no part of the rest of its name naming a secret
+ * (review 2026-11-23). A login, an email, a host or a link to a team's tracker is what users keep in their note and
+ * search their chats for; passwords, tokens, keys and addresses with a path stay screened.
+ */
+function savedSecretEntryIsPlain(name: string, value: string): boolean {
+  if (savedSecretIdentifierVariable(name, value)) return true;
+  const parts = name.toUpperCase().split("_");
+  const last = parts.pop() ?? "";
+  return (last === "URL" || last === "URI") && BARE_ORIGIN.test(value.trim()) && !SECRET_NAME_PATTERN.test(parts.join("_"));
+}
+
+function extractedValues(secrets: readonly Pick<AcceptedWorkspaceSecret, "name" | "value">[]): string[] {
+  return secrets.flatMap((secret) => secret.value.kind === "env"
+    ? secret.value.entries.filter((entry) => !savedSecretEntryIsPlain(entry.name, entry.value)).map((entry) => entry.value)
+    : workspaceActivitySecretValues([secret as AcceptedWorkspaceSecret]));
+}
+
+/**
+ * The screened values of saved secrets: each typed value and its trimmed form, with their LF forms, once. Env
+ * variables that hold identifiers or bare addresses are left out (`savedSecretEntryIsPlain`).
+ */
 export function savedSecretScreenedValues(
   secrets: readonly Pick<AcceptedWorkspaceSecret, "name" | "value">[]
 ): readonly string[] {
   let extracted: readonly string[];
   try {
-    extracted = workspaceActivitySecretValues(secrets as readonly AcceptedWorkspaceSecret[]);
+    extracted = extractedValues(secrets);
   } catch {
     extracted = [];
   }
