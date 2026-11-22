@@ -10,6 +10,22 @@ function session(role: "admin" | "user" = "admin") {
 }
 
 describe("administrator system model policy handlers", () => {
+  it.each(["admin", "user"] as const)("guards past-chat embedding role saves and clears for %s", async (role) => {
+    const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
+    const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });
+    const patch = (body: object) => handlers.PATCH(new Request("http://local.test/api/admin/providers/system-model-policy", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+    const assigned = await patch({ expectedVersion: 4, embeddingProviderModelId: "embed-a" });
+    expect(assigned.status).toBe(role === "admin" ? 200 : 403);
+    if (role !== "admin") return expect(service.update).not.toHaveBeenCalled();
+    expect(service.update).toHaveBeenCalledExactlyOnceWith({ embeddingProviderModelId: "embed-a", expectedVersion: 4, userId: "user-1" });
+    expect((await patch({ expectedVersion: 4, embeddingProviderModelId: null })).status).toBe(200);
+    expect(service.update).toHaveBeenLastCalledWith({ embeddingProviderModelId: null, expectedVersion: 4, userId: "user-1" });
+    for (const embeddingProviderModelId of ["", " embed-a", "x".repeat(257), 7, "embed\u0000a"]) {
+      expect((await patch({ expectedVersion: 4, embeddingProviderModelId })).status).toBe(400);
+    }
+    expect(service.update).toHaveBeenCalledTimes(2);
+  });
   it.each(["admin", "user"] as const)("guards independent MCP guard writes for %s", async (role) => {
     const service = { list: vi.fn().mockResolvedValue({}), update: vi.fn() };
     const handlers = createAdminSystemModelPolicyHandlers({ resolveAuth: vi.fn().mockResolvedValue(session(role)) as never, service: service as never });

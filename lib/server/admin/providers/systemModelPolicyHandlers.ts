@@ -94,7 +94,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const value = await readJsonBodyOrNull(request, "json");
       const bodyError = requestBodyErrorResponse(value);
       if (bodyError) return bodyError;
-      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "decisionProviderModelId", "decisionFeatures",
+      const allowed = ["expectedVersion", "providerModelId", "reasoningEffort", "rerankerProviderModelId", "embeddingProviderModelId", "decisionProviderModelId", "decisionFeatures",
         "mcpGuardProviderModelId", "mcpGuardReasoningEffort", "researchVerifierProviderModelId", "researchVerifierReasoningEffort", "researchResearcherProviderModelId", "researchResearcherReasoningEffort", "visionProviderModelId", "visionReasoningEffort", "chatTitleProviderModelId", "chatTitleReasoningEffort", "chatPdfProviderModelId", "chatPdfReasoningEffort",
         "chatPdfProcessingMode", "chatPdfFallbackMethod", "chatPdfNativeProviderModelId", "chatPdfNativeReasoningEffort", "imageProviderModelId", "imageModels"];
       const textOrNull = (entry: unknown, limit: number) => entry === null ||
@@ -123,6 +123,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       }
       const hasUtilityUpdate = record(value) && Object.hasOwn(value, "providerModelId");
       const hasRerankerUpdate = record(value) && Object.hasOwn(value, "rerankerProviderModelId");
+      const hasEmbeddingUpdate = record(value) && Object.hasOwn(value, "embeddingProviderModelId");
       const hasDecisionModelUpdate = record(value) && Object.hasOwn(value, "decisionProviderModelId");
       const hasDecisionFeaturesUpdate = record(value) && Object.hasOwn(value, "decisionFeatures");
       const decisionFeatures = hasDecisionFeaturesUpdate && record(value) ? decodeDecisionFeatureOverrides(value.decisionFeatures) : null;
@@ -138,7 +139,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
       const hasPdfPolicyUpdate = record(value) && (Object.hasOwn(value, "chatPdfProcessingMode") || Object.hasOwn(value, "chatPdfFallbackMethod"));
       if (!record(value) || Object.keys(value).some((key) => !allowed.includes(key)) ||
         !Number.isSafeInteger(value.expectedVersion) || Number(value.expectedVersion) < 1 ||
-        !hasUtilityUpdate && !hasRerankerUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasResearchResearcherUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
+        !hasUtilityUpdate && !hasRerankerUpdate && !hasEmbeddingUpdate && !hasDecisionModelUpdate && !hasDecisionFeaturesUpdate && !hasTitleModelUpdate && !hasMcpGuardUpdate && !hasResearchVerifierUpdate && !hasResearchResearcherUpdate && !hasVisionUpdate && !hasPdfModelUpdate && !hasPdfNativeUpdate && !hasPdfPolicyUpdate && !hasImageUpdate ||
         hasDecisionModelUpdate && !textOrNull(value.decisionProviderModelId, 256) ||
         hasDecisionFeaturesUpdate && !decisionFeatures ||
         hasImageUpdate !== Object.hasOwn(value, "imageModels") ||
@@ -167,6 +168,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
         hasPdfPolicyUpdate && (Object.hasOwn(value, "chatPdfProcessingMode") && !["prefer_chat_model", "use_pdf_reader", "read_page_images"].includes(String(value.chatPdfProcessingMode)) ||
           Object.hasOwn(value, "chatPdfFallbackMethod") && !["pdf_reader", "page_images"].includes(String(value.chatPdfFallbackMethod))) ||
         hasRerankerUpdate && !textOrNull(value.rerankerProviderModelId, 256) ||
+        hasEmbeddingUpdate && !textOrNull(value.embeddingProviderModelId, 256) ||
         value.providerModelId === null && value.reasoningEffort !== null ||
         value.chatTitleProviderModelId === null && value.chatTitleReasoningEffort !== null ||
         value.chatPdfProviderModelId === null && value.chatPdfReasoningEffort !== null) {
@@ -217,6 +219,7 @@ export function createAdminSystemModelPolicyHandlers(input: Readonly<{
           ...(hasRerankerUpdate
             ? { rerankerProviderModelId: value.rerankerProviderModelId as string | null }
             : {}),
+          ...(hasEmbeddingUpdate ? { embeddingProviderModelId: value.embeddingProviderModelId as string | null } : {}),
           userId: auth.session.userId
         });
         return Response.json({ systemModelPolicy: await input.service.list() });

@@ -1,5 +1,6 @@
 "use client";
 
+import { AdminEmbeddingRoleRow } from "@/components/admin/roles/AdminEmbeddingRoleRow";
 import { AdminRolePicker } from "@/components/admin/roles/AdminRolePicker";
 import { AdminReasoningSelect as ReasoningSelect } from "@/components/admin/roles/AdminReasoningSelect";
 import { RoleRow } from "@/components/admin/roles/AdminRoleRow";
@@ -576,6 +577,8 @@ export function AdminSystemRolesTable({
         />
         {fallbacks ? <p className="text-xs leading-5 text-ink-muted" data-testid="admin-reranker-fallbacks">{fallbacks}</p> : null}
       </RoleRow>
+
+      <AdminEmbeddingRoleRow busy={busy} catalog={catalog} controller={controller} requestConfirmation={requestConfirmation} />
 
       <RoleRow title="Relevance checks" testId="admin-role-decisions" status={roleStatus(policy.decisionModel ?? null)}
         statusLabel={policy.decisionModel ? policy.decisionModel.available ? "Ready" : "Unavailable" : "Off"}

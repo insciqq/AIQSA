@@ -84,6 +84,7 @@
   "chat_image_unsupported",
   "chat_import_failed",
   "chat_search_index_failed",
+  "chat_search_reembedding_unscheduled",
   "chat_search_saved_secret_unreadable",
   "chat_search_usage_unrecorded",
   "chat_summary_no_progress",

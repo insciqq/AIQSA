@@ -45,6 +45,7 @@ export function deploymentLabeller(
         ...catalog.documentCandidates,
         ...catalog.verificationCandidates,
         ...catalog.rerankerCandidates,
+        ...(catalog.embeddingCandidates ?? []),
         ...(catalog.decisionCandidates ?? []),
         ...Object.values(catalog.ineligible).flat(),
         ...(catalog.policy.systemModel ? [catalog.policy.systemModel] : []),
@@ -56,6 +57,7 @@ export function deploymentLabeller(
         ...(catalog.policy.visionModel ? [catalog.policy.visionModel] : []),
         ...(catalog.policy.chatPdfModel ? [catalog.policy.chatPdfModel] : []),
         ...(catalog.policy.rerankerModel ? [catalog.policy.rerankerModel] : []),
+        ...(catalog.policy.embeddingModel ? [catalog.policy.embeddingModel] : []),
         ...(catalog.policy.decisionModel ? [catalog.policy.decisionModel] : []),
         ...(catalog.policy.rerankerRoute?.entries ?? [])
       ].map((item) => ({ id: item.connectionId, name: item.connectionDisplayName }))
@@ -140,6 +142,12 @@ export function researchRoleItems(catalog: AdminSystemModelPolicyCatalog): Admin
 export function rerankerItems(catalog: AdminSystemModelPolicyCatalog): AdminRolePickerItem[] {
   const label = deploymentLabeller(catalog);
   return catalog.rerankerCandidates.map((item) => ({ group: "ready", id: item.id, label: label(item) }));
+}
+
+/** Embedding models verified on their provider's default key; the server refuses any other. */
+export function embeddingItems(catalog: AdminSystemModelPolicyCatalog): AdminRolePickerItem[] {
+  const label = deploymentLabeller(catalog);
+  return (catalog.embeddingCandidates ?? []).map((item) => ({ group: "ready", id: item.id, label: label(item) }));
 }
 
 /** Read-only route line under the Reranking picker. */
