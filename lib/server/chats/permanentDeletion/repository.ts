@@ -126,7 +126,7 @@ export function createPrismaPermanentChatDeletionRepository(
       const fenced = await client.chat.count({
         where: { id: chatId, permanentDeletionAt: { not: null }, userId }
       });
-      if (fenced > 0) return "in_progress";
+      if (fenced > 0) return "in_progress" as const;
       // The chat is gone: only its owner's completed work row says the deletion finished; anything else reads
       // as unknown, like a chat that never existed.
       const [row] = await client.$queryRaw<Array<{ completed: boolean }>>(Prisma.sql`
@@ -138,7 +138,7 @@ export function createPrismaPermanentChatDeletionRepository(
           AND "completedAt" IS NOT NULL
         LIMIT 1
       `);
-      return row?.completed ? "complete" : null;
+      return row?.completed ? "complete" as const : null;
     }
   });
 }
