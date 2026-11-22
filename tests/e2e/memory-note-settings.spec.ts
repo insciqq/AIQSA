@@ -75,6 +75,12 @@ async function prepare(page: Page, initial: Partial<Pick<Server, "note" | "legac
 
 const editor = (page: Page) => page.getByRole("textbox", { name: "Memory note" });
 
+/** Opens Settings › Memory again from its address, as a reload of the page would: Settings does not keep `?library=` in the address. */
+async function reopen(page: Page): Promise<void> {
+  await page.goto("/?library=memory");
+  await expect(page.getByTestId("settings-memory")).toBeVisible({ timeout: 30_000 });
+}
+
 test("the note is edited and saved as one text, and every control stays reachable at every size in both themes", async ({ page }, info) => {
   const server = await prepare(page);
   const section = page.getByTestId("settings-memory");
@@ -91,7 +97,7 @@ test("the note is edited and saved as one text, and every control stays reachabl
   expect(server.writes).toEqual([{ method: "PUT", path: "/api/me/memory/note",
     body: { text: "I work on the billing team.\nAnswer in short bullet points.", revision: 0 } }]);
 
-  await page.reload();
+  await reopen(page);
   await expect(editor(page)).toHaveValue("I work on the billing team.\nAnswer in short bullet points.");
   await expect(section.getByRole("button", { name: "Save" })).toBeDisabled();
   await captureState(page, info, "memory-note-saved", { anchor: section.getByRole("button", { name: "Save" }), sizes, atEachSize: async () => {
@@ -110,7 +116,7 @@ test("a save over a stale revision keeps the user's text beside the saved note",
   const conflict = page.getByTestId("memory-note-conflict");
   await expect(conflict).toContainText("The note changed elsewhere");
   await expect(editor(page)).toHaveValue("Answer briefly and in Russian.");
-  await conflict.getByText("Saved note").click();
+  await conflict.getByText("Saved note", { exact: true }).click();
   await expect(conflict.getByLabel("Saved note")).toContainText("Use metric units.");
   await captureState(page, info, "memory-note-conflict", { anchor: conflict, sizes, atEachSize: async () => {
     await expectWithinViewport(page, conflict.getByRole("button", { name: "Keep my text and save over it" }));
@@ -130,7 +136,7 @@ test("the switches persist, and Memory off disables the two that depend on it", 
   await expect(page.getByRole("switch", { name: "Use Memory in answers" })).toHaveAttribute("aria-checked", "false");
   await expect(page.getByRole("switch", { name: "Offer to remember" })).toBeDisabled();
   expect(server.writes.map((write) => write.body)).toEqual([{ pastChatSearchEnabled: false }, { memoryEnabled: false }]);
-  await page.reload();
+  await reopen(page);
   await expect(page.getByRole("switch", { name: "Use Memory in answers" })).toHaveAttribute("aria-checked", "false");
   await expect(page.getByRole("switch", { name: "Search past chats" })).toHaveAttribute("aria-checked", "false");
   await expect(page.getByRole("switch", { name: "Offer to remember" })).toHaveAttribute("aria-checked", "true");

@@ -144,7 +144,8 @@ test("offer cards are accepted, dismissed or no longer fit, at every size in bot
   expect(writes.map((write) => write.body)).toEqual([{ decision: "accept" }, { decision: "dismiss" }, { decision: "accept" }]);
 
   await remembered.getByRole("button", { name: "Undo this change to your memory" }).click();
-  await expect(remembered.getByRole("status")).toContainText("Your note is back to the previous text");
+  await expect(page.getByRole("listitem", { name: "Change undone" }).getByRole("status"))
+    .toContainText("Your note is back to the previous text");
 });
 
 test("a past-chat source opens its chat at the message", async ({ page }, info) => {
