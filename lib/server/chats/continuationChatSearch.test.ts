@@ -24,7 +24,9 @@ describe("a continuation's new chat", () => {
   it.each(["NORMAL", "EXCLUDED"] as const)("of a %s chat gets its leaf and a mark in the creating transaction", async (mode) => {
     const { recorder, repository } = continuation(mode);
 
-    const { chatId } = await repository.complete(SOURCE, { attemptId: "attempt-1", id: "continuation-1" }, "Summary.");
+    const result = await repository.complete(SOURCE, { attemptId: "attempt-1", id: "continuation-1" }, "Summary.");
+    if (result.status !== "complete") throw new Error("continuation_not_complete");
+    const { chatId } = result;
 
     const created = recorder.indexOf((call) => call.name === "chat.create");
     const leaf = recorder.indexOf((call) => call.name === "chat.update" &&
