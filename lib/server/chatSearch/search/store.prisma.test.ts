@@ -122,7 +122,9 @@ async function seed(): Promise<Fixture> {
     eligible.add(seeded.chatId);
   }
   const special = async (name: string, text: string, firstMinute: number, options: Readonly<{ userId?: string; mode?: "EXCLUDED" | "TEMPORARY" }> = {}) => {
-    const seeded = await seedChat({ firstMinute, text: () => text, title: `Special ${name}`, turns: 1, userId: options.userId ?? owner, windows: 1,
+    // The indexer's text: a header with the chat's title, then the turn (`lib/server/chatSearch/index/passages.ts`).
+    const seeded = await seedChat({ firstMinute, text: () => `Chat: Special ${name}\n\nUser: ${text}\n\nAssistant: Noted.`,
+      title: `Special ${name}`, turns: 1, userId: options.userId ?? owner, windows: 1,
       ...(options.mode ? { mode: options.mode } : {}) });
     passages.push(...seeded.passages);
     return seeded.chatId;
@@ -285,6 +287,10 @@ describe("past-chat search SQL", () => {
     const vectors = { "ABC-1234 rollout": axis(1), "reduce infrastructure spending": axis(2) };
     const fused = await timed("fused_search", () => searchAs(fixture.owner, fixture.current, "ABC-1234 rollout", vectors));
     expect(chatIds(fused).slice(0, 2)).toEqual([fixture.chat.ticket, fixture.chat.similar]);
+    if (fused.kind !== "searched") throw new Error("expected a search");
+    expect(fused.degraded).toBeNull();
+    expect(fused.result.results[0]).toMatchObject({ chatTitle: "Special ticket" });
+    expect(fused.result.results[0]!.excerpt.startsWith("User: Ticket ABC-1234")).toBe(true);
     expect(chatIds(await searchAs(fixture.owner, fixture.current, "reduce infrastructure spending", vectors))[0]).toBe(fixture.chat.costs);
   });
 

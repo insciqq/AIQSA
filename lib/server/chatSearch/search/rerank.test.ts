@@ -10,7 +10,8 @@ type Runtime = NonNullable<Dependencies["runtime"]>;
 
 const role = {} as never;
 const binding = { adapter: { rerank: async () => ({ model: "m", provider: "p", requestId: null, scores: [], usage: { inputTokens: null,
-  searchUnits: null, totalTokens: null } }) }, connectionId: "conn", credentialId: "cred", credentialSource: "default",
+  searchUnits: null, totalTokens: null } }) }, configuration: { upstreamModelId: "cohere/rerank-4-fast" }, connectionId: "conn",
+  credentialId: "cred", credentialSource: "default",
   credentialVersionId: "credv", provider: "openrouter", providerModelId: "selected" } as unknown as RerankerRuntimeBinding;
 
 function reranker(resolution: RerankerModelRoleResolution, runtime: Runtime["resolveForInstallation"] = async () => binding) {
@@ -33,7 +34,7 @@ describe("past-chat reranker role", () => {
     const resolved = await fake.resolve();
     expect(asked).toEqual(["selected"]);
     expect(resolved).toMatchObject({ kind: "ready", route: { binding: { connectionId: "conn", credentialId: "cred", credentialSource: "default",
-      credentialVersionId: "credv", provider: "openrouter", providerModelId: "selected" } } });
+      credentialVersionId: "credv", modelId: "cohere/rerank-4-fast", provider: "openrouter", providerModelId: "selected" } } });
   });
 
   it("never falls through to another approved reranker when the selected one is broken", async () => {

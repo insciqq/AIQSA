@@ -3,7 +3,8 @@ import type { SearchPastChatsInput } from "../../../contracts/pastChats";
 import { RerankAdapterError, type RerankRequest, type RerankResult } from "../../providers/rerank";
 import { chatSearchEligible, type ChatSearchEligibilityFields } from "../eligibility";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder, type ChatSearchEmbeddingModel } from "../embedder";
-import type { PastChatRerankResolution, PastChatRerankUsageEvent } from "./rerank";
+import type { ChatSearchUsageRecord } from "../usage";
+import type { PastChatRerankResolution } from "./rerank";
 import { createPastChatSearch, type PastChatSearchDependencies, type PastChatSearchOutcome } from "./retrieval";
 import type { PastChatPassageRow, PastChatScope, PastChatSearchStore } from "./store";
 
@@ -153,7 +154,7 @@ function embedder(vectors: Readonly<Record<string, readonly number[]>>, options:
 function reranker(resolution: PastChatRerankResolution | ((request: RerankRequest) => Promise<RerankResult>)) {
   const requests: RerankRequest[] = [];
   const binding = { connectionId: "conn", credentialId: "cred", credentialSource: "default" as const, credentialVersionId: "credv",
-    provider: "openrouter", providerModelId: "reranker" };
+    modelId: "upstream/reranker", provider: "openrouter", providerModelId: "reranker" };
   const resolved: PastChatRerankResolution = typeof resolution === "function"
     ? { kind: "ready", route: { binding, rerank: async (request) => {
       requests.push(request);
@@ -290,7 +291,7 @@ describe("past-chat search reranking", () => {
 
   it("reorders the fused candidates by the reranker's scores and records its usage after the call", async () => {
     const { store } = world();
-    const events: PastChatRerankUsageEvent[] = [];
+    const events: ChatSearchUsageRecord[] = [];
     const fused = ids(await search({ embedder: unset, store }, { query: "payments" }));
     const rerank = reranker(async (request) => ({ model: "reranker", provider: "x", requestId: "req-1", usage,
       scores: request.documents.map((document, index) => ({ handle: document.handle, index, relevanceScore: index })) }));
@@ -301,14 +302,16 @@ describe("past-chat search reranking", () => {
     expect(outcome.result.results.map((result) => result.chatId)).toEqual([...fused].reverse());
     expect(rerank.requests[0]!.query).toBe("payments");
     expect(rerank.requests[0]!.documents.map((document) => document.handle)).toEqual(["d1", "d2", "d3"]);
-    await vi.waitFor(() => expect(events).toEqual([expect.objectContaining({ kind: "rerank", outcome: "succeeded", purpose: "memory_retrieval",
-      providerRequestId: "req-1", usage, userId: OWNER })]));
+    // The record `recordChatSearchUsage` takes as it is.
+    await vi.waitFor(() => expect(events).toEqual([{ chatId: CURRENT, costUsd: usage.costUsd, modelId: "upstream/reranker", modelRunId: null,
+      provider: "openrouter", providerModelId: "reranker", purpose: "memory_retrieval", usage: { inputTokens: 100, totalTokens: 100 },
+      userId: OWNER }]));
   });
 
   it("keeps the fused order when the reranker fails, returns partial coverage or is unusable, and never asks another", async () => {
     const { store } = world();
     const fused = ids(await search({ embedder: unset, store }, { query: "payments" }));
-    const events: PastChatRerankUsageEvent[] = [];
+    const events: ChatSearchUsageRecord[] = [];
     const failing = reranker(async () => {
       throw new RerankAdapterError("rerank_provider_http_error", { httpStatus: 503, usage });
     });
@@ -323,7 +326,8 @@ describe("past-chat search reranking", () => {
       expect(outcome.rerank).toBe("failed");
       expect(outcome.result.results.map((result) => result.chatId)).toEqual(fused);
     }
-    await vi.waitFor(() => expect(events.map((event) => event.outcome)).toEqual(["failed", "succeeded", "succeeded"]));
+    // The failed call and the two whose ranking was refused reported usage; the unusable route made no call.
+    await vi.waitFor(() => expect(events).toHaveLength(3));
     const notSet = searched(await search({ embedder: unset, reranker: reranker({ kind: "unset" }).fake, store }, { query: "payments" }));
     expect(notSet.rerank).toBe("not_set");
     expect(notSet.result.results.map((result) => result.chatId)).toEqual(fused);
@@ -349,15 +353,16 @@ describe("past-chat search authority and listing", () => {
 
   it("lists the most recent chats, each once by its latest turn, newest first, within the days asked for", async () => {
     const { store } = createWorld([chat("a"), chat("b"), chat("c")], [
-      { chatId: "a", id: "a1", text: "First question in a", turnAt: new Date("2026-11-01T10:00:00Z") },
-      { chatId: "a", id: "a2", text: "Latest question in a", turnAt: new Date("2026-11-05T10:00:00Z") },
-      { chatId: "b", id: "b1", text: "Only question in b", turnAt: new Date("2026-11-03T10:00:00Z") },
-      { chatId: "c", id: "c1", text: "Old question in c", turnAt: new Date("2026-10-01T10:00:00Z") }
+      { chatId: "a", id: "a1", text: "Chat: Title a\n\nUser: First question in a", turnAt: new Date("2026-11-01T10:00:00Z") },
+      { chatId: "a", id: "a2", text: "Chat: Title a\nFiles: plan.pdf\n\nUser: Latest question in a\n\nAssistant: An answer",
+        turnAt: new Date("2026-11-05T10:00:00Z") },
+      { chatId: "b", id: "b1", text: "Chat: Title b\n\nUser: Only question in b", turnAt: new Date("2026-11-03T10:00:00Z") },
+      { chatId: "c", id: "c1", text: "Chat: Title c\n\nUser: Old question in c", turnAt: new Date("2026-10-01T10:00:00Z") }
     ]);
     const outcome = searched(await search({ store }, { query: null, limit: 5 }));
     expect(outcome.result.mode).toBe("recent");
     expect(outcome.result.results.map((result) => [result.chatId, result.excerpt])).toEqual([
-      ["a", "Latest question in a"], ["b", "Only question in b"], ["c", "Old question in c"]]);
+      ["a", "User: Latest question in a\n\nAssistant: An answer"], ["b", "User: Only question in b"], ["c", "User: Old question in c"]]);
     expect(ids(await search({ store }, { after: "2026-11-02" }))).toEqual(["a", "b"]);
     expect(ids(await search({ store }, { before: "2026-11-02", limit: 1 }))).toEqual(["a"]);
   });

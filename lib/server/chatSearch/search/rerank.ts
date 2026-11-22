@@ -1,7 +1,8 @@
 import { ProviderAdmissionError } from "../../providerRuntime/admission";
 import { createRerankerModelRoleResolver } from "../../providerRuntime/rerankerModelRole";
 import { createPrismaRerankerRuntime, type RerankerRuntimeBinding } from "../../providerRuntime/rerankerRuntime";
-import type { RerankRequest, RerankResult, RerankUsage } from "../../providers/rerank";
+import type { RerankRequest, RerankResult } from "../../providers/rerank";
+import type { ChatSearchUsageRecord } from "../usage";
 
 /**
  * The installation's dedicated reranker as past-chat search uses it: the
@@ -11,7 +12,10 @@ import type { RerankRequest, RerankResult, RerankUsage } from "../../providers/r
  */
 
 export type PastChatRerankBinding = Pick<RerankerRuntimeBinding,
-  "connectionId" | "credentialId" | "credentialSource" | "credentialVersionId" | "provider" | "providerModelId">;
+  "connectionId" | "credentialId" | "credentialSource" | "credentialVersionId" | "provider" | "providerModelId"> & Readonly<{
+  /** The upstream model id the usage row names. */
+  modelId: string;
+}>;
 
 export type PastChatRerankRoute = Readonly<{
   binding: PastChatRerankBinding;
@@ -26,22 +30,13 @@ export type PastChatRerankResolution =
 export type PastChatReranker = Readonly<{ resolve(): Promise<PastChatRerankResolution> }>;
 
 /**
- * A reranker call's provider-reported usage, recorded after the call under the
- * `memory_retrieval` purpose (the identifier past-chat search keeps from
- * Memory, so usage history stays continuous). Only calls that reported usage
- * are recorded; failed ones included. Recording never delays or fails a search.
+ * Records a reranker call's provider-reported usage under `memory_retrieval`
+ * (`recordChatSearchUsage` in `lib/server/chatSearch/usage.ts`, which takes
+ * this record as it is). Called after the call, failed ones included, only
+ * when the provider reported something, and never awaited: recording never
+ * delays or fails a search.
  */
-export type PastChatRerankUsageEvent = Readonly<{
-  purpose: "memory_retrieval";
-  kind: "rerank";
-  userId: string;
-  binding: PastChatRerankBinding;
-  outcome: "succeeded" | "failed";
-  usage: RerankUsage;
-  providerRequestId: string | null;
-}>;
-
-export type PastChatUsageRecorder = (event: PastChatRerankUsageEvent) => Promise<void> | void;
+export type PastChatUsageRecorder = (record: ChatSearchUsageRecord) => Promise<unknown> | unknown;
 
 type RerankerStore = Parameters<typeof createRerankerModelRoleResolver>[0] & Parameters<typeof createPrismaRerankerRuntime>[0];
 
@@ -67,7 +62,8 @@ export function createPrismaPastChatReranker(db: RerankerStore, dependencies: Re
         const binding = await runtime.resolveForInstallation({ providerModelId: selected });
         return { kind: "ready", route: {
           binding: { connectionId: binding.connectionId, credentialId: binding.credentialId, credentialSource: binding.credentialSource,
-            credentialVersionId: binding.credentialVersionId, provider: binding.provider, providerModelId: binding.providerModelId },
+            credentialVersionId: binding.credentialVersionId, modelId: binding.configuration.upstreamModelId, provider: binding.provider,
+            providerModelId: binding.providerModelId },
           rerank: (request) => binding.adapter.rerank(request)
         } };
       } catch (error) {

@@ -15,12 +15,14 @@ import {
 } from "../../contracts/pastChats";
 import { STANDARD_CHAT_FALLBACK_TIME_ZONE } from "../../domain/promptTemplates";
 import type { ChatSearchEmbedder } from "../chatSearch/embedder";
+import { createChatSearchEmbedder } from "../chatSearch/embedderPrisma";
 import { pastChatTimeZone } from "../chatSearch/search/dates";
 import { createPastChatReader, createPrismaPastChatReadStore, type PastChatReader } from "../chatSearch/search/read";
 import { createSavedSecretValuesReader } from "../chatSearch/search/redaction";
 import { createPrismaPastChatReranker, type PastChatUsageRecorder } from "../chatSearch/search/rerank";
 import { createPastChatSearch, type PastChatMeaningDegradation, type PastChatSearch } from "../chatSearch/search/retrieval";
 import { createPrismaPastChatSearchStore } from "../chatSearch/search/store";
+import { recordChatSearchUsage } from "../chatSearch/usage";
 import type { ProviderRunRequest } from "../providers/types";
 import { redactSearchQuery } from "../redaction/searchQuery";
 import { hasInvalidProviderToolArguments, type ModelToolCall, type RunTool, type ToolExecutionResult } from "./types";
@@ -132,6 +134,8 @@ export type PastChatsToolContext = Readonly<{
   deadlineAt?: number;
   /** The answer's call budget; without one, calls are not counted. */
   budget?: PastChatsCallBudget;
+  /** The run the call belongs to; a search's usage rows name it. */
+  runId?: string;
 }>;
 
 /** The zone the turn's context states: the admitted prompt baseline's, else the standard fallback. */
@@ -175,14 +179,14 @@ function searchNote(result: SearchPastChatsResult, degraded: PastChatMeaningDegr
   const count = result.results.length;
   if (result.mode === "recent") {
     return count
-      ? `The user's ${count} most recent earlier chats, newest first, each by the start of its latest turn. ${QUOTED} ` +
+      ? `The user's most recent earlier chats (${count}), newest first, each by the start of its latest turn. ${QUOTED} ` +
         "read_past_chat opens one by its chatId."
       : "No earlier chat of the user's had a turn in that range. Chats excluded from Memory, temporary chats and turns not yet " +
         "indexed are not listed, so this does not show the user has none.";
   }
   const partial = degraded ? MEANING_UNAVAILABLE : "";
   return count
-    ? `${count} excerpts from the user's earlier chats, best match first. ${QUOTED} Each names its chat (chatId, chatTitle), when ` +
+    ? `Excerpts from the user's earlier chats (${count}), best match first. ${QUOTED} Each names its chat (chatId, chatTitle), when ` +
       "it was said (date, in the user's time zone) and its message (messageId), which read_past_chat opens with " +
       `around_message_id. Read the chat when an excerpt is not enough.${partial}`
     : "No excerpt of the user's earlier chats matched. That does not show the user never discussed it: try other or fewer words, " +
@@ -221,7 +225,7 @@ export function createPastChatTools(dependencies: Readonly<{ search: PastChatSea
       }
       const outcome = await dependencies.search.search({ currentChatId: context.chatId, input: decoded.data, ownerId: context.userId,
         timeZone: context.timeZone, ...(context.signal ? { signal: context.signal } : {}),
-        ...(context.deadlineAt !== undefined ? { deadlineAt: context.deadlineAt } : {}) });
+        ...(context.deadlineAt !== undefined ? { deadlineAt: context.deadlineAt } : {}), ...(context.runId ? { runId: context.runId } : {}) });
       switch (outcome.kind) {
         case "disabled": return refusal(call, "past_chats_disabled", DISABLED);
         case "query_unusable": return refusal(call, "past_chats_arguments_invalid", QUERY_UNUSABLE);
@@ -259,19 +263,19 @@ export function createPastChatTools(dependencies: Readonly<{ search: PastChatSea
 }
 
 /**
- * The installation's tools over PostgreSQL. The embedder is the past-chat
- * embedding seam (`createChatSearchEmbedder`), and `recordUsage` records the
- * reranker's provider-reported usage (`memory_retrieval`); both are wired by
- * the caller.
+ * The installation's tools over PostgreSQL: the past-chat embedding seam
+ * (`createChatSearchEmbedder`), the selected reranker and usage rows
+ * (`recordChatSearchUsage`) unless the caller passes its own.
  */
 export function createPrismaPastChatTools(db: PrismaClient, dependencies: Readonly<{
-  embedder: ChatSearchEmbedder;
-  recordUsage: PastChatUsageRecorder;
-}>): PastChatTools {
+  embedder?: ChatSearchEmbedder;
+  recordUsage?: PastChatUsageRecorder;
+}> = {}): PastChatTools {
   const savedSecretValues = createSavedSecretValuesReader(db);
   return createPastChatTools({
     reader: createPastChatReader({ savedSecretValues, store: createPrismaPastChatReadStore(db) }),
-    search: createPastChatSearch({ embedder: dependencies.embedder, recordUsage: dependencies.recordUsage,
+    search: createPastChatSearch({ embedder: dependencies.embedder ?? createChatSearchEmbedder(db),
+      recordUsage: dependencies.recordUsage ?? ((record) => recordChatSearchUsage(db, record)),
       reranker: createPrismaPastChatReranker(db), savedSecretValues, store: createPrismaPastChatSearchStore(db) })
   });
 }

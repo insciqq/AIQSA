@@ -12,6 +12,7 @@ import { RerankAdapterError, type RerankUsage } from "../../providers/rerank";
 import { redactSavedSecretValues } from "../../redaction/savedSecrets";
 import { redactSearchQuery } from "../../redaction/searchQuery";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder } from "../embedder";
+import { chatSearchPassageBody } from "../index/passages";
 import { pastChatTimestamp, pastChatTurnRange } from "./dates";
 import { pastChatPhraseChunks, pastChatQueryChunks, pastChatWordUnits, type PastChatWordUnit } from "./query";
 import {
@@ -85,6 +86,8 @@ export type PastChatSearchRequest = Readonly<{
   currentChatId: string;
   timeZone: string;
   input: SearchPastChatsInput;
+  /** The run the search answers for, which its usage rows name when given. */
+  runId?: string;
   /** The caller's Stop: aborting it rejects the search. */
   signal?: AbortSignal;
   /** An earlier end than the search's own deadline, in epoch milliseconds. */
@@ -145,7 +148,8 @@ type ResultSource = Readonly<{ row: PastChatPassageRow; needles: readonly string
  */
 function boundedResults(mode: PastChatSearchMode, sources: readonly ResultSource[], excerptChars: number, savedValues: readonly string[],
   timeZone: string): PastChatExcerpt[] {
-  const texts = sources.map((source) => redactPastChatText(source.row.text, savedValues));
+  // The excerpt is the turn's own words: the passage's header (the chat's title and the turn's file names) is in the result already.
+  const texts = sources.map((source) => redactPastChatText(chatSearchPassageBody(source.row.text).trim() || source.row.text, savedValues));
   const titles = sources.map((source) => pastChatTitle(source.row.title, savedValues));
   const build = (cap: number) => sources.flatMap((source, index): PastChatExcerpt[] => {
     const decoded = pastChatExcerptSchema.safeParse({ chatId: source.row.chatId, chatTitle: titles[index]!,
@@ -169,13 +173,13 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
   const now = dependencies.now ?? Date.now;
   const { embedder, store } = dependencies;
 
-  function recordRerankUsage(event: Readonly<{ userId: string; binding: PastChatRerankBinding; outcome: "succeeded" | "failed";
-    usage: RerankUsage | null | undefined; providerRequestId: string | null }>): void {
-    if (!usageReported(event.usage)) return;
-    const usage = event.usage;
+  function recordRerankUsage(request: PastChatSearchRequest, binding: PastChatRerankBinding, usage: RerankUsage | null | undefined): void {
+    if (!usageReported(usage)) return;
+    const reported: RerankUsage = usage;
     // After the call and never awaited: bookkeeping never delays or fails the search.
-    void Promise.resolve().then(() => dependencies.recordUsage({ binding: event.binding, kind: "rerank", outcome: event.outcome,
-      providerRequestId: event.providerRequestId, purpose: "memory_retrieval", usage, userId: event.userId }))
+    void Promise.resolve().then(() => dependencies.recordUsage({ chatId: request.currentChatId, costUsd: reported.costUsd ?? null,
+      modelId: binding.modelId, modelRunId: request.runId ?? null, provider: binding.provider, providerModelId: binding.providerModelId,
+      purpose: "memory_retrieval", usage: { inputTokens: reported.inputTokens, totalTokens: reported.totalTokens }, userId: request.ownerId }))
       .catch(() => degrade("write", null));
   }
 
@@ -275,8 +279,7 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
               text: pastChatExcerpt(redactPastChatText(rows.get(hit.id)!.text, savedValues), needles(hit.terms), RERANK_DOCUMENT_CHARS) }));
             rerankSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, Math.min(timeouts.rerankMs, remaining())))]);
             const reranked = await raced(resolution.route.rerank({ documents, query, signal: rerankSignal }), rerankSignal);
-            recordRerankUsage({ binding, outcome: "succeeded", providerRequestId: reranked.requestId, usage: reranked.usage,
-              userId: request.ownerId });
+            recordRerankUsage(request, binding, reranked.usage);
             // Coverage must be complete and one-to-one, or the ranking is not used at all.
             const handles = new Map(documents.map((document, index) => [document.handle, top[index]!.id]));
             const scores = new Map<string, number>();
@@ -293,7 +296,7 @@ export function createPastChatSearch(dependencies: PastChatSearchDependencies): 
           } catch (error) {
             if (stopped()) throw error;
             if (binding && error instanceof RerankAdapterError) {
-              recordRerankUsage({ binding, outcome: "failed", providerRequestId: null, usage: error.usage, userId: request.ownerId });
+              recordRerankUsage(request, binding, error.usage);
             }
             degrade("process", error instanceof RerankAdapterError ? error.code : rerankSignal?.aborted ? "rerank_request_timed_out" : null);
             return { kind: "failed" };
