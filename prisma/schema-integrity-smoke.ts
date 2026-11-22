@@ -122,29 +122,6 @@ async function createModelRunFixture(tx: Prisma.TransactionClient) {
   return { chat: chats[0], run, user, userMessage };
 }
 
-function memoryIndexGenerationData(
-  userId: string,
-  generation: number,
-  state: "ACTIVE" | "FAILED" | "READY"
-): Prisma.MemoryIndexGenerationUncheckedCreateInput {
-  const readyAt = new Date();
-  return {
-    activatedAt: state === "ACTIVE" ? readyAt : null,
-    chunkingVersion: "memory-chunking-v1",
-    generation,
-    id: randomUUID(),
-    indexMode: "LEXICAL_ONLY",
-    indexedThroughMemoryRevision: 0,
-    languageProfile: "simple",
-    normalizationVersion: "memory-normalization-v1",
-    readyAt,
-    retrievalPipelineVersion: "memory-retrieval-v1",
-    state,
-    targetMemoryRevision: 0,
-    userId
-  };
-}
-
 type QueryClient = Pick<Prisma.TransactionClient, "$queryRaw">;
 type SemanticDuplicateIndex = Readonly<{
   indexNames: string[];
@@ -368,70 +345,53 @@ async function assertConstraintCatalog(): Promise<void> {
   if (fairnessQueueIndexes.length !== 2) {
     throw new Error("Expected tenant-fair document-processing queue indexes.");
   }
-  const memorySearchColumns = await prisma.$queryRaw<Array<{
+  // Past-chat search reads one language-neutral text projection and exact vectors (no approximate index at the
+  // measured sizes), and no routine of the retired Memory subsystem is left.
+  const passageSearchColumns = await prisma.$queryRaw<Array<{
     columnName: string;
     isGenerated: string;
+    simple: boolean;
   }>>`
-    SELECT column_name AS "columnName", is_generated AS "isGenerated"
+    SELECT column_name AS "columnName", is_generated AS "isGenerated",
+      COALESCE(generation_expression LIKE '%''simple''::regconfig%', false) AS simple
     FROM information_schema.columns
     WHERE table_schema = current_schema()
-      AND table_name = 'MemorySearchEntry'
+      AND table_name = 'ChatSearchPassage'
       AND (column_name ILIKE '%search%' OR column_name ILIKE '%vector%')
     ORDER BY column_name
   `;
-  if (JSON.stringify(memorySearchColumns) !== JSON.stringify([
-    { columnName: "normalizedSearchText", isGenerated: "NEVER" },
-    { columnName: "searchVectorSimple", isGenerated: "ALWAYS" }
+  if (JSON.stringify(passageSearchColumns) !== JSON.stringify([
+    { columnName: "searchVectorSimple", isGenerated: "ALWAYS", simple: true }
   ])) {
-    throw new Error("Expected only language-neutral Memory search projections.");
+    throw new Error("Expected only the language-neutral past-chat search projection.");
   }
-  const memoryLexicalIndexes = await prisma.$queryRaw<Array<{ indexname: string }>>`
-    SELECT indexname
-    FROM pg_indexes
-    WHERE schemaname = current_schema()
-      AND indexname IN (
-        'MemorySearchEntry_english_gin_idx',
-        'MemorySearchEntry_russian_gin_idx',
-        'MemorySearchEntry_trigram_gin_idx',
-        'MemorySearchEntry_simple_gin_idx',
-        'MemorySearchEntry_normalizedSearchText_trgm_idx'
-      )
-    ORDER BY indexname
+  const passageIndexes = await prisma.$queryRaw<Array<{ definition: string; name: string; valid: boolean }>>`
+    SELECT index_relation.relname AS name, index_catalog.indisvalid AS valid,
+      pg_get_indexdef(index_catalog.indexrelid) AS definition
+    FROM pg_index AS index_catalog
+    INNER JOIN pg_class AS index_relation ON index_relation.oid = index_catalog.indexrelid
+    INNER JOIN pg_class AS table_relation ON table_relation.oid = index_catalog.indrelid
+    INNER JOIN pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace
+    WHERE namespace.nspname = current_schema() AND table_relation.relname = 'ChatSearchPassage'
+    ORDER BY index_relation.relname
   `;
-  if (JSON.stringify(memoryLexicalIndexes.map(({ indexname }) => indexname)) !==
-    JSON.stringify([
-      "MemorySearchEntry_normalizedSearchText_trgm_idx",
-      "MemorySearchEntry_simple_gin_idx"
-    ])) {
-    throw new Error("Expected only language-neutral Memory lexical indexes.");
+  if (
+    passageIndexes.some(({ valid }) => !valid) ||
+    passageIndexes.some(({ definition }) => /USING (hnsw|ivfflat)/u.test(definition)) ||
+    !passageIndexes.some(({ definition, name }) =>
+      name === "ChatSearchPassage_simple_gin_idx" && definition.includes('USING gin ("searchVectorSimple")'))
+  ) {
+    throw new Error("Expected valid exact past-chat search indexes with the simple GIN index and no approximate one.");
   }
-  const memoryTransliterationFunctions = await prisma.$queryRaw<Array<{
-    parallelSafety: string;
-    strict: boolean;
-    volatility: string;
-  }>>`
-    SELECT procedure.proparallel AS "parallelSafety",
-      procedure.proisstrict AS strict,
-      procedure.provolatile AS volatility
+  const retiredMemoryRoutines = await prisma.$queryRaw<Array<{ name: string }>>`
+    SELECT procedure.proname AS name
     FROM pg_proc AS procedure
     INNER JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
     WHERE namespace.nspname = current_schema()
-      AND procedure.proname LIKE 'aiqsa_memory_transliterate_%'
+      AND procedure.proname ~ '^aiqsa_memory_'
   `;
-  if (memoryTransliterationFunctions.length !== 0) {
-    throw new Error("Memory retains a retired language-specific transliteration function.");
-  }
-  const memoryOperationOutcomes = await prisma.$queryRaw<Array<{ label: string }>>`
-    SELECT enum_label.enumlabel AS label
-    FROM pg_type AS enum_type
-    INNER JOIN pg_enum AS enum_label ON enum_label.enumtypid = enum_type.oid
-    INNER JOIN pg_namespace AS namespace ON namespace.oid = enum_type.typnamespace
-    WHERE namespace.nspname = current_schema()
-      AND enum_type.typname = 'MemoryOperationOutcome'
-    ORDER BY enum_label.enumsortorder
-  `;
-  if (memoryOperationOutcomes.map(({ label }) => label).join(",") !== "APPLIED,REJECTED") {
-    throw new Error("MemoryOperationOutcome contains an unsupported compatibility value.");
+  if (retiredMemoryRoutines.length !== 0) {
+    throw new Error("A routine of the retired Memory subsystem is left.");
   }
   // Sidebar message search: an expression index needs an immutable function,
   // and a concurrently built index must have finished valid.
@@ -457,116 +417,57 @@ async function assertConstraintCatalog(): Promise<void> {
   ])) {
     throw new Error("Expected a valid trigram index over the immutable message search text.");
   }
-  // History source purge finds receipts by their cited chats and in-flight
-  // state; both indexes are built concurrently and must have finished valid.
-  const historyReceiptIndexes = await prisma.$queryRaw<Array<{
-    name: string;
-    valid: boolean;
-  }>>`
-    SELECT index_relation.relname AS name, index_catalog.indisvalid AS valid
-    FROM pg_index AS index_catalog
-    INNER JOIN pg_class AS index_relation ON index_relation.oid = index_catalog.indexrelid
-    INNER JOIN pg_namespace AS namespace ON namespace.oid = index_relation.relnamespace
-    WHERE namespace.nspname = current_schema()
-      AND (
-        (index_relation.relname = 'MemoryHistoryRun_cited_source_chat_idx'
-          AND pg_get_indexdef(index_catalog.indexrelid)
-            LIKE '%USING gin (jsonb_path_query_array(results, %sourceChatId%')
-        OR (index_relation.relname = 'MemoryHistoryRun_userId_state_idx'
-          AND pg_get_indexdef(index_catalog.indexrelid)
-            LIKE '%USING btree ("userId", state)%')
-      )
-    ORDER BY index_relation.relname
-  `;
-  if (JSON.stringify(historyReceiptIndexes) !== JSON.stringify([
-    { name: "MemoryHistoryRun_cited_source_chat_idx", valid: true },
-    { name: "MemoryHistoryRun_userId_state_idx", valid: true }
-  ])) {
-    throw new Error("Expected valid cited-chat and state indexes over Memory history receipts.");
-  }
 }
 
-async function assertMemoryActiveGenerationGuard(): Promise<void> {
-  await expectDatabaseRejection(
-    "unselected active Memory generation",
-    "ACTIVE Memory generation must be selected by owner settings",
-    async (tx) => {
-      const { user } = await createUserAndChats(tx, 0);
-      await tx.memoryIndexGeneration.create({
-        data: memoryIndexGenerationData(user.id, 1, "ACTIVE")
-      });
-    }
-  );
-
-  await expectDatabaseRejection(
-    "Memory settings pointer to a non-active generation",
-    "Memory settings must point to the one same-owner ACTIVE generation",
-    async (tx) => {
-      const { user } = await createUserAndChats(tx, 0);
-      const generation = await tx.memoryIndexGeneration.create({
-        data: memoryIndexGenerationData(user.id, 1, "READY")
-      });
-      await tx.userMemorySettings.update({
-        data: { activeIndexGenerationId: generation.id },
-        where: { userId: user.id }
-      });
-    }
-  );
-
-  const fixture = await prisma.$transaction(async (tx) => {
+/** The memory note's checks bound it and its offers, and an account's Memory switches start on. */
+async function assertMemoryNoteShapes(): Promise<void> {
+  await expectDatabaseRejection("memory note over its limit", "UserMemoryNote_text_check", async (tx) => {
     const { user } = await createUserAndChats(tx, 0);
-    const generations = await Promise.all([
-      tx.memoryIndexGeneration.create({
-        data: memoryIndexGenerationData(user.id, 1, "READY")
-      }),
-      tx.memoryIndexGeneration.create({
-        data: memoryIndexGenerationData(user.id, 2, "FAILED")
-      })
-    ]);
-    return { generations, user };
+    await tx.userMemoryNote.create({ data: { lastChangedBy: "USER", text: "a".repeat(6001), userId: user.id } });
   });
-
-  try {
-    const outcomes = await Promise.allSettled(
-      fixture.generations.map((generation) =>
-        prisma.$transaction(async (tx) => {
-          await tx.memoryIndexGeneration.update({
-            data: { activatedAt: new Date(), state: "ACTIVE" },
-            where: { id: generation.id }
-          });
-          await tx.userMemorySettings.update({
-            data: { activeIndexGenerationId: generation.id },
-            where: { userId: fixture.user.id }
-          });
-        })
-      )
-    );
-    if (
-      outcomes.filter((outcome) => outcome.status === "fulfilled").length !== 1 ||
-      outcomes.filter((outcome) => outcome.status === "rejected").length !== 1
-    ) {
-      throw new Error(
-        `Concurrent Memory generation activation did not produce exactly one winner: ${JSON.stringify(
-          outcomes.map((outcome) => outcome.status)
-        )}`
-      );
+  await expectDatabaseRejection("memory note without a revision", "UserMemoryNote_revision_check", async (tx) => {
+    const { user } = await createUserAndChats(tx, 0);
+    await tx.userMemoryNote.create({ data: { lastChangedBy: "USER", revision: 0, text: "", userId: user.id } });
+  });
+  await expectRolledBackSuccess("memory note at its limit", async (tx) => {
+    const { user } = await createUserAndChats(tx, 0);
+    await tx.userMemoryNote.create({ data: { lastChangedBy: "AGENT", text: "a".repeat(6000), userId: user.id } });
+    const settings = await tx.userSettings.create({ data: { userId: user.id } });
+    if (!settings.memoryEnabled || !settings.pastChatSearchEnabled || !settings.memorySuggestionsEnabled) {
+      throw new Error("A new account's Memory switches must start on.");
     }
-
-    const [settings, activeGenerations] = await Promise.all([
-      prisma.userMemorySettings.findUniqueOrThrow({ where: { userId: fixture.user.id } }),
-      prisma.memoryIndexGeneration.findMany({
-        where: { state: "ACTIVE", userId: fixture.user.id }
-      })
-    ]);
-    if (
-      activeGenerations.length !== 1 ||
-      settings.activeIndexGenerationId !== activeGenerations[0]?.id
-    ) {
-      throw new Error("Concurrent Memory generation activation left an invalid active pointer.");
-    }
-  } finally {
-    await prisma.user.delete({ where: { id: fixture.user.id } });
-  }
+  });
+  await expectDatabaseRejection("memory note offer adding over existing text", "MemoryNoteOffer_operation_check", async (tx) => {
+    const { chat, run, user, userMessage } = await createModelRunFixture(tx);
+    const answer = await createMessage(tx, {
+      chatId: chat.id,
+      parentMessageId: userMessage.id,
+      role: "assistant",
+      status: "streaming"
+    });
+    const call = await tx.modelRunToolCall.create({
+      data: {
+        arguments: json({}),
+        modelRunId: run.id,
+        ordinal: 0,
+        providerCallId: "integrity-manage-memory",
+        roundIndex: 0,
+        toolName: "manage_memory"
+      }
+    });
+    await tx.memoryNoteOffer.create({
+      data: {
+        afterText: "Synthetic rule.",
+        assistantMessageId: answer.id,
+        beforeText: "Synthetic earlier rule.",
+        chatId: chat.id,
+        operation: "ADD",
+        runId: run.id,
+        toolCallId: call.id,
+        userId: user.id
+      }
+    });
+  });
 }
 
 async function assertSearchOptionSources(): Promise<void> {
@@ -699,110 +600,38 @@ async function assertSameChatRelations(): Promise<void> {
   });
 }
 
-async function assertMemoryCandidateSourceAuthority(): Promise<void> {
+/** A past-chat passage keeps its vector's dimension and never enters a chat fenced for permanent deletion. */
+async function assertPastChatPassageShapes(): Promise<void> {
+  async function turn(tx: Prisma.TransactionClient) {
+    const { chats, user } = await createUserAndChats(tx, 1);
+    const question = await createMessage(tx, { chatId: chats[0].id });
+    const answer = await createMessage(tx, { chatId: chats[0].id, parentMessageId: question.id, role: "assistant" });
+    return { answer, chat: chats[0], question, user };
+  }
+  await expectDatabaseRejection("past-chat passage with a mismatched vector", "ChatSearchPassage_embedding_check", async (tx) => {
+    const { answer, chat, question, user } = await turn(tx);
+    await tx.$executeRaw`
+      INSERT INTO "ChatSearchPassage" ("id", "userId", "chatId", "userMessageId", "assistantMessageId", "turnAt", "ordinal",
+        "text", "contentHash", "embedding", "embeddingProviderModelId", "embeddingDimension")
+      VALUES (${randomUUID()}, ${user.id}, ${chat.id}, ${question.id}, ${answer.id}, CURRENT_TIMESTAMP, 0,
+        'Synthetic passage', ${"a".repeat(64)}, '[0.1,0.2]'::vector, 'integrity-embedding', 3)
+    `;
+  });
   await expectDatabaseRejection(
-    "assistant Memory candidate source",
-    "exact settled direct USER message",
+    "past-chat passage in a chat fenced for permanent deletion",
+    "Permanently deleted chat cannot accept new aggregate children",
     async (tx) => {
-      const hash = () =>
-        `${randomUUID().replaceAll("-", "")}${randomUUID().replaceAll("-", "")}`;
-      const { chats, user } = await createUserAndChats(tx, 1);
-      const userMessage = await createMessage(tx, { chatId: chats[0].id });
-      const assistantMessage = await createMessage(tx, {
-        chatId: chats[0].id,
-        parentMessageId: userMessage.id,
-        role: "assistant"
+      const { answer, chat, question, user } = await turn(tx);
+      await tx.chat.update({
+        data: { archived: true, permanentDeletionAt: new Date(), permanentDeletionOperationId: randomUUID() },
+        where: { id: chat.id }
       });
-      const sourceHash = hash();
-      const pipelineVersion = "memory-fact-extraction-v1";
-      const job = await tx.memoryJob.create({
-        data: {
-          acceptedResultHash: hash(),
-          activeLeafMessageId: assistantMessage.id,
-          branchGeneration: 0,
-          chatId: chats[0].id,
-          completedAt: new Date(),
-          id: randomUUID(),
-          idempotencyFingerprint: hash(),
-          kind: "EXTRACT_FACTS",
-          memoryGenerationSnapshot: 0,
-          memoryRevisionSnapshot: 0,
-          pipelineVersion,
-          sourceHash,
-          sourceMessageId: userMessage.id,
-          sourceRevision: 0,
-          state: "SUCCEEDED",
-          userId: user.id
-        }
-      });
-      const createdAt = new Date(Date.now() - 10_000);
-      const completedAt = new Date(Date.now() - 1_000);
-      const execution = await tx.memoryExecutionBinding.create({
-        data: {
-          acceptedOutputHash: hash(),
-          completedAt,
-          createdAt,
-          destinationFingerprint: hash(),
-          id: randomUUID(),
-          inputHash: hash(),
-          logicalRole: "MEMORY_FACT_EXTRACT",
-          memoryJobId: job.id,
-          ordinal: 0,
-          ownerType: "JOB",
-          pipelineVersion,
-          policyVersion: "memory-fact-policy-v1",
-          promptVersion: "memory-fact-prompt-v1",
-          providerId: "fake",
-          recoverableUntil: new Date(createdAt.getTime() + 1_000),
-          relationsDetachedAt: completedAt,
-          schemaVersion: "memory-fact-schema-v1",
-          secretFreeExecutionSnapshot: json({}),
-          state: "SUCCEEDED",
-          userId: user.id
-        }
-      });
-      const candidateId = hash();
-      await tx.memoryCandidate.create({
-        data: {
-          branchGeneration: 0,
-          chatId: chats[0].id,
-          confidence: 0.9,
-          createdByExecutionId: execution.id,
-          id: candidateId,
-          importance: 0.5,
-          jobId: job.id,
-          languageCode: "en",
-          negated: false,
-          pipelineVersion,
-          proposedCanonicalKey: "user.preference.drink",
-          proposedCategory: "preference",
-          proposedDirectness: "DIRECT",
-          proposedDisplayText: "I prefer tea.",
-          proposedModality: "PREFERENCE",
-          proposedScope: json({ target_id: chats[0].id, type: "CHAT" }),
-          proposedSensitivity: "NORMAL",
-          proposedValue: json({ drink: "tea" }),
-          sourceHash,
-          sourceProjectionHash: hash(),
-          sourceProjectionVersion: "memory-fact-source-projection-v1",
-          sourceRevision: 0,
-          sourceTimezone: "UTC",
-          state: "PENDING",
-          userId: user.id
-        }
-      });
-      await tx.memoryCandidateMessage.create({
-        data: {
-          candidateId,
-          chatId: chats[0].id,
-          endOffset: 4,
-          messageId: assistantMessage.id,
-          ordinal: 0,
-          sourceTextHash: hash(),
-          startOffset: 0,
-          userId: user.id
-        }
-      });
+      await tx.$executeRaw`
+        INSERT INTO "ChatSearchPassage" ("id", "userId", "chatId", "userMessageId", "assistantMessageId", "turnAt", "ordinal",
+          "text", "contentHash")
+        VALUES (${randomUUID()}, ${user.id}, ${chat.id}, ${question.id}, ${answer.id}, CURRENT_TIMESTAMP, 0,
+          'Synthetic passage', ${"a".repeat(64)})
+      `;
     }
   );
 }
@@ -1210,17 +1039,17 @@ async function assertStatusEnums(): Promise<void> {
 
 async function main() {
   await assertConstraintCatalog();
-  await assertMemoryActiveGenerationGuard();
+  await assertMemoryNoteShapes();
   await assertSearchOptionSources();
   await assertSameChatRelations();
-  await assertMemoryCandidateSourceAuthority();
+  await assertPastChatPassageShapes();
   await assertGrantShapes();
   await assertStatusEnums();
   await assertSubagentRelations();
   await assertWorkspaceAttachmentRelations();
   await assertUsagePurposeVocabulary();
   console.log(
-    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, concurrent Memory generation activation, tenant-safe pointers, direct-USER Memory candidates and fact decisions, historical Knowledge usage index, six grant shapes, lifecycle enums, and sub-agent keys and cascades."
+    "AIQSA schema integrity smoke ok: validated semantic index uniqueness, constraint validation, memory note and offer shapes, tenant-safe pointers, past-chat passage shapes, historical Knowledge usage index, six grant shapes, lifecycle enums, and sub-agent keys and cascades."
   );
 }
 
