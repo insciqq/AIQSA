@@ -529,10 +529,11 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
      * A call that was not sent. One refused before sending is recorded refused here (`refused.toolName` is the
      * record's, which names an unknown tool in its plain form); one gated for approval already has the record `begin`
      * wrote. A call that never runs (its connection gone, handed back for approval, waiting for one) gives its turn's
-     * count back: the budget is for work done (review finding 2026-11-03).
+     * count back: the budget is for work done (review finding 2026-11-03). `onWait` hands over a call that waits
+     * for approval (its card's id, or the call itself back to the main agent), last and with no await before it.
      */
     const notRun = async (exit: Readonly<{ output: string; refused?: Readonly<{ result: ToolLoopJsonValue; toolName: string }>;
-      settled: SettledToolCall }>): Promise<TranscriptToolResultItem> => {
+      settled: SettledToolCall; onWait?: () => void }>): Promise<TranscriptToolResultItem> => {
       if (left !== null && turn) turn.spent.calls -= 1;
       left = null;
       if (exit.refused) {
@@ -543,6 +544,7 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
       } else {
         recordToolCall({ toolName: call.name, kind, settled: exit.settled });
       }
+      exit.onWait?.();
       return { callId: call.id, id: randomUUID(), kind: "tool_result", name: call.name, outcome: "error", output: exit.output };
     };
     if (before.kind === "refuse") {
@@ -570,10 +572,8 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     // A sub-agent never asks the user itself: the call that would wait goes back to the main agent, unsent and card-free.
     if (deps.approvalHandBack && approval && !humanApproved && approval.guard?.decision !== "allow") {
       const result = jsonError(call, { error: "needs_approval", message: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT });
-      const item = await notRun({ output: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT, refused: { result, toolName: call.name },
-        settled: { kind: "awaiting_approval" } });
-      deps.approvalHandBack(call, approval);
-      return item;
+      return notRun({ output: SUBAGENT_APPROVAL_HANDED_BACK_OUTPUT, refused: { result, toolName: call.name },
+        settled: { kind: "awaiting_approval" }, onWait: () => deps.approvalHandBack?.(call, approval) });
     }
     const begun = await deps.store.begin({ ...record, ...links, ...(approval ? { approval } : {}),
       ...(approvalAfter ? { approvalAfter } : {}),
@@ -581,10 +581,9 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
     if (begun.kind === "inactive") throw new ToolBatchInactiveError();
     deps.history.record(begun.row);
     if (begun.kind === "gated") {
-      const item = await notRun({ output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT,
-        settled: { kind: "awaiting_approval" } });
-      approvals.push(begun.approvalId);
-      return item;
+      const approvalId = begun.approvalId;
+      return notRun({ output: before.retry ? UNKNOWN_OUTCOME_APPROVAL_OUTPUT : APPROVAL_PENDING_OUTPUT,
+        settled: { kind: "awaiting_approval" }, onWait: () => approvals.push(approvalId) });
     }
     executed += 1;
     const activity = { ...tool.activity(call), round: input.round };
