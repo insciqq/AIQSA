@@ -1,4 +1,5 @@
 import { decodeInstructionPreset, type InstructionPreset } from "../../../contracts/instructionPresets";
+import { memoryNoteSchema, memoryNoteUndoUpdate } from "../../../contracts/memoryNote";
 import { instructionsUndoMutation } from "../../../contracts/resourceChanges";
 import { decodeSkillSaveUndoState } from "../../../contracts/skillSaves";
 import { decodeSubagentDefaultUndoResponse } from "../../../contracts/subagentDefinitions";
@@ -42,6 +43,10 @@ export type TelegramChangeRoutes = Readonly<{
   instructions(request: Request): Promise<Response>;
   /** `GET /api/me/instructions/[presetId]` */
   instructionPreset(request: Request, presetId: string): Promise<Response>;
+  /** `GET` and `PUT /api/me/memory/note` */
+  memoryNote(request: Request): Promise<Response>;
+  /** `POST /api/me/memory/offers/[offerId]` */
+  memoryNoteOffer(request: Request, offerId: string): Promise<Response>;
 }>;
 
 export type TelegramChangeGateway = Readonly<{
@@ -90,6 +95,17 @@ async function assistantSettled(response: Response): Promise<TelegramChangeOutco
   if (code === "assistant_archived") return { kind: "archived" };
   return code && response.status >= 400 && response.status < 500 && response.status !== 401
     ? { code, kind: "refused", ...(skills ? { skills } : {}) } : { kind: "failed" };
+}
+
+/** Refusals of the memory note routes the card words; the rest is a failure, after which the buttons are offered again. */
+const MEMORY_NOTE_WORDED_REFUSALS: ReadonlySet<string> = new Set(["memory_disabled", "memory_note_invalid", "memory_note_too_long"]);
+
+/** A memory note route's refusal: the note or the offer moved on, the offer is gone, or a refusal the card words. */
+async function memoryNoteRefused(response: Response): Promise<TelegramChangeOutcome> {
+  const { code } = await refusal(response);
+  if (code === "memory_note_conflict" || code === "memory_note_offer_stale") return { kind: "changed" };
+  if (code === "memory_note_offer_not_found") return { kind: "missing" };
+  return code !== null && MEMORY_NOTE_WORDED_REFUSALS.has(code) ? { code, kind: "refused" } : { kind: "failed" };
 }
 
 const SUBAGENT = { changed: "subagent_definition_conflict", missing: "subagent_not_found" } as const;
@@ -158,6 +174,23 @@ export function createTelegramChangeGateway(routes: (userId: string) => Telegram
           const mutation = instructionsUndoMutation(card, current);
           if (!mutation) return { kind: "changed" };
           return settled(await route.instructions(request("/api/me/instructions", "POST", mutation)), INSTRUCTIONS);
+        }
+        case "memory_note_undo": {
+          // The earlier text goes back only while the note is at the revision the change left; the route checks it again.
+          const read = await route.memoryNote(request("/api/me/memory/note", "GET"));
+          if (!read.ok) return { kind: "failed" };
+          const current = memoryNoteSchema.safeParse(await json(read));
+          if (!current.success) return { kind: "failed" };
+          const update = memoryNoteUndoUpdate(operation.card, current.data);
+          if (!update) return { kind: "changed" };
+          const saved = await route.memoryNote(request("/api/me/memory/note", "PUT", update));
+          if (saved.ok) return { kind: "done" };
+          return memoryNoteRefused(saved);
+        }
+        case "memory_note_offer": {
+          const response = await route.memoryNoteOffer(request(`/api/me/memory/offers/${segment(operation.offerId)}`, "POST",
+            { decision: operation.decision }), operation.offerId);
+          return response.ok ? { kind: "done" } : memoryNoteRefused(response);
         }
       }
     }

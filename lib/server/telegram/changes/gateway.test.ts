@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
+import type { MemoryNoteChangeCard } from "../../../contracts/memoryNote";
 import type { InstructionsChangeCard } from "../../../contracts/resourceChanges";
 import { createTelegramChangeGateway, type TelegramChangeRoutes } from "./gateway";
 import type { TelegramChangeOperation } from "./plan";
@@ -20,7 +21,7 @@ function routes(answer: () => Response) {
     return {
       assistant: record("assistant"), assistantListing: record("assistantListing"), assistantPublication: record("assistantPublication"),
       instructionPreset: record("instructionPreset"), instructions: record("instructions"),
-      proxy: record("proxy"), scheduledTask: record("scheduledTask"), secrets: record("secrets"), skill: record("skill"),
+      memoryNote: record("memoryNote"), memoryNoteOffer: record("memoryNoteOffer"), proxy: record("proxy"), scheduledTask: record("scheduledTask"), secrets: record("secrets"), skill: record("skill"),
       skillSaveUndo: record("skillSaveUndo"), subagent: record("subagent"), subagentDefaultUndo: record("subagentDefaultUndo"),
       subagentRestore: record("subagentRestore")
     };
@@ -111,6 +112,49 @@ describe("a change button's request", () => {
       route: "instructions" }]);
     expect(await routes(refused("instruction_preset_conflict", 409)).gateway.act({ operation: { card: created, kind: "instructions_undo" }, userId: "u" }))
       .toEqual({ kind: "changed" });
+  });
+
+  it("undoes a memory note change as the web card does: reads the note, then saves the earlier text under the revision", async () => {
+    const card: MemoryNoteChangeCard = { version: 1, resource: "memory_note", action: "added", revision: 3, before: null, after: "Use tables.",
+      previousText: "Call me Sam." };
+    const note = { lastChangedBy: "agent", revision: 3, text: "Call me Sam.\nUse tables.", updatedAt: "2026-11-22T10:00:00.000Z" };
+    const answers = [() => Response.json(note), () => Response.json({ ...note, lastChangedBy: "user", revision: 4, text: "Call me Sam." })];
+    const fake = routes(() => answers.shift()!());
+    expect(await fake.gateway.act({ operation: { card, kind: "memory_note_undo" }, userId: "u" })).toEqual({ kind: "done" });
+    expect(fake.calls).toEqual([
+      { body: null, method: "GET", params: [], path: "/api/me/memory/note", route: "memoryNote" },
+      { body: { revision: 3, text: "Call me Sam." }, method: "PUT", params: [], path: "/api/me/memory/note", route: "memoryNote" }
+    ]);
+    // Changed since: nothing is sent.
+    const moved = routes(() => Response.json({ ...note, revision: 4 }));
+    expect(await moved.gateway.act({ operation: { card, kind: "memory_note_undo" }, userId: "u" })).toEqual({ kind: "changed" });
+    expect(moved.calls).toHaveLength(1);
+    const conflict = [() => Response.json(note), refused("memory_note_conflict", 409)];
+    expect(await routes(() => conflict.shift()!()).gateway.act({ operation: { card, kind: "memory_note_undo" }, userId: "u" }))
+      .toEqual({ kind: "changed" });
+    const secret = [() => Response.json(note), refused("memory_note_invalid", 400, { reason: "secret" })];
+    expect(await routes(() => secret.shift()!()).gateway.act({ operation: { card, kind: "memory_note_undo" }, userId: "u" }))
+      .toEqual({ code: "memory_note_invalid", kind: "refused" });
+    expect(await routes(refused("unauthorized", 401)).gateway.act({ operation: { card, kind: "memory_note_undo" }, userId: "u" }))
+      .toEqual({ kind: "failed" });
+  });
+
+  it("sends an offer's Remember and No thanks to the offer route and reads its refusals", async () => {
+    const accept: TelegramChangeOperation = { decision: "accept", kind: "memory_note_offer", offerId: "offer-1" };
+    const fake = routes(() => Response.json({ change: null, offer: { decidedAt: null, offerId: "offer-1", state: "pending" } }));
+    expect(await fake.gateway.act({ operation: accept, userId: "u" })).toEqual({ kind: "done" });
+    expect(await fake.gateway.act({ operation: { ...accept, decision: "dismiss" }, userId: "u" })).toEqual({ kind: "done" });
+    expect(fake.calls).toEqual([
+      { body: { decision: "accept" }, method: "POST", params: ["offer-1"], path: "/api/me/memory/offers/offer-1", route: "memoryNoteOffer" },
+      { body: { decision: "dismiss" }, method: "POST", params: ["offer-1"], path: "/api/me/memory/offers/offer-1", route: "memoryNoteOffer" }
+    ]);
+    expect(await routes(refused("memory_note_offer_stale", 409)).gateway.act({ operation: accept, userId: "u" })).toEqual({ kind: "changed" });
+    expect(await routes(refused("memory_note_offer_not_found", 404)).gateway.act({ operation: accept, userId: "u" })).toEqual({ kind: "missing" });
+    for (const code of ["memory_note_too_long", "memory_disabled"]) {
+      expect(await routes(refused(code, 409, { characters: 6_100, limit: 6_000 })).gateway.act({ operation: accept, userId: "u" }))
+        .toEqual({ code, kind: "refused" });
+    }
+    expect(await routes(refused("memory_note_unavailable", 503)).gateway.act({ operation: accept, userId: "u" })).toEqual({ kind: "failed" });
   });
 
   it("reads a Skill save's Undo and a default sub-agent's Undo from their answers", async () => {

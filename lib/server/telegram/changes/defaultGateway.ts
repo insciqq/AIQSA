@@ -6,6 +6,8 @@ import { createPublishAssistantHandler, createUpdateAssistantHandler } from "../
 import { createAssistantListingHandlers } from "../../assistants/listingHandlers";
 import { createInstructionPresetHandlers } from "../../instructions/handlers";
 import { createInstructionPresetStore } from "../../instructions/store";
+import { createMemoryNoteHandlers } from "../../memoryNote/handlers";
+import { createMemoryNoteService } from "../../memoryNote/service";
 import { prisma } from "../../prisma";
 import { createProxyHandlers } from "../../proxies/handlers";
 import { createProxyStore } from "../../proxies/store";
@@ -34,10 +36,12 @@ export function createDefaultTelegramChangeGateway(deps: Readonly<{ access: Pick
   const proxyStore = createProxyStore(prisma);
   const instructionStore = createInstructionPresetStore(prisma);
   const skillSaves = () => createSkillSaveUndoService(prisma);
+  const memoryNotes = createMemoryNoteService({ db: prisma });
   return createTelegramChangeGateway((userId): TelegramChangeRoutes => {
     const resolveAuth = telegramRequestAuth(deps.access, userId);
     const subagents = createSubagentDefinitionHandlers({ resolveAuth, service: defaultSubagentDefinitionService });
     const instructions = createInstructionPresetHandlers({ resolveAuth, store: instructionStore });
+    const memory = createMemoryNoteHandlers({ resolveAuth, service: memoryNotes });
     return {
       secrets: (request) => createWorkspaceSecretHandlers({ resolveAuth, store: secretStore }).POST(request),
       proxy: (request, proxyId) => createProxyHandlers({ resolveAuth, store: proxyStore })(request, "delete", "personal", proxyId),
@@ -57,7 +61,9 @@ export function createDefaultTelegramChangeGateway(deps: Readonly<{ access: Pick
       subagentDefaultUndo: (request) => subagents.defaultUndoPOST(request),
       scheduledTask: (request, taskId) => createScheduledTaskHandlers({ ...defaultScheduledTaskHandlerDeps, resolveAuth }).remove(request, taskId),
       instructions: (request) => instructions.POST(request),
-      instructionPreset: (request, presetId) => instructions.detail(request, presetId)
+      instructionPreset: (request, presetId) => instructions.detail(request, presetId),
+      memoryNote: (request) => request.method === "PUT" ? memory.notePUT(request) : memory.noteGET(request),
+      memoryNoteOffer: (request, offerId) => memory.offerPOST(request, offerId)
     };
   });
 }
