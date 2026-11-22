@@ -5,6 +5,7 @@ export const HANDWRITTEN_AGENT_DOCS = Object.freeze([
   "agent_docs/PROVIDERS.md",
   "agent_docs/MEMORY.md",
   "agent_docs/RUN_CONTRACTS.md",
+  "agent_docs/RESEARCH.md",
   "agent_docs/FRONTEND.md",
   "agent_docs/SECURITY.md",
   "agent_docs/SIGN_IN.md",

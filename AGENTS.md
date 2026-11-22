@@ -46,6 +46,7 @@ npm run task:check       # after any task ledger change
 | Provider adapters, model roles, capability checks, Search, embeddings, reranking, prices | [Providers](agent_docs/PROVIDERS.md) |
 | The memory note, past-chat search | [Memory](agent_docs/MEMORY.md) |
 | The agent and its runs: admission, retries, context and compaction, tools and approvals, agent-initiated changes, Workspace, scheduled tasks, Telegram, recovery, outputs | [Run contracts](agent_docs/RUN_CONTRACTS.md) |
+| Deep research: its plan window, researchers, evidence records, checks and report | [Research](agent_docs/RESEARCH.md) |
 | UI behavior and visual design | [Frontend](agent_docs/FRONTEND.md) |
 | Sessions, secrets, untrusted content, MCP trust, the Workspace sandbox, artifacts, dependencies | [Security](agent_docs/SECURITY.md) |
 | External sign-in, SCIM, two-factor sign-in | [Sign-in](agent_docs/SIGN_IN.md) |
