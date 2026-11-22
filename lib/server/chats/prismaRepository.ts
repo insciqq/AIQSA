@@ -2159,9 +2159,7 @@ export function createPrismaChatRepository(
             messages: messages.messages.map((message) =>
               serializeHydratedMessage(
                 message,
-                messages.memoryActionsByRun,
-                messages.memorySourcesByRun,
-                messages.memoryStatusesByRun,
+                messages.pastChatSourcesByRun,
                 userId,
                 messages.scheduledTasks,
                 messages.parents
@@ -2302,9 +2300,7 @@ export function createPrismaChatRepository(
             messages: messages.messages.map((message) =>
               serializeHydratedMessage(
                 message,
-                messages.memoryActionsByRun,
-                messages.memorySourcesByRun,
-                messages.memoryStatusesByRun,
+                messages.pastChatSourcesByRun,
                 userId,
                 messages.scheduledTasks,
                 messages.parents

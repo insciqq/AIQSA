@@ -220,7 +220,7 @@ function chatRef(ref: string, userKey: string): string {
 }
 
 function validateReferences(corpus: ChatSearchCorpus, scenarios: readonly ChatSearchScenario[]): void {
-  const chats = new Map(corpus.users.flatMap((user) => user.chats.map((chat) => [`${user.key}/${chat.key}`, chat] as const)));
+  const chats = new Map(corpus.users.flatMap((user) => user.chats.map((chat) => [`${user.key}/${chat.key}` as string, chat] as const)));
   const ids = new Set<string>();
   for (const scenario of scenarios) {
     if (ids.has(scenario.id)) throw new Error(`chat_search_scenario_duplicate:${scenario.id}`);

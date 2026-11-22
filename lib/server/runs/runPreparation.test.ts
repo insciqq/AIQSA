@@ -835,11 +835,13 @@ describe("memory note and past-chat search admission", () => {
     expect(prepared.normalizedRequest.prompt.memoryActionAnswerResult).toBeUndefined();
     expect(prepared.providerRequest.tools?.some((tool) => tool.name === "memory_search") ?? false).toBe(false);
     // The adapters render it after the trusted prompt and the personal Instructions, and never in a stored preview.
-    const instructions = providerInstructionsWithPersonalContext({ ...prepared.providerRequest,
-      prompt: { ...prepared.providerRequest.prompt, personalInstructions: "Answer like a pirate." } })!;
+    // The prepared request's frozen snapshots are deeply readonly; the renderer reads it as the adapters do.
+    const providerRequest = prepared.providerRequest as unknown as ProviderRunRequest;
+    const instructions = providerInstructionsWithPersonalContext({ ...providerRequest,
+      prompt: { ...providerRequest.prompt, personalInstructions: "Answer like a pirate." } })!;
     expect(instructions.indexOf("Answer like a pirate.")).toBeLessThan(instructions.indexOf("I work on the billing team."));
     expect(instructions.endsWith(renderMemoryNoteForPrompt(NOTE))).toBe(true);
-    expect(providerInstructionsWithPersonalContext(prepared.providerRequest, true)).not.toContain("billing team");
+    expect(providerInstructionsWithPersonalContext(providerRequest, true)).not.toContain("billing team");
   });
 
   it("reads a later note only in the next run: each admission freezes the note it read", async () => {
