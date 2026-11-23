@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { clipPastChatLine, PAST_CHATS_LIMITS } from "../../../contracts/pastChats";
 import { chatExportText } from "../../../domain/chatExport";
 import { redactSavedSecretValues, savedSecretLineFeeds } from "../../redaction/savedSecrets";
-import { redactSecrets, redactSecretsInWindows } from "../../redaction/secrets";
+import { redactSecretsAndSavedValues } from "../../redaction/screen";
+import { redactSecrets } from "../../redaction/secrets";
 import type { ChatSearchEligibilityFields } from "../eligibility";
 
 /**
@@ -15,8 +16,8 @@ import type { ChatSearchEligibilityFields } from "../eligibility";
  * its topic into vector search. The cost is that renaming a chat re-embeds that chat's passages, a few calls at the
  * measured sizes, while a turn whose text did not change is never embedded again.
  *
- * Secrets never reach a passage: each message is screened for the owner's saved secret values (as written and once
- * normalized) and for recognized secrets before it is cut into windows, so a secret on a window boundary stays whole, and every finished passage
+ * Secrets never reach a passage: each message is screened for the owner's saved secret values and for recognized
+ * secrets together before it is cut into windows, so a secret on a window boundary stays whole, and every finished passage
  * (title and file names included) is screened once more, so a join cannot form one either.
  */
 
@@ -160,21 +161,19 @@ function normalizedSavedValues(savedSecretValues: readonly string[]): readonly s
 }
 
 /**
- * A message's searchable text: its text blocks, normalized, screened for secrets and bounded. Saved values are
- * screened in the text as written, before normalization can change a value's line endings, and again in the
- * normalized text with the values normalized the same way, so text a client already wrote with LF is screened alike.
+ * A message's searchable text: its text blocks, normalized, screened for secrets and bounded. The saved values are
+ * normalized as the text is, so a value saved with CRLF line endings or a control character still matches, and the
+ * values and recognized secrets are found in the same normalized text and replaced together
+ * (`redactSecretsAndSavedValues`), so neither can break the other.
  */
 export function chatSearchMessageText(content: unknown, savedSecretValues: readonly string[]): string {
-  const forms = normalizedSavedValues(savedSecretValues);
-  const written = redactSavedSecretValues(chatExportText(content), forms).text;
-  const normalized = normalizedText(written).trim();
-  if (!normalized) return "";
-  const saved = redactSavedSecretValues(normalized, forms).text;
+  const normalized = normalizedText(chatExportText(content));
+  if (!normalized.trim()) return "";
   // A secret on a scan window's boundary stays whole, and text past the scan bound is withheld behind a marker.
-  const redacted = redactSecretsInWindows(saved, {
+  const redacted = redactSecretsAndSavedValues(normalized, normalizedSavedValues(savedSecretValues), {
     maxCodeUnits: CHAT_SEARCH_PASSAGE_LIMITS.messageScanChars,
     windowCodeUnits: CHAT_SEARCH_PASSAGE_LIMITS.messageScanChars
-  }).redactedText.trim();
+  }).text.trim();
   return boundedText(redacted, CHAT_SEARCH_PASSAGE_LIMITS.messageIndexedChars);
 }
 

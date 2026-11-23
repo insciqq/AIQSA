@@ -135,6 +135,29 @@ describe("past-chat passages", () => {
     expect(passages.map((passage) => passage.text).join("\n")).not.toContain("fixture-pass-42");
   });
 
+  it("screens saved values and recognized secrets together, so an overlap leaves no part of either", () => {
+    const credentialUrl = "https://deploy-bot:fixture-pass-42@db.example.org";
+    const tokenInValue = "API_KEY=sk-abcdefghijklmnopqrstuvwxyz123456 DB_PASS=fixture-pass-42";
+    // A saved value inside a recognized secret, and a recognized secret inside a saved value.
+    expect(chatSearchMessageText(text(`Connect to ${credentialUrl} today`), ["deploy-bot"]))
+      .toBe("Connect to [REDACTED:CREDENTIAL_URL] today");
+    expect(chatSearchMessageText(text(`rotation ${tokenInValue} schedule`), [tokenInValue])).toBe(`rotation ${SAVED_SECRET_MARKER} schedule`);
+    // Partial overlaps, either way round.
+    expect(chatSearchMessageText(text(`x corp-prefix::${GITHUB_TOKEN} y`), ["corp-prefix::ghp_abcdefghij"])).toBe("x [REDACTED:TOKEN] y");
+    expect(chatSearchMessageText(text(`use ${credentialUrl} lane-7 now`), ["db.example.org lane-7"]))
+      .toBe("use [REDACTED:CREDENTIAL_URL] now");
+    // With CRLF line endings, and with a control character inside the saved value.
+    expect(chatSearchMessageText(text(`Login:\r\n${credentialUrl}\r\nThanks`), ["deploy-bot"]))
+      .toBe("Login:\n[REDACTED:CREDENTIAL_URL]\nThanks");
+    expect(chatSearchMessageText(text("key fixture\u0007pass-42 end"), ["fixture\u0007pass-42"])).toBe(`key ${SAVED_SECRET_MARKER} end`);
+    const passages = buildChatSearchPassages(chatSnapshot({ turns: [{ answer: `Use ${credentialUrl}.`, question: `Is ${credentialUrl} right?` }] }),
+      ["deploy-bot"]);
+    for (const passage of passages) {
+      expect(passage.text).not.toContain("fixture-pass-42");
+      expect(passage.text).not.toContain("deploy-bot");
+    }
+  });
+
   it("keeps a secret that crosses a window boundary whole and redacted", () => {
     // The token starts just before the first window's target end, so a cut there would split it.
     const answer = `${"word ".repeat(590)}${GITHUB_TOKEN} ${"after ".repeat(500)}`;

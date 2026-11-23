@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SAVED_SECRET_MARKER,
+  savedSecretIdentifierVariable,
   savedSecretScreenedValues,
   savedSecretValueIsScreened,
   valueContainsSavedSecret,
@@ -53,6 +54,36 @@ describe("saved secret matching", () => {
     // A text secret is screened whole, whatever its name.
     expect(savedSecretScreenedValues([{ name: "EMAIL", value: { kind: "text", text: "ivan.petrov@example.com" } }]))
       .toEqual(["ivan.petrov@example.com"]);
+  });
+
+  it("leaves an identifier variable unscreened only when its value has that identifier's shape", () => {
+    const plain = [
+      ["SERVICE_LOGIN", "deploy-bot"], ["JIRA_EMAIL", "ivan.petrov@example.com"], ["REDIS_HOST", "cache.example.org"],
+      ["REDIS_HOST", "cache.example.org:6379"], ["REDIS_HOST", "redis:6379"], ["DB_HOST", "10.0.0.5"], ["AWS_REGION", "eu-central-1"],
+      ["JIRA_HOST", "https://jira.example.com"], ["JIRA_HOST", "https://jira.example.com:8443/"], ["DB_PORT", "5432"]
+    ];
+    const credentials = [
+      // A login with a password part, and a login and PIN shaped like a host and port outside a host variable.
+      ["SERVICE_LOGIN", "demo:fixture-pass-42"], ["SERVICE_LOGIN", "demo:1234"],
+      ["JIRA_EMAIL", "ivan.petrov:fixture-pass-42@example.com"],
+      // Hosts with a password, with or without a user, and one in a connection string with another scheme.
+      ["REDIS_HOST", "redis://:fixture-pass-42@cache.example.org/0"], ["REDIS_HOST", ":fixture-pass-42@cache.example.org"],
+      ["DB_HOST", "postgres://db.example.org:5432"], ["AWS_REGION", "eu-central-1:fixture-pass-42"],
+      // Origins with a user, a query or a path.
+      ["JIRA_HOST", "https://ivan:fixture-pass-42@jira.example.com"], ["JIRA_HOST", "https://jira.example.com/rest?token=fixture-pass-42"],
+      ["JIRA_HOST", "https://jira.example.com/browse/fixture"]
+    ];
+    for (const [name, value] of plain) expect(savedSecretIdentifierVariable(name, value)).toBe(true);
+    for (const [name, value] of credentials) expect(savedSecretIdentifierVariable(name, value)).toBe(false);
+    const entries = [...plain, ...credentials].map(([name, value]) => ({ name: name!, value: value! }));
+    const saved = savedSecretScreenedValues([{ name: "Env", value: { entries, kind: "env" } }]);
+    expect(saved).toEqual(credentials.map(([, value]) => value));
+    expect(valueContainsSavedSecret("Log in as demo:fixture-pass-42 on cache.example.org:6379", saved)).toBe(true);
+    expect(valueContainsSavedSecret("The cache is cache.example.org:6379, the tracker https://jira.example.com", saved)).toBe(false);
+    // An address variable's origin takes a port of digits only.
+    expect(savedSecretScreenedValues([{ name: "Jira", value: { entries: [
+      { name: "JIRA_URL", value: "https://jira.example.com:8443" }, { name: "JIRA_URL", value: "https://jira.example.com:fixture-pass-42" }
+    ], kind: "env" } }])).toEqual(["https://jira.example.com:fixture-pass-42"]);
   });
 
   it("finds a screened value only, so facts naming a plain setting are kept", () => {

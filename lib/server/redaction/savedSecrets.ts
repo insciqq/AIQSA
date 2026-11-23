@@ -53,20 +53,41 @@ export function savedSecretLineEndingForms(values: readonly string[]): readonly 
 const IDENTIFIER_NAME_PARTS = new Set(["ACCOUNT", "BUCKET", "DOMAIN", "EMAIL", "HOST", "HOSTNAME", "LOGIN", "MAIL", "PORT", "PROJECT", "REGION", "USER", "USERNAME"]);
 /** Anywhere in a name, these keep the value masked, as in AWS_ACCESS_KEY_ID, DB_USER_PASSWORD or MAIL_URL. */
 const SECRET_NAME_PATTERN = /AUTH|BEARER|CERT|CODE|CONN|COOKIE|CRED|DSN|HASH|KEY|LICENSE|MFA|OTP|PASS|PIN|PRIVATE|PW|SALT|SECRET|SEED|SESSION|TOKEN|URI|URL/u;
-/** A value that carries a password itself, such as smtp://bob:pw@host or bob:pw@host. */
-const CREDENTIAL_VALUE = /(?:^|:\/\/)[^\s:@/]+:[^\s@/]+@/u;
-/** An http(s) address that is only an origin: no user, path, query or fragment that could carry a token. */
-const BARE_ORIGIN = /^https?:\/\/[^\s/?#@]+\/?$/iu;
+/** A host name or IPv4 address: letters, digits and hyphens in dot-separated labels. */
+const HOST_NAME = String.raw`[\p{L}\p{M}\p{N}-]+(?:\.[\p{L}\p{M}\p{N}-]+)*`;
+/** A username, a host name, a region, a bucket, a project, an account number or a port: one word with no `:`, `@` or `/`. */
+const PLAIN_IDENTIFIER = /^[\p{L}\p{M}\p{N}._-]+$/u;
+/** An email address: a local part without `:`, so `user:password@host` is not one. */
+const EMAIL_ADDRESS = new RegExp(String.raw`^[\p{L}\p{M}\p{N}._%+-]+@${HOST_NAME}$`, "u");
+/** A host and its port, which only a host variable holds: elsewhere `name:digits` may be a login and a PIN. */
+const HOST_AND_PORT = new RegExp(String.raw`^${HOST_NAME}:\d{1,5}$`, "u");
+/** An http(s) address that is only an origin: a host and a port, with no user, path, query or fragment that could carry a token. */
+const BARE_ORIGIN = new RegExp(String.raw`^https?://(?:${HOST_NAME}|\[[0-9a-f:.]+\])(?::\d{1,5})?/?$`, "iu");
+
+/**
+ * Whether a value has the shape of the identifier its variable names: a plain username, host name or region, an
+ * email, a bare http(s) origin, or for a host variable a host and port. A value with a password part
+ * (`user:password`, `:password@`), a user in a URL, or a URL with a path, a query or another scheme never has it,
+ * whatever the name says (review 2026-11-23): `SERVICE_LOGIN=demo:password` is a Basic-auth pair, and
+ * `REDIS_HOST=redis://:password@host/0` a connection string.
+ */
+function identifierValueShape(lastNamePart: string, value: string): boolean {
+  const trimmed = value.trim();
+  return PLAIN_IDENTIFIER.test(trimmed) || EMAIL_ADDRESS.test(trimmed) || BARE_ORIGIN.test(trimmed) ||
+    ((lastNamePart === "HOST" || lastNamePart === "HOSTNAME") && HOST_AND_PORT.test(trimmed));
+}
 
 /**
  * Whether an env variable is an identifier, not a credential: its name's last part names a login, an email, a host
  * or a region (DB_USER, AWS_DEFAULT_REGION), no part of it names a secret (USER_PW, LOGIN_CODE stay secrets), and its
- * value carries no password. `manage_secret` lets an answer name these (operator decision 2026-10-27).
+ * value has that identifier's shape (`identifierValueShape`). `manage_secret` lets an answer name these (operator
+ * decision 2026-10-27), and derived text keeps them as ordinary text.
  */
 export function savedSecretIdentifierVariable(name: unknown, value: unknown): boolean {
-  if (typeof name !== "string" || typeof value !== "string" || CREDENTIAL_VALUE.test(value)) return false;
+  if (typeof name !== "string" || typeof value !== "string") return false;
   const upper = name.toUpperCase();
-  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(upper.split("_").at(-1) ?? "");
+  const last = upper.split("_").at(-1) ?? "";
+  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(last) && identifierValueShape(last, value);
 }
 
 /**

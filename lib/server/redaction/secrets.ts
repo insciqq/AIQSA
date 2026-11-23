@@ -926,6 +926,12 @@ export function textContainsRedactionMarker(value: string): boolean {
   return value.search(REDACTION_PLACEHOLDER_PATTERN) !== -1;
 }
 
+/** Where markers that stand for removed text (`[REDACTED:TOKEN]`, `[REDACTED_SECRET]` and the like) sit in a text. */
+export function redactionMarkerRanges(value: string): readonly SecretSourceRange[] {
+  return [...value.matchAll(REDACTION_PLACEHOLDER_PATTERN)].map((match) =>
+    ({ end: match.index + match[0].length, start: match.index }));
+}
+
 export function parseSecrets(value: string): SecretParseResult {
   if (typeof value !== "string" || value.length === 0) {
     return {
