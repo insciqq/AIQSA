@@ -12,7 +12,7 @@ import type { ChatSearchClaim, ChatSearchIndexStore, ChatSearchPassageToEmbed, C
  * (words are searchable as soon as that commits), then embeds the passages that lack a vector of the current role, in
  * batches, newest turns first. A provider failure backs the chat off with a content-free code and never touches its
  * words. Nothing here waits on the user's answer: chats are marked dirty after it settles (`./dirty.ts`). Vectors are
- * written only for an owner who allows them right before the calls (`./ownerEmbedding.ts`); any other owner's chat
+ * written only for an owner who allows them right before each call (`./ownerEmbedding.ts`); any other owner's chat
  * settles with its words alone.
  *
  * Freshness: the worker runs a pass every `CHAT_SEARCH_INDEX_PASS_INTERVAL_MS` while idle and the next one at once
@@ -234,16 +234,19 @@ export async function runChatSearchIndexPassOn(
       continue;
     }
     try {
-      // An inactive account, or Memory or past-chat search off: nothing goes to the provider, and no retry follows,
-      // since the backfill marks the chat again once vectors are allowed.
-      if (!await store.ownerAllowsEmbedding(claim.userId)) {
-        await settle(claim, { kind: "clean", note: CHAT_SEARCH_OWNER_OFF_NOTE });
-        continue;
-      }
       const rows = await store.passagesToEmbed({
         chatId: claim.chatId, limit: limits.passagesPerChat + 1, providerModelId: model.providerModelId
       });
+      let ownerOff = false;
       for (const batch of batches(rows.slice(0, limits.passagesPerChat), limits)) {
+        // An inactive account, or Memory or past-chat search off: nothing more goes to the provider. Asked right before
+        // every request, since one chat's requests can take a while and the owner may turn search off meanwhile; the
+        // vectors already written stay, and no retry follows, since the backfill marks the chat again once vectors are
+        // allowed (`./backfill.ts`).
+        if (!await store.ownerAllowsEmbedding(claim.userId)) {
+          ownerOff = true;
+          break;
+        }
         const result = await input.embedder.embed({
           latencyClass: "background",
           mode: "document",
@@ -263,7 +266,8 @@ export async function runChatSearchIndexPassOn(
           vectors: batch.map((row, index) => ({ contentHash: row.contentHash, id: row.id, vector: result.vectors[index]! }))
         });
       }
-      await settle(claim, rows.length > limits.passagesPerChat ? { kind: "more" } : { kind: "clean", note: null });
+      await settle(claim, ownerOff ? { kind: "clean", note: CHAT_SEARCH_OWNER_OFF_NOTE }
+        : rows.length > limits.passagesPerChat ? { kind: "more" } : { kind: "clean", note: null });
     } catch (error) {
       if (error instanceof ChatSearchEmbeddingError &&
         (error.code === "embedding_model_changed" || error.code === "embedding_request_cancelled")) {

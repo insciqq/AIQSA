@@ -288,6 +288,37 @@ describe("the past-chat index in PostgreSQL", () => {
     }
   });
 
+  it("sends no further request once the owner turns search off during a chat's first one, and resumes when it is on", async () => {
+    const userId = await owner();
+    const { chatId } = await chat(userId, [["Hotel?", "The river one."], ["Train?", "The 9:10."], ["Pack?", "An umbrella."]]);
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+    let calls = 0;
+    const embedder: ChatSearchEmbedder = {
+      currentModel: async () => ({ kind: "model", providerModelId: "fake-embed-a" }),
+      async embed(request) {
+        calls += 1;
+        if (calls === 1) {
+          await prisma.userSettings.upsert({ create: { pastChatSearchEnabled: false, userId }, update: { pastChatSearchEnabled: false },
+            where: { userId } });
+        }
+        return { dimension: 3, vectors: request.texts.map((value) => [value.length, 1, 0.5]) };
+      }
+    };
+    expect(await runChatSearchIndexPass({ db: prisma, embedder, limits: { batchTexts: 1, ownerIds: [userId] } }))
+      .toMatchObject({ embedded: 1, failed: 0, indexed: 1 });
+    expect(calls).toBe(1);
+    expect((await passages(chatId)).map((row) => row.embeddingProviderModelId)).toEqual([null, null, "fake-embed-a"]);
+    expect(await prisma.chatSearchState.findUniqueOrThrow({ where: { chatId } }))
+      .toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+
+    await prisma.userSettings.update({ data: { pastChatSearchEnabled: true }, where: { userId } });
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder, limits: { ownerIds: [userId] } })).toMatchObject({ vectors: 1 });
+    await drain(embedder, [userId]);
+    // The two turns still without a vector, in one request.
+    expect(calls).toBe(2);
+    expect((await passages(chatId)).every((row) => row.embeddingProviderModelId === "fake-embed-a")).toBe(true);
+  });
+
   it("builds no passage for a turn with a message the old Memory kept out, and follows the rest of the branch", async () => {
     const userId = await owner();
     const { chatId, ids } = await chat(userId, [["Before the reset", "Old answer"], ["Kept question", "Paused answer"],
