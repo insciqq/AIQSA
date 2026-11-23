@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import {
-  BROWSER_REFUSED_REVISIONS_LIMIT, browserSessionHoldsOnlySite, browserSignInSaveAllowed, browserSignInSaveFiles, completedSignInFile,
+  BROWSER_REFUSED_REVISIONS_LIMIT, browserSessionHoldsOnlySite, browserSignInSaveAllowed, browserSignInSaveFiles, completedSignIn,
   nextRefusedBrowserRevisions, refusedBrowserRevisions, serverWrittenBrowserTurn
 } from "./browserSignInAuthority";
 
@@ -61,8 +61,12 @@ describe("whose turn may save a browser sign-in", () => {
 });
 
 describe("the sign-in a stored handoff shows the user finishing", () => {
-  it("names the file a sign-in handoff's Done saved", () => {
-    expect(completedSignInFile(handoff("sign_in", done))).toBe("example.com.json");
+  it("names the file a sign-in handoff's Done saved and the host of the page it was made on", () => {
+    expect(completedSignIn(handoff("sign_in", done))).toEqual({ fileName: "example.com.json", host: "mail.example.com" });
+    // A result that recorded no page, or no usable address, still names its file.
+    expect(completedSignIn(handoff("sign_in", { ...done, page: null }))).toEqual({ fileName: "example.com.json", host: null });
+    expect(completedSignIn(handoff("sign_in", { ...done, page: { title: "", url: "about:blank" } })))
+      .toEqual({ fileName: "example.com.json", host: null });
   });
 
   it.each([
@@ -78,14 +82,16 @@ describe("the sign-in a stored handoff shows the user finishing", () => {
     ["no result", { arguments: { reason: "sign_in" }, result: null, state: "complete" }],
     ["malformed arguments", { ...handoff("sign_in", done), arguments: "sign_in" }]
   ])("names none for %s", (_name, call) => {
-    expect(completedSignInFile(call)).toBeNull();
+    expect(completedSignIn(call)).toBeNull();
   });
 
-  it("reads only the run's own finished sign-in handoffs from its stored calls", async () => {
+  it("reads only the run's own finished sign-in handoffs from its stored calls, each file with its pages' hosts", async () => {
     const findMany = vi.fn(async (_query: unknown) => [handoff("sign_in", done),
-      handoff("sign_in", { ...done, signInSavedAfterAnswer: "shop.example" }), handoff("sign_in", { ...done, outcome: "cancelled" })]);
+      handoff("sign_in", { ...done, page: { title: "Shop", url: "https://shop.example/account" }, signInSavedAfterAnswer: "shop.example" }),
+      handoff("sign_in", { ...done, page: { title: "Example", url: "https://example.com/" } }),
+      handoff("sign_in", { ...done, outcome: "cancelled" })]);
     expect(await browserSignInSaveFiles({ modelRunToolCall: { findMany } } as never, "run-1"))
-      .toEqual(new Set(["example.com.json", "shop.example.json"]));
+      .toEqual(new Map([["example.com.json", ["mail.example.com", "example.com"]], ["shop.example.json", ["shop.example"]]]));
     expect(findMany).toHaveBeenCalledWith({ select: { arguments: true, result: true, state: true }, where: {
       arguments: { equals: "sign_in", path: ["reason"] }, modelRunId: "run-1", state: "complete", toolName: "browser_handoff" } });
   });
@@ -133,11 +139,37 @@ describe("a sign-in file of one site", () => {
   });
 
   it("lets a finished sign-in save its own file of its site alone, nothing else", () => {
-    const finished = new Set(["example.com.json"]);
+    const finished = new Map([["example.com.json", ["mail.example.com"]]]);
     expect(browserSignInSaveAllowed(finished, { bytes: state(["example.com"]), fileName: "example.com.json" })).toBe(true);
     expect(browserSignInSaveAllowed(finished, { bytes: state(["example.com", "bank.example"]), fileName: "example.com.json" })).toBe(false);
     expect(browserSignInSaveAllowed(finished, { bytes: state(["bank.example"]), fileName: "bank.example.json" })).toBe(false);
-    expect(browserSignInSaveAllowed(new Set(), { bytes: state(["example.com"]), fileName: "example.com.json" })).toBe(false);
+    expect(browserSignInSaveAllowed(new Map(), { bytes: state(["example.com"]), fileName: "example.com.json" })).toBe(false);
+  });
+
+  // The guest keeps a hosting service's tenants in one file named after the service (`SessionStore.file_for` in
+  // `ops/workspace-guest/python/aiqsa/browser/_sessions.py`): the page Done happened on names the site.
+  it("checks a file against the site of the page Done happened on, a hosting tenant's included", () => {
+    const appEngine = new Map([["r.appspot.com.json", ["demo.uc.r.appspot.com"]]]);
+    const tenant = (cookies: readonly string[]) => ({ bytes: state(cookies, ["https://demo.uc.r.appspot.com"]), fileName: "r.appspot.com.json" });
+    expect(browserSignInSaveAllowed(appEngine, tenant(["demo.uc.r.appspot.com"]))).toBe(true);
+    expect(browserSignInSaveAllowed(appEngine, tenant(["demo.uc.r.appspot.com", "other.uc.r.appspot.com"]))).toBe(false);
+    expect(browserSignInSaveAllowed(appEngine, tenant(["demo.uc.r.appspot.com", "bank.example"]))).toBe(false);
+    const cognito = new Map([["amazoncognito.com.json", ["myapp.auth.us-east-1.amazoncognito.com"]]]);
+    expect(browserSignInSaveAllowed(cognito, { bytes: state(["myapp.auth.us-east-1.amazoncognito.com"],
+      ["https://myapp.auth.us-east-1.amazoncognito.com"]), fileName: "amazoncognito.com.json" })).toBe(true);
+    expect(browserSignInSaveAllowed(cognito, { bytes: state(["myapp.auth.us-east-1.amazoncognito.com",
+      "rival.auth.eu-west-1.amazoncognito.com"]), fileName: "amazoncognito.com.json" })).toBe(false);
+    const google = new Map([["google.com.json", ["accounts.google.com"]]]);
+    expect(browserSignInSaveAllowed(google, { bytes: state([".google.com", "accounts.google.com"], ["https://accounts.google.com"]),
+      fileName: "google.com.json" })).toBe(true);
+    expect(browserSignInSaveAllowed(google, { bytes: state([".google.com", ".bank.example"]), fileName: "google.com.json" })).toBe(false);
+  });
+
+  it("falls back to the file name's registrable domain, a hosting service as one site, for a result that recorded no page", () => {
+    const older = new Map<string, readonly (string | null)[]>([["r.appspot.com.json", [null]]]);
+    expect(browserSignInSaveAllowed(older, { bytes: state(["demo.uc.r.appspot.com"]), fileName: "r.appspot.com.json" })).toBe(true);
+    expect(browserSignInSaveAllowed(older, { bytes: state(["demo.uc.r.appspot.com", "bank.example"]), fileName: "r.appspot.com.json" }))
+      .toBe(false);
   });
 });
 

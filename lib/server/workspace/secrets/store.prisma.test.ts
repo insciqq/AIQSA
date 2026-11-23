@@ -271,13 +271,17 @@ describe("persisted personal Workspace secrets", () => {
     await prisma.message.update({ where: { id: run.userMessageId }, data });
   };
   let ordinal = 0;
-  /** A `browser_handoff` call of the run as the engine stores it, with the file its Done saved when it names one. */
-  const handoff = (runId: string, reason: string, outcome: string, saved?: string) => prisma.modelRunToolCall.create({ data: {
-    arguments: { message: "Please sign in, then press Done.", reason }, completedAt: new Date(), modelRunId: runId,
-    ordinal: ordinal++, providerCallId: `call-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "browser_handoff",
-    result: { callId: "call", name: "browser_handoff", status: "complete", content: [{ type: "json", value: {
-      next: "Look at the page.", outcome, page: { title: "Shop", url: "https://shop.example/account" },
-      ...(saved ? { signInSavedAfterAnswer: saved } : {}) } }] } } });
+  /**
+   * A `browser_handoff` call of the run as the engine stores it, with the file its Done saved when it names one and the
+   * page Done happened on (by default the saved site's).
+   */
+  const handoff = (runId: string, reason: string, outcome: string, saved?: string, pageHost = saved ?? "shop.example") =>
+    prisma.modelRunToolCall.create({ data: {
+      arguments: { message: "Please sign in, then press Done.", reason }, completedAt: new Date(), modelRunId: runId,
+      ordinal: ordinal++, providerCallId: `call-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "browser_handoff",
+      result: { callId: "call", name: "browser_handoff", status: "complete", content: [{ type: "json", value: {
+        next: "Look at the page.", outcome, page: { title: "Site", url: `https://${pageHost}/account` },
+        ...(saved ? { signInSavedAfterAnswer: saved } : {}) } }] } } });
 
   it("lets a turn the server wrote save only a sign-in the user finished in its own run, while the user's turn saves as before", async () => {
     const userId = await owner();
@@ -409,6 +413,27 @@ describe("persisted personal Workspace secrets", () => {
     expect(await saveWorkspaceBrowserSessions(prisma, { ...again, files: [google([".google.com", ".bank.example"], "carried")] },
       () => key)).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
     expect(await currentBrowser(userId, "accounts.google.com.json")).toEqual(saved);
+  });
+
+  // The guest keeps a hosting service's tenants in one file named after the service: the page Done happened on, which
+  // the stored result records, names the site the file may hold.
+  it("saves a hosting tenant's finished sign-in from the service's file, never another tenant's beside it", async () => {
+    const userId = await owner();
+    const tenant = (domains: readonly string[], value: string) => ({ fileName: "r.appspot.com.json", bytes: Buffer.from(
+      JSON.stringify({ cookies: domains.map((domain) => ({ name: "SID", value, domain, path: "/", expires: -1, httpOnly: true, secure: true,
+        sameSite: "Lax" })), origins: [{ origin: "https://demo.uc.r.appspot.com", localStorage: [] }] })) });
+    const signIn = await browserRun(userId);
+    await serverTurn(signIn, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(signIn.runId, "sign_in", "completed", "r.appspot.com", "demo.uc.r.appspot.com");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...signIn, files: [tenant(["demo.uc.r.appspot.com"], "signed-in")] },
+      () => key)).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    const saved = await currentBrowser(userId, "r.appspot.com.json");
+    const again = await laterBrowserRun(signIn);
+    await serverTurn(again, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(again.runId, "sign_in", "completed", "r.appspot.com", "demo.uc.r.appspot.com");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...again, files: [tenant(["demo.uc.r.appspot.com", "other.uc.r.appspot.com"],
+      "carried")] }, () => key)).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect(await currentBrowser(userId, "r.appspot.com.json")).toEqual(saved);
   });
 
   // A settings change fences every run accepted before it, but the refused file stays on the disk for the next one.
