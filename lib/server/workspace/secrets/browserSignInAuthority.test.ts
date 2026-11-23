@@ -104,11 +104,25 @@ describe("a sign-in file of one site", () => {
     expect(browserSessionHoldsOnlySite(state([]), "example.com")).toBe(true);
   });
 
+  // The guest names a file after the host a sign-in began on, while the site keeps its sign-in cookies on the parent.
+  it("holds the site's whole registrable domain, a file named after a subdomain included", () => {
+    expect(browserSessionHoldsOnlySite(state([".google.com", "accounts.google.com"], ["https://accounts.google.com"]),
+      "accounts.google.com")).toBe(true);
+    expect(browserSessionHoldsOnlySite(state([".news.bbc.co.uk", ".bbc.co.uk"]), "news.bbc.co.uk")).toBe(true);
+    // A private suffix keeps one tenant apart from another.
+    expect(browserSessionHoldsOnlySite(state(["alice.github.io"]), "alice.github.io")).toBe(true);
+    // An address has no registrable domain: only its own name.
+    expect(browserSessionHoldsOnlySite(state(["192.168.1.10"]), "192.168.1.10")).toBe(true);
+  });
+
   it.each([
     ["another site's cookie", state(["example.com", "bank.example"]), "example.com"],
     ["another site's origin", state(["example.com"], ["https://bank.example"]), "example.com"],
     ["a name that only ends like the site", state(["notexample.com"]), "example.com"],
-    ["a cookie on a parent name", state(["mail.example.com", ".example.com"]), "mail.example.com"]
+    ["another registrable domain beside the parent's cookie", state([".google.com", ".bank.example"]), "accounts.google.com"],
+    ["a public suffix", state(["example.com", ".com"]), "example.com"],
+    ["another tenant of a private suffix", state(["alice.github.io", "mallory.github.io"]), "alice.github.io"],
+    ["another address", state(["192.168.1.10", "192.168.1.11"]), "192.168.1.10"]
   ])("holds more than the site with %s", (_name, bytes, site) => {
     expect(browserSessionHoldsOnlySite(bytes, site)).toBe(false);
   });
@@ -148,5 +162,17 @@ describe("the revisions a Workspace session keeps refused", () => {
     expect(next).toHaveLength(BROWSER_REFUSED_REVISIONS_LIMIT);
     expect(next[0]![0]).toBe("s1.json");
     expect(next.at(-1)).toEqual(["new.json", digest("b")]);
+  });
+
+  // A file still on the disk is collected and refused again by each later run: it must not age out under the bound.
+  it("moves a revision refused again to the newest place, so newer refusals drop only revisions nobody collects", () => {
+    const full = new Map(Array.from({ length: BROWSER_REFUSED_REVISIONS_LIMIT }, (_, index) => [`s${index}.json`, digest("a")] as const));
+    const refreshed = nextRefusedBrowserRevisions(full, "s0.json", digest("a"))!;
+    expect(refreshed).toHaveLength(BROWSER_REFUSED_REVISIONS_LIMIT);
+    expect(refreshed[0]![0]).toBe("s1.json");
+    expect(refreshed.at(-1)).toEqual(["s0.json", digest("a")]);
+    const after = nextRefusedBrowserRevisions(refusedBrowserRevisions(refreshed), "new.json", digest("b"))!;
+    expect(after.map(([name]) => name)).toContain("s0.json");
+    expect(after.map(([name]) => name)).not.toContain("s1.json");
   });
 });

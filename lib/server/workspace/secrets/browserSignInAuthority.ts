@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { getDomain } from "tldts";
 import { WORKSPACE_BROWSER_SESSION_MAX_COUNT } from "@/lib/contracts/workspaceSecrets";
 import { storedUserRequest } from "../../runs/turnProvenance";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
@@ -68,18 +69,29 @@ export async function browserSignInSaveFiles(tx: Pick<Prisma.TransactionClient, 
   return new Set(calls.flatMap((call) => completedSignInFile(call) ?? []));
 }
 
+const hostName = (value: string): string => value.trim().toLowerCase().replace(/^\./u, "").replace(/\.$/u, "");
+
+/** A host's registrable domain, the public-suffix list's private section respected; null for an address or a bare name. */
+function registrableDomain(host: string): string | null {
+  const name = hostName(host);
+  return name ? getDomain(name, { allowPrivateDomains: true }) ?? null : null;
+}
+
 /**
- * Whether a session file holds the named site alone: every cookie's domain and every origin's host is that site or a
- * name under it. A file kept for several sites (Settings accepts such a storage state) carries cookies of the others,
- * which a sign-in to one site never authorizes. Conservative: a cookie a site sets on a parent name also counts as
- * another site's, and an unreadable file holds nothing alone.
+ * Whether a session file holds the named site alone: every cookie's domain and every origin's host belongs to the site's
+ * registrable domain. The guest names a file after the host a sign-in began on (`accounts.google.com.json`) while the
+ * site keeps its sign-in cookies on the parent (`.google.com`), so the whole registrable domain is the site. A file
+ * kept for several sites (Settings accepts such a storage state) carries another registrable domain's cookies, which a
+ * sign-in to one site never authorizes. A site with no registrable domain (an address) holds only its own names, and an
+ * unreadable file holds nothing alone.
  */
 export function browserSessionHoldsOnlySite(bytes: Uint8Array, site: string): boolean {
-  const own = site.toLowerCase();
+  const own = hostName(site);
+  const ownDomain = registrableDomain(own);
   const isOwn = (host: unknown) => {
-    if (typeof host !== "string") return false;
-    const name = host.trim().toLowerCase().replace(/^\./u, "").replace(/\.$/u, "");
-    return name === own || name.endsWith(`.${own}`);
+    const name = typeof host === "string" ? hostName(host) : "";
+    if (!name) return false;
+    return ownDomain !== null ? registrableDomain(name) === ownDomain : name === own || name.endsWith(`.${own}`);
   };
   try {
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
@@ -114,8 +126,9 @@ export function refusedBrowserRevisions(value: unknown): ReadonlyMap<string, str
 
 /**
  * The refused revisions with one file's set to `checksum`, or removed with null, the newest last and within
- * `BROWSER_REFUSED_REVISIONS_LIMIT`; null when none remain. A list, because a JSON object's key order does not survive
- * the database.
+ * `BROWSER_REFUSED_REVISIONS_LIMIT`; null when none remain. A file set again, refused once more as a later run collected
+ * it, moves to the newest place, so the bound drops only revisions no run has collected since. A list, because a JSON
+ * object's key order does not survive the database.
  */
 export function nextRefusedBrowserRevisions(current: ReadonlyMap<string, string>, fileName: string, checksum: string | null):
   Array<[string, string]> | null {
