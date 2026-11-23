@@ -38,10 +38,13 @@ async function owner() {
   return id;
 }
 
-async function plan(userId: string): Promise<PreparingRunAdmissionInput> {
-  const chat = await prisma.chat.create({ data: { userId, title: "Synthetic secrets admission", workspaceEnabled: true } });
+/** A send's admission in a new chat, or as the next message of a chat on its Workspace session. */
+async function plan(userId: string, next?: Readonly<{ chatId: string; expectedActiveLeafId: string | null; sessionId: string }>):
+  Promise<PreparingRunAdmissionInput> {
+  const chat = next ? { id: next.chatId }
+    : await prisma.chat.create({ data: { userId, title: "Synthetic secrets admission", workspaceEnabled: true } });
   const runId = randomUUID(), userMessageId = randomUUID(), assistantMessageId = randomUUID();
-  const sessionId = `ws_${randomBytes(20).toString("hex")}`;
+  const sessionId = next?.sessionId ?? `ws_${randomBytes(20).toString("hex")}`;
   const policy = await prisma.workspacePolicy.findUniqueOrThrow({ where: { id: WORKSPACE_POLICY_ID } });
   const normalized = {
     enabled: true as const, imageRef: config.imageRef, inboxIndexPath: "/workspace/inbox/index.json", internetEnabled: false,
@@ -52,7 +55,7 @@ async function plan(userId: string): Promise<PreparingRunAdmissionInput> {
   };
   const content = textMessageContent("Use my synthetic Workspace access");
   return {
-    admissionKind: "NORMAL_SEND", chatId: chat.id, content, expectedActiveLeafId: null, modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, userId, workspaceEnabled: true,
+    admissionKind: "NORMAL_SEND", chatId: chat.id, content, expectedActiveLeafId: next?.expectedActiveLeafId ?? null, modelId: "fake-qsa", provider: "fake", providerRequestPreview: {}, userId, workspaceEnabled: true,
     normalizedRequest: {
       attachmentIds: [], chatId: chat.id, content, modelCapabilities: { nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: false, vision: false },
       modelId: "fake-qsa", params: {}, prompt: { developer: null, system: null }, provider: "fake", searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", workspace: normalized
@@ -76,6 +79,18 @@ async function browserRun(userId: string): Promise<WorkspaceBrowserSaveInput> {
     data: { state: "RUNNING", runtimeSandboxId: `synthetic_${randomUUID()}` } });
   return { userId, runId: run.runId, sessionId: session.id, runtimeSandboxId: session.runtimeSandboxId!,
     operation: { owner: session.operationOwner!, generation: session.version }, files: [], skipped: [] };
+}
+
+/** The chat's next message after `previous` ended and released the VM: a new run on the same session and disk. */
+async function laterBrowserRun(previous: WorkspaceBrowserSaveInput): Promise<WorkspaceBrowserSaveInput> {
+  const ended = await prisma.modelRun.update({ where: { id: previous.runId }, data: { status: "complete" }, select: { chatId: true } });
+  await prisma.workspaceSession.update({ where: { id: previous.sessionId }, data: { operationOwner: null, state: "STOPPED" } });
+  const chat = await prisma.chat.findUniqueOrThrow({ where: { id: ended.chatId }, select: { activeLeafMessageId: true } });
+  const run = await admitPreparingRunWithClient(prisma, await plan(previous.userId, { chatId: ended.chatId,
+    expectedActiveLeafId: chat.activeLeafMessageId, sessionId: previous.sessionId }));
+  const session = await prisma.workspaceSession.update({ where: { id: previous.sessionId },
+    data: { state: "RUNNING", runtimeSandboxId: previous.runtimeSandboxId } });
+  return { ...previous, runId: run.runId, operation: { owner: session.operationOwner!, generation: session.version } };
 }
 
 const saveBrowser = (input: WorkspaceBrowserSaveInput, value = "synthetic-session") => saveWorkspaceBrowserSessions(prisma,
@@ -248,20 +263,23 @@ describe("persisted personal Workspace secrets", () => {
 
   // Operator decision 2026-11-23: a turn the server wrote authorizes nothing, so its agent (page text may steer it)
   // cannot replace the sign-in the user saved for later chats; only a Sign in again handoff the user finished saves.
+  /** Marks a run's stored message as a turn the server wrote. */
+  const serverTurn = async (input: WorkspaceBrowserSaveInput, data: Readonly<{ scheduledTaskPrompt?: true;
+    systemTurnKind?: "browser_sign_in_request" | "conversation_summary" | "mcp_approval_continuation" | "subagent_callback" }>) => {
+    const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: input.runId }, select: { userMessageId: true } });
+    await prisma.message.update({ where: { id: run.userMessageId }, data });
+  };
+  let ordinal = 0;
+  /** A `browser_handoff` call of the run as the engine stores it, with the file its Done saved when it names one. */
+  const handoff = (runId: string, reason: string, outcome: string, saved?: string) => prisma.modelRunToolCall.create({ data: {
+    arguments: { message: "Please sign in, then press Done.", reason }, completedAt: new Date(), modelRunId: runId,
+    ordinal: ordinal++, providerCallId: `call-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "browser_handoff",
+    result: { callId: "call", name: "browser_handoff", status: "complete", content: [{ type: "json", value: {
+      next: "Look at the page.", outcome, page: { title: "Shop", url: "https://shop.example/account" },
+      ...(saved ? { signInSavedAfterAnswer: saved } : {}) } }] } } });
+
   it("lets a turn the server wrote save only a sign-in the user finished in its own run, while the user's turn saves as before", async () => {
     const userId = await owner();
-    const serverTurn = async (input: WorkspaceBrowserSaveInput, data: Readonly<{ scheduledTaskPrompt?: true;
-      systemTurnKind?: "browser_sign_in_request" | "conversation_summary" | "mcp_approval_continuation" | "subagent_callback" }>) => {
-      const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: input.runId }, select: { userMessageId: true } });
-      await prisma.message.update({ where: { id: run.userMessageId }, data });
-    };
-    let ordinal = 0;
-    const handoff = (runId: string, reason: string, outcome: string, saved?: string) => prisma.modelRunToolCall.create({ data: {
-      arguments: { message: "Please sign in, then press Done.", reason }, completedAt: new Date(), modelRunId: runId,
-      ordinal: ordinal++, providerCallId: `call-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "browser_handoff",
-      result: { callId: "call", name: "browser_handoff", status: "complete", content: [{ type: "json", value: {
-        next: "Look at the page.", outcome, page: { title: "Shop", url: "https://shop.example/account" },
-        ...(saved ? { signInSavedAfterAnswer: saved } : {}) } }] } } });
     const own = await browserRun(userId);
     expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
     const saved = await currentBrowser(userId, "shop.example.json");
@@ -344,6 +362,50 @@ describe("persisted personal Workspace secrets", () => {
     expect(await saveBrowser(ofWakeUp, "injected-cookie")).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
     expect((await currentBrowser(userId, "shop.example.json")).value).toEqual({ kind: "browser_session", originalName: "shop.example.json",
       base64: browserBytes("after-allow").toString("base64") });
+  });
+
+  // A refused file stays on the chat's disk, and the next run there collects it again: the refusal must outlive the turn.
+  it("never saves the bytes a turn the server wrote was refused when a later run of the chat collects them", async () => {
+    const userId = await owner();
+    const own = await browserRun(userId);
+    expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
+    const saved = await currentBrowser(userId, "shop.example.json");
+    const injected = { fileName: "shop.example.json", bytes: browserBytes("injected-cookie") };
+    const refused = { saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } };
+
+    const wakeUp = await laterBrowserRun(own);
+    await serverTurn(wakeUp, { systemTurnKind: "subagent_callback" });
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...wakeUp, files: [injected] }, () => key)).toEqual(refused);
+    // The user's next message only reads a file, yet its run collects what the disk still holds.
+    const reading = await laterBrowserRun(wakeUp);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...reading, files: [injected] }, () => key)).toEqual(refused);
+    expect(await currentBrowser(userId, "shop.example.json")).toEqual(saved);
+    // Only a sign-in the user finishes for that site in a run saves it, as a Sign in again would.
+    const signIn = await laterBrowserRun(reading);
+    await handoff(signIn.runId, "sign_in", "completed", "shop.example");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...signIn, files: [injected] }, () => key)).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    expect((await prisma.workspaceSession.findUniqueOrThrow({ where: { id: own.sessionId } })).browserRefusedRevisions).toBeNull();
+    // Another chat's disk keeps no refusal of this one: what its own turn collects saves as before.
+    expect(await saveBrowser(await browserRun(userId), "elsewhere")).toMatchObject({ saved: 1 });
+  });
+
+  // Settings accepts a storage state of several sites: a sign-in to one never carries the other sites' cookies along.
+  it("refuses a turn the server wrote a file holding more than the site its finished sign-in saved", async () => {
+    const userId = await owner();
+    const own = await browserRun(userId);
+    const both = (value: string) => Buffer.from(JSON.stringify({ cookies: [
+      { name: "session", value, domain: ".shop.example", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" },
+      { name: "session", value, domain: "bank.example", path: "/", expires: -1, httpOnly: true, secure: true, sameSite: "Lax" }
+    ], origins: [{ origin: "https://www.shop.example", localStorage: [{ name: "cart", value }] }] }));
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...own, files: [{ fileName: "shop.example.json", bytes: both("user-cookie") }] },
+      () => key)).toMatchObject({ saved: 1 });
+    const saved = await currentBrowser(userId, "shop.example.json");
+    const signIn = await laterBrowserRun(own);
+    await serverTurn(signIn, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(signIn.runId, "sign_in", "completed", "shop.example");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...signIn, files: [{ fileName: "shop.example.json", bytes: both("signed-in") }] },
+      () => key)).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect(await currentBrowser(userId, "shop.example.json")).toEqual(saved);
   });
 
   it("saves states between 512 KiB and 8 MiB exactly, keeps the previous version for 8 MiB + 1 and decodes the list", async () => {
