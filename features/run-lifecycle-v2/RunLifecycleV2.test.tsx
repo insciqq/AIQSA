@@ -455,8 +455,10 @@ describe("Run lifecycle v2", () => {
     expect(screen.queryByTestId("past-chat-sources")).toBeNull();
     rerender(<RunAnswerV2 artifact={artifact} content="Answer" onOpenChatMessage={onOpenChatMessage}
       presentation={presentation({ kind: "complete", runId: "run-p" })} />);
-    const disclosure = screen.getByTestId("past-chat-sources");
-    expect(disclosure.querySelector("summary")).toHaveTextContent("Past chats · 1");
+    // With no other work to name, the process line itself reads "Past chats · 1" and the fold repeats no heading.
+    const fold = screen.getByTestId("tool-activity-disclosure");
+    expect(fold.querySelector(":scope > summary")).toHaveTextContent("Past chats · 1");
+    expect(screen.getByTestId("past-chat-sources").querySelector("summary")).toBeNull();
     fireEvent.click(screen.getByRole("link", { name: "Open Rollback plan at this message", hidden: true }));
     expect(onOpenChatMessage).toHaveBeenCalledWith("chat_1", "msg_1");
   });
