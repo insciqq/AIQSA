@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { storedUserRequest } from "../../runs/turnProvenance";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../../tools/browserHandoff";
 
 /** The skip code of a session a turn the server wrote may not save (`browserSignInSaveFiles`). */
@@ -7,25 +8,24 @@ export const BROWSER_SESSION_SERVER_TURN = "browser_session_server_turn";
 /** The handoff reason Sign in again asks for (`lib/contracts/browserSignIn.ts`), the only one whose Done may save here. */
 const SIGN_IN_REASON = "sign_in";
 
-/** The stored facts of a run's turn that say whose turn it is. */
-export type BrowserSaveTurn = Readonly<{
-  scheduledTaskId: string | null;
-  userMessage: Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>;
-}>;
+/** The stored facts of a run that say whose turn it is. */
+export type BrowserSaveTurn = Readonly<{ scheduledTaskId: string | null; userId: string; userMessageId: string }>;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
- * Whether a run's turn is one the server wrote, as its stored message shows: any kind (`Message.systemTurnKind`: a
- * sub-agent wake-up, a Sign in again request, the continuation after an MCP Allow, a continued chat's summary prompt) or
- * a scheduled task's prompt, its occurrence included. Unlike the self-service fences (`storedUserRequest`), the
- * continuation after an Allow of the user's own turn counts as the server's too (operator decision 2026-11-23): the
- * Allow covers one MCP call, never a sign-in that every later chat of the user's would reuse.
+ * Whether a run's turn is one the server wrote, as its stored message shows: a scheduled occurrence, or a turn that is
+ * not the user's own request by the stored chain the self-service fences read (`storedUserRequest`): any kind
+ * (`Message.systemTurnKind`: a sub-agent wake-up, a Sign in again request, a continued chat's summary prompt) and a
+ * scheduled task's prompt. The continuation after an MCP Allow has exactly the authority of the turn whose call the user
+ * allowed: after the user's own turn it is theirs, after a turn the server wrote it is the server's, and a missing link
+ * fails closed.
  */
-export function serverWrittenBrowserTurn(turn: BrowserSaveTurn): boolean {
-  return turn.scheduledTaskId !== null || turn.userMessage.scheduledTaskPrompt || turn.userMessage.systemTurnKind !== null;
+export async function serverWrittenBrowserTurn(tx: Pick<Prisma.TransactionClient, "$queryRaw">, turn: BrowserSaveTurn):
+  Promise<boolean> {
+  return turn.scheduledTaskId !== null || !(await storedUserRequest(tx, { messageId: turn.userMessageId, userId: turn.userId }));
 }
 
 /**

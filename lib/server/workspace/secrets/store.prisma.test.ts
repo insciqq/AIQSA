@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { randomBytes, randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { prisma } from "@/lib/server/prisma";
 import { textMessageContent } from "@/lib/domain/content";
@@ -23,6 +24,7 @@ import type { WorkspaceBrowserSaveItem } from "./browserCollection";
 
 const key = Buffer.alloc(32, 37);
 const users: string[] = [];
+const servers: string[] = [];
 const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERMINISTIC_RUNTIME: "1", NODE_ENV: "test" });
 const definitions = WORKSPACE_MCP_TOOL_ALLOWLIST.map((originalName) => ({
   description: `Synthetic ${originalName}`, inputSchema: { type: "object" }, namespacedName: namespacedWorkspaceToolName(originalName), originalName
@@ -106,6 +108,7 @@ describe("persisted personal Workspace secrets", () => {
     await prisma.workspaceSession.deleteMany({ where: { chatId: { in: chatIds } } });
     await prisma.chat.deleteMany({ where: { id: { in: chatIds } } });
     await prisma.user.deleteMany({ where: { id: { in: ids } } });
+    await prisma.mcpServer.deleteMany({ where: { id: { in: servers.splice(0) } } });
   });
   afterAll(async () => {
     if (originalPolicy) await prisma.workspacePolicy.update({ where: { id: WORKSPACE_POLICY_ID }, data: { enabled: originalPolicy.enabled } });
@@ -263,6 +266,7 @@ describe("persisted personal Workspace secrets", () => {
     expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
     const saved = await currentBrowser(userId, "shop.example.json");
 
+    // An Allow's continuation here names no Allow, as in a branch copy: its link is missing, so it fails closed.
     for (const turn of [{ systemTurnKind: "subagent_callback" }, { systemTurnKind: "browser_sign_in_request" },
       { systemTurnKind: "mcp_approval_continuation" }, { systemTurnKind: "conversation_summary" }, { scheduledTaskPrompt: true }] as const) {
       const input = await browserRun(userId);
@@ -301,6 +305,45 @@ describe("persisted personal Workspace secrets", () => {
       { fileName: "shop.example.json", bytes: browserBytes("user-again") },
       { fileName: "new.example.json", bytes: browserBytes("user-new") }
     ] }, () => key)).toEqual({ saved: 2, unchanged: 0, skipped: {} });
+  });
+
+  // The turn after an MCP Allow has exactly the authority of the turn whose call the user allowed (`storedUserRequest`).
+  it("saves from the turn after an MCP Allow as the turn whose call the user allowed would", async () => {
+    const userId = await owner();
+    const own = await browserRun(userId);
+    expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
+    /** A run admitted as the turn after an Allow of a call that a turn of its chat made, linked as admission freezes it. */
+    const continuation = async (gatedKind?: "subagent_callback") => {
+      const input = await browserRun(userId);
+      const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: input.runId },
+        select: { chatId: true, normalizedRequest: true, userMessageId: true } });
+      const question = await prisma.message.create({ data: { chatId: run.chatId, content: textMessageContent("Synthetic gated turn"),
+        role: "user", status: "complete", ...(gatedKind ? { systemTurnKind: gatedKind } : {}) } });
+      const reply = await prisma.message.create({ data: { chatId: run.chatId, content: textMessageContent("Synthetic approval card"),
+        parentMessageId: question.id, role: "assistant", status: "complete" } });
+      const gated = await prisma.modelRun.create({ data: { assistantMessageId: reply.id, chatId: run.chatId, engine: "native",
+        modelId: "fake-qsa", normalizedRequest: {}, provider: "fake", status: "cancelled", userId, userMessageId: question.id } });
+      const server = await prisma.mcpServer.create({ data: { displayName: "Synthetic Records", enabled: true,
+        namespace: `browser_${randomUUID().replaceAll("-", "")}` } });
+      servers.push(server.id);
+      const approval = await prisma.mcpToolApproval.create({ data: { argumentsDigest: "a".repeat(64), chatId: run.chatId,
+        decidedAt: new Date(), decision: "allow_server", definitionHash: "b".repeat(64), modelRunId: gated.id, serverId: server.id,
+        serverName: "Synthetic Records", source: "code", toolName: "mcp_records_create", toolTitle: "create_record", userId } });
+      await prisma.message.update({ where: { id: run.userMessageId }, data: { systemTurnKind: "mcp_approval_continuation" } });
+      await prisma.modelRun.update({ where: { id: input.runId }, data: { normalizedRequest: {
+        ...(run.normalizedRequest as Prisma.InputJsonObject),
+        mcpApproval: { approvedBy: approval.id, consentedServerIds: [], version: 1 } } } });
+      return input;
+    };
+
+    // After the user's own turn it is that turn: it saves what its browser holds, as before.
+    const ofUser = await continuation();
+    expect(await saveBrowser(ofUser, "after-allow")).toMatchObject({ saved: 1, skipped: {} });
+    // After a wake-up's call it is the server's turn: the saved sign-in stays.
+    const ofWakeUp = await continuation("subagent_callback");
+    expect(await saveBrowser(ofWakeUp, "injected-cookie")).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect((await currentBrowser(userId, "shop.example.json")).value).toEqual({ kind: "browser_session", originalName: "shop.example.json",
+      base64: browserBytes("after-allow").toString("base64") });
   });
 
   it("saves states between 512 KiB and 8 MiB exactly, keeps the previous version for 8 MiB + 1 and decodes the list", async () => {

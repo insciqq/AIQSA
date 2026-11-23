@@ -2,9 +2,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { browserSignInSaveFiles, completedSignInFile, serverWrittenBrowserTurn } from "./browserSignInAuthority";
 
-const turn = (message: Readonly<{ scheduledTaskPrompt?: boolean; systemTurnKind?: string }> = {}, scheduledTaskId: string | null = null) => ({
-  scheduledTaskId, userMessage: { scheduledTaskPrompt: message.scheduledTaskPrompt ?? false, systemTurnKind: message.systemTurnKind ?? null }
-});
+/** A run's stored turn whose chain, current turn first, the fake database reads (`storedUserRequest`). */
+function stored(chain: readonly Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>[],
+  scheduledTaskId: string | null = null) {
+  const $queryRaw = vi.fn(async (..._query: unknown[]) => chain);
+  return { $queryRaw, tx: { $queryRaw } as never, turn: { scheduledTaskId, userId: "user-1", userMessageId: "message-1" } };
+}
+
+const own = { scheduledTaskPrompt: false, systemTurnKind: null };
+const allow = { scheduledTaskPrompt: false, systemTurnKind: "mcp_approval_continuation" };
+const kind = (systemTurnKind: string) => ({ scheduledTaskPrompt: false, systemTurnKind });
 
 function handoff(reason: string, value: Readonly<Record<string, unknown>>, state = "complete") {
   return { arguments: { message: "Please sign in, then press Done.", reason }, state,
@@ -15,20 +22,38 @@ const done = { next: "Look at the page.", outcome: "completed", page: { title: "
   signInSavedAfterAnswer: "example.com" };
 
 describe("whose turn may save a browser sign-in", () => {
-  it("leaves the user's own turn as it was, a Telegram or Discord message included", () => {
-    expect(serverWrittenBrowserTurn(turn())).toBe(false);
+  // The user's own turn saves as before, a Telegram or Discord message included, and so does the turn after an MCP Allow
+  // of it: that continuation has exactly the authority of the turn whose call the user allowed.
+  it.each([
+    ["the user's own message", [own]],
+    ["the turn after an Allow of the user's own turn", [allow, own]],
+    ["a continuation of a continuation of the user's own turn", [allow, allow, own]]
+  ])("leaves %s the user's", async (_name, chain) => {
+    const { $queryRaw, tx, turn } = stored(chain);
+    expect(await serverWrittenBrowserTurn(tx, turn)).toBe(false);
+    // The chain of the run's own message, read as the run's user.
+    expect(($queryRaw.mock.calls[0] as unknown[]).slice(1, 4)).toEqual(["message-1", "user-1", "user-1"]);
   });
 
-  // Operator decision 2026-11-23: every turn the server wrote, the continuation after the user's MCP Allow included.
+  // Operator decision 2026-11-23: every turn the server wrote, and an Allow's continuation of one.
   it.each([
-    ["a sub-agent wake-up", turn({ systemTurnKind: "subagent_callback" })],
-    ["a Sign in again request", turn({ systemTurnKind: "browser_sign_in_request" })],
-    ["the continuation after an MCP Allow", turn({ systemTurnKind: "mcp_approval_continuation" })],
-    ["a continued chat's summary prompt", turn({ systemTurnKind: "conversation_summary" })],
-    ["a scheduled task's prompt, a branch copy's included", turn({ scheduledTaskPrompt: true })],
-    ["a scheduled occurrence", turn({}, "task-1")]
-  ])("counts %s as the server's", (_name, value) => {
-    expect(serverWrittenBrowserTurn(value)).toBe(true);
+    ["a sub-agent wake-up", [kind("subagent_callback")]],
+    ["a Sign in again request", [kind("browser_sign_in_request")]],
+    ["a continued chat's summary prompt", [kind("conversation_summary")]],
+    ["a scheduled task's prompt, a branch copy's included", [{ scheduledTaskPrompt: true, systemTurnKind: null }]],
+    ["the turn after an Allow of a wake-up's call", [allow, kind("subagent_callback")]],
+    ["the turn after an Allow of a sign-in request's call", [allow, kind("browser_sign_in_request")]],
+    ["a continuation whose link is missing, as in a branch copy", [allow]],
+    ["a missing message", []]
+  ])("counts %s as the server's", async (_name, chain) => {
+    const { tx, turn } = stored(chain);
+    expect(await serverWrittenBrowserTurn(tx, turn)).toBe(true);
+  });
+
+  it("counts a scheduled occurrence as the server's without reading its chain", async () => {
+    const { $queryRaw, tx, turn } = stored([own], "task-1");
+    expect(await serverWrittenBrowserTurn(tx, turn)).toBe(true);
+    expect($queryRaw).not.toHaveBeenCalled();
   });
 });
 

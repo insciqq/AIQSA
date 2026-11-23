@@ -44,7 +44,7 @@ async function authorizedRun(tx: Prisma.TransactionClient, input: WorkspaceBrows
     session.version !== input.operation.generation || session.operationOwner !== input.operation.owner) return null;
   const binding = await tx.workspaceRunBinding.findUnique({ where: { modelRunId: input.runId }, include: {
     modelRun: { select: { userId: true, chatId: true, status: true, chat: { select: { userId: true } }, scheduledTaskId: true,
-      userMessage: { select: { scheduledTaskPrompt: true, systemTurnKind: true } } } }
+      userMessageId: true } }
   } });
   if (!binding?.browserSessionSequence || binding.workspaceSessionId !== session.id || binding.modelRun.chatId !== session.chatId ||
     binding.modelRun.userId !== input.userId || binding.modelRun.chat.userId !== input.userId) return null;
@@ -93,8 +93,9 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
     return "unchanged";
   }
   // A turn the server wrote saves or replaces only a sign-in the user finished in it, and the saved one stays otherwise
-  // (operator decision 2026-11-23); the user's own turn saves what its browser holds.
-  if (serverWrittenBrowserTurn(run.turn) && !(await browserSignInSaveFiles(tx, input.runId)).has(file.fileName)) {
+  // (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what its browser
+  // holds.
+  if (await serverWrittenBrowserTurn(tx, run.turn) && !(await browserSignInSaveFiles(tx, input.runId)).has(file.fileName)) {
     return BROWSER_SESSION_SERVER_TURN;
   }
   if (!existing && await tx.workspaceSecret.count({ where: { userId: input.userId, browserFileName: { not: null } } }) >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) {
