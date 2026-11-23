@@ -1,13 +1,12 @@
 -- The first turn of each continued chat stored before this release takes the kind the previous migration added
--- (`lib/contracts/chatContinuation.ts`), read from the durable continuation records alone. A turn is recognized only
--- where a completed continuation names its chat, and only exactly as that continuation wrote it: the chat's root user
--- turn with the prompt's exact text, no kind and no scheduled task, whose answer is the summary written with it (its
--- one text block under the summary's heading, no model and no run). A root turn the user wrote by editing the prompt,
--- even to the same words, is answered by a run of its own, so it stays the user's.
---
--- Not recognized, so their first turn stays an ordinary one: a continued chat whose source chat was deleted (its
--- record went with the source), and a branch copy made of a continued chat before this release (a copy keeps no link to
--- a turn that had no run).
+-- (`lib/contracts/chatContinuation.ts`), recognized by the pair the continuation wrote, exactly as it wrote it, so that
+-- no continuation record is needed: deleting the source chat deletes its record, and a branch copy never had one. The
+-- pair is a root user turn with the prompt's exact text, no kind, no scheduled task and no model, whose answer is the
+-- summary written with it: its one text block under the summary's heading, with no model, no run and no run it was
+-- copied from. A branch copy of a continued chat copies that pair as it is, so its first turn is recognized too. A root
+-- turn the user wrote by editing the prompt, even to the same words, names the model of the run that answered it, and
+-- that answer is the run's own, so it stays the user's. A branch copy whose active answer under the prompt was a
+-- regenerated one copied that answer, which names its run, so its first turn stays an ordinary one.
 --
 -- Past-chat search indexes such a turn's answer without the turn's text, so each chat whose turn changed here is marked
 -- for the indexer as an interactive change marks it (`lib/server/chatSearch/index/dirty.ts`): only a state row it already
@@ -16,13 +15,12 @@
 WITH "backfilled" AS (
   UPDATE "Message" AS prompt
   SET "systemTurnKind" = 'conversation_summary'
-  FROM "ChatContinuation" AS continuation
-  WHERE continuation."status" = 'complete'
-    AND continuation."newChatId" = prompt."chatId"
-    AND prompt."role" = 'user'
+  WHERE prompt."role" = 'user'
     AND prompt."parentMessageId" IS NULL
     AND prompt."systemTurnKind" IS NULL
     AND prompt."scheduledTaskPrompt" = false
+    AND prompt."provider" IS NULL
+    AND prompt."modelId" IS NULL
     AND prompt."content" = '{"blocks":[{"type":"text","text":"Continue from the conversation summary below."}]}'::jsonb
     AND EXISTS (
       SELECT 1
