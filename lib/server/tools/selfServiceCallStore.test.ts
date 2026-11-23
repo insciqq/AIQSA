@@ -7,7 +7,7 @@ const input = { callId: "call_row_1", runId: "run_1", toolName: "manage_secret",
 const done = { action: "created" as const, previous: null, valueReplaced: false, secret: { description: "", envNames: [],
   id: "10000000-0000-4000-8000-000000000001", kind: "text" as const, name: "GitLab", versionId: "20000000-0000-4000-8000-000000000001" } };
 const result = secretChangedResult({ id: "provider_call_1", name: "manage_secret" }, done);
-const allowedRun = { scheduledTaskId: null, scheduledTaskPrompt: false, status: "streaming", userStatus: "active" };
+const allowedRun = { scheduledTaskId: null, status: "streaming", userMessageId: "message_1", userStatus: "active" };
 
 function transaction(options: Readonly<{ run?: unknown; call?: unknown; settled?: number }> = {}) {
   const queries: string[] = [];
@@ -16,7 +16,9 @@ function transaction(options: Readonly<{ run?: unknown; call?: unknown; settled?
       const text = Array.isArray(strings) ? strings.join("?") : (strings as { strings: readonly string[] }).strings.join("?");
       queries.push(text);
       if (text.includes("SELECT r.\"chatId\"")) return [{ chatId: "chat_1", userId: "user_1" }];
-      if (text.includes("r.\"scheduledTaskId\", m.\"scheduledTaskPrompt\"")) return options.run === undefined ? [allowedRun] : options.run;
+      if (text.includes("r.\"scheduledTaskId\", r.\"userMessageId\"")) return options.run === undefined ? [allowedRun] : options.run;
+      // The stored chain of the run's message (`storedUserRequest`): the user's own turn.
+      if (text.includes("WITH RECURSIVE")) return [{ scheduledTaskPrompt: false, systemTurnKind: null }];
       return [];
     }),
     modelRun: {},
@@ -37,7 +39,8 @@ describe("the ModelRunToolCall call store of a self-service change", () => {
     expect(await createToolCallSelfServiceStore(input).claim(tx as never)).toEqual({ kind: "open" });
     // Owner, then chat, then the run: the order every settlement writer takes.
     expect(queries.findIndex((text) => text.includes("FROM \"User\""))).toBeLessThan(queries.findIndex((text) => text.includes("FROM \"Chat\" WHERE")));
-    expect(queries.at(-1)).toContain("FOR UPDATE OF r");
+    const runLock = queries.findIndex((text) => text.includes("FOR UPDATE OF r"));
+    expect(runLock).toBeGreaterThan(queries.findIndex((text) => text.includes("FROM \"Chat\" WHERE")));
     expect(tx.modelRunToolCall.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: "call_row_1", modelRunId: "run_1" } }));
   });
 

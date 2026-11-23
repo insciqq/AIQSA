@@ -54,12 +54,14 @@ describe("manage_secret", () => {
 
   it("leaves logins, emails and regions out of the masked values and keeps anything secret-looking masked", () => {
     const shown = [["SAUCEDEMO_USERNAME", "standard_user"], ["AWS_DEFAULT_REGION", "eu-central-1"], ["smtp_mail", "me@example.test"],
-      ["DB_HOST", "db.internal"], ["DB_PORT", "5432"], ["MAIL_LOGIN", "bob"]];
+      ["DB_HOST", "db.internal"], ["DB_PORT", "5432"], ["MAIL_LOGIN", "bob"], ["REDIS_HOST", "cache.example.org:6379"]];
     const masked = [["SAUCEDEMO_PASSWORD", "secret_sauce"], ["AWS_ACCESS_KEY_ID", "AKIA-not-real"], ["AWS_SECRET_ACCESS_KEY", "secret-key-not-real"],
       ["DB_USER_PASSWORD", "db-pass-not-real"], ["API_USER_TOKEN", "token-not-real"], ["DATABASE_URL", "postgres://u:p@db/app"],
       ["SUPERUSER", "admin-not-split"], ["USER_PW", "pw-not-real"], ["MAIL_URL", "smtp://bob:hunter2@smtp.example"], ["LOGIN_CODE", "481516"],
       ["HOST_DSN", "dsn-not-real"], ["USER_CERT", "cert-not-real"], ["ACCOUNT_RECOVERY_CODES", "codes-not-real"], ["DB_HOST", "bob:hunter2@db"],
-      ["USER_SALT", "salt-not-real"], ["LOGIN_MFA", "mfa-not-real"]];
+      ["USER_SALT", "salt-not-real"], ["LOGIN_MFA", "mfa-not-real"],
+      // An identifier name whose value carries a password is masked too.
+      ["SERVICE_LOGIN", "demo:pass-not-real"], ["REDIS_HOST", "redis://:pass-not-real@cache.example.org/0"]];
     const variables = [...shown, ...masked].map(([name, value]) => ({ name, value }));
     expect(manageSecretValues({ action: "create", kind: "env", name: "Shop", variables })).toEqual(masked.map(([, value]) => value));
     expect(manageSecretValues({ action: "create", kind: "text", name: "USERNAME", text: "text-is-always-masked" })).toEqual(["text-is-always-masked"]);
