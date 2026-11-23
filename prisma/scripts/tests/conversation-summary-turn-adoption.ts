@@ -32,7 +32,8 @@ const summary = (text: string) => `Conversation summary\n\n${text}`;
 //   and an approval continuation;
 // - a continued chat whose record went with its source chat;
 // - a branch copy of a continued chat, which copied the pair as it was;
-// - a branch copy made while the regenerated summary was the active answer, which copied that answer and its run.
+// - a branch copy made while the regenerated summary was the active answer, which copied that answer and its run;
+// - a branch copy of the user's edit to the same words, which copied the edit's model and its answer's run.
 const messages: readonly MessageSpec[] = [
   { chat: "cst-source", id: "cst-s-q", model: true, role: "user", text: "Plan the release" },
   { chat: "cst-source", id: "cst-s-a", model: true, parent: "cst-s-q", role: "assistant", run: true, text: "A plan." },
@@ -53,11 +54,15 @@ const messages: readonly MessageSpec[] = [
   { chat: "cst-copy", id: "cst-p-summary", parent: "cst-p-prompt", role: "assistant", text: summary("The plan so far.") },
   { chat: "cst-copy-regenerated", id: "cst-r-prompt", role: "user", text: PROMPT },
   { chat: "cst-copy-regenerated", copiedFrom: "cst-c-regenerated-run", id: "cst-r-answer", model: true, parent: "cst-r-prompt",
-    role: "assistant", text: summary("Again.") }
+    role: "assistant", text: summary("Again.") },
+  { chat: "cst-copy-edit", id: "cst-e-prompt", model: true, role: "user", text: PROMPT },
+  { chat: "cst-copy-edit", copiedFrom: "cst-c-edit-a-run", id: "cst-e-answer", model: true, parent: "cst-e-prompt", role: "assistant",
+    text: summary("Mine.") }
 ];
 const leaves: Readonly<Record<string, string>> = {
   "cst-continued": "cst-c-allow-a",
   "cst-copy": "cst-p-summary",
+  "cst-copy-edit": "cst-e-answer",
   "cst-copy-regenerated": "cst-r-answer",
   "cst-orphan": "cst-o-summary",
   "cst-source": "cst-s-a"
@@ -65,13 +70,13 @@ const leaves: Readonly<Record<string, string>> = {
 /** The answers a run wrote. */
 const runs = messages.filter((message) => message.run);
 /** The turns the backfill recognizes. */
-const RECOGNIZED: ReadonlySet<string> = new Set(["cst-c-prompt", "cst-o-prompt", "cst-p-prompt"]);
+const RECOGNIZED: ReadonlySet<string> = new Set(["cst-c-prompt", "cst-o-prompt", "cst-p-prompt", "cst-r-prompt"]);
 /**
- * The past-chat index states: those of two recognized chats, one waiting out a failed pass, which the backfill marks;
- * the source's and the regenerated copy's, settled, which it leaves. The plain copy has none, and gets none.
+ * The past-chat index states: those of three recognized chats, one waiting out a failed pass, which the backfill marks;
+ * the source's and the edit's copy's, settled, which it leaves. The plain copy has none, and gets none.
  */
-const MARKED = ["cst-continued", "cst-orphan"] as const;
-const SETTLED = ["cst-copy-regenerated", "cst-source"] as const;
+const MARKED = ["cst-continued", "cst-copy-regenerated", "cst-orphan"] as const;
+const SETTLED = ["cst-copy-edit", "cst-source"] as const;
 
 const content = (text: string): string => quote(JSON.stringify({ blocks: [{ text, type: "text" }] }));
 const sqlOrNull = (value: string | undefined): string => value === undefined ? "NULL" : quote(value);
@@ -126,6 +131,7 @@ INSERT INTO "ChatSearchState" ("chatId", "userId", "indexedLeafMessageId", "dirt
   "lastErrorCode", "updatedAt") VALUES
   ('cst-continued', 'cst-owner', 'cst-c-allow-a', '${BEFORE}', 3, '2026-11-02 07:00:00', 'synthetic_failure', '${BEFORE}'),
   ('cst-orphan', 'cst-owner', 'cst-o-summary', NULL, 0, NULL, NULL, '${BEFORE}'),
+  ('cst-copy-regenerated', 'cst-owner', 'cst-r-answer', NULL, 0, NULL, NULL, '${BEFORE}'),
   ${SETTLED.map((chat) => `(${quote(chat)}, 'cst-owner', ${quote(leaves[chat]!)}, NULL, 0, NULL, NULL, '${BEFORE}')`).join(",\n  ")};
 COMMIT;
 
@@ -149,9 +155,9 @@ BEGIN
       AND conname = 'Message_system_turn_kind_check' AND convalidated)
     THEN RAISE EXCEPTION 'conversation_summary_turn_kind'; END IF;
 
-  -- Every pair a continuation wrote takes the kind, with or without its record and in a copy that kept it; the user's
-  -- edit to the same words, a later turn in them and a copy of the regenerated answer stay as they were, other kinds
-  -- included.
+  -- Every pair a continuation wrote takes the kind, with or without its record, in a copy that kept it and in a copy of
+  -- its regenerated summary; the user's edit to the same words, a copy of that edit and a later turn in those words stay
+  -- as they were, other kinds included.
   IF (SELECT string_agg(id || ':' || COALESCE("systemTurnKind"::text, '-'), ',' ORDER BY id COLLATE "C") FROM "Message"
       WHERE id LIKE 'cst-%') IS DISTINCT FROM ${quote(expectedKinds)}
     THEN RAISE EXCEPTION 'conversation_summary_turn_backfill'; END IF;
