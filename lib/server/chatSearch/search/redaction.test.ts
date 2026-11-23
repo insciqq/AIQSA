@@ -51,6 +51,15 @@ describe("past-chat query screening", () => {
     expect(pastChatSearchQuery("deploy-bot on https://sonar.example.com", saved)).toBe("deploy-bot on https://sonar.example.com");
   });
 
+  it("searches past a large saved file value and one that starts with an emoji", () => {
+    const file = "- host: reports.example\n  user: demo\n".repeat(3_200);
+    const started = performance.now();
+    expect(pastChatSearchQuery("meeting", [file])).toBe("meeting");
+    expect(pastChatSearchQuery("meeting", ["🔑fixture-password-42"])).toBe("meeting");
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(pastChatSearchQuery("find 🔑fixture-password-42 now", ["🔑fixture-password-42"])).toBe("find now");
+  });
+
   it("screens again once a dropped marker joins the words around it", () => {
     const passphrase = "correct horse battery staple";
     expect(pastChatSearchQuery(`find correct horse ${GITHUB_TOKEN} battery staple`, [passphrase])).toBe("find");

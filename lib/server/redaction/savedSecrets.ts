@@ -7,8 +7,9 @@ import { redactSecrets } from "./secrets";
  * (Settings > Secrets): writes repeating one are refused, and indexing
  * replaces them with a marker before anything is stored, embedded or recalled
  * (the memory note and past-chat search; `./savedSecretLoader.ts` loads the
- * values). Matching is exact and literal, on
- * each value and its trimmed form, so it behaves the same in every language.
+ * values). Matching is literal, with each run of whitespace in the text and
+ * in a value read as one space (`savedSecretFoldedWhitespace`), so it behaves
+ * the same in every language and never compiles a value into a pattern.
  *
  * Only values that look like secrets are screened (review 2026-10-23): at
  * least 20 characters of any kind, or at least 8 characters with one that is
@@ -177,20 +178,33 @@ export function savedSecretScreenedValues(
   return savedSecretLineEndingForms([...values]);
 }
 
-/** Whitespace runs as one space, so a value rewrapped across lines still matches, as screening matches it (`./screen.ts`). */
-function foldedWhitespace(text: string): string {
+/**
+ * The text with each maximal run of whitespace as one space and none at either edge: the form in which saved values
+ * are compared (`./screen.ts`, the memory note's check of a change), so a value rewrapped across lines still matches.
+ */
+export function savedSecretFoldedWhitespace(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
+}
+
+/** The values folded (`savedSecretFoldedWhitespace`), once each; one of whitespace alone is left out, as it would match ordinary text. */
+export function savedSecretFoldedValues(values: readonly string[]): readonly string[] {
+  const folded = new Set<string>();
+  for (const value of values) {
+    const form = savedSecretFoldedWhitespace(value);
+    if (form) folded.add(form);
+  }
+  return [...folded];
 }
 
 /** Whether any string in a value, object keys included, contains one of the saved values, whatever whitespace separates its words. */
 export function valueContainsSavedSecret(value: unknown, savedValues: readonly string[]): boolean {
-  const folded = savedValues.map(foldedWhitespace).filter(Boolean);
+  const folded = savedSecretFoldedValues(savedValues);
   return folded.length > 0 && containsFoldedValue(value, folded, new WeakSet());
 }
 
 function containsFoldedValue(value: unknown, folded: readonly string[], seen: WeakSet<object>): boolean {
   if (typeof value === "string") {
-    const text = foldedWhitespace(value);
+    const text = savedSecretFoldedWhitespace(value);
     return folded.some((saved) => text.includes(saved));
   }
   if (typeof value !== "object" || value === null || seen.has(value)) return false;
