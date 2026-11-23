@@ -9,11 +9,12 @@ import type { ConnectorRunWait } from "./runAdmission";
  * recorded before this process started that never settled may already have
  * reached the chat and settles `unknown`, never resent; a pending one is
  * followed for at most a minute per sweep and, once its run settled,
- * delivered once through the same claim the live path uses. A run this
- * process still follows (or has just admitted) is its observer's alone. A
- * record too old to matter settles `failed` without a message. The caller
- * runs one sweep at a time, so no claim of a delivery in progress here is
- * taken for an interrupted one.
+ * delivered once through the same claim the live path uses; a delivery the
+ * connector hands back (`deferred`: provably nothing reached the chat) stays
+ * pending for a later sweep. A run this process still follows (or has just
+ * admitted) is its observer's alone. A record too old to matter settles
+ * `failed` without a message. The caller runs one sweep at a time, so no
+ * claim of a delivery in progress here is taken for an interrupted one.
  */
 
 export const CONNECTOR_RECOVERY_BATCH = 500;
@@ -41,8 +42,11 @@ export type ConnectorRecoveryDeps<Link extends ConnectorRecoveryLink> = Readonly
     settle(input: Readonly<{ at: Date; runId: string; state: "failed" | "unknown" }>): Promise<void>;
   }>;
   waitForRun: ConnectorRunWait;
-  /** Delivers a settled run once, through the live path's claim (and publishes that it did); `skipped` when another holds it. */
-  deliver(link: Link): Promise<"delivered" | "failed" | "unknown" | "skipped">;
+  /**
+   * Delivers a settled run once, through the live path's claim (and publishes that it did); `skipped` when another holds
+   * it, `deferred` when nothing reached the chat and the record is pending again.
+   */
+  deliver(link: Link): Promise<"delivered" | "failed" | "unknown" | "skipped" | "deferred">;
   /** Runs this process itself is following; recovery leaves them to it. */
   isLive(runId: string): boolean;
   now?: () => number;
@@ -113,7 +117,8 @@ export async function recoverConnectorDeliveries<Link extends ConnectorRecoveryL
       return;
     }
     const state = await deps.deliver(row);
-    if (state !== "skipped") log({ code: state === "delivered" ? undefined : deps.log.deliveryFailed, outcome: "completed", runId: row.runId });
+    if (state === "deferred") log({ outcome: "waiting", runId: row.runId });
+    else if (state !== "skipped") log({ code: state === "delivered" ? undefined : deps.log.deliveryFailed, outcome: "completed", runId: row.runId });
   }
 
   await Promise.all(Array.from({ length: Math.min(CONNECTOR_RECOVERY_CONCURRENCY, pending.length) }, () => worker()));

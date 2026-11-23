@@ -1,4 +1,4 @@
-import type { TelegramFailureKind } from "./transport";
+import type { TelegramFailure, TelegramFailureCategory, TelegramFailureKind } from "./transport";
 
 /**
  * Content-free log codes for Bot API call failures, by outcome kind. The
@@ -23,6 +23,20 @@ export type TelegramTransportFailureCode = (typeof TELEGRAM_TRANSPORT_FAILURE_CO
 
 export function telegramFailureCode(kind: TelegramFailureKind, errorCode?: number): string {
   return kind === "telegram" && errorCode === 429 ? TELEGRAM_RATE_LIMITED_CODE : TELEGRAM_TRANSPORT_FAILURE_CODES[kind];
+}
+
+export type TelegramFailureLogFields = Readonly<{ code: string; httpStatus?: number; category?: TelegramFailureCategory }>;
+
+/**
+ * A failed call's content-free log fields: its code, and its HTTP status and transport category (DNS, connect, TLS…)
+ * when it has them, so an audit tells why Telegram was unreachable. Never its description.
+ */
+export function telegramFailureLogFields(failure: Pick<TelegramFailure, "category" | "errorCode" | "kind" | "status">): TelegramFailureLogFields {
+  return {
+    code: telegramFailureCode(failure.kind, failure.errorCode),
+    ...(failure.status === undefined ? {} : { httpStatus: failure.status }),
+    ...(failure.category ? { category: failure.category } : {})
+  };
 }
 
 /** Every log code this module family emits besides the contract's reason codes. */

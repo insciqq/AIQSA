@@ -815,6 +815,8 @@
   "telegram_chat_unreachable",
   "telegram_control_action_failed",
   "telegram_control_unavailable",
+  "telegram_delivery_deferred",
+  "telegram_delivery_expired",
   "telegram_delivery_unknown",
   "telegram_encryption_unavailable",
   "telegram_file_failed",

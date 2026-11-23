@@ -7,6 +7,7 @@ import type { TelegramSessionProvider } from "../control/session";
 import type { TelegramRunLinkRecord, TelegramRunLinkStore } from "../store/runLinks";
 import type { TelegramDeliveryInput, TelegramDeliveryResult } from "./delivery";
 import type { TelegramRunEvent, TelegramRunEventContext } from "./events";
+import type { TelegramDeliveryRetries } from "./retries";
 import { publishTelegramDelivery } from "./runObserver";
 
 /**
@@ -17,8 +18,10 @@ import { publishTelegramDelivery } from "./runObserver";
  * claim of a run linked before this process started that never settled may
  * already have reached Telegram and settles `unknown`, never resent; a pending
  * one is followed for at most a minute per sweep and, once its run settled,
- * delivered once through the same claim the live path uses. A link too old to
- * matter settles `failed` without a message.
+ * delivered once through the same claim the live path uses. A link handed back
+ * because Telegram never received its answer waits out its retry wait
+ * (`retries.ts`) before a sweep tries it again. A link too old to matter
+ * settles `failed` without a message.
  */
 
 export const TELEGRAM_RECOVERY_BATCH = CONNECTOR_RECOVERY_BATCH;
@@ -40,16 +43,22 @@ export type TelegramRecoveryDeps = Readonly<{
   publish(event: TelegramRunEvent, context: TelegramRunEventContext): Promise<void>;
   /** Runs this process itself is following; recovery leaves them to it. */
   isLive(runId: string): boolean;
+  /** The waits of answers handed back (`deliver` records them); a link still waiting is left to a later sweep. */
+  retries?: Pick<TelegramDeliveryRetries, "due">;
   now?: () => number;
 }>;
 
 /** One sweep; the caller runs one at a time, so no claim of a delivery in progress here is taken for an interrupted one. */
 export async function recoverTelegramDeliveries(deps: TelegramRecoveryDeps, input: Readonly<{ startedAt: Date }>): Promise<void> {
+  const now = deps.now ?? Date.now;
   await recoverConnectorDeliveries<TelegramRunLinkRecord>({
     // Nothing can be sent while the bot is off; the links wait for the sweep after it is back.
     available: async () => Boolean(await deps.sessions.current()),
     async deliver(row) {
-      const delivery = { linkId: row.linkId, runId: row.runId, runLinked: true, telegramChatId: row.telegramChatId, userId: row.userId };
+      const delivery = {
+        linkId: row.linkId, runId: row.runId, runLinked: true, settledAt: row.runSettledAt, telegramChatId: row.telegramChatId,
+        userId: row.userId
+      };
       const result = await deps.deliver(delivery);
       await publishTelegramDelivery(deps.publish, result, {
         linkId: row.linkId, runId: row.runId, source: "recovery", telegramChatId: row.telegramChatId, userId: row.userId
@@ -57,7 +66,17 @@ export async function recoverTelegramDeliveries(deps: TelegramRecoveryDeps, inpu
       return result.state;
     },
     isLive: deps.isLive,
-    links: deps.runLinks,
+    links: {
+      claimDelivery: (runId) => deps.runLinks.claimDelivery(runId),
+      async listByState(list) {
+        const rows = await deps.runLinks.listByState(list);
+        const { retries } = deps;
+        if (list.state !== "pending" || !retries) return rows;
+        const at = now();
+        return rows.filter((row) => retries.due(row.runId, at));
+      },
+      settle: (settled) => deps.runLinks.settle(settled)
+    },
     log: {
       deliveryFailed: "telegram_run_delivery_failed", recoveryFailed: "telegram_run_recovery_failed", subsystem: "telegram",
       unknown: "telegram_delivery_unknown"

@@ -3,7 +3,7 @@ import { logEvent } from "../../observability";
 import type { TranscribeUserAudioResult, TranscriptionRefusal, UserAudio } from "../../speechToText/transcribeUserAudio";
 import type { TelegramMessage } from "../botApi";
 import type { TelegramConversation } from "../bridge/conversation";
-import { telegramFailureCode } from "../codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "../codes";
 import {
   TELEGRAM_MEDIA_COPY, TELEGRAM_RUN_REFUSAL_COPY, telegramReasonText, telegramUnsupportedFileText,
   telegramUsageLimitText, telegramVoiceRateLimitedText, telegramVoiceTranscriptText
@@ -76,10 +76,10 @@ type UploadedAttachment = Readonly<{ id: string; kind: string; status: string; f
 type Refusal = Readonly<{ text: string }>;
 
 /** Content-free: stable codes and statuses only. */
-function log(fields: Readonly<{ code: string; error?: unknown; httpStatus?: number; outcome: "failed" | "skipped" }>): void {
+function log(fields: TelegramFailureLogFields & Readonly<{ error?: unknown; outcome: "failed" | "skipped" }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error } : {}), ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}),
-    outcome: fields.outcome, stage: "process", subsystem: "telegram"
+    ...(fields.category ? { category: fields.category } : {}), outcome: fields.outcome, stage: "process", subsystem: "telegram"
   });
 }
 
@@ -195,7 +195,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
     const { api } = context.bot;
     const file = await api.getFile(fileId);
     if (!file.ok) {
-      log({ code: telegramFailureCode(file.kind, file.errorCode), httpStatus: file.status, outcome: "failed" });
+      log({ ...telegramFailureLogFields(file), outcome: "failed" });
       // Telegram refuses `getFile` above its 20 MB bound.
       return { ok: false, tooLarge: file.kind === "telegram" && file.errorCode === 400 && /too big/iu.test(file.description ?? "") };
     }
@@ -206,7 +206,10 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
     }
     const outcome = await api.downloadFile(file.result.file_path, { maxBytes });
     if (!outcome.ok) {
-      log({ code: "telegram_media_download_failed", httpStatus: outcome.status, outcome: "failed" });
+      log({
+        code: "telegram_media_download_failed", httpStatus: outcome.status, outcome: "failed",
+        ...(outcome.category ? { category: outcome.category } : {})
+      });
       return { ok: false, tooLarge: outcome.kind === "too_large" };
     }
     return outcome.result.length > maxBytes ? { ok: false, tooLarge: true } : { ok: true, data: outcome.result };
@@ -223,7 +226,7 @@ export function createTelegramMediaHandler(deps: TelegramMediaDeps): TelegramMes
         ...reply
       });
       if (sent.ok) continue;
-      log({ code: telegramFailureCode(sent.kind, sent.errorCode), httpStatus: sent.status, outcome: "failed" });
+      log({ ...telegramFailureLogFields(sent), outcome: "failed" });
       if (sent.kind !== "telegram" || sent.errorCode !== 400) return;
       const plain = await context.bot.outbound.sendText({ chatId: context.message.chat.id, text: chunk, ...(index === 0 ? { replyTo: context.message.message_id } : {}) });
       if (!plain.ok) return;

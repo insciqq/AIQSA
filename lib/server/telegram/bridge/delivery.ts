@@ -10,6 +10,7 @@ import { renderTelegramAnswer } from "../render";
 import type { TelegramRunLinkStore } from "../store/runLinks";
 import type { TelegramFailure } from "../transport";
 import type { TelegramRunAnswer, TelegramRunGateway } from "./gateway";
+import { TELEGRAM_DELIVERY_RETRY_WINDOW_MS, type TelegramDeliveryRetries } from "./retries";
 
 /**
  * The one final message of a run started from Telegram, live or after a
@@ -20,7 +21,11 @@ import type { TelegramRunAnswer, TelegramRunGateway } from "./gateway";
  * was stopped or failed sends what it wrote, then why it ended. Every message
  * asks right before it leaves whether the run's exact link still reaches its
  * chat; once it does not, nothing more goes and the claim settles `failed`
- * with the access reason.
+ * with the access reason. An answer of which nothing reached Telegram, its
+ * last send provably unsent (`network_before_send`, after the outbound's one
+ * repeat), is handed back `pending` for the recovery sweeps until an hour
+ * after its run settled (`retries.ts`); the failed try past that settles
+ * `failed` (`telegram_delivery_expired`). Each try checks access anew.
  */
 
 export type TelegramDeliveryDeps = Readonly<{
@@ -28,6 +33,8 @@ export type TelegramDeliveryDeps = Readonly<{
   gateway: Pick<TelegramRunGateway, "answer">;
   runLinks: Pick<TelegramRunLinkStore, "claimDelivery" | "settle">;
   sessions: TelegramSessionProvider;
+  /** The waits between tries of answers handed back; without it a sweep tries them every time. */
+  retries?: Pick<TelegramDeliveryRetries, "defer" | "forget">;
   now?: () => number;
 }>;
 
@@ -38,11 +45,15 @@ export type TelegramDeliveryInput = Readonly<{
   telegramChatId: number;
   /** The run has a `TelegramRunLink` row to claim; without one the live observer delivers unclaimed. */
   runLinked: boolean;
+  /** When the run settled (`TelegramRunLinkRecord.runSettledAt`); absent or null: just now, as the live observer saw it. */
+  settledAt?: Date | null;
 }>;
 
 export type TelegramDeliveryResult =
   /** Nothing to do now: the bot is off, or another delivery claimed the run. */
   | Readonly<{ state: "skipped" }>
+  /** Nothing reached Telegram: the run's link is `pending` again for a later sweep. */
+  | Readonly<{ state: "deferred" }>
   | Readonly<{
     state: "delivered" | "failed" | "unknown";
     answer: TelegramRunAnswer | null;
@@ -52,7 +63,7 @@ export type TelegramDeliveryResult =
 
 /** Content-free: run identity, stable codes and HTTP status only. */
 function log(fields: Readonly<{
-  code: string; error?: unknown; httpStatus?: number; outcome: "completed" | "failed" | "skipped"; runId: string;
+  code: string; error?: unknown; httpStatus?: number; outcome: "completed" | "failed" | "skipped" | "waiting"; runId: string;
 }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
@@ -73,6 +84,7 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
   if (!bot) return { state: "skipped" };
   const claim = () => input.runLinked ? deps.runLinks.claimDelivery(input.runId) : Promise.resolve(true);
   const settle = async (state: "delivered" | "failed" | "unknown") => {
+    deps.retries?.forget(input.runId);
     if (input.runLinked) await deps.runLinks.settle({ at: new Date(now()), runId: input.runId, state });
   };
 
@@ -144,6 +156,20 @@ export async function deliverTelegramRun(deps: TelegramDeliveryDeps, input: Tele
     // The link stopped reaching the chat mid-answer: the rest stays in AIQSA.
     await settle("failed");
     log({ code: recheck.reasonCode, outcome: "failed", runId: input.runId });
+    return { answer, bot, messageIds: sent.messageIds, state: "failed" };
+  }
+  if (input.runLinked && sent.messageIds.length === 0 && sent.failure.kind === "network_before_send") {
+    // Nothing of the answer reached Telegram, provably: a later sweep may send it all, while the run is recent.
+    const at = now();
+    if (at - (input.settledAt?.getTime() ?? at) <= TELEGRAM_DELIVERY_RETRY_WINDOW_MS) {
+      // The wait first, so no sweep takes the link back before it.
+      deps.retries?.defer(input.runId, at);
+      await deps.runLinks.settle({ at: new Date(at), runId: input.runId, state: "pending" });
+      log({ code: "telegram_delivery_deferred", outcome: "waiting", runId: input.runId });
+      return { state: "deferred" };
+    }
+    log({ code: "telegram_delivery_expired", outcome: "failed", runId: input.runId });
+    await settle("failed");
     return { answer, bot, messageIds: sent.messageIds, state: "failed" };
   }
   const state = ambiguous(sent.failure) ? "unknown" : "failed";

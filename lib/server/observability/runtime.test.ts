@@ -42,6 +42,17 @@ describe("bounded observability runtime", () => {
     }
   );
 
+  it("keeps a lifecycle record's closed transport category, so DNS and connect failures read apart, and drops any other", () => {
+    const fields = {
+      category: "dns", code: "telegram_network_before_send", httpStatus: 502, outcome: "failed", stage: "dispatch", subsystem: "telegram"
+    } as const;
+    expect(record("service_operation", fields)).toMatchObject(fields);
+    expect(record("runtime_lifecycle", { ...fields, category: "connect" })).toMatchObject({ category: "connect" });
+    expect(record("service_operation", { ...fields, category: "api.example.org:443" } as never)).not.toHaveProperty("category");
+    // A push attempt keeps its own narrower categories.
+    expect(record("job_attempt", { ...fields, category: "forbidden_address" } as never)).not.toHaveProperty("category");
+  });
+
   it("keeps image failure stages and finish categories content-free", () => {
     const fields = { stage: "provider", code: "image_generation_refused", duration_ms: 35, finish_reason: "safety" } as const;
     const event = record("image_execution", { ...fields, image_ids: ["PRIVATE_ID"], prompt: "PRIVATE_PROMPT",

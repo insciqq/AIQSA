@@ -13,7 +13,8 @@ import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventCo
  * Follows one admitted run in this process: the typed events go to the
  * subscribers in order, the answer streams into its draft (D-09), and once the
  * run settled the final message is delivered and `delivered` published. A run
- * this process stops following before it settled stays pending for recovery.
+ * this process stops following before it settled stays pending for recovery,
+ * as does an answer Telegram provably never received (`delivery.ts`).
  * Every draft first checks that the run's link still reaches its chat (D-04);
  * once it does not, the drafts end while the run goes on in AIQSA.
  */
@@ -35,13 +36,16 @@ export type TelegramRunObservation = Readonly<{
   onDelivered?: () => void;
 }>;
 
-/** Publishes `delivered` for a run whose final message was handled (live or recovery). */
+/**
+ * Publishes `delivered` for a run whose final message was handled (live or recovery); a delivery handed back for a
+ * later sweep publishes once that sweep settles it, so its files and cards follow the answer.
+ */
 export async function publishTelegramDelivery(
   publish: NonNullable<TelegramRunObserverDeps["publish"]>,
   result: TelegramDeliveryResult,
   context: Omit<TelegramRunEventContext, "bot" | "chatId">
 ): Promise<void> {
-  if (result.state === "skipped" || !result.answer) return;
+  if (result.state === "skipped" || result.state === "deferred" || !result.answer) return;
   const status = result.answer.status === "streaming" ? "complete" : result.answer.status;
   const summary = result.answer.artifactSummary;
   await publish({

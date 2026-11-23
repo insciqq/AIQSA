@@ -5,7 +5,7 @@ import { logEvent, runInBackground } from "../../observability";
 import { databaseFailureCode } from "../../observability/databaseFailure";
 import type { TelegramInlineKeyboardMarkup, TelegramInputRichBlock, TelegramInputRichMessage } from "../botApi";
 import { onTelegramRunEvent, type TelegramRunEventContext, type TelegramRunListener } from "../bridge/events";
-import { telegramFailureCode } from "../codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "../codes";
 import type { TelegramAccessResolver } from "../control/access";
 import { reachTelegramChat, type TelegramChatBinding } from "../control/reach";
 import type { TelegramSessionProvider } from "../control/session";
@@ -99,13 +99,13 @@ export type TelegramChangesDeps = Readonly<{
 }>;
 
 /** Content-free: ids, codes and HTTP status. */
-function log(fields: Readonly<{
-  code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed" | "skipped"; runId?: string;
+function log(fields: TelegramFailureLogFields & Readonly<{
+  error?: unknown; outcome: "degraded" | "failed" | "skipped"; runId?: string;
 }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
-    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), outcome: fields.outcome,
-    ...(fields.runId ? { run_id: fields.runId } : {}), stage: "dispatch", subsystem: "telegram"
+    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), ...(fields.category ? { category: fields.category } : {}),
+    outcome: fields.outcome, ...(fields.runId ? { run_id: fields.runId } : {}), stage: "dispatch", subsystem: "telegram"
   });
 }
 
@@ -242,10 +242,10 @@ export function createTelegramChanges(deps: TelegramChangesDeps): TelegramChange
         text: plainTelegramMessage(message).join("\n\n").slice(0, 4_096) }, options);
       if (plain.ok || unchanged(plain)) return "edited";
       if (plain.kind === "unreachable") return "unreachable";
-      log({ code: telegramFailureCode(plain.kind, plain.errorCode), httpStatus: plain.status, outcome: "failed", runId: press.payload.runId });
+      log({ ...telegramFailureLogFields(plain), outcome: "failed", runId: press.payload.runId });
       return "failed";
     }
-    log({ code: telegramFailureCode(rich.kind, rich.errorCode), httpStatus: rich.status, outcome: "failed", runId: press.payload.runId });
+    log({ ...telegramFailureLogFields(rich), outcome: "failed", runId: press.payload.runId });
     return "failed";
   }
 

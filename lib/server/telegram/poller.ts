@@ -2,7 +2,7 @@ import type { TelegramHealthCode } from "../../contracts/telegram";
 import { logEvent, reportSubsystemFailure, reportSubsystemHealthy, runInBackground } from "../observability";
 import { databaseFailureCode } from "../observability/databaseFailure";
 import { TELEGRAM_ALLOWED_UPDATES } from "./botApi";
-import { telegramFailureCode } from "./codes";
+import { telegramFailureCode, telegramFailureLogFields, type TelegramFailureLogFields } from "./codes";
 import type { TelegramControlRepository } from "./control/repository";
 import type { TelegramSessionProvider } from "./control/session";
 import type { TelegramBotSession, TelegramDispatcher } from "./dispatcher";
@@ -35,9 +35,9 @@ export type TelegramPoller = Readonly<{
   state(): TelegramPollerState;
 }>;
 
-/** Content-free: stages, outcomes, codes, delays and counts only. */
-function log(fields: Readonly<{
-  action?: "retry" | "stop"; code?: string; count?: number; delay_ms?: number; error?: unknown; httpStatus?: number;
+/** Content-free: stages, outcomes, codes, HTTP status, transport categories, delays and counts only. */
+function log(fields: Partial<TelegramFailureLogFields> & Readonly<{
+  action?: "retry" | "stop"; count?: number; delay_ms?: number; error?: unknown;
   outcome: "completed" | "degraded" | "failed" | "skipped" | "waiting"; prisma_code?: string; stage: "claim" | "reconcile";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
@@ -150,8 +150,12 @@ export function createTelegramPoller(deps: Readonly<{
       if (!outcome.ok) {
         const code = telegramPollFailureCode(outcome);
         const action = code === "telegram_token_rejected" ? "stop" : "retry";
-        log({ action, code: telegramFailureCode(outcome.kind, outcome.errorCode), httpStatus: outcome.status, outcome: "failed", stage: "reconcile" });
-        reportSubsystemFailure({ action, code, httpStatus: outcome.status, stage: "reconcile", subsystem: "telegram" });
+        const failure = telegramFailureLogFields(outcome);
+        log({ ...failure, action, outcome: "failed", stage: "reconcile" });
+        reportSubsystemFailure({
+          action, code, ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }),
+          ...(failure.category ? { category: failure.category } : {}), stage: "reconcile", subsystem: "telegram"
+        });
         failing = true;
         await recordHealth(session, code);
         if (code === "telegram_token_rejected") {

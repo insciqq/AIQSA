@@ -1,4 +1,4 @@
-import type { PrismaClient, TelegramRunLink } from "@prisma/client";
+import type { ModelRunStatus, PrismaClient, TelegramRunLink } from "@prisma/client";
 import { retainDatabaseFailure } from "../../observability/databaseFailure";
 
 /**
@@ -6,6 +6,8 @@ import { retainDatabaseFailure } from "../../observability/databaseFailure";
  * answer goes to and its delivery state. Delivery is claimed before anything
  * is sent (`pending` → `claimed`), so a restart never sends an answer twice: a
  * claim that never settled is ambiguous and is settled `unknown`, not retried.
+ * A claim whose answer provably never reached Telegram is handed back
+ * `pending` for a later sweep (`bridge/delivery.ts`).
  */
 
 export type TelegramRunDeliveryState = "pending" | "claimed" | "delivered" | "failed" | "unknown";
@@ -20,6 +22,11 @@ export type TelegramRunLinkRecord = Readonly<{
   deliveryState: TelegramRunDeliveryState;
   deliveredAt: Date | null;
   createdAt: Date;
+  /**
+   * When the run settled, read as its row's last write once its status is terminal (usage or a title written right
+   * after the answer may move it by moments); null while the run goes on.
+   */
+  runSettledAt: Date | null;
 }>;
 
 export type TelegramRunLinkStore = Readonly<{
@@ -31,13 +38,17 @@ export type TelegramRunLinkStore = Readonly<{
   setStatusMessage(input: Readonly<{ runId: string; statusMessageId: number }>): Promise<void>;
   /** `pending` → `claimed`; true only for the one caller that may deliver. */
   claimDelivery(runId: string): Promise<boolean>;
-  /** Settles a claimed delivery. */
-  settle(input: Readonly<{ at: Date; runId: string; state: "delivered" | "failed" | "unknown" }>): Promise<void>;
+  /** Settles a claimed delivery; `pending` hands it back for a later sweep (nothing of it reached Telegram). */
+  settle(input: Readonly<{ at: Date; runId: string; state: "delivered" | "failed" | "unknown" | "pending" }>): Promise<void>;
   /** Oldest runs in one delivery state, for recovery sweeps. */
   listByState(input: Readonly<{ limit: number; state: "pending" | "claimed" }>): Promise<readonly TelegramRunLinkRecord[]>;
 }>;
 
-function record(row: TelegramRunLink): TelegramRunLinkRecord {
+const SETTLED_RUN_STATUSES: ReadonlySet<ModelRunStatus> = new Set(["complete", "cancelled", "error"]);
+/** What a record reads of its run. */
+const runSelect = { run: { select: { status: true, updatedAt: true } } } as const;
+
+function record(row: TelegramRunLink & Readonly<{ run: Readonly<{ status: ModelRunStatus; updatedAt: Date }> }>): TelegramRunLinkRecord {
   return {
     createdAt: row.createdAt,
     deliveredAt: row.deliveredAt,
@@ -45,6 +56,7 @@ function record(row: TelegramRunLink): TelegramRunLinkRecord {
     draftId: row.draftId,
     linkId: row.linkId,
     runId: row.runId,
+    runSettledAt: SETTLED_RUN_STATUSES.has(row.run.status) ? row.run.updatedAt : null,
     statusMessageId: row.statusMessageId === null ? null : Number(row.statusMessageId),
     telegramChatId: Number(row.telegramChatId),
     userId: row.userId
@@ -64,7 +76,7 @@ export function createPrismaTelegramRunLinkStore(prisma: Pick<PrismaClient, "tel
       return created.count === 1;
     },
     async find(runId) {
-      const row = await prisma.telegramRunLink.findUnique({ where: { runId } }).catch(retainDatabaseFailure);
+      const row = await prisma.telegramRunLink.findUnique({ include: runSelect, where: { runId } }).catch(retainDatabaseFailure);
       return row ? record(row) : null;
     },
     async setStatusMessage(input) {
@@ -85,7 +97,7 @@ export function createPrismaTelegramRunLinkStore(prisma: Pick<PrismaClient, "tel
     },
     async listByState(input) {
       const rows = await prisma.telegramRunLink.findMany({
-        orderBy: [{ createdAt: "asc" }, { runId: "asc" }], take: Math.max(1, Math.min(input.limit, 500)),
+        include: runSelect, orderBy: [{ createdAt: "asc" }, { runId: "asc" }], take: Math.max(1, Math.min(input.limit, 500)),
         where: { deliveryState: input.state }
       }).catch(retainDatabaseFailure);
       return rows.map(record);

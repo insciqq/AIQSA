@@ -106,7 +106,8 @@ export function memoryRunLinkStore() {
       if (rows.has(input.runId)) return false;
       rows.set(input.runId, {
         createdAt: input.now, deliveredAt: null, deliveryState: "pending", draftId: input.draftId, linkId: input.linkId, runId: input.runId,
-        statusMessageId: null, telegramChatId: input.telegramChatId, userId: input.userId
+        // Runs are the fake gateway's: a test that needs the time its run settled sets it on the row.
+        runSettledAt: null, statusMessageId: null, telegramChatId: input.telegramChatId, userId: input.userId
       });
       return true;
     },
