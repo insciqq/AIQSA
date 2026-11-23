@@ -60,7 +60,7 @@ describe("bounded MCP guard", () => {
     expect(admission).toMatchObject({ version: 2, messages: [{ kind: "message", id: "current" }, { kind: "message", id: "own" }] });
     expect(JSON.stringify(admission)).not.toContain("My earlier request");
     expect(f.findMessages).toHaveBeenCalledWith({ where: { id: { in: ["other", "own"] }, chatId: "chat",
-      OR: [{ authorUserId: "user" }, { authorUserId: null, chat: { userId: "user", importSource: null } }],
+      chat: { userId: "user", importSource: null },
       role: "user", scheduledTaskPrompt: false, systemTurnKind: null }, select: { id: true } });
     expect(f.execute).not.toHaveBeenCalled();
   });
