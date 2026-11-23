@@ -1639,6 +1639,7 @@
   "browser_file_integrity_failed",
   "browser_file_size_mismatch",
   "browser_push_vapid_key_invalid",
+  "browser_session_server_turn",
   "capability_probe_inconclusive",
   "chat_changed",
   "chat_import_chat_missing",

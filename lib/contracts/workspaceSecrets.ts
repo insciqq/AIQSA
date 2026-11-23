@@ -68,7 +68,7 @@ export type WorkspaceSecretSummary = Readonly<{
 
 export const WORKSPACE_BROWSER_SKIP_CODES = [
   "browser_session_invalid", "browser_session_too_large", "browser_session_total_limit", "browser_session_limit",
-  "browser_session_stale", "browser_session_read_failed"
+  "browser_session_stale", "browser_session_read_failed", "browser_session_server_turn"
 ] as const;
 export type WorkspaceBrowserSkipCode = (typeof WORKSPACE_BROWSER_SKIP_CODES)[number];
 /** Outcome of one accepted run's browser autosave: counts only, never names, origins or cookies. */
@@ -252,8 +252,10 @@ export function workspaceBrowserAutosaveMessage(report: WorkspaceBrowserAutosave
   if (skipped("browser_session_invalid")) parts.push(`${counted(skipped("browser_session_invalid"), "file")} skipped: not a Playwright storage_state JSON with a safe filename.`);
   if (skipped("browser_session_read_failed")) parts.push(`${counted(skipped("browser_session_read_failed"), "session")} could not be read from Workspace; ${kept}`);
   if (skipped("browser_session_stale")) parts.push(`${counted(skipped("browser_session_stale"), "session")} not saved because a newer save or a settings change took precedence.`);
+  if (skipped("browser_session_server_turn")) parts.push(`${counted(skipped("browser_session_server_turn"), "session")} not saved: a turn you did not write (a wake-up, an automation or a continuation) saves only a sign-in you finished there with Done; ${kept}`);
   if (report.failure) parts.push("The autosave did not finish; sessions saved before it stopped and all other previous versions were kept.");
-  const attention = report.failure !== undefined ||
-    WORKSPACE_BROWSER_SKIP_CODES.some((code) => code !== "browser_session_stale" && skipped(code) > 0);
+  // A newer save winning and a turn the server wrote are the rules at work, not a failure to look into.
+  const attention = report.failure !== undefined || WORKSPACE_BROWSER_SKIP_CODES.some((code) =>
+    code !== "browser_session_stale" && code !== "browser_session_server_turn" && skipped(code) > 0);
   return { attention, text: parts.join(" ") };
 }

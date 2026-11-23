@@ -243,6 +243,66 @@ describe("persisted personal Workspace secrets", () => {
     expect(await store().list(foreignUserId)).toEqual([]);
   });
 
+  // Operator decision 2026-11-23: a turn the server wrote authorizes nothing, so its agent (page text may steer it)
+  // cannot replace the sign-in the user saved for later chats; only a Sign in again handoff the user finished saves.
+  it("lets a turn the server wrote save only a sign-in the user finished in its own run, while the user's turn saves as before", async () => {
+    const userId = await owner();
+    const serverTurn = async (input: WorkspaceBrowserSaveInput, data: Readonly<{ scheduledTaskPrompt?: true;
+      systemTurnKind?: "browser_sign_in_request" | "conversation_summary" | "mcp_approval_continuation" | "subagent_callback" }>) => {
+      const run = await prisma.modelRun.findUniqueOrThrow({ where: { id: input.runId }, select: { userMessageId: true } });
+      await prisma.message.update({ where: { id: run.userMessageId }, data });
+    };
+    let ordinal = 0;
+    const handoff = (runId: string, reason: string, outcome: string, saved?: string) => prisma.modelRunToolCall.create({ data: {
+      arguments: { message: "Please sign in, then press Done.", reason }, completedAt: new Date(), modelRunId: runId,
+      ordinal: ordinal++, providerCallId: `call-${randomUUID()}`, roundIndex: 0, state: "complete", toolName: "browser_handoff",
+      result: { callId: "call", name: "browser_handoff", status: "complete", content: [{ type: "json", value: {
+        next: "Look at the page.", outcome, page: { title: "Shop", url: "https://shop.example/account" },
+        ...(saved ? { signInSavedAfterAnswer: saved } : {}) } }] } } });
+    const own = await browserRun(userId);
+    expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
+    const saved = await currentBrowser(userId, "shop.example.json");
+
+    for (const turn of [{ systemTurnKind: "subagent_callback" }, { systemTurnKind: "browser_sign_in_request" },
+      { systemTurnKind: "mcp_approval_continuation" }, { systemTurnKind: "conversation_summary" }, { scheduledTaskPrompt: true }] as const) {
+      const input = await browserRun(userId);
+      await serverTurn(input, turn);
+      // Handoffs that prove nothing: another reason, no Done, a Done that saved nothing, and another run's sign-in.
+      await handoff(input.runId, "captcha", "completed", "shop.example");
+      await handoff(input.runId, "sign_in", "not_answered");
+      await handoff(input.runId, "sign_in", "completed");
+      await handoff(own.runId, "sign_in", "completed", "shop.example");
+      const report = await saveWorkspaceBrowserSessions(prisma, { ...input, files: [
+        { fileName: "shop.example.json", bytes: browserBytes("injected-cookie") },
+        { fileName: "new.example.json", bytes: browserBytes("injected-new") }
+      ] }, () => key);
+      expect(report, JSON.stringify(turn)).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 2 } });
+      expect(await currentBrowser(userId, "shop.example.json")).toEqual(saved);
+      expect(await prisma.workspaceSecret.count({ where: { userId, browserFileName: "new.example.json" } })).toBe(0);
+      // What its browser holds unchanged is no save at all.
+      expect(await saveWorkspaceBrowserSessions(prisma, { ...input, files: [{ fileName: "shop.example.json",
+        bytes: browserBytes("user-cookie") }] }, () => key)).toEqual({ saved: 0, unchanged: 1, skipped: {} });
+    }
+
+    // Sign in again: the user finished the handoff for that site in this run, so that site alone is saved.
+    const signIn = await browserRun(userId);
+    await serverTurn(signIn, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(signIn.runId, "sign_in", "completed", "shop.example");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...signIn, files: [
+      { fileName: "shop.example.json", bytes: browserBytes("signed-in-again") },
+      { fileName: "new.example.json", bytes: browserBytes("injected-new") }
+    ] }, () => key)).toEqual({ saved: 1, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect((await currentBrowser(userId, "shop.example.json")).value).toEqual({ kind: "browser_session", originalName: "shop.example.json",
+      base64: browserBytes("signed-in-again").toString("base64") });
+
+    // The user's own turn saves what its browser holds, new sites included.
+    const later = await browserRun(userId);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...later, files: [
+      { fileName: "shop.example.json", bytes: browserBytes("user-again") },
+      { fileName: "new.example.json", bytes: browserBytes("user-new") }
+    ] }, () => key)).toEqual({ saved: 2, unchanged: 0, skipped: {} });
+  });
+
   it("saves states between 512 KiB and 8 MiB exactly, keeps the previous version for 8 MiB + 1 and decodes the list", async () => {
     const userId = await owner();
     const first = await browserRun(userId);

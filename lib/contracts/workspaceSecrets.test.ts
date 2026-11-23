@@ -60,6 +60,12 @@ describe("Workspace secret wire contract", () => {
     const quiet = workspaceBrowserAutosaveMessage({ saved: 2, unchanged: 1, skipped: {} });
     expect(quiet).toEqual({ attention: false, text: "Last browser autosave: 2 saved, 1 unchanged." });
     expect(workspaceBrowserAutosaveMessage({ saved: 0, unchanged: 0, skipped: { browser_session_stale: 1 } }).attention).toBe(false);
+    // A turn the server wrote saving nothing but a finished sign-in is the rule at work, said plainly.
+    const serverTurn = workspaceBrowserAutosaveMessage({ saved: 1, unchanged: 0, skipped: { browser_session_server_turn: 2 } });
+    expect(serverTurn).toEqual({ attention: false, text: "Last browser autosave: 1 saved, 0 unchanged. 2 sessions not saved: a turn you " +
+      "did not write (a wake-up, an automation or a continuation) saves only a sign-in you finished there with Done; any " +
+      "previously saved version was kept." });
+    expect(decodeWorkspaceBrowserAutosaveReport({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } })).not.toBeNull();
     const skipped = workspaceBrowserAutosaveMessage({ saved: 0, unchanged: 1, skipped: { browser_session_too_large: 1, browser_session_total_limit: 2 } });
     expect(skipped.attention).toBe(true);
     expect(skipped.text).toContain("1 session larger than 8 MiB skipped; any previously saved version was kept.");
