@@ -1,3 +1,12 @@
+/**
+ * The kind of a continued chat's first user turn (`Message.systemTurnKind`), which the server writes above the
+ * conversation summary: it shows as its text, yet it is never the user's own request, so answering it again offers no
+ * change to the user's resources and commits none (`lib/server/runs/turnProvenance.ts`).
+ */
+export const CONVERSATION_SUMMARY_TURN_KIND = "conversation_summary";
+/** That turn's text, the server's own. */
+export const CONVERSATION_SUMMARY_PROMPT = "Continue from the conversation summary below.";
+
 export type ChatContinuationModelSelection = Readonly<{ provider: string; modelId: string }>;
 export type ChatContinuationProgress = Readonly<{ completedParts: number; stage: "preparing" | "summarizing" | "combining" }>;
 export type ChatContinuationRequest = Readonly<{

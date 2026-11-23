@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { BROWSER_SIGN_IN_TURN_KIND } from "../../contracts/browserSignIn";
+import { CONVERSATION_SUMMARY_TURN_KIND } from "../../contracts/chatContinuation";
 import { MCP_APPROVAL_CONTINUATION_KIND, type MessageSystemTurnKind } from "../../contracts/mcpApprovals";
 import { SUBAGENT_CALLBACK_TURN_KIND } from "../../contracts/subagents";
 import { textMessageContent } from "../../domain/content";
@@ -98,6 +99,9 @@ const CASES: readonly (readonly [string, ProvenanceInput, TurnProvenance])[] = [
     serverTurnKind: SUBAGENT_CALLBACK_TURN_KIND, userAuthoredTurn: false, userRequest: false }],
   ["a regenerate of a stored sign-in request", regenerate({ systemTurnKind: BROWSER_SIGN_IN_TURN_KIND }), { ...OWN_REGENERATED,
     serverTurnKind: BROWSER_SIGN_IN_TURN_KIND, userAuthoredTurn: false, userRequest: false }],
+  // A continued chat's first turn is the server's prompt above the summary, in the chat or a branch copy of it.
+  ["a regenerate of a continued chat's summary", regenerate({ systemTurnKind: CONVERSATION_SUMMARY_TURN_KIND }), {
+    ...OWN_REGENERATED, serverTurnKind: CONVERSATION_SUMMARY_TURN_KIND, userAuthoredTurn: false, userRequest: false }],
   ["a regenerate of a stored turn after an Allow of the user's own turn", regenerate({ continuesUserRequest: true,
     systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }), { ...OWN_REGENERATED, serverTurnKind: MCP_APPROVAL_CONTINUATION_KIND }],
   ["a regenerate of a stored turn after an Allow of a wake-up's call", regenerate({ systemTurnKind: MCP_APPROVAL_CONTINUATION_KIND }),
@@ -150,6 +154,7 @@ describe("the stored turn's request, as a change checks it again when it commits
   const wakeUp = { scheduledTaskPrompt: false, systemTurnKind: SUBAGENT_CALLBACK_TURN_KIND };
   const signIn = { scheduledTaskPrompt: false, systemTurnKind: BROWSER_SIGN_IN_TURN_KIND };
   const prompt = { scheduledTaskPrompt: true, systemTurnKind: null };
+  const summary = { scheduledTaskPrompt: false, systemTurnKind: CONVERSATION_SUMMARY_TURN_KIND };
 
   // Each chain is the current turn first, followed back through the Allow each continuation names to the run it gated.
   it.each([
@@ -160,6 +165,8 @@ describe("the stored turn's request, as a change checks it again when it commits
     ["a scheduled task's prompt", [prompt], false],
     ["a sub-agent wake-up", [wakeUp], false],
     ["a browser sign-in request", [signIn], false],
+    ["a continued chat's summary prompt", [summary], false],
+    ["the turn after an Allow of a call answering a summary prompt", [allow, summary], false],
     ["the turn after an Allow of a wake-up's call", [allow, wakeUp], false],
     ["the turn after an Allow of a sign-in request's call", [allow, signIn], false],
     ["a continuation of a continuation of a wake-up", [allow, allow, wakeUp], false],

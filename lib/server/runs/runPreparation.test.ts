@@ -4748,8 +4748,8 @@ describe("automation and Skill save admission by turn kind", () => {
     return { ...harness.deps, ...memoryNoteDeps(), workspace: contractWorkspace(), repository: { ...harness.deps.repository,
       createScheduledTaskForCall: vi.fn(), saveSkillForCall: vi.fn() } };
   }
-  const stored = (systemTurnKind?: "browser_sign_in_request" | "mcp_approval_continuation" | "subagent_callback",
-    continuesUserRequest?: true) =>
+  const stored = (systemTurnKind?: "browser_sign_in_request" | "conversation_summary" | "mcp_approval_continuation" |
+    "subagent_callback", continuesUserRequest?: true) =>
     regenerateInput(toolBody, { userMessage: { content: textMessageContent("Remind me daily"), id: "stored-user-message",
       scheduledTaskPrompt: false, ...(systemTurnKind ? { systemTurnKind } : {}), ...(continuesUserRequest ? { continuesUserRequest } : {}) } });
   const CASES: ReadonlyArray<readonly [string, RunPreparationInput, boolean]> = [
@@ -4763,7 +4763,8 @@ describe("automation and Skill save admission by turn kind", () => {
     ["an Allow continuation of the user's own turn regenerated", stored("mcp_approval_continuation", true), true],
     ["an Allow continuation of a wake-up's call regenerated", stored("mcp_approval_continuation"), false],
     ["a wake-up regenerated", stored("subagent_callback"), false],
-    ["a sign-in request regenerated", stored("browser_sign_in_request"), false]
+    ["a sign-in request regenerated", stored("browser_sign_in_request"), false],
+    ["a continued chat's summary regenerated", stored("conversation_summary"), false]
   ];
 
   it.each(CASES)("%s", async (_label, input, userRequest) => {

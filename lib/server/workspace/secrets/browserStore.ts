@@ -13,6 +13,10 @@ import {
   type WorkspaceBrowserSaveReport, type WorkspaceBrowserSkipCode
 } from "./browserSession";
 import type { WorkspaceBrowserSaveItem } from "./browserCollection";
+import {
+  BROWSER_SESSION_SERVER_TURN, browserSignInSaveFiles, serverWrittenBrowserTurn, type BrowserSaveTurn
+} from "./browserSignInAuthority";
+import { logEvent } from "../../observability";
 
 export type WorkspaceBrowserSaveInput = Readonly<{
   userId: string;
@@ -31,13 +35,16 @@ export type WorkspaceBrowserSaveInput = Readonly<{
 type FileOutcome = "saved" | "unchanged" | "unauthorized" | WorkspaceBrowserSkipCode;
 
 // Authorization is rechecked in every per-file transaction: a lease, operation
-// or run state change between files ends this save without a later write.
-async function authorizedSequence(tx: Prisma.TransactionClient, input: WorkspaceBrowserSaveInput): Promise<bigint | null> {
+// or run state change between files ends this save without a later write. The
+// run's stored turn comes with it: whose turn it was decides what it may save.
+async function authorizedRun(tx: Prisma.TransactionClient, input: WorkspaceBrowserSaveInput):
+  Promise<Readonly<{ sequence: bigint; turn: BrowserSaveTurn }> | null> {
   const session = await lockWorkspaceSession(tx, input.sessionId);
   if (!session || session.state === "DELETING" || session.runtimeSandboxId !== input.runtimeSandboxId ||
     session.version !== input.operation.generation || session.operationOwner !== input.operation.owner) return null;
   const binding = await tx.workspaceRunBinding.findUnique({ where: { modelRunId: input.runId }, include: {
-    modelRun: { select: { userId: true, chatId: true, status: true, chat: { select: { userId: true } } } }
+    modelRun: { select: { userId: true, chatId: true, status: true, chat: { select: { userId: true } }, scheduledTaskId: true,
+      userMessageId: true } }
   } });
   if (!binding?.browserSessionSequence || binding.workspaceSessionId !== session.id || binding.modelRun.chatId !== session.chatId ||
     binding.modelRun.userId !== input.userId || binding.modelRun.chat.userId !== input.userId) return null;
@@ -46,7 +53,7 @@ async function authorizedSequence(tx: Prisma.TransactionClient, input: Workspace
   const handoffOwner = input.handoffToken && input.operation.owner === `export:${input.runId}:${input.handoffToken}` &&
     binding.exportLeaseToken === input.handoffToken && binding.exportLeaseExpiresAt && binding.exportLeaseExpiresAt > new Date() &&
     ["preparing", "queued", "in_progress", "streaming"].includes(binding.modelRun.status);
-  return runOwner || handoffOwner ? binding.browserSessionSequence : null;
+  return runOwner || handoffOwner ? { sequence: binding.browserSessionSequence, turn: binding.modelRun } : null;
 }
 
 /** The stamp inside a saved revision, read only when a stamped file competes with it. */
@@ -61,8 +68,9 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
   file: Readonly<{ fileName: string; bytes: Uint8Array }>, key: () => Buffer, now: () => number): Promise<FileOutcome> {
   input.signal?.throwIfAborted();
   await lockWorkspaceSecretOwner(tx, input.userId, true);
-  const sequence = await authorizedSequence(tx, input);
-  if (sequence === null) return "unauthorized";
+  const run = await authorizedRun(tx, input);
+  if (run === null) return "unauthorized";
+  const { sequence } = run;
   const owner = await tx.user.findUniqueOrThrow({ where: { id: input.userId }, select: { workspaceBrowserManualSequence: true } });
   const existing = await tx.workspaceSecret.findFirst({ where: { userId: input.userId, browserFileName: file.fileName }, include: { value: true } });
   // What this run was given at admission: a file it collects back unchanged is no write of its own.
@@ -83,6 +91,12 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
       await tx.workspaceSecret.update({ where: { id: existing.id }, data: { browserWriterSequence: writerSequence } });
     }
     return "unchanged";
+  }
+  // A turn the server wrote saves or replaces only a sign-in the user finished in it, and the saved one stays otherwise
+  // (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what its browser
+  // holds.
+  if (await serverWrittenBrowserTurn(tx, run.turn) && !(await browserSignInSaveFiles(tx, input.runId)).has(file.fileName)) {
+    return BROWSER_SESSION_SERVER_TURN;
   }
   if (!existing && await tx.workspaceSecret.count({ where: { userId: input.userId, browserFileName: { not: null } } }) >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) {
     return "browser_session_limit";
@@ -114,7 +128,7 @@ export async function saveWorkspaceBrowserSessions(prisma: PrismaClient, input: 
   // failed outcome for an authorized run instead of disappearing.
   const authorized = await prisma.$transaction(async (tx) => {
     await lockWorkspaceSecretOwner(tx, input.userId, true);
-    return await authorizedSequence(tx, input) !== null;
+    return await authorizedRun(tx, input) !== null;
   }, { maxWait: 1_000, timeout: 5_000 });
   if (!authorized) return null;
 
@@ -144,6 +158,11 @@ export async function saveWorkspaceBrowserSessions(prisma: PrismaClient, input: 
   } catch {
     // Committed states remain; the rest keep their previous versions.
     report.failure = "browser_session_save_failed";
+  }
+  const refused = report.skipped[BROWSER_SESSION_SERVER_TURN];
+  if (refused) {
+    logEvent("runtime_lifecycle", { subsystem: "workspace", stage: "write", outcome: "skipped", code: BROWSER_SESSION_SERVER_TURN,
+      action: "skip", count: refused });
   }
   await prisma.workspaceRunBinding.update({ where: { modelRunId: input.runId }, data: { browserSessionSave: report as Prisma.InputJsonValue } });
   return report;

@@ -366,7 +366,11 @@ it("serves one visible summary from the active branch, preserving source, scope,
   expect(f.execute.mock.calls[0]?.[1].userPrompt).not.toContain("SIBLING_PRIVATE_TEXT");
   const detail = await createPrismaChatRepository(prisma).getChat({ chatId: result.chatId, userId });
   expect(detail?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  // The first turn is the server's, shown as its prompt above the summary, never the user's own request.
+  expect(detail?.messages[0]).toMatchObject({ content: textMessageContent("Continue from the conversation summary below."),
+    systemTurnKind: "conversation_summary" });
   expect(detail?.messages[1]?.content).toEqual(textMessageContent("Conversation summary\n\n## Goal\nRelease a small feature.\n## Decisions\nKeep find_tools unchanged."));
+  expect(detail?.messages[1]).not.toHaveProperty("systemTurnKind");
   expect(detail?.hasContinuationSource).toBe(true);
   const child = await prisma.chat.findUniqueOrThrow({ where: { id: result.chatId } });
   expect(child).toMatchObject({ userId, memoryMode: "NORMAL", workspaceEnabled: false });

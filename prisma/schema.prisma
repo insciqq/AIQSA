@@ -77,6 +77,8 @@ enum MessageSystemTurnKind {
   subagent_callback
   /// A Sign in again request for one site (`lib/contracts/browserSignIn.ts`).
   browser_sign_in_request
+  /// A continued chat's first turn above its summary (`lib/contracts/chatContinuation.ts`).
+  conversation_summary
 }
 
 /// Why a user reported an answer (`AnswerProblemReport`); stable codes.

@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { describe, expect, it } from "vitest";
+import { CONVERSATION_SUMMARY_PROMPT, CONVERSATION_SUMMARY_TURN_KIND } from "../../contracts/chatContinuation";
+import { textMessageContent } from "../../domain/content";
 import { recordingTransaction } from "../chatSearch/index/markRecorder.testFixtures";
 import { createChatContinuationRepository } from "./continuationRepository";
 import { TEMPORARY_CHAT_RETENTION_MS } from "./temporaryRetention";
@@ -61,5 +63,20 @@ describe("a continuation's new chat", () => {
     };
     expect(data.temporaryRetentionDeadline.getTime()).toBeGreaterThanOrEqual(before + TEMPORARY_CHAT_RETENTION_MS);
     expect(recorder.calls.some((call) => call.name.startsWith("memoryDeletionOutbox."))).toBe(false);
+  });
+
+  it("opens with a turn the server wrote, shown as its prompt above the summary, never as the user's own request", async () => {
+    const { recorder, repository } = continuation("NORMAL");
+
+    await repository.complete(SOURCE, { attemptId: "attempt-1", id: "continuation-1" }, "Summary.");
+
+    const messages = recorder.calls.filter((call) => call.name === "message.create")
+      .map((call) => (call.args as { data: Record<string, unknown> }).data);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ content: textMessageContent(CONVERSATION_SUMMARY_PROMPT), role: "user",
+      systemTurnKind: CONVERSATION_SUMMARY_TURN_KIND });
+    expect(messages[1]).toMatchObject({ content: textMessageContent("Conversation summary\n\nSummary."), parentMessageId: messages[0]!.id,
+      role: "assistant" });
+    expect(messages[1]).not.toHaveProperty("systemTurnKind");
   });
 });

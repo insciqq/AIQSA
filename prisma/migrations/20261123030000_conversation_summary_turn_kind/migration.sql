@@ -1,0 +1,12 @@
+-- A continued chat's first user turn, which the server writes above the conversation summary
+-- (`lib/contracts/chatContinuation.ts`), takes a kind of its own, so answering it again is never the user's own request:
+-- it offers no change to the user's resources and commits none (`lib/server/runs/turnProvenance.ts`).
+--
+-- PostgreSQL lets a value added here be used only once this transaction commits, so the turns written before it take
+-- the kind in the next migration (`20261123030100_conversation_summary_turn_backfill`).
+--
+-- Expand only: the previous release's writers never name the value. An earlier image cannot read a message of the new
+-- kind, and the next migration gives it to the first turn of the continued chats already stored, so the previous
+-- release's app cannot open those chats while Compose replaces it, and going back below this release means restoring the
+-- backup taken before the upgrade.
+ALTER TYPE "MessageSystemTurnKind" ADD VALUE 'conversation_summary' AFTER 'browser_sign_in_request';

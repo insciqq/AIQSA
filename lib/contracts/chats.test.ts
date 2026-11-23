@@ -154,6 +154,11 @@ describe("chat wire contracts", () => {
     // A server-written kind only on user messages; the not-sent mark only on a refused MCP call.
     expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...message, systemTurnKind: "mcp_approval_continuation" }],
       usageStats }) })).toBeNull();
+    // A continued chat's first turn carries its kind too, which the page shows as its text above the summary.
+    const prompt = { ...turn, id: "prompt", parentMessageId: null, systemTurnKind: "conversation_summary",
+      content: { blocks: [{ text: "Continue from the conversation summary below.", type: "text" }] } };
+    expect(decodeChatDetailResponse({ chat: detailChat({ messages: [prompt, { ...message, parentMessageId: "prompt" }], usageStats }) })
+      ?.messages[0]?.systemTurnKind).toBe("conversation_summary");
     expect(decodeChatDetailResponse({ chat: detailChat({ messages: [{ ...answer, toolActivity: { calls: [{ approvalRequired: true,
       origin: "mcp", round: 1, status: "complete", toolName: "delete_record" }] } }], usageStats }) })).toBeNull();
   });

@@ -16,6 +16,7 @@ import {
   decodeStoredChatAssistantOverrides,
   storedChatAssistantOverrides
 } from "../../contracts/chats";
+import { CONVERSATION_SUMMARY_PROMPT, CONVERSATION_SUMMARY_TURN_KIND } from "../../contracts/chatContinuation";
 import { CHAT_SUMMARY_LEASE_MS, ChatContinuationError, type ContinuationRepository, type ContinuationSource } from "./continuation";
 import type { StorageAdapter } from "../uploads/storage";
 import type { WorkspaceRuntime } from "../workspace/runtime";
@@ -376,9 +377,11 @@ export function createChatContinuationRepository(client: PrismaClient, deps: Rea
           data: { newChatId, status: "TRANSFERRED" } });
         await tx.chatContinuationWorkspaceSeed.updateMany({ where: { continuationId: claim.id, status: { in: ["NO_SOURCE_DISK", "FAILED"] } },
           data: { newChatId } });
+        // The server writes this turn, so answering it again (a regenerate here or in a branch copy, which keeps the kind)
+        // is never the user's own request.
         await tx.message.create({ data: {
           id: requestMessageId, chatId: newChatId, role: "user", status: "complete",
-          content: textMessageContent("Continue from the conversation summary below.")
+          content: textMessageContent(CONVERSATION_SUMMARY_PROMPT), systemTurnKind: CONVERSATION_SUMMARY_TURN_KIND
         } });
         await tx.message.create({ data: {
           id: messageId, parentMessageId: requestMessageId, chatId: newChatId, role: "assistant", status: "complete",
