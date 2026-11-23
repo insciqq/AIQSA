@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SAVED_SECRET_MARKER } from "../../redaction/savedSecrets";
+import { SAVED_SECRET_MARKER, savedSecretScreenedValues } from "../../redaction/savedSecrets";
 import { UNPROCESSED_TEXT_PLACEHOLDER } from "../../redaction/secrets";
 import { pastChatSearchQuery, pastChatTitle, redactPastChatText } from "./redaction";
 
@@ -39,6 +39,16 @@ describe("past-chat query screening", () => {
     expect(pastChatSearchQuery(`find ${passphrase} now`, ["correct horse\nbattery staple"])).toBe("find now");
     // Words of the value alone, or in another order, are ordinary text.
     expect(pastChatSearchQuery("correct horse, battery", [passphrase])).toBe("correct horse, battery");
+  });
+
+  it("drops a token saved under a login name, and keeps an ordinary login searchable", () => {
+    const sonarToken = `squ_${"0123456789abcdef".repeat(2)}01234567`;
+    const saved = savedSecretScreenedValues([{ name: "Code quality", value: { entries: [
+      { name: "SONAR_LOGIN", value: sonarToken }, { name: "SERVICE_LOGIN", value: "deploy-bot" },
+      { name: "SONAR_HOST", value: "https://sonar.example.com" }
+    ], kind: "env" } }]);
+    expect(pastChatSearchQuery(`scanner login ${sonarToken} failed`, saved)).toBe("scanner login failed");
+    expect(pastChatSearchQuery("deploy-bot on https://sonar.example.com", saved)).toBe("deploy-bot on https://sonar.example.com");
   });
 
   it("screens again once a dropped marker joins the words around it", () => {

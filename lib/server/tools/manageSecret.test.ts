@@ -67,6 +67,15 @@ describe("manage_secret", () => {
     expect(manageSecretValues({ action: "create", kind: "text", name: "USERNAME", text: "text-is-always-masked" })).toEqual(["text-is-always-masked"]);
   });
 
+  it("masks a token saved under a login or user name, since the format wins over the name", () => {
+    const shown = [["SONAR_HOST", "https://sonar.example.com"], ["SERVICE_LOGIN", "admin"], ["JIRA_EMAIL", "ivan.petrov@example.com"],
+      ["DB_HOST", "ip-172-31-23-45.eu-central-1.compute.internal"]];
+    const masked = [["SONAR_LOGIN", `squ_${"0123456789abcdef".repeat(2)}01234567`], ["GIT_LOGIN", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"],
+      ["SERVICE_USER", "a1b2c3d4e5f6g7h8i9j0"], ["DEPLOY_USER", "abcdefghijklmnopqrstuvwxyzABCDEF_-"], ["CHAT_USER", "xoxb-12345678"]];
+    const variables = [...shown, ...masked].map(([name, value]) => ({ name, value }));
+    expect(manageSecretValues({ action: "update", kind: "env", name: "Code quality", variables })).toEqual(masked.map(([, value]) => value));
+  });
+
   it("is an account change that needs neither approval nor the VM", () => {
     expect(manageSecretTool).toMatchObject({ effects: "local", name: "manage_secret", needsApproval: false, requiresVm: false });
     expect(manageSecretTool.tool).toMatchObject({ capability: "session", name: "manage_secret" });
