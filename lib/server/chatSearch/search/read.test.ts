@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readPastChatResultSchema, type ReadPastChatInput } from "../../../contracts/pastChats";
 import { chatSearchEligible, type ChatSearchEligibilityFields } from "../eligibility";
+import { OWNER_TITLE } from "../index/indexer.testFixtures";
 import {
   createPastChatReader,
   createPrismaPastChatReadStore,
@@ -24,7 +25,7 @@ function linearStore(count: number, size: number, overrides: Partial<PastChatRea
     generatedFiles: [], id: `m${index}`, role: index % 2 === 0 ? "user" : "assistant", text: `message ${index} ${"x".repeat(size)}`, tools: [] }));
   return {
     branch: async (ownerId, chatId) => ownerId === OWNER && chatId === "chat-1"
-      ? { chatId, messages: messages.map(({ id, role }) => ({ id, role })), title: "Long chat" } : null,
+      ? { chatId, messages: messages.map(({ id, role }) => ({ id, role })), title: "Long chat", titleOrigin: OWNER_TITLE } : null,
     messages: async (_ownerId, _chatId, ids) => messages.filter((message) => ids.includes(message.id)),
     switches: async () => ({ memoryEnabled: true, pastChatSearchEnabled: true }),
     ...overrides
@@ -105,8 +106,11 @@ type SeedMessage = Readonly<{ id: string; parentMessageId: string | null; role: 
 type ExcludedRow = Readonly<{ chatId: string; messageId: string; userId: string }>;
 
 /** Enough of Prisma for the read store: rows filtered by the fields its queries name. */
+type TitleGeneration = Readonly<{ status: string; titleRevision: number }> | null;
+
 function fakeDb(input: Readonly<{
-  chats: readonly (ChatSearchEligibilityFields & { id: string; title: string; activeLeafMessageId: string | null })[];
+  chats: readonly (ChatSearchEligibilityFields & { id: string; title: string; activeLeafMessageId: string | null;
+    titleRevision?: number; titleGeneration?: TitleGeneration })[];
   messages: readonly (SeedMessage & { chatId: string })[];
   attachments?: readonly { id: string; chatId: string; fileName: string; origin: string; producerModelRunId: string | null }[];
   runs?: readonly { id: string; chatId: string; assistantMessageId: string | null }[];
@@ -123,9 +127,18 @@ function fakeDb(input: Readonly<{
     chat: { findFirst: async ({ where }: { where: { id: string; userId: string } }) => {
       const found = input.chats.find((row) => row.id === where.id);
       return found && chatSearchEligible(found, where.userId)
-        ? { activeLeafMessageId: found.activeLeafMessageId, id: found.id, title: found.title } : null;
+        ? { activeLeafMessageId: found.activeLeafMessageId, id: found.id, title: found.title,
+          titleGeneration: found.titleGeneration ?? null, titleRevision: found.titleRevision ?? 0 } : null;
     } },
-    message: { findMany: async ({ where }: { where: { chatId: string; id?: { in: string[] } } }) => input.messages
+    message: {
+      // The chat's first user message: the seeds are in time order.
+      findFirst: async ({ where }: { where: { chatId: string; role: string } }) => {
+        const first = input.messages.find((row) => row.chatId === where.chatId && row.role === where.role);
+        return first ? { content: { blocks: first.text ? [{ text: first.text, type: "text" }] : [] },
+          searchExclusion: (input.excluded ?? []).some((row) => row.chatId === first.chatId && row.messageId === first.id)
+            ? { messageId: first.id } : null } : null;
+      },
+      findMany: async ({ where }: { where: { chatId: string; id?: { in: string[] } } }) => input.messages
       .filter((row) => row.chatId === where.chatId && inList(where.id, row.id))
       .map((row) => ({ branchSourceModelRunId: null, chatId: row.chatId,
         content: { blocks: [...(row.text ? [{ text: row.text, type: "text" }] : []), ...(row.blocks ?? [])] }, createdAt: at(row.minute),
@@ -153,18 +166,20 @@ describe("read_past_chat over the stored chat", () => {
     { id: "wake", minute: 6, parentMessageId: "a2e", role: "user", systemTurnKind: "subagent_callback", text: "Callback from a sub-agent" },
     { id: "a3", minute: 7, parentMessageId: "wake", role: "assistant", text: "Follow-up after the sub-agent" }
   ].map((message) => ({ ...message, chatId: "chat-1" }));
-  const db = (excluded: readonly ExcludedRow[] = []) => fakeDb({
+  type TitleFields = Readonly<{ title?: string; titleRevision?: number; titleGeneration?: TitleGeneration }>;
+  const db = (excluded: readonly ExcludedRow[] = [], titled: TitleFields = {}) => fakeDb({
     excluded,
     attachments: [{ chatId: "chat-1", fileName: "brief.pdf", id: "att-1", origin: "USER_UPLOAD", producerModelRunId: null },
       { chatId: "chat-1", fileName: "checklist.xlsx", id: "out-1", origin: "WORKSPACE_EXPORT", producerModelRunId: "run-1" }],
     calls: [{ modelRunId: "run-1", toolName: "web_search" }, { modelRunId: "run-1", toolName: "fetch_url" }, { modelRunId: "run-1", toolName: "web_search" }],
-    chats: [chat, { ...chat, id: "chat-x", memoryMode: "EXCLUDED" }, { ...chat, id: "chat-foreign", userId: "owner-2" }],
+    chats: [{ ...chat, ...titled }, { ...chat, id: "chat-x", memoryMode: "EXCLUDED" }, { ...chat, id: "chat-foreign", userId: "owner-2" }],
     messages: [...messages, ...messages.map((message) => ({ ...message, chatId: "chat-x" })),
       ...messages.map((message) => ({ ...message, chatId: "chat-foreign" }))],
     runs: [{ assistantMessageId: "a1", chatId: "chat-1", id: "run-1" }]
   });
-  const reader = (excluded: readonly ExcludedRow[] = []) => createPastChatReader({ savedSecretValues: async () => [],
-    store: createPrismaPastChatReadStore(db(excluded) as unknown as Parameters<typeof createPrismaPastChatReadStore>[0]) });
+  const reader = (excluded: readonly ExcludedRow[] = [], titled: TitleFields = {}, savedValues: readonly string[] = []) =>
+    createPastChatReader({ savedSecretValues: async () => savedValues,
+      store: createPrismaPastChatReadStore(db(excluded, titled) as unknown as Parameters<typeof createPrismaPastChatReadStore>[0]) });
 
   it("follows the active branch, leaves server-written turns out and names files and tools", async () => {
     const result = readOk(await reader().read({ input: { chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" }));
@@ -215,5 +230,22 @@ describe("read_past_chat over the stored chat", () => {
     expect(await shown(["wake"])).toEqual(["u1", "a1", "u2e", "a2e"]);
     expect(await shown(["u1"], { around_message_id: "a1" })).toBe("message_not_found");
     expect(await shown(["u1"], { after_message_id: "u2e" })).toEqual(["a2e", "a3"]);
+  });
+
+  it("names the chat by its search title, as its passages do", async () => {
+    const titleOf = async (excluded: readonly string[], titled: TitleFields, savedValues: readonly string[] = []) => readOk(await reader(
+      excluded.map((messageId) => ({ chatId: "chat-1", messageId, userId: OWNER })), titled, savedValues)
+      .read({ input: { chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" })).chatTitle;
+    const fallback = { title: "Prepare the close checklist" };
+    // A title made from a first message kept out of search, by the first line or by the title model, is not shown.
+    expect(await titleOf(["u1"], fallback)).toBe("Untitled chat");
+    expect(await titleOf(["u1"], { title: "Close checklist", titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 1 }))
+      .toBe("Untitled chat");
+    // The owner's own title stays, whether renamed before or after the title model named the chat.
+    expect(await titleOf(["u1"], { titleRevision: 1 })).toBe("Quarter close");
+    expect(await titleOf(["u1"], { titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 2 })).toBe("Quarter close");
+    expect(await titleOf([], fallback)).toBe("Prepare the close checklist");
+    // A saved value in the first line is screened in the title made from it.
+    expect(await titleOf([], fallback, ["close checklist"])).toBe("Prepare the [REDACTED:SAVED_SECRET]");
   });
 });

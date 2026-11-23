@@ -14,6 +14,8 @@ import { omitSubagentCallbackTurns } from "../../../domain/subagentCallbackTurns
 import { quietCheckOmission } from "../../chats/quietScheduledChecks";
 import { chatSearchEligibleWhere } from "../eligibility";
 import { chatSearchWithheldMessages } from "../index/exclusions";
+import { chatSearchTitle, type ChatSearchTitleOrigin } from "../index/passages";
+import { chatSearchTitleOrigin, chatSearchTitleSelect } from "../index/prismaStore";
 import { pastChatTimestamp } from "./dates";
 import { pastChatTitle, redactPastChatText, type SavedSecretValuesReader } from "./redaction";
 import { readPastChatSwitches, type PastChatSwitches } from "./store";
@@ -41,7 +43,13 @@ const CONTEXT_BEFORE = 2;
 
 export type PastChatBranchNode = Readonly<{ id: string; role: "user" | "assistant" }>;
 
-export type PastChatBranch = Readonly<{ chatId: string; title: string; messages: readonly PastChatBranchNode[] }>;
+export type PastChatBranch = Readonly<{
+  chatId: string;
+  /** The stored title and where it came from, from which the read names the chat by its search title (`chatSearchTitle`). */
+  title: string;
+  titleOrigin: ChatSearchTitleOrigin;
+  messages: readonly PastChatBranchNode[];
+}>;
 
 /** One message as stored, before redaction and bounds. */
 export type PastChatMessageSource = Readonly<{
@@ -187,7 +195,7 @@ export function createPastChatReader(dependencies: Readonly<{ store: PastChatRea
           const message = index >= span.from && index < span.to ? pastChatMessage(source, savedValues, request.timeZone) : null;
           if (message) shown.set(index, message);
         }
-        const chatTitle = pastChatTitle(branch.title, savedValues);
+        const chatTitle = pastChatTitle(chatSearchTitle(branch.title, branch.titleOrigin, savedValues), savedValues);
         const base = JSON.stringify({ chatId: branch.chatId, chatTitle, hasEarlier: false, hasLater: false, messages: [] }).length;
         const window = fitWindow(anchor, span, (index) => {
           const message = shown.get(index);
@@ -222,9 +230,10 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
     switches: (ownerId: string) => readPastChatSwitches(db, ownerId),
 
     async branch(ownerId: string, chatId: string): Promise<PastChatBranch | null> {
-      const chat = await db.chat.findFirst({ select: { activeLeafMessageId: true, id: true, title: true },
+      const chat = await db.chat.findFirst({ select: { activeLeafMessageId: true, ...chatSearchTitleSelect },
         where: { ...chatSearchEligibleWhere(ownerId), id: chatId } });
       if (!chat) return null;
+      const titleOrigin = await chatSearchTitleOrigin(db, chat);
       const [rows, excluded] = await Promise.all([
         db.message.findMany({ select: branchSelect, where: { chatId: chat.id } }),
         db.chatSearchExcludedMessage.findMany({ select: { messageId: true }, where: { chatId: chat.id, userId: ownerId } })
@@ -249,7 +258,7 @@ export function createPrismaPastChatReadStore(db: ReadDb): PastChatReadStore {
         cursor = row.parentMessageId;
       }
       const withheld = chatSearchWithheldMessages(path.map((node) => node.id), stored, hidden);
-      return { chatId: chat.id, messages: path.reverse().filter((node) => !withheld.has(node.id)), title: chat.title };
+      return { chatId: chat.id, messages: path.reverse().filter((node) => !withheld.has(node.id)), title: chat.title, titleOrigin };
     },
 
     async messages(ownerId: string, chatId: string, ids: readonly string[]): Promise<PastChatMessageSource[]> {

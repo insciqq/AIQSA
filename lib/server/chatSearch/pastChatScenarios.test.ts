@@ -15,6 +15,7 @@ import {
 import { chatSearchEligible, type ChatSearchEligibilityFields } from "./eligibility";
 import type { ChatSearchEmbedder } from "./embedder";
 import { runChatSearchIndexPassOn } from "./index/pass";
+import { OWNER_TITLE } from "./index/indexer.testFixtures";
 import type { ChatSearchSourceMessage } from "./index/passages";
 import type { ChatSearchIndexStore, ChatSearchPassageToEmbed } from "./index/store";
 import { createPastChatReader, type PastChatReadStore } from "./search/read";
@@ -180,7 +181,8 @@ const indexStore: ChatSearchIndexStore = {
     const path = sourcePath(chat);
     const fileNames = new Map(seedActivePath(chat.seed).filter((message) => message.files.length)
       .map((message) => [idOf(message.key), message.files] as const));
-    return { activeLeafMessageId: path.at(-1)?.id ?? null, chatId, eligibility: chat.eligibility, fileNames, path, title: chat.seed.title };
+    return { activeLeafMessageId: path.at(-1)?.id ?? null, chatId, eligibility: chat.eligibility, fileNames, path, title: chat.seed.title,
+      titleOrigin: OWNER_TITLE };
   },
   loadSavedSecretValues: async () => [],
   ownerAllowsEmbedding: async () => true,
@@ -332,7 +334,7 @@ const readStore: PastChatReadStore = {
     if (!eligibleFor(ownerId, chatId)) return null;
     const chat = world.get(chatId)!;
     return { chatId, messages: sourcePath(chat).map((message) => ({ id: message.id, role: message.role as "user" | "assistant" })),
-      title: chat.seed.title };
+      title: chat.seed.title, titleOrigin: OWNER_TITLE };
   },
   async messages(ownerId, chatId, ids) {
     const chat = world.get(chatId);

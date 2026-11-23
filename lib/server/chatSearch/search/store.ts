@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { MEMORY_SWITCH_DEFAULTS } from "../../../contracts/memoryNote";
 import { chatSearchEligibleSql } from "../eligibility";
+import { chatSearchPassageTitle } from "../index/passages";
 import type { PastChatTurnRange } from "./dates";
 import { PAST_CHAT_QUERY_LIMITS, type PastChatUnitStatistics, type PastChatWordUnit } from "./query";
 import type { PastChatLaneHit, PastChatWordHit } from "./rank";
@@ -28,8 +29,19 @@ export type PastChatPassageRow = Readonly<{
   userMessageId: string;
   turnAt: Date;
   text: string;
+  /**
+   * The chat's search title as the passage's header names it (`chatSearchPassageTitle`), never the stored title, so a
+   * result names a chat only by what its passages hold (`chatSearchTitle`); a rename shows once the indexer rebuilt
+   * the chat's passages, which it marks for that.
+   */
   title: string;
 }>;
+
+type StoredPassageRow = Omit<PastChatPassageRow, "title">;
+
+function withTitles(rows: readonly StoredPassageRow[]): PastChatPassageRow[] {
+  return rows.map((row) => ({ ...row, title: chatSearchPassageTitle(row.text) }));
+}
 
 export type PastChatSearchStore = Readonly<{
   /** The user's Memory and past-chat search switches; both default to on. */
@@ -38,7 +50,7 @@ export type PastChatSearchStore = Readonly<{
   wordStatistics(ownerId: string, query: string, phrases: readonly string[]): Promise<PastChatUnitStatistics[]>;
   wordHits(scope: PastChatScope, units: readonly PastChatWordUnit[], limit: number): Promise<PastChatWordHit[]>;
   vectorHits(scope: PastChatScope, vector: Readonly<{ providerModelId: string; values: readonly number[] }>, limit: number): Promise<PastChatLaneHit[]>;
-  /** The texts and chat titles of these passages that are still eligible and on their chat's active branch, in no order. */
+  /** The texts and search titles of these passages that are still eligible and on their chat's active branch, in no order. */
   passages(scope: Omit<PastChatScope, "range">, ids: readonly string[]): Promise<PastChatPassageRow[]>;
   /** Each eligible chat once by its latest active-branch turn in the range (that turn's first window), newest first. */
   recent(scope: PastChatScope, limit: number): Promise<PastChatPassageRow[]>;
@@ -186,21 +198,21 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
 
     async passages(scope: Omit<PastChatScope, "range">, ids: readonly string[]): Promise<PastChatPassageRow[]> {
       if (ids.length === 0) return [];
-      return db.$queryRaw<PastChatPassageRow[]>(Prisma.sql`
+      return withTitles(await db.$queryRaw<StoredPassageRow[]>(Prisma.sql`
         WITH RECURSIVE candidates AS MATERIALIZED (
-          SELECT p."id", p."chatId", p."userMessageId", p."assistantMessageId", p."turnAt", p."text", c."title", c."activeLeafMessageId"
+          SELECT p."id", p."chatId", p."userMessageId", p."assistantMessageId", p."turnAt", p."text", c."activeLeafMessageId"
           FROM "ChatSearchPassage" p
           JOIN "Chat" c ON c."id" = p."chatId"
           WHERE p."id" = ANY(${[...ids]}::text[]) AND ${scopeSql(scope)}
         ),
         ${activePathSql(Prisma.sql`SELECT DISTINCT k."chatId", k."activeLeafMessageId" FROM candidates k`)}
-        SELECT k."id", k."chatId", k."userMessageId", k."turnAt", k."text", k."title"
+        SELECT k."id", k."chatId", k."userMessageId", k."turnAt", k."text"
         FROM candidates k
-        WHERE EXISTS (SELECT 1 FROM active_path a WHERE a."chatId" = k."chatId" AND a."id" = k."assistantMessageId")`);
+        WHERE EXISTS (SELECT 1 FROM active_path a WHERE a."chatId" = k."chatId" AND a."id" = k."assistantMessageId")`));
     },
 
     async recent(scope: PastChatScope, limit: number): Promise<PastChatPassageRow[]> {
-      return db.$queryRaw<PastChatPassageRow[]>(Prisma.sql`
+      return withTitles(await db.$queryRaw<StoredPassageRow[]>(Prisma.sql`
         WITH RECURSIVE ${activePathSql(Prisma.sql`SELECT DISTINCT c."id" AS "chatId", c."activeLeafMessageId"
           FROM "ChatSearchPassage" p
           JOIN "Chat" c ON c."id" = p."chatId"
@@ -216,11 +228,10 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
         newest AS MATERIALIZED (
           SELECT * FROM latest ORDER BY "turnAt" DESC, "chatId" LIMIT ${limit}
         )
-        SELECT p."id", p."chatId", p."userMessageId", p."turnAt", p."text", c."title"
+        SELECT p."id", p."chatId", p."userMessageId", p."turnAt", p."text"
         FROM newest n
         JOIN "ChatSearchPassage" p ON p."id" = n."id"
-        JOIN "Chat" c ON c."id" = p."chatId"
-        ORDER BY n."turnAt" DESC, n."chatId"`);
+        ORDER BY n."turnAt" DESC, n."chatId"`));
     }
   });
 }
