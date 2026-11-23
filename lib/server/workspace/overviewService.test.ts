@@ -122,16 +122,16 @@ describe("administrator Workspace overview", () => {
     }
   });
 
-  it("projects the owner of a personal chat, and none of a removed Project's chat, without touching session activity or selecting chat contents", async () => {
+  it("projects the owner of each session's chat without touching session activity or selecting chat contents", async () => {
     const findMany = vi.fn().mockResolvedValue([
       { ...record("personal"), chat: { user: { displayName: "Personal user" } } },
-      { ...record("project"), chat: { user: null } }
+      { ...record("other"), chat: { user: { displayName: "Other user" } } }
     ]);
     const update = vi.fn();
     const repository = createPrismaWorkspaceOverviewRepository({ workspaceSession: { findMany, update } } as never);
     const values = await repository.read();
     expect(values.map(({ context, user }) => ({ context, user }))).toEqual([
-      { context: "personal", user: "Personal user" }, { context: null, user: null }
+      { context: "personal", user: "Personal user" }, { context: "personal", user: "Other user" }
     ]);
     expect(update).not.toHaveBeenCalled();
     expect(findMany.mock.calls[0]![0].select.chat.select).not.toHaveProperty("title");

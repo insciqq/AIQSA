@@ -19,7 +19,6 @@ function chat(input: Partial<WorkspaceChatSummary> & { id: string; title: string
 function folder(input: Partial<FolderSummary> & { id: string; name: string }): FolderSummary {
   return {
     parentId: null,
-    projectMemory: "",
     sortOrder: 0,
     ...input
   };

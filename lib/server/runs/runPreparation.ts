@@ -315,7 +315,6 @@ export type SendRunPreparationSource = Readonly<{
     id: string;
     memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
     messageCount?: number;
-    projectMemory: string | null;
     workspaceEnabled?: boolean;
   }>;
   /**
@@ -348,7 +347,6 @@ export type RegenerateRunPreparationSource = Readonly<{
       defaultProvider: string;
       id: string;
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
-      projectMemory: string | null;
       workspaceEnabled?: boolean;
     }>;
     userMessage: Readonly<{

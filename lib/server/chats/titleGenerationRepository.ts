@@ -60,7 +60,7 @@ export function createChatTitleRepository(client: PrismaClient) {
           } } }
         });
         if (job.chat.archived || job.chat.permanentDeletionAt ||
-          job.chat.userId !== job.userId || job.chat.user?.status !== "active" ||
+          job.chat.userId !== job.userId || job.chat.user.status !== "active" ||
           job.chat.title !== job.expectedTitle || job.chat.titleRevision !== job.titleRevision ||
           !job.providerSnapshot || !job.credentialVersionId) {
           await tx.chatTitleGeneration.update({ where: { runId: job.runId },

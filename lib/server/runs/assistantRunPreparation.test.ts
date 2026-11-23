@@ -167,8 +167,7 @@ function sendSource() {
       activeLeafMessageId: null,
       defaultModelId: "fake-model",
       defaultProvider: "fake",
-      id: "chat-1",
-      projectMemory: null
+      id: "chat-1"
     },
     kind: "send" as const
   };
@@ -563,7 +562,7 @@ describe("bound chat Assistant rows", () => {
       source: {
         assistantMessage: { modelId: "fake-model", provider: "fake" },
         chat: { assistantId: "assistant-1", defaultModelId: "fake-model", defaultProvider: "fake", id: "chat-1",
-          projectMemory: null, ...chat },
+          ...chat },
         userMessage: { content: textMessageContent("Stored question"), id: "user-message-1", scheduledTaskPrompt: false }
       }
     };

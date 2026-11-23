@@ -105,7 +105,7 @@ describe("Telegram answer files: which go and how", () => {
 });
 
 describe("Telegram answer files: bytes through the owner's download authority", () => {
-  type Row = { byteSize: number; fileName: string; id: string; mimeType: string; projectId: string | null; status: string; storageKey: string;
+  type Row = { byteSize: number; fileName: string; id: string; mimeType: string; status: string; storageKey: string;
     userId: string | null };
 
   function reader(rows: readonly Row[], objects: Map<string, Buffer>, options: Readonly<{ failStorage?: boolean }> = {}) {
@@ -129,7 +129,7 @@ describe("Telegram answer files: bytes through the owner's download authority", 
   }
 
   const owned: Row = {
-    byteSize: 5, fileName: "report.txt", id: "attachment-1", mimeType: "text/plain", projectId: null, status: "ready", storageKey: "object-1",
+    byteSize: 5, fileName: "report.txt", id: "attachment-1", mimeType: "text/plain", status: "ready", storageKey: "object-1",
     userId: "user-1"
   };
 

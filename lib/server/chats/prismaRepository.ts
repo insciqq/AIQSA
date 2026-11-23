@@ -2007,7 +2007,6 @@ export function createPrismaChatRepository(
             id: true,
             name: true,
             parentId: true,
-            projectMemory: true,
             sortOrder: true
           }
         });
@@ -2234,7 +2233,7 @@ export function createPrismaChatRepository(
         return graph;
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
-    updateFolder: async ({ folderId, name, parentId, projectMemory, userId }) => {
+    updateFolder: async ({ folderId, name, parentId, userId }) => {
       const trimmed = typeof name === "string" ? name.trim() : undefined;
       if (typeof name === "string" && !trimmed) {
         return null;
@@ -2268,8 +2267,7 @@ export function createPrismaChatRepository(
             const result = await tx.folder.updateMany({
               data: {
                 ...(trimmed !== undefined ? { name: trimmed } : {}),
-                ...(parentId !== undefined ? { parentId } : {}),
-                ...(projectMemory !== undefined ? { projectMemory: projectMemory.slice(0, 12000) } : {})
+                ...(parentId !== undefined ? { parentId } : {})
               },
               where: {
                 id: folderId,
@@ -2286,7 +2284,6 @@ export function createPrismaChatRepository(
                 id: true,
                 name: true,
                 parentId: true,
-                projectMemory: true,
                 sortOrder: true
               },
               where: {
@@ -2378,7 +2375,6 @@ export function createPrismaChatRepository(
             id: true,
             name: true,
             parentId: true,
-            projectMemory: true,
             sortOrder: true
           },
           where: {

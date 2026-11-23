@@ -6,7 +6,7 @@ export const WORKSPACE_OVERVIEW_STATES = [
 export type WorkspaceOverviewState = (typeof WORKSPACE_OVERVIEW_STATES)[number];
 export type WorkspaceOverviewFilter = "active" | "all";
 export type WorkspaceOverviewRow = Readonly<{
-  /** Null for a chat that is no longer personal, such as a removed Project's chat awaiting deletion. */
+  /** Null for a runtime environment that no Workspace session accounts for. */
   context: "personal" | null;
   id: string;
   lastActiveAt: string | null;

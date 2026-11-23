@@ -14,7 +14,7 @@ import {
 
 type ProvenanceInput = Parameters<typeof turnProvenance>[0];
 
-const chat = { activeLeafMessageId: "leaf-1", defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", projectMemory: null };
+const chat = { activeLeafMessageId: "leaf-1", defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1" };
 const computer: FrozenComputerBinding = { arch: "arm64", cwd: "~/work", deviceId: "device-1", name: "Laptop", online: true, os: "darwin" };
 
 function occurrence(memory?: true): ScheduledOccurrenceAdmission {

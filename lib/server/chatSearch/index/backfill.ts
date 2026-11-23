@@ -46,7 +46,7 @@ export type ChatSearchBackfillInput = Readonly<{
 function eligibleChatWhere(): Prisma.ChatWhereInput {
   const { userId: _owner, ...rule } = chatSearchEligibleWhere("");
   void _owner;
-  return { ...rule, userId: { not: null } };
+  return rule;
 }
 
 const BACKGROUND_PRIORITY = Prisma.sql`LEAST(chat."updatedAt", clock_timestamp()::timestamp(3))`;
@@ -80,7 +80,7 @@ export async function runChatSearchBackfillPass(input: ChatSearchBackfillInput):
     INSERT INTO "ChatSearchState" ("chatId", "userId", "dirtyAt", "updatedAt")
     SELECT chat."id", chat."userId", ${BACKGROUND_PRIORITY}, CURRENT_TIMESTAMP
     FROM "Chat" AS chat
-    WHERE chat."id" = ANY(${candidates.map((chat) => chat.id)}::text[]) AND chat."userId" IS NOT NULL
+    WHERE chat."id" = ANY(${candidates.map((chat) => chat.id)}::text[])
     ON CONFLICT ("chatId") DO NOTHING`;
 
   let vectors = 0;

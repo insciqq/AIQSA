@@ -146,7 +146,6 @@ export type FolderRecord = {
   id: string;
   name: string;
   parentId: string | null;
-  projectMemory: string;
   sortOrder: number;
 };
 
@@ -178,7 +177,6 @@ export type ChatRepository = {
     folderId: string;
     name?: string | null;
     parentId?: string | null;
-    projectMemory?: string;
     userId: string;
   }): Promise<FolderRecord | null>;
   updateChat(input: {
@@ -752,11 +750,9 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
       return bodyError;
     }
     const name = optionalTextValue(body, "name");
-    const projectMemory = optionalTextValue(body, "projectMemory");
     const parentId = parentFolderValue(body);
     if (
       name === undefined &&
-      projectMemory === undefined &&
       parentId === undefined
     ) {
       return Response.json({ error: "folder_update_required" }, { status: 400 });
@@ -772,7 +768,6 @@ export function createUpdateFolderHandler(deps: ChatHandlerDeps) {
       folderId: params.folderId,
       name,
       parentId,
-      projectMemory,
       userId: result.session.userId
     });
 

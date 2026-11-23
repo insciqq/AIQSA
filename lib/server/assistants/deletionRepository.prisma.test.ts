@@ -89,13 +89,13 @@ describe("Prisma Assistant deletion", () => {
       const identity = { avatar, name: "Doomed Assistant" };
       await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`
-          INSERT INTO "Chat" (id, "userId", "projectId", "createdByUserId", "createdByDisplayName", title, "memoryMode",
+          INSERT INTO "Chat" (id, "userId", title, "memoryMode",
             "assistantId", "assistantOverrides", "updatedAt")
           VALUES
-            (${ownerChat}, ${ownerUserId}, NULL, NULL, '', 'Owner chat', 'EXCLUDED', ${assistantId}, '{"model":{"value":"x"}}'::jsonb, '2026-01-02 00:00:00'),
-            (${consumerChat}, ${consumerUserId}, NULL, NULL, '', 'Consumer chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
-            (${deletingChat}, ${ownerUserId}, NULL, NULL, '', 'Deleting chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
-            (${unboundChat}, ${ownerUserId}, NULL, NULL, '', 'Removed earlier', 'EXCLUDED', NULL, '{"search":{"mode":"off"}}'::jsonb, '2026-01-02 00:00:00')
+            (${ownerChat}, ${ownerUserId}, 'Owner chat', 'EXCLUDED', ${assistantId}, '{"model":{"value":"x"}}'::jsonb, '2026-01-02 00:00:00'),
+            (${consumerChat}, ${consumerUserId}, 'Consumer chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
+            (${deletingChat}, ${ownerUserId}, 'Deleting chat', 'EXCLUDED', ${assistantId}, NULL, '2026-01-02 00:00:00'),
+            (${unboundChat}, ${ownerUserId}, 'Removed earlier', 'EXCLUDED', NULL, '{"search":{"mode":"off"}}'::jsonb, '2026-01-02 00:00:00')
         `;
         await tx.$executeRaw`
           INSERT INTO "Message" (id, "chatId", role, content, status, "updatedAt")

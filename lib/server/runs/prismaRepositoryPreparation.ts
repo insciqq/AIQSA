@@ -957,8 +957,8 @@ export type TerminalChatSourceInput = Readonly<{
  * chat list (a monitoring check keeps its place, `chatListTime.ts`), a Temporary chat's deletion deadline moves to a
  * day after this answer, and a main-agent answer marks the chat for past-chat search, whatever its outcome, since the
  * pass reconciles the passages with the active branch (`lib/server/chatSearch/index/dirty.ts`). The chat row is
- * locked before the mark, in the order the index pass takes it. A chat that is gone, fenced for permanent deletion or
- * has no personal owner (a legacy Project chat) is left alone; its runs still settle.
+ * locked before the mark, in the order the index pass takes it. A chat that is gone or fenced for permanent deletion is
+ * left alone; its runs still settle.
  */
 export async function settleTerminalChatSource(
   tx: Prisma.TransactionClient,

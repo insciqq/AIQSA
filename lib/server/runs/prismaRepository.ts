@@ -356,7 +356,6 @@ export function createPrismaRunRepository(
         answerCompletedAt: true,
         workspaceWaitPending: true,
         assistantMessageId: true,
-        chat: { select: { userId: true } },
         chatId: true,
         errorPayload: true,
         id: true,
@@ -374,7 +373,6 @@ export function createPrismaRunRepository(
       assistantMessageId: run.assistantMessageId,
       chatId: run.chatId,
       id: run.id,
-      ...(run.chat.userId === null ? { legacyProjectChat: true as const } : {}),
       modelId: run.modelId,
       provider: run.provider,
       providerResponseId: run.providerResponseId,
@@ -688,7 +686,6 @@ export function createPrismaRunRepository(
           computerCwd: true,
           computerDeviceId: true,
           defaultProviderModel: { select: { connectionId: true, id: true } },
-          folder: { select: { projectMemory: true } },
           folderId: true,
           id: true,
           memoryMode: true,
@@ -714,7 +711,6 @@ export function createPrismaRunRepository(
         id: chat.id,
         memoryMode: chat.memoryMode,
         messageCount: chat._count.messages,
-        projectMemory: chat.folder?.projectMemory ?? null,
         title: chat.title,
         workspaceEnabled: chat.workspaceEnabled
       };
@@ -727,7 +723,7 @@ export function createPrismaRunRepository(
         loadChatCreationDefaults(prismaClient, userId).catch(retainRunPrismaCode),
         folderId
           ? prismaClient.folder.findFirst({
-              select: { id: true, projectMemory: true },
+              select: { id: true },
               where: { id: folderId, userId }
             }).catch(retainRunPrismaCode)
           : null
@@ -749,7 +745,6 @@ export function createPrismaRunRepository(
         // prepareRun must see the pre-conversion source mode.
         memoryMode: memoryMode === "TEMPORARY" ? "NORMAL" : memoryMode,
         messageCount: 0,
-        projectMemory: folder?.projectMemory ?? null,
         title: "New Chat",
         workspaceEnabled: false
       };
@@ -783,11 +778,6 @@ export function createPrismaRunRepository(
                 select: {
                   connectionId: true,
                   id: true
-                }
-              },
-              folder: {
-                select: {
-                  projectMemory: true
                 }
               },
               id: true,
@@ -833,7 +823,6 @@ export function createPrismaRunRepository(
         defaultProvider: sourceMessage.chat.defaultProviderModel?.connectionId ?? "",
         id: sourceMessage.chat.id,
         memoryMode: sourceMessage.chat.memoryMode,
-        projectMemory: sourceMessage.chat.folder?.projectMemory ?? null,
         workspaceEnabled: sourceMessage.chat.workspaceEnabled
       };
 

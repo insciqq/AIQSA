@@ -83,8 +83,6 @@ export type RunControlRecord = {
   assistantMessageId: string | null;
   chatId: string;
   id: string;
-  /** The run belongs to a legacy Project chat, which has no personal owner. */
-  legacyProjectChat?: true;
   modelId: string;
   provider: string;
   providerResponseId: string | null;
@@ -648,7 +646,6 @@ export type RunOwnedChatRecord = Readonly<{
   id: string;
   memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
   messageCount: number;
-  projectMemory: string | null;
   title: string;
   workspaceEnabled?: boolean;
 }>;
@@ -753,7 +750,6 @@ export type RunRepository = {
       defaultProvider: string;
       id: string;
       memoryMode?: "NORMAL" | "EXCLUDED" | "TEMPORARY";
-      projectMemory: string | null;
       workspaceEnabled?: boolean;
     };
     userMessage: {

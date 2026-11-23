@@ -29,7 +29,6 @@ export type FolderSummary = {
   id: string;
   name: string;
   parentId: string | null;
-  projectMemory: string;
   sortOrder: number;
 };
 

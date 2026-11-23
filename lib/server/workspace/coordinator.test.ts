@@ -2371,7 +2371,7 @@ describe("Workspace export transactions", () => {
   const lease = { operation: { generation: 2, owner: "export:run_1:token" }, runId: "run_1", runtimeSandboxId: "runtime_1",
     sessionId: "session_1", token: "token" };
   const output = { byteSize: 6, checksum: "c".repeat(64), mimeType: "text/plain", relativePath: "report.txt" };
-  const binding = { operationGeneration: 2, operationOwner: lease.operation.owner, projectId: null, runId: "run_1",
+  const binding = { operationGeneration: 2, operationOwner: lease.operation.owner, runId: "run_1",
     runtimeSandboxId: "runtime_1", sessionId: "session_1", userId: "user_1" } as unknown as WorkspaceExecutionBinding;
 
   it.each([
