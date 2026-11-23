@@ -858,3 +858,119 @@ describe("remote Workspace output batches", () => {
     await expect(collect(abandoned[0]!.body)).rejects.toThrow("workspace_output_export_failed");
   }, 30_000);
 });
+
+describe("remote Workspace output streams", () => {
+  const servers: ReturnType<typeof createWorkspaceRunnerServer>[] = [];
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeAllConnections();
+    })));
+  });
+
+  /** One runner over real HTTP whose next listing serves these sources, with the runner's export records. */
+  async function exporting(sources: readonly Readonly<{ body: ReadableStream<Uint8Array>; byteSize: number }>[]) {
+    const lines: string[] = [];
+    const write = process.stdout.write.bind(process.stdout) as (line: unknown) => boolean;
+    vi.spyOn(process.stdout, "write").mockImplementation((line) => {
+      if (!String(line).includes("\"runtime_lifecycle\"")) return write(line);
+      lines.push(String(line));
+      return true;
+    });
+    const local = new DeterministicWorkspaceRuntime(deterministicConfig);
+    const server = createWorkspaceRunnerServer({ runtime: local, token });
+    servers.push(server);
+    // A short keep-alive idle timeout brings the runner's close within the test (production: 5 s and Node's buffer).
+    Object.assign(server, { keepAliveTimeout: 50, keepAliveTimeoutBuffer: 0 });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const runtime = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token, runtimeMode: "remote",
+      runnerUrl: new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}`) });
+    const sessionId = "0199aabc-12ef-7abc-8abc-0123456789af";
+    const session = await runtime.ensureSession({ cpus: 1, diskMiB: deterministicConfig.diskMiB, imageRef: deterministicConfig.imageRef,
+      internetEnabled: false, memoryMiB: deterministicConfig.memoryMiB, runtimeSandboxId: null,
+      sandboxName: workspaceSandboxName(sessionId), operation, sessionId });
+    vi.spyOn(local, "collectOutputs").mockResolvedValueOnce(workspaceOutputCollection(sources.map(({ body, byteSize }, index) => ({
+      body, byteSize, checksum: "a".repeat(64), mimeType: "application/octet-stream",
+      opaqueFileId: index.toString(16).padStart(64, "0"), relativePath: `large-${index}.bin` })), undefined));
+    const outputs = await runtime.collectOutputs({ modelRunId: "run_stream", outputDirectory: workspaceRunOutputDirectory("run_stream"),
+      runtimeSandboxId: session.runtimeSandboxId, operation, sessionId });
+    const records = () => lines.map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((record) => record.stage === "export");
+    return { outputs, records };
+  }
+
+  /** A source served in 64 KiB chunks that fails once `failAt` bytes went out, if given. */
+  function source(byteSize: number, failAt?: number) {
+    const state = { served: 0, ended: false };
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (failAt !== undefined && state.served >= failAt) { controller.error(new Error("synthetic_source_failure")); return; }
+        if (state.served === byteSize) { state.ended = true; controller.close(); return; }
+        const size = Math.min(64 * 1024, byteSize - state.served);
+        state.served += size;
+        controller.enqueue(new Uint8Array(size).fill(state.served % 251));
+      }
+    }, { highWaterMark: 0 });
+    return { body, byteSize, state };
+  }
+
+  it("completes outputs the app drains slowly after the runner wrote all of them (production 2026-11-20)", async () => {
+    // Each ends at another offset of a 64 KiB socket read; every one of them failed while the runner kept the connection.
+    const sources = [0, 16_960, 32_768, 48_032].map((tail) => source(15 * 64 * 1024 + tail));
+    const { outputs, records } = await exporting(sources);
+    const readers = outputs.map((output) => output.body.getReader());
+    const received = await Promise.all(readers.map(async (reader) => (await reader.read()).value!.byteLength));
+    // The app waits on object storage while the rest sits in socket buffers, until each runner connection idled out
+    // (Node may add a second to the keep-alive timeout).
+    await vi.waitFor(() => expect(sources.every(({ state }) => state.ended)).toBe(true), { interval: 10, timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    // It then drains slowly, as its upload does, so the HTTP client pauses on the final bytes.
+    await Promise.all(readers.map(async (reader, index) => {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) return;
+        received[index] = received[index]! + next.value.byteLength;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }));
+    expect(received).toEqual(sources.map(({ byteSize }) => byteSize));
+    await vi.waitFor(() => expect(records().map(({ outcome, count }) => ({ outcome, count })).sort((a, b) => Number(a.count) - Number(b.count)))
+      .toEqual(sources.map(({ byteSize }) => ({ outcome: "completed", count: byteSize }))), { interval: 10, timeout: 2_000 });
+  }, 20_000);
+
+  it("names a runner stream that broke off, on both sides, with how far the runner got", async () => {
+    const byteSize = 512 * 1024;
+    const { outputs: [output], records } = await exporting([source(byteSize, 128 * 1024)]);
+    let received = 0;
+    const reader = output!.body.getReader();
+    const failure = await (async () => {
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) return null;
+          received += next.value.byteLength;
+        }
+      } catch (error) { return error; }
+    })();
+    expect(failure).toBeInstanceOf(WorkspaceRuntimeError);
+    expect(failure).toMatchObject({ code: "workspace_output_stream_incomplete" });
+    expect(received).toBeLessThan(byteSize);
+    await vi.waitFor(() => expect(records()).toEqual([expect.objectContaining({
+      outcome: "failed", code: "workspace_output_export_failed", count: 128 * 1024 })]), { interval: 10, timeout: 2_000 });
+  }, 20_000);
+
+  it.each([{ length: 6 }, { length: 12 }])("refuses a $length-byte body declared as 10 bytes as incomplete", async ({ length }) => {
+    const listing = { batchId: "b".repeat(32), outputs: [{ batchId: "b".repeat(32), byteSize: 10, checksum: "c".repeat(64),
+      mimeType: "text/plain", opaqueFileId: "d".repeat(64), relativePath: "out.txt" }] };
+    vi.stubGlobal("fetch", vi.fn(async (url: URL) => String(url).includes("/outputs/list")
+      ? Response.json(listing) : new Response(new Uint8Array(length))));
+    const runtime = new RemoteWorkspaceRuntime({ ...deterministicConfig, runnerToken: token,
+      runnerUrl: new URL("http://runner.invalid"), runtimeMode: "remote" });
+    const [output] = await runtime.collectOutputs({ modelRunId: "run_stream", outputDirectory: workspaceRunOutputDirectory("run_stream"),
+      runtimeSandboxId: "sandbox_stream", operation, sessionId: "0199aabc-12ef-7abc-8abc-0123456789b0" });
+    await expect(collect(output!.body)).rejects.toMatchObject({ code: "workspace_output_stream_incomplete" });
+  });
+});
