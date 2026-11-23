@@ -122,8 +122,14 @@ function fakeDb(input: Readonly<{
     attachment: { findMany: async ({ where }: { where: Record<string, unknown> }) => (input.attachments ?? []).filter((row) =>
       (where.chatId === undefined || row.chatId === where.chatId) && inList(where.id, row.id) &&
       inList(where.producerModelRunId, row.producerModelRunId) && (!where.origin || row.origin !== "USER_UPLOAD")) },
-    chatSearchExcludedMessage: { findMany: async ({ where }: { where: { chatId: string; userId: string } }) => (input.excluded ?? [])
-      .filter((row) => row.chatId === where.chatId && row.userId === where.userId).map(({ messageId }) => ({ messageId })) },
+    chatSearchExcludedMessage: {
+      findFirst: async ({ where }: { where: { chatId: string } }) => {
+        const row = (input.excluded ?? []).find((excluded) => excluded.chatId === where.chatId);
+        return row ? { messageId: row.messageId } : null;
+      },
+      findMany: async ({ where }: { where: { chatId: string; userId: string } }) => (input.excluded ?? [])
+        .filter((row) => row.chatId === where.chatId && row.userId === where.userId).map(({ messageId }) => ({ messageId }))
+    },
     chat: { findFirst: async ({ where }: { where: { id: string; userId: string } }) => {
       const found = input.chats.find((row) => row.id === where.id);
       return found && chatSearchEligible(found, where.userId)
@@ -134,9 +140,7 @@ function fakeDb(input: Readonly<{
       // The chat's first user message: the seeds are in time order.
       findFirst: async ({ where }: { where: { chatId: string; role: string } }) => {
         const first = input.messages.find((row) => row.chatId === where.chatId && row.role === where.role);
-        return first ? { content: { blocks: first.text ? [{ text: first.text, type: "text" }] : [] },
-          searchExclusion: (input.excluded ?? []).some((row) => row.chatId === first.chatId && row.messageId === first.id)
-            ? { messageId: first.id } : null } : null;
+        return first ? { content: { blocks: first.text ? [{ text: first.text, type: "text" }] : [] } } : null;
       },
       findMany: async ({ where }: { where: { chatId: string; id?: { in: string[] } } }) => input.messages
       .filter((row) => row.chatId === where.chatId && inList(where.id, row.id))
@@ -237,13 +241,17 @@ describe("read_past_chat over the stored chat", () => {
       excluded.map((messageId) => ({ chatId: "chat-1", messageId, userId: OWNER })), titled, savedValues)
       .read({ input: { chat_id: "chat-1" }, ownerId: OWNER, timeZone: "UTC" })).chatTitle;
     const fallback = { title: "Prepare the close checklist" };
-    // A title made from a first message kept out of search, by the first line or by the title model, is not shown.
+    // While the chat holds any message kept out of search, no title is shown: made from the first line, by the title
+    // model, or by the owner, and whichever message is kept out.
     expect(await titleOf(["u1"], fallback)).toBe("Untitled chat");
+    expect(await titleOf(["a1"], fallback)).toBe("Untitled chat");
     expect(await titleOf(["u1"], { title: "Close checklist", titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 1 }))
       .toBe("Untitled chat");
-    // The owner's own title stays, whether renamed before or after the title model named the chat.
-    expect(await titleOf(["u1"], { titleRevision: 1 })).toBe("Quarter close");
-    expect(await titleOf(["u1"], { titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 2 })).toBe("Quarter close");
+    expect(await titleOf(["u1"], { titleRevision: 1 })).toBe("Untitled chat");
+    expect(await titleOf(["a2e"], { titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 2 })).toBe("Untitled chat");
+    // Without such a message the owner's own title stays, whether renamed before or after the title model named the chat.
+    expect(await titleOf([], { titleRevision: 1 })).toBe("Quarter close");
+    expect(await titleOf([], { titleGeneration: { status: "settled", titleRevision: 0 }, titleRevision: 2 })).toBe("Quarter close");
     expect(await titleOf([], fallback)).toBe("Prepare the close checklist");
     // A saved value in the first line is screened in the title made from it.
     expect(await titleOf([], fallback, ["close checklist"])).toBe("Prepare the [REDACTED:SAVED_SECRET]");

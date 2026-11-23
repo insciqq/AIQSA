@@ -8,7 +8,7 @@ export const ORDINARY: ChatSearchEligibilityFields = Object.freeze({
 });
 
 /** A title the owner set: search keeps it as it is. */
-export const OWNER_TITLE: ChatSearchTitleOrigin = Object.freeze({ firstMessage: null, serverSet: false });
+export const OWNER_TITLE: ChatSearchTitleOrigin = Object.freeze({ firstMessage: null, serverSet: false, withholdsMessages: false });
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 1, 12, minute));
 

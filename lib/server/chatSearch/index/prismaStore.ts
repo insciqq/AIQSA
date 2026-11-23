@@ -46,25 +46,28 @@ export const chatSearchTitleSelect = {
 } as const satisfies Prisma.ChatSelect;
 
 /**
- * Where the chat's title came from (`ChatSearchTitleOrigin`), in the caller's transaction. Every rename and every
+ * What decides the chat's search title (`ChatSearchTitleOrigin`), in the caller's transaction. Every rename and every
  * title the title model applies moves `titleRevision` on, and only a rename leaves no settled title request one
  * revision behind, so a title is the server's while the revision is 0 or the model set it last. A rename that races a
- * request still in flight counts as the model's, which at worst leaves that chat untitled in search.
+ * request still in flight counts as the model's, which at worst leaves that chat untitled in search. A chat holding a
+ * withheld message goes untitled whatever the origin (`chatSearchTitle`), so its first message is not read.
  */
 export async function chatSearchTitleOrigin(
-  db: Pick<Prisma.TransactionClient, "message">,
+  db: Pick<Prisma.TransactionClient, "chatSearchExcludedMessage" | "message">,
   chat: Prisma.ChatGetPayload<{ select: typeof chatSearchTitleSelect }>
 ): Promise<ChatSearchTitleOrigin> {
   const generation = chat.titleGeneration;
   const serverSet = chat.titleRevision === 0 ||
     (generation?.status === "settled" && chat.titleRevision === generation.titleRevision + 1);
-  if (!serverSet) return { firstMessage: null, serverSet };
+  const withheld = await db.chatSearchExcludedMessage.findFirst({ select: { messageId: true }, where: { chatId: chat.id } });
+  if (withheld !== null) return { firstMessage: null, serverSet, withholdsMessages: true };
+  if (!serverSet) return { firstMessage: null, serverSet, withholdsMessages: false };
   const first = await db.message.findFirst({
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { content: true, searchExclusion: { select: { messageId: true } } },
+    select: { content: true },
     where: { chatId: chat.id, role: "user" }
   });
-  return { firstMessage: first ? { content: first.content, excluded: first.searchExclusion !== null } : null, serverSet };
+  return { firstMessage: first ? { content: first.content } : null, serverSet, withholdsMessages: false };
 }
 
 function sameVersion(dirtyAt: Date | null, claim: ChatSearchClaim): boolean {

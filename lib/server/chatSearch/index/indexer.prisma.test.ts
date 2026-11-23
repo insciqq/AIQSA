@@ -95,6 +95,37 @@ async function fence(chatId: string): Promise<void> {
     where: { id: chatId } });
 }
 
+/**
+ * Indexes one chat with `saved` as its owner's saved secrets, and names it as search results for `query` and a direct
+ * read of the chat do.
+ */
+function searchTitles(input: Readonly<{
+  userId: string; chatId: string; query: string; saved?: readonly string[]; embedder?: ChatSearchEmbedder;
+}>) {
+  const { chatId, query, userId } = input;
+  const savedSecretValues = async () => input.saved ?? [];
+  const embedder = input.embedder ?? fakeEmbedder({ kind: "unset" }).embedder;
+  const store = createPrismaChatSearchIndexStore(prisma);
+  const search = createPastChatSearch({ embedder, recordUsage: () => undefined, savedSecretValues,
+    store: createPrismaPastChatSearchStore(prisma) });
+  const reader = createPastChatReader({ savedSecretValues, store: createPrismaPastChatReadStore(prisma) });
+  return {
+    async index() {
+      await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+      for (let pass = 0; pass < 10; pass += 1) {
+        if (!(await runChatSearchIndexPassOn({ ...store, loadSavedSecretValues: savedSecretValues },
+          { embedder, limits: { ownerIds: [userId] } })).more) return;
+      }
+    },
+    async titles() {
+      const found = await search.search({ currentChatId: randomUUID(), input: { query }, ownerId: userId, timeZone: "UTC" });
+      const read = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
+      return { read: read.kind === "read" ? read.result.chatTitle : read.kind,
+        results: found.kind === "searched" ? found.result.results.map((result) => result.chatTitle) : found.kind };
+    }
+  };
+}
+
 describe("the past-chat index in PostgreSQL", () => {
   it("indexes a marked chat turn by turn with its files, words searchable and vectors written", async () => {
     const userId = await owner();
@@ -346,24 +377,7 @@ describe("the past-chat index in PostgreSQL", () => {
     // A new chat takes its first message's first line as its title (`titleFromMessageContent`), here part of a saved secret.
     const { chatId, ids } = await chat(userId, [[saved, "Stored."], ["Which port?", "Port 5432 on the replica."]],
       { title: titleFromMessageContent(text(saved)) });
-    const words = fakeEmbedder({ kind: "unset" });
-    const store = createPrismaChatSearchIndexStore(prisma);
-    const index = async () => {
-      await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
-      for (let pass = 0; pass < 10; pass += 1) {
-        if (!(await runChatSearchIndexPassOn({ ...store, loadSavedSecretValues: async () => [saved] },
-          { embedder: words.embedder, limits: { ownerIds: [userId] } })).more) return;
-      }
-    };
-    const search = createPastChatSearch({ embedder: words.embedder, recordUsage: () => undefined, savedSecretValues: async () => [saved],
-      store: createPrismaPastChatSearchStore(prisma) });
-    const reader = createPastChatReader({ savedSecretValues: async () => [saved], store: createPrismaPastChatReadStore(prisma) });
-    const titles = async () => {
-      const found = await search.search({ currentChatId: randomUUID(), input: { query: "replica" }, ownerId: userId, timeZone: "UTC" });
-      const read = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
-      return { read: read.kind === "read" ? read.result.chatTitle : read.kind,
-        results: found.kind === "searched" ? found.result.results.map((result) => result.chatTitle) : found.kind };
-    };
+    const { index, titles } = searchTitles({ chatId, query: "replica", saved: [saved], userId });
 
     await index();
     const texts = (await passages(chatId)).map((row) => row.text);
@@ -378,10 +392,38 @@ describe("the past-chat index in PostgreSQL", () => {
     await index();
     expect((await passages(chatId)).map((row) => row.text)).toEqual(["Chat:\n\nUser: Which port?\n\nAssistant: Port 5432 on the replica."]);
     expect(await titles()).toEqual({ read: "Untitled chat", results: ["Untitled chat"] });
-    // The owner's own title is the owner's words and stays.
+    // Even a title the owner sets later stays out while the chat holds a withheld message.
     await prisma.chat.update({ data: { title: "Replica settings", titleRevision: { increment: 1 } }, where: { id: chatId } });
     await index();
-    expect(await titles()).toEqual({ read: "Replica settings", results: ["Replica settings"] });
+    expect((await passages(chatId)).map((row) => row.text)).toEqual(["Chat:\n\nUser: Which port?\n\nAssistant: Port 5432 on the replica."]);
+    expect(await titles()).toEqual({ read: "Untitled chat", results: ["Untitled chat"] });
+  });
+
+  it("names a chat untitled while it holds any withheld message, whichever message it is and whoever set the title", async () => {
+    const userId = await owner();
+    // Only the first answer is withheld; the title the server made from the first question would still name that turn.
+    const first = await chat(userId, [["Reorg headcount plan\nWho moves where?", "Withheld answer"], ["Which floor?", "The fourth floor."]],
+      { title: titleFromMessageContent(text("Reorg headcount plan")) });
+    // The first question is withheld and its answer, whose run owned the title request, was deleted with that request
+    // (`ChatTitleGeneration` cascades): the model's title now looks like the owner's (revision 1, no request behind it).
+    const second = await chat(userId, [["Salary bands for the team", "Withheld turn"], ["Which floor?", "The fifth floor."]],
+      { title: "Team salary bands", titleRevision: 1 });
+    for (const [chatId, messageId] of [[first.chatId, first.ids[1]!], [second.chatId, second.ids[0]!]] as const) {
+      await prisma.$executeRaw`
+        INSERT INTO "ChatSearchExcludedMessage" ("chatId", "messageId", "userId") VALUES (${chatId}, ${messageId}, ${userId})`;
+    }
+    const fake = fakeEmbedder();
+    const named = [first, second].map(({ chatId }) => searchTitles({ chatId, embedder: fake.embedder, query: "floor", userId }));
+    for (const { index } of named) await index();
+    for (const [{ chatId }, floor] of [[first, "fourth"], [second, "fifth"]] as const) {
+      expect((await passages(chatId)).map((row) => row.text)).toEqual([`Chat:\n\nUser: Which floor?\n\nAssistant: The ${floor} floor.`]);
+    }
+    // Nothing of either title reaches the embedding model.
+    expect(fake.embedded.size).toBeGreaterThan(0);
+    expect([...fake.embedded.keys()].join("\n")).not.toMatch(/Reorg|salary/iu);
+    for (const { titles } of named) {
+      expect(await titles()).toEqual({ read: "Untitled chat", results: ["Untitled chat", "Untitled chat"] });
+    }
   });
 
   it("records past-chat search usage without a Memory binding, as the usage checks allow", async () => {
