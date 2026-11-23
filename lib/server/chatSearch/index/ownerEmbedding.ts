@@ -6,8 +6,9 @@ import { MEMORY_SWITCH_DEFAULTS } from "../../../contracts/memoryNote";
  * the old Memory indexed and embedded history only for such owners. Every other owner's chats are still indexed by
  * words, which stays in the installation, so turning a switch off keeps the passages and stops the searches
  * (`agent_docs/MEMORY.md`); nothing is sent for them until the switch is on again, when the backfill's vectors sweep
- * (`./backfill.ts`) marks their chats within a minute. The pass asks right before each embedding call (`./pass.ts`), so
- * a switch turned off while a chat is being embedded stops the requests that follow.
+ * (`./backfill.ts`) marks their chats within a minute. The pass asks right before each embedding call, in the same
+ * query that asks whether the chat may still be indexed (`embeddingPermission` in `./store.ts`), so a switch turned off,
+ * or the chat excluded or deleted, while it is being embedded stops the requests that follow.
  */
 
 /** The note a chat settles with when its words are indexed and its owner does not allow vectors now. */

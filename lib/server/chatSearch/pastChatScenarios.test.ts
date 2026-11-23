@@ -185,7 +185,7 @@ const indexStore: ChatSearchIndexStore = {
       titleOrigin: OWNER_TITLE };
   },
   loadSavedSecretValues: async () => [],
-  ownerAllowsEmbedding: async () => true,
+  embeddingPermission: async () => "allowed",
   async reconcile(claim, target) {
     for (let index = passages.length - 1; index >= 0; index -= 1) if (passages[index]!.chatId === claim.chatId) passages.splice(index, 1);
     if (target.kind === "clear") {

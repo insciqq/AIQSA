@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { createPrismaChatRepository } from "../../chats/prismaRepository";
 import { titleFromMessageContent } from "../../chats/titlePolicy";
 import { prisma } from "../../prisma";
 import { SAVED_SECRET_MARKER } from "../../redaction/savedSecrets";
@@ -348,6 +349,39 @@ describe("the past-chat index in PostgreSQL", () => {
     // The two turns still without a vector, in one request.
     expect(calls).toBe(2);
     expect((await passages(chatId)).every((row) => row.embeddingProviderModelId === "fake-embed-a")).toBe(true);
+  });
+
+  it.each([
+    ["excluded", "excluded"],
+    ["fenced for permanent deletion", "fenced"],
+    ["deleted", "deleted"]
+  ] as const)("sends no further request once the chat is %s during its first one, and leaves nothing of it", async (_label, change) => {
+    const userId = await owner();
+    const { chatId } = await chat(userId, [["Hotel?", "The river one."], ["Train?", "The 9:10."], ["Pack?", "An umbrella."]]);
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+    let calls = 0;
+    const embedder: ChatSearchEmbedder = {
+      currentModel: async () => ({ kind: "model", providerModelId: "fake-embed-a" }),
+      async embed(request) {
+        calls += 1;
+        if (calls === 1) {
+          if (change === "excluded") {
+            await expect(createPrismaChatRepository(prisma).setMemoryMode({ chatId, mode: "EXCLUDED", userId }))
+              .resolves.toEqual({ kind: "ok" });
+          } else if (change === "fenced") {
+            await fence(chatId);
+          } else {
+            await prisma.chat.delete({ where: { id: chatId } });
+          }
+        }
+        return { dimension: 3, vectors: request.texts.map((value) => [value.length, 1, 0.5]) };
+      }
+    };
+    expect(await runChatSearchIndexPass({ db: prisma, embedder, limits: { batchTexts: 1, ownerIds: [userId] } }))
+      .toMatchObject({ failed: 0, indexed: 1, more: false, ...(change === "fenced" ? { cleared: 1 } : { gone: 1 }) });
+    expect(calls).toBe(1);
+    expect(await passages(chatId)).toEqual([]);
+    expect(await prisma.chatSearchState.findUnique({ where: { chatId } })).toBeNull();
   });
 
   it("builds no passage for a turn with a message the old Memory kept out, and follows the rest of the branch", async () => {

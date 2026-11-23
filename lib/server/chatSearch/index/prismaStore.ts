@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import { chatSearchEligibilityFields, chatSearchEligibilitySelect } from "../eligibility";
+import { chatSearchEligibilityFields, chatSearchEligibilitySelect, chatSearchEligibleSql } from "../eligibility";
 import { chatSearchOwnerEmbeddingSql } from "./ownerEmbedding";
 import type { ChatSearchChatSnapshot, ChatSearchSourceMessage, ChatSearchTitleOrigin } from "./passages";
 import { planChatSearchPassages, type StoredChatSearchPassage } from "./plan";
@@ -224,10 +224,13 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
       return chatSearchSavedSecretValues(db, userId);
     },
 
-    async ownerAllowsEmbedding(userId) {
-      const [row] = await db.$queryRaw<Array<{ allowed: boolean }>>`
-        SELECT ${chatSearchOwnerEmbeddingSql(Prisma.sql`${userId}`)} AS "allowed"`;
-      return row?.allowed === true;
+    async embeddingPermission({ chatId, userId }) {
+      const [row] = await db.$queryRaw<Array<{ chat: boolean; owner: boolean }>>`
+        SELECT
+          EXISTS (SELECT 1 FROM "Chat" AS c WHERE c."id" = ${chatId} AND ${chatSearchEligibleSql("c", userId)}) AS "chat",
+          ${chatSearchOwnerEmbeddingSql(Prisma.sql`${userId}`)} AS "owner"`;
+      if (row?.chat !== true) return "chat_left";
+      return row.owner === true ? "allowed" : "owner_off";
     },
 
     async reconcile(claim, target) {
