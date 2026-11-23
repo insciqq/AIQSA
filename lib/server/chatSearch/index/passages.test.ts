@@ -190,7 +190,7 @@ describe("past-chat passages", () => {
   it("names a chat by what search holds of the first message its title was made from", () => {
     const saved = "DB_PASSWORD=fixture-pass-42\r\nDB_HOST=cache.example";
     const firstLine = "DB_PASSWORD=fixture-pass-42";
-    const origin = (content: unknown, excluded = false) => ({ firstMessage: { content, excluded }, serverSet: true });
+    const origin = (content: unknown) => ({ firstMessage: { content }, serverSet: true, withholdsMessages: false });
     const headerOf = (title: string, titleOrigin: Parameters<typeof chatSearchTitle>[1], values: readonly string[] = []) => {
       const passages = buildChatSearchPassages(chatSnapshot({ title, titleOrigin, turns: [{ answer: "Stored.", question: saved }] }), values);
       return passages[0]!.text.split("\n")[0];
@@ -201,16 +201,24 @@ describe("past-chat passages", () => {
     expect(chatSearchTitle(`Branch: ${firstLine}`, origin(text(saved)), [saved])).toBe(`Branch: ${SAVED_SECRET_MARKER}`);
     // A title the model made from that turn, or one that does not hold the line, goes untitled.
     expect(chatSearchTitle("Database credentials", origin(text(saved)), [saved])).toBe("");
-    // The first message was kept out of search: no title made from it is shown, nor its first line in any passage.
-    const kept = origin(text("Notes about the reorg\nmore"), true);
-    expect(chatSearchTitle("Notes about the reorg", kept, [])).toBe("");
-    expect(headerOf("Notes about the reorg", kept)).toBe("Chat:");
-    expect(chatSearchPassageTitle(buildChatSearchPassages(chatSnapshot({ title: "Notes about the reorg", titleOrigin: kept,
-      turns: [{ answer: "A", question: "Q" }] }), [])[0]!.text)).toBe("");
     // Nothing to screen: the stored title stays, and so does any title the owner set.
     expect(chatSearchTitle("Trip planning", origin(text("Where should we stay?")), [])).toBe("Trip planning");
-    expect(chatSearchTitle(firstLine, { firstMessage: null, serverSet: false }, [saved])).toBe(firstLine);
-    expect(chatSearchTitle(firstLine, { firstMessage: { content: text(saved), excluded: true }, serverSet: false }, [])).toBe(firstLine);
+    expect(chatSearchTitle(firstLine, { firstMessage: null, serverSet: false, withholdsMessages: false }, [saved])).toBe(firstLine);
+  });
+
+  it("leaves a chat untitled in search while it holds any message search never holds, whoever set the title", () => {
+    // Server-set from the first message, a model title whose request went with its answer (now counted as the
+    // owner's), and the owner's own rename: none is shown while the chat holds a withheld message.
+    for (const withheld of [
+      { firstMessage: null, serverSet: true, withholdsMessages: true },
+      { firstMessage: null, serverSet: false, withholdsMessages: true }
+    ]) {
+      expect(chatSearchTitle("Notes about the reorg", withheld, [])).toBe("");
+      const [passage] = buildChatSearchPassages(chatSnapshot({ title: "Notes about the reorg", titleOrigin: withheld,
+        turns: [{ answer: "A", question: "Q" }] }), []);
+      expect(passage!.text.split("\n")[0]).toBe("Chat:");
+      expect(chatSearchPassageTitle(passage!.text)).toBe("");
+    }
   });
 
   it("screens the title as it screens the turn's words, and reads it back from the header", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChatSearchEmbeddingError, type ChatSearchEmbedder, type ChatSearchEmbeddingModel, type ChatSearchEmbedRequest } from "../embedder";
+import { chatSearchEligible } from "../eligibility";
 import { chatSnapshot, longAnswer, type FixtureTurn } from "./indexer.testFixtures";
 import type { ChatSearchChatSnapshot } from "./passages";
 import { chatSearchRetryDelayMs, runChatSearchIndexPassOn } from "./pass";
@@ -52,7 +53,11 @@ function memoryStore(clock: { now: Date }) {
     },
     async loadSnapshot(chatId) { return chats.get(chatId) ?? null; },
     async loadSavedSecretValues(userId) { return secrets.get(userId) ?? []; },
-    async ownerAllowsEmbedding(userId) { return !ownersOff.has(userId); },
+    async embeddingPermission({ chatId, userId }) {
+      const chat = chats.get(chatId);
+      if (!chat || !chatSearchEligible(chat.eligibility, userId)) return "chat_left";
+      return ownersOff.has(userId) ? "owner_off" : "allowed";
+    },
     async reconcile(claim, target) {
       if (!chats.has(claim.chatId) || !states.has(claim.chatId)) return { kind: "gone" };
       if (!same(states.get(claim.chatId), claim)) return { kind: "stale" };
@@ -310,6 +315,33 @@ describe("the past-chat index pass", () => {
     expect(fake.calls).toHaveLength(3);
     expect(memory.chatPassages("chat-1").every((row) => row.embedding !== null)).toBe(true);
     expect(memory.states.get("chat-1")).toMatchObject({ dirtyAt: null, lastErrorCode: null });
+  });
+
+  it.each([
+    ["excluded, its passages cleared with it", "cleared_by_writer", { memoryMode: "EXCLUDED" as const }],
+    ["fenced for permanent deletion, its passages left to the pass", "left", { permanentDeletionAt: new Date() }],
+    ["deleted", "deleted", {}]
+  ])("sends nothing more of a chat %s during its first request, and clears it", async (_label, change, eligibility) => {
+    const { fake, memory, run } = setup([{ answer: "The river hotel.", question: "Which hotel?" },
+      { answer: "The 9:10.", question: "Which train?" }, { answer: "An umbrella.", question: "What to pack?" }]);
+    fake.state.during = () => {
+      const chat = memory.chats.get("chat-1")!;
+      if (change === "deleted") memory.chats.delete("chat-1");
+      else memory.chats.set("chat-1", { ...chat, eligibility: { ...chat.eligibility, ...eligibility } });
+      // The writer that excludes or deletes a chat drops its state and passages in its own transaction (`clearChatSearch`).
+      if (change !== "left") {
+        memory.states.delete("chat-1");
+        for (const row of memory.chatPassages("chat-1")) memory.passages.delete(row.id);
+      }
+    };
+    const summary = await run({ limits: { batchTexts: 1 } });
+    expect(fake.calls).toHaveLength(1);
+    // The request already out lands on a passage only while the pass has not cleared it yet; nothing is kept.
+    expect(summary).toMatchObject({ failed: 0, indexed: 1, more: false,
+      ...(change === "left" ? { cleared: 1, embedded: 1, gone: 0 } : { cleared: 0, embedded: 0, gone: 1 }) });
+    expect(memory.chatPassages("chat-1")).toEqual([]);
+    expect(memory.states.has("chat-1")).toBe(false);
+    expect(await run()).toMatchObject({ claimed: 0 });
   });
 
   it("never embeds with another model while the role is unusable, and says why", async () => {

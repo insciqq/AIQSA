@@ -136,6 +136,12 @@ describe("past-chat search call sites", () => {
       const outcome = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
       return outcome.kind === "read" ? outcome.result.messages.map((message) => message.text) : outcome.kind;
     };
+    /** The title a direct read names the chat by, and the first line of each of its passages. */
+    const named = async (chatId: string) => {
+      const outcome = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
+      const rows = await prisma.chatSearchPassage.findMany({ orderBy: { turnAt: "asc" }, select: { text: true }, where: { chatId } });
+      return { headers: rows.map((row) => row.text.split("\n")[0]), read: outcome.kind === "read" ? outcome.result.chatTitle : outcome.kind };
+    };
 
     const copy = await createPrismaMessageBranchRepository(prisma).createChatBranchFromMessage({
       sourceMessageId: laterAnswer.id, userId
@@ -147,6 +153,8 @@ describe("past-chat search call sites", () => {
     for (const chatId of [chat.id, copy!.id]) {
       expect(await questionsIn(chatId)).toHaveLength(1);
       expect(await readTexts(chatId)).toEqual(["And the train?", "The 9:10 to Sintra."]);
+      // A chat holding a withheld message is untitled in search, and so is the copy that carries its rows.
+      expect(await named(chatId)).toEqual({ headers: ["Chat:"], read: "Untitled chat" });
     }
 
     // A Resume under the retired disclosure changes nothing; the current one makes the whole chat searchable.
@@ -164,7 +172,10 @@ describe("past-chat search call sites", () => {
     expect(await questionsIn(chat.id)).toEqual([question.id, later.id]);
     expect(await readTexts(chat.id)).toEqual(["Where should we stay?", "Alfama, near the river.", "And the train?",
       "The 9:10 to Sintra."]);
+    // Resume cleared the rows, so the title returns in every passage and the read.
+    expect(await named(chat.id)).toEqual({ headers: ["Chat: Lisbon trip", "Chat: Lisbon trip"], read: "Lisbon trip" });
     // The copy is a chat of its own: its rows stay until it is resumed itself.
     expect(await excludedIn(copy!.id)).toHaveLength(1);
+    expect(await named(copy!.id)).toEqual({ headers: ["Chat:"], read: "Untitled chat" });
   });
 });

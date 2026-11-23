@@ -31,7 +31,13 @@ export type ChatSearchReconcileOutcome =
   /** The chat was deleted or fenced for permanent deletion: it has no state or passages left. */
   | Readonly<{ kind: "gone" }>;
 
-export type ChatSearchPassageToEmbed = Readonly<{ id: string; text: string; contentHash: string }>;
+/**
+ * `allowed`; `owner_off` when the owner does not allow vectors now; `chat_left` when the chat was deleted, fenced for
+ * deletion or otherwise left search (Excluded, Temporary) since it was claimed.
+ */
+export type ChatSearchEmbeddingPermission = "allowed" | "owner_off" | "chat_left";
+
+export type ChatSearchPassageToEmbed =Readonly<{ id: string; text: string; contentHash: string }>;
 
 export type ChatSearchEmbeddingWrite = Readonly<{ id: string; contentHash: string; vector: readonly number[] }>;
 
@@ -53,8 +59,12 @@ export type ChatSearchIndexStore = Readonly<{
    */
   loadSnapshot(chatId: string): Promise<ChatSearchChatSnapshot | null>;
   loadSavedSecretValues(userId: string): Promise<readonly string[]>;
-  /** Whether the owner's passages may go to the embedding model now (`./ownerEmbedding.ts`). */
-  ownerAllowsEmbedding(userId: string): Promise<boolean>;
+  /**
+   * Whether the chat's passages may go to the embedding model now, as committed, in one query: the chat may still be
+   * indexed (`chatSearchEligible`: it exists, is the owner's ordinary chat and is not fenced for deletion), then the
+   * owner allows vectors (`./ownerEmbedding.ts`).
+   */
+  embeddingPermission(claim: Pick<ChatSearchClaim, "chatId" | "userId">): Promise<ChatSearchEmbeddingPermission>;
   /** Writes the target if the claim's version still holds (`planChatSearchPassages`). */
   reconcile(claim: ChatSearchClaim, target: ChatSearchReconcileTarget): Promise<ChatSearchReconcileOutcome>;
   /** The chat's passages without a vector of this model, newest turn first. */

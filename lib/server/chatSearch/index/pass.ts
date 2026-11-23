@@ -13,7 +13,7 @@ import type { ChatSearchClaim, ChatSearchIndexStore, ChatSearchPassageToEmbed, C
  * batches, newest turns first. A provider failure backs the chat off with a content-free code and never touches its
  * words. Nothing here waits on the user's answer: chats are marked dirty after it settles (`./dirty.ts`). Vectors are
  * written only for an owner who allows them right before each call (`./ownerEmbedding.ts`); any other owner's chat
- * settles with its words alone.
+ * settles with its words alone, and a chat that left search meanwhile sends nothing more and is cleared.
  *
  * Freshness: the worker runs a pass every `CHAT_SEARCH_INDEX_PASS_INTERVAL_MS` while idle and the next one at once
  * while a pass reports `more`. A new turn's mark carries the current time and claims go newest mark first, so it is
@@ -237,14 +237,16 @@ export async function runChatSearchIndexPassOn(
       const rows = await store.passagesToEmbed({
         chatId: claim.chatId, limit: limits.passagesPerChat + 1, providerModelId: model.providerModelId
       });
-      let ownerOff = false;
+      let stop: "owner_off" | "chat_left" | null = null;
       for (const batch of batches(rows.slice(0, limits.passagesPerChat), limits)) {
-        // An inactive account, or Memory or past-chat search off: nothing more goes to the provider. Asked right before
-        // every request, since one chat's requests can take a while and the owner may turn search off meanwhile; the
-        // vectors already written stay, and no retry follows, since the backfill marks the chat again once vectors are
-        // allowed (`./backfill.ts`).
-        if (!await store.ownerAllowsEmbedding(claim.userId)) {
-          ownerOff = true;
+        // Asked right before every request, since one chat's requests can take a while. The chat left search (deleted,
+        // fenced for deletion, excluded): the prefetched texts are no longer the index's to send, and the chat is
+        // cleared as one that left before its words were rewritten. An inactive account, or Memory or past-chat search
+        // off: nothing more goes to the provider; the vectors already written stay, and no retry follows, since the
+        // backfill marks the chat again once vectors are allowed (`./backfill.ts`).
+        const permission = await store.embeddingPermission(claim);
+        if (permission !== "allowed") {
+          stop = permission;
           break;
         }
         const result = await input.embedder.embed({
@@ -266,7 +268,17 @@ export async function runChatSearchIndexPassOn(
           vectors: batch.map((row, index) => ({ contentHash: row.contentHash, id: row.id, vector: result.vectors[index]! }))
         });
       }
-      await settle(claim, ownerOff ? { kind: "clean", note: CHAT_SEARCH_OWNER_OFF_NOTE }
+      if (stop === "chat_left") {
+        const outcome = await store.reconcile(claim, { kind: "clear" });
+        if (outcome.kind === "cleared") counts.cleared += 1;
+        else if (outcome.kind === "gone") counts.gone += 1;
+        else if (outcome.kind === "stale") {
+          counts.stale += 1;
+          more = true;
+        }
+        continue;
+      }
+      await settle(claim, stop === "owner_off" ? { kind: "clean", note: CHAT_SEARCH_OWNER_OFF_NOTE }
         : rows.length > limits.passagesPerChat ? { kind: "more" } : { kind: "clean", note: null });
     } catch (error) {
       if (error instanceof ChatSearchEmbeddingError &&

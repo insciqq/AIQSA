@@ -67,15 +67,17 @@ export type ChatSearchSourceMessage = Readonly<{
   scheduledTaskPrompt: boolean;
 }>;
 
-/** Where a chat's stored title came from, which decides its search title (`chatSearchTitle`). */
+/** What decides a chat's search title (`chatSearchTitle`): whether search withholds any of it, and who set the title. */
 export type ChatSearchTitleOrigin = Readonly<{
+  /** The chat holds a message search never holds (`ChatSearchExcludedMessage`), whichever message that is. */
+  withholdsMessages: boolean;
   /**
    * The server set the title, never the owner: at creation, from the first message's first line (`titleRevision`
    * still 0, a branch copy's included) or by the title model from the first turn.
    */
   serverSet: boolean;
   /** The chat's first user message, which a server-set title is made from; null when not needed or there is none. */
-  firstMessage: Readonly<{ content: unknown; excluded: boolean }> | null;
+  firstMessage: Readonly<{ content: unknown }> | null;
 }>;
 
 /** What the indexer reads of one chat, all from one consistent snapshot. */
@@ -229,18 +231,19 @@ function firstLineTitle(text: string): string {
 }
 
 /**
- * The title past-chat search knows a chat by, in passage headers, results and reads alike: the stored title, except
- * that a title the server made from the first message never brings back what search withholds of that message. A new
- * chat is named after its first message's first line, and the title model names it after its first turn, so when that
- * message is kept out of search (`ChatSearchExcludedMessage`) the chat goes untitled (""), and when screening changes
- * its first line (a secret saved or recognized there) the screened line takes the place of the line as written, or
- * the chat goes untitled when its title does not hold that line. A title the owner set is the owner's words and stays.
- * Wherever the result is shown it is screened again, like any title.
+ * The title past-chat search knows a chat by, in passage headers, results and reads alike. A chat that holds any
+ * message search never holds (`ChatSearchExcludedMessage`) goes untitled (""), whoever set its title: a title the
+ * server or the title model made from a withheld turn cannot be told apart from the owner's once the answer that owned
+ * the title request is deleted, so none is shown until Resume clears the rows (a branch copy carries them and stays
+ * untitled too). Otherwise the stored title stays, except that a title the server made from the first message never
+ * brings back what screening changes of it: when a secret was saved or recognized in its first line, the screened line
+ * takes the place of the line as written, or the chat goes untitled when its title does not hold that line. A title
+ * the owner set stays. Wherever the result is shown it is screened again, like any title.
  */
 export function chatSearchTitle(title: string, origin: ChatSearchTitleOrigin, savedSecretValues: readonly string[]): string {
+  if (origin.withholdsMessages) return "";
   const first = origin.firstMessage;
   if (!origin.serverSet || first === null) return title;
-  if (first.excluded) return "";
   const written = firstLineTitle(chatExportText(first.content));
   const screened = firstLineTitle(chatSearchMessageText(first.content, savedSecretValues));
   if (written === screened) return title;
