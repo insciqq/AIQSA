@@ -462,6 +462,9 @@ describe("native model call", () => {
       expect(failure).toMatchObject({ code: "openai_response_terminal_text_mismatch" });
       expect(providerStreamDrop(failure)).toBe("inconsistent");
       expect(provider.fetchFn).toHaveBeenCalledTimes(MODEL_CALL_RETRY.maxAttempts);
+      // The last attempt's rejected text is dropped too, so the failed answer keeps none of it; usage stays.
+      expect(call.discarded).toEqual(Array.from({ length: MODEL_CALL_RETRY.maxAttempts }, (_, index) => index + 1));
+      expect(call.usages).toHaveLength(MODEL_CALL_RETRY.maxAttempts);
       expect(providerFailureCode(failure, "run_execution_failed")).toBe("openai_response_terminal_text_mismatch");
       expect(subagentFailureCode(failure)).toBe("openai_response_terminal_text_mismatch");
     });

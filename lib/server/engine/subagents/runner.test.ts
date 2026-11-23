@@ -336,6 +336,18 @@ describe("sub-agent runner", () => {
       expect(JSON.stringify(records)).not.toContain("secret text");
     });
 
+    it("fails a turn whose rounds' completion kept disagreeing with their stream by that code, keeping none of their text", async () => {
+      // A proxy that switched upstream mid-stream (codex-lb): the adapter rejects what each attempt streamed.
+      const code = "openai_response_terminal_text_mismatch";
+      const fail = () => markProviderStreamDrop(Object.assign(new Error(code), { code }), "inconsistent");
+      const ctx = setup([{ events: [{ data: { delta: "PRIVATE_REJECTED" }, type: "token" }], fail }],
+        { modelRetry: { backoff: { baseDelayMs: 1, maxBackoffMs: 1 }, maxAttempts: 2 } });
+      const result = await ctx.runner.wait(await ctx.runner.start(ctx.input()));
+      expect(result).toMatchObject({ reason: code, state: "failed" });
+      expect(ctx.requests).toHaveLength(2);
+      expect(JSON.stringify([result, ctx.settled, ctx.appended])).not.toContain("PRIVATE_REJECTED");
+    });
+
     it.each([
       ["a request deadline", () => new ProviderRequestTimeoutError(300_000), "provider_request_timed_out"],
       ["a silent stream", () => new ProviderStreamIdleTimeoutError({ idleTimeoutMs: 60_000, observedIdleMs: 60_001 }), "provider_stream_timeout"],
