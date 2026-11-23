@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureRunObservation } from "@/tests/support/runObservation";
+import { createBridgeHarness, createFakeGateway, type BridgeHarness } from "@/tests/support/telegramChatBridge";
+import { createTelegramBotApi, createTelegramPacer } from "../botApi";
+import type { TelegramBotSession } from "../dispatcher";
+import { createTelegramOutbound } from "../outbound";
 import { renderTelegramAnswer } from "../render";
-import { createBridgeHarness, createFakeGateway } from "@/tests/support/telegramChatBridge";
+import type { TelegramFailure, TelegramTransport } from "../transport";
 import type { TelegramRunEvent, TelegramRunEventContext } from "./events";
 import { TELEGRAM_RECOVERY_FOLLOW_MS, TELEGRAM_RECOVERY_GRACE_MS, TELEGRAM_RECOVERY_MAX_AGE_MS } from "./recovery";
+import { TELEGRAM_DELIVERY_RETRY_MIN_MS, TELEGRAM_DELIVERY_RETRY_WINDOW_MS } from "./retries";
 
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { while (closers.length) await closers.pop()!(); });
@@ -168,5 +174,153 @@ describe("Telegram delivery sweeps while this process runs", () => {
     expect(sources).toEqual(["recovery"]);
     expect(h.fake.botMessages(user.id)).toHaveLength(1);
     expect(h.fake.botMessages(user.id)[0]).toMatchObject({ rich_message: renderTelegramAnswer("Answered while the bot was off").messages[0] });
+  });
+});
+
+describe("Telegram delivery sweeps while Telegram is unreachable", () => {
+  const BEFORE_SEND: TelegramFailure = { category: "connect", kind: "network_before_send", ok: false };
+
+  /**
+   * A bridge on a clock the test moves whose bot session meets `net.fail` on every answer send before it leaves, as a
+   * host that lost Telegram does; the harness's own session stays as the poller's.
+   */
+  function unreachableBridge() {
+    const clock = { now: Date.now() };
+    const net: { fail: TelegramFailure | null; sends: number } = { fail: BEFORE_SEND, sends: 0 };
+    const events: Array<Readonly<{ event: TelegramRunEvent; source: TelegramRunEventContext["source"] }>> = [];
+    const gateway = createFakeGateway({ autoAnswer: null });
+    let session: TelegramBotSession | null = null;
+    const h: BridgeHarness = createBridgeHarness({
+      bridge: {
+        now: () => clock.now,
+        publish: async (event, context) => { if (event.type === "delivered") events.push({ event, source: context.source }); },
+        sessions: { current: async () => session }
+      },
+      gateway
+    });
+    closers.push(h.close);
+    const transport: TelegramTransport = {
+      ...h.fake.transport,
+      call: async (input) => {
+        if (input.method === "sendRichMessage" || input.method === "sendMessage") {
+          net.sends += 1;
+          if (net.fail) return net.fail;
+        }
+        return h.fake.transport.call(input);
+      }
+    };
+    const api = createTelegramBotApi({ pacer: createTelegramPacer({ now: () => 0 }), sleep: async () => undefined, token: h.fake.token, transport });
+    session = {
+      ...h.session, api,
+      outbound: createTelegramOutbound({
+        api, botId: h.fake.bot.id, callbacks: { create: async ({ buttons }) => buttons.map(() => "c:x") }, messageRefs: h.messageRefs.store
+      })
+    };
+    const user = h.fake.inject.addUser();
+    const link = h.link(user);
+    return { clock, events, gateway, h, link, net, user };
+  }
+
+  /** A run admitted before the process `startedAt` (a restart), settled with `text` and left for the sweeps. */
+  async function settledBeforeStart(text: string) {
+    const bridge = unreachableBridge();
+    const { clock, gateway, h, link } = bridge;
+    const admission = await h.bridge.sendTelegramMessage({
+      chatTarget: { assistantId: null, kind: "new" }, contentBlocks: [{ text: "a question", type: "text" }], link, updateId: 601
+    });
+    expect(admission.kind).toBe("admitted");
+    const run = gateway.runs[0]!;
+    run.token(text);
+    run.complete();
+    return { ...bridge, run, startedAt: new Date(clock.now + 1) };
+  }
+
+  it("leaves an answer Telegram never took pending, backs off, and sends it exactly once at the first sweep after Telegram answers", async () => {
+    const { clock, events, h, net, run, startedAt, user } = await settledBeforeStart("Answered while Telegram was away");
+    await h.bridge.recover(startedAt);
+    // The send and its one repeat never left: the link stays deliverable.
+    expect(net.sends).toBe(2);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    // A sweep inside the wait tries nothing; the next one after it tries once more and backs off further.
+    await h.bridge.recover(startedAt);
+    expect(net.sends).toBe(2);
+    clock.now += TELEGRAM_DELIVERY_RETRY_MIN_MS;
+    await h.bridge.recover(startedAt);
+    expect(net.sends).toBe(4);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+
+    // Telegram answers again; the wait of two minutes is still running at the next minute's sweep.
+    net.fail = null;
+    clock.now += TELEGRAM_DELIVERY_RETRY_MIN_MS;
+    await h.bridge.recover(startedAt);
+    expect(net.sends).toBe(4);
+    clock.now += TELEGRAM_DELIVERY_RETRY_MIN_MS;
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)).toMatchObject({ deliveredAt: expect.any(Date), deliveryState: "delivered" });
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+    expect(h.fake.botMessages(user.id)[0]).toMatchObject({ rich_message: renderTelegramAnswer("Answered while Telegram was away").messages[0] });
+
+    clock.now += 10 * TELEGRAM_DELIVERY_RETRY_MIN_MS;
+    await Promise.all([h.bridge.recover(startedAt), h.bridge.recover(startedAt)]);
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+    expect(net.sends).toBe(5);
+    expect(events).toEqual([{ event: expect.objectContaining({ sent: true, type: "delivered" }), source: "recovery" }]);
+  });
+
+  it("gives an answer up as failed, with its code, when Telegram still cannot take it over an hour after its run settled", async () => {
+    const { clock, events, h, net, run, startedAt, user } = await settledBeforeStart("Answered long ago");
+    const row = h.runLinks.rows.get(run.id)!;
+    h.runLinks.rows.set(run.id, { ...row, runSettledAt: new Date(clock.now - TELEGRAM_DELIVERY_RETRY_WINDOW_MS - 60_000) });
+    const observation = await captureRunObservation();
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("failed");
+    expect(observation.records()).toContainEqual(expect.objectContaining({
+      code: "telegram_delivery_expired", outcome: "failed", run_id: run.id, subsystem: "telegram"
+    }));
+    expect(events).toEqual([{ event: expect.objectContaining({ sent: false, type: "delivered" }), source: "recovery" }]);
+
+    net.fail = null;
+    clock.now += 10 * TELEGRAM_DELIVERY_RETRY_MIN_MS;
+    await h.bridge.recover(startedAt);
+    expect(h.fake.botMessages(user.id)).toHaveLength(0);
+    expect(net.sends).toBe(2);
+  });
+
+  it("never resends an answer whose send may have reached Telegram", async () => {
+    const { clock, h, net, run, startedAt, user } = await settledBeforeStart("Maybe already there");
+    net.fail = { category: "reset", kind: "network_after_send", ok: false };
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("unknown");
+    net.fail = null;
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      clock.now += 10 * TELEGRAM_DELIVERY_RETRY_MIN_MS;
+      await h.bridge.recover(startedAt);
+    }
+    expect(net.sends).toBe(1);
+    expect(h.fake.botMessages(user.id)).toHaveLength(0);
+  });
+
+  it("hands a live answer Telegram never took to the sweeps, which deliver it once Telegram answers again", async () => {
+    const { clock, events, gateway, h, net, user } = unreachableBridge();
+    const startedAt = new Date(clock.now - 1);
+    await h.deliver(h.fake.inject.text(user, "a question"));
+    h.bridge.conversation.flush();
+    await vi.waitFor(() => expect(gateway.runs).toHaveLength(1));
+    const run = gateway.runs[0]!;
+    await vi.waitFor(() => expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending"));
+    run.token("The live answer");
+    run.complete();
+    await h.settle();
+    expect(net.sends).toBe(2);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("pending");
+    // Nothing is published for an answer still on its way: its files and cards follow it.
+    expect(events).toEqual([]);
+
+    net.fail = null;
+    clock.now += Math.max(TELEGRAM_RECOVERY_GRACE_MS, TELEGRAM_DELIVERY_RETRY_MIN_MS);
+    await h.bridge.recover(startedAt);
+    expect(h.runLinks.rows.get(run.id)?.deliveryState).toBe("delivered");
+    expect(h.fake.botMessages(user.id)).toHaveLength(1);
+    expect(events).toEqual([{ event: expect.objectContaining({ sent: true, type: "delivered" }), source: "recovery" }]);
   });
 });

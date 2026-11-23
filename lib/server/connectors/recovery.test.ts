@@ -43,6 +43,14 @@ describe("the connectors' recovery sweep", () => {
     expect(off.delivered).toEqual([]);
   });
 
+  it("leaves a delivery its connector hands back pending for a later sweep, settling nothing", async () => {
+    const s = sweep([row("unsent", "pending", STARTED - 5_000)], { deliver: vi.fn(async () => "deferred" as const) });
+    await s.run();
+    await s.run();
+    expect(s.deps.deliver).toHaveBeenCalledTimes(2);
+    expect(s.settled).toEqual([]);
+  });
+
   it("drops an answer too old to deliver and leaves a run still going for the next sweep", async () => {
     const s = sweep([row("old", "pending", STARTED - CONNECTOR_RECOVERY_MAX_AGE_MS - 5_000), row("going", "pending", STARTED - 5_000)],
       { waitForRun: async () => null });

@@ -154,9 +154,21 @@ describe("Telegram buttons, references, run links and links (stateful)", () => {
     await expect(runLinks.create(input)).resolves.toBe(true);
     await expect(runLinks.create(input)).resolves.toBe(false);
     await runLinks.setStatusMessage({ runId: run.id, statusMessageId: 44 });
-    await expect(runLinks.listByState({ limit: 10, state: "pending" })).resolves.toContainEqual(expect.objectContaining({ runId: run.id, statusMessageId: 44 }));
+    await expect(runLinks.listByState({ limit: 10, state: "pending" })).resolves.toContainEqual(expect.objectContaining({
+      runId: run.id, runSettledAt: null, statusMessageId: 44
+    }));
     const claims = await Promise.all([runLinks.claimDelivery(run.id), runLinks.claimDelivery(run.id)]);
     expect(claims.sort()).toEqual([false, true]);
+    // Nothing reached Telegram: the claim goes back, and the next delivery claims it again.
+    await runLinks.settle({ at: NOW, runId: run.id, state: "pending" });
+    await expect(runLinks.find(run.id)).resolves.toMatchObject({ deliveredAt: null, deliveryState: "pending" });
+    await expect(runLinks.claimDelivery(run.id)).resolves.toBe(true);
+    // The run settled: its record reads when.
+    const settled = await prisma.modelRun.update({ data: { status: "complete" }, where: { id: run.id } });
+    await expect(runLinks.find(run.id)).resolves.toMatchObject({ runSettledAt: settled.updatedAt });
+    await expect(runLinks.listByState({ limit: 10, state: "claimed" })).resolves.toContainEqual(expect.objectContaining({
+      runId: run.id, runSettledAt: settled.updatedAt
+    }));
     await runLinks.settle({ at: NOW, runId: run.id, state: "delivered" });
     await expect(runLinks.find(run.id)).resolves.toMatchObject({ deliveredAt: NOW, deliveryState: "delivered" });
     await expect(prisma.telegramRunLink.update({ data: { deliveredAt: null }, where: { runId: run.id } })).rejects.toThrow();

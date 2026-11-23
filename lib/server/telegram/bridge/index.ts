@@ -16,6 +16,7 @@ import { publishTelegramRunEvent, type TelegramRunEvent, type TelegramRunEventCo
 import type { TelegramRunGateway } from "./gateway";
 import { createTelegramBridgeMenus } from "./menus";
 import { recoverTelegramDeliveries, TELEGRAM_RECOVERY_SWEEP_INTERVAL_MS } from "./recovery";
+import { createTelegramDeliveryRetries } from "./retries";
 import { observeTelegramRun } from "./runObserver";
 
 /**
@@ -65,6 +66,8 @@ export type TelegramChatBridgeDeps = Readonly<{
 
 /** Log codes the bridge adds to the transport and reason codes; all registered in the failure-code registry. */
 export const TELEGRAM_BRIDGE_LOG_CODES = [
+  "telegram_delivery_deferred",
+  "telegram_delivery_expired",
   "telegram_followup_failed",
   "telegram_run_admission_failed",
   "telegram_run_delivery_failed",
@@ -86,7 +89,9 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
     gateway: deps.gateway, now, runLinks: deps.runLinks,
     ...(deps.sleep ? { sleep: deps.sleep } : {}), ...(deps.idleMs === undefined ? {} : { idleMs: deps.idleMs })
   });
-  const delivery = { access: deps.access, gateway: deps.gateway, now, runLinks: deps.runLinks, sessions: deps.sessions };
+  // Shared by the live deliveries and the sweeps: an answer Telegram never received waits here before its next try.
+  const retries = createTelegramDeliveryRetries();
+  const delivery = { access: deps.access, gateway: deps.gateway, now, retries, runLinks: deps.runLinks, sessions: deps.sessions };
   const conversation = createTelegramConversation({
     admit: sendTelegramMessage,
     gateway: deps.gateway,
@@ -118,6 +123,7 @@ export function createTelegramChatBridge(deps: TelegramChatBridgeDeps): Telegram
         isLive: (runId) => conversation.isLive(runId),
         now,
         publish,
+        retries,
         runLinks: deps.runLinks,
         sessions: deps.sessions,
         waitForRun
