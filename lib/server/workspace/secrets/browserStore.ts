@@ -93,7 +93,25 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
       createdAt: existing.value.createdAt, savedAt: () => revisionSavedAt(existing.value, input.userId, key) } : null,
     given: given && given.valueId !== existing?.valueId ? { checksum: given.value.checksum,
       savedAt: () => revisionSavedAt(given.value, input.userId, key) } : null });
-  if (order === "browser_session_stale") return order;
+  // A turn the server wrote saves or replaces only a sign-in the user finished in it, of that site alone, and the saved one
+  // stays otherwise (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what
+  // its browser holds. A refused file stays on the disk, so the same bytes collected by any later run of the chat are
+  // held to the same rule, and only a sign-in finished in that run saves them.
+  const refusedHere = run.refused.get(file.fileName) === checksum;
+  const unauthorized = async () => (refusedHere || await serverWrittenBrowserTurn(tx, run.turn)) &&
+    !browserSignInSaveAllowed(await browserSignInSaveFiles(tx, input.runId), file);
+  // Refused bytes are remembered with the session, or move to the newest place when a later run collects them again, so
+  // the bound drops only revisions no run collects any more.
+  const remember = async () => {
+    if (refusedHere && [...run.refused.keys()].at(-1) === file.fileName) return;
+    await storeRefusedRevisions(tx, input.sessionId, nextRefusedBrowserRevisions(run.refused, file.fileName, checksum));
+  };
+  if (order === "browser_session_stale") {
+    // Not saved either way, yet a changed file a turn the server wrote left unauthorized is remembered too: the fence that
+    // stopped it holds only runs accepted before it, never the next run that collects the same bytes from the disk.
+    if (existing?.value.checksum !== checksum && given?.value.checksum !== checksum && await unauthorized()) await remember();
+    return order;
+  }
   const writerSequence = existing && existing.browserWriterSequence > sequence ? existing.browserWriterSequence : sequence;
   if (existing && order === "unchanged") {
     // Advance ordering even when the immutable encrypted revision is unchanged.
@@ -102,16 +120,8 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
     }
     return "unchanged";
   }
-  // A turn the server wrote saves or replaces only a sign-in the user finished in it, of that site alone, and the saved one
-  // stays otherwise (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what
-  // its browser holds. A refused file stays on the disk, so the same bytes collected by any later run of the chat are
-  // held to the same rule, and only a sign-in finished in that run saves them.
-  const refusedHere = run.refused.get(file.fileName) === checksum;
-  if ((refusedHere || await serverWrittenBrowserTurn(tx, run.turn)) &&
-    !browserSignInSaveAllowed(await browserSignInSaveFiles(tx, input.runId), file)) {
-    if (!refusedHere) {
-      await storeRefusedRevisions(tx, input.sessionId, nextRefusedBrowserRevisions(run.refused, file.fileName, checksum));
-    }
+  if (await unauthorized()) {
+    await remember();
     return BROWSER_SESSION_SERVER_TURN;
   }
   if (!existing && await tx.workspaceSecret.count({ where: { userId: input.userId, browserFileName: { not: null } } }) >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) {

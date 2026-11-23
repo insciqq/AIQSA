@@ -17,6 +17,7 @@ import { workspaceSecretEnvironment, workspaceSecretVariables } from "./manifest
 import { createRunSecretSource } from "./runSecrets";
 import { bindWorkspaceSecrets, createWorkspaceSecretStore, decryptWorkspaceSecret, lockWorkspaceSecretOwner } from "./store";
 import { saveWorkspaceBrowserSessions, type WorkspaceBrowserSaveInput } from "./browserStore";
+import { BROWSER_REFUSED_REVISIONS_LIMIT } from "./browserSignInAuthority";
 import {
   decodeWorkspaceSecretList, WORKSPACE_BROWSER_SESSION_MAX_BYTES, WORKSPACE_BROWSER_SESSION_TOTAL_MAX_BYTES
 } from "@/lib/contracts/workspaceSecrets";
@@ -390,6 +391,81 @@ describe("persisted personal Workspace secrets", () => {
   });
 
   // Settings accepts a storage state of several sites: a sign-in to one never carries the other sites' cookies along.
+  // The guest names a file after the host a sign-in began on, while the site keeps its sign-in cookies on the parent.
+  it("saves a finished sign-in named after the host it began on with its cookies on the site's parent, never another site's beside them", async () => {
+    const userId = await owner();
+    const google = (domains: readonly string[], value: string) => ({ fileName: "accounts.google.com.json", bytes: Buffer.from(
+      JSON.stringify({ cookies: domains.map((domain) => ({ name: "SID", value, domain, path: "/", expires: -1, httpOnly: true, secure: true,
+        sameSite: "Lax" })), origins: [{ origin: "https://accounts.google.com", localStorage: [] }] })) });
+    const signIn = await browserRun(userId);
+    await serverTurn(signIn, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(signIn.runId, "sign_in", "completed", "accounts.google.com");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...signIn, files: [google([".google.com", "accounts.google.com"], "signed-in")] },
+      () => key)).toEqual({ saved: 1, unchanged: 0, skipped: {} });
+    const saved = await currentBrowser(userId, "accounts.google.com.json");
+    const again = await laterBrowserRun(signIn);
+    await serverTurn(again, { systemTurnKind: "browser_sign_in_request" });
+    await handoff(again.runId, "sign_in", "completed", "accounts.google.com");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...again, files: [google([".google.com", ".bank.example"], "carried")] },
+      () => key)).toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect(await currentBrowser(userId, "accounts.google.com.json")).toEqual(saved);
+  });
+
+  // A settings change fences every run accepted before it, but the refused file stays on the disk for the next one.
+  it("remembers a refused file even when a settings change fenced its save, so the next run of the chat never saves it", async () => {
+    const userId = await owner();
+    const own = await browserRun(userId);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...own, files: [{ fileName: "shop.example.json", bytes: browserBytes("user-cookie") },
+      { fileName: "other.example.json", bytes: browserBytes("other-cookie") }] }, () => key)).toMatchObject({ saved: 2 });
+    const saved = await currentBrowser(userId, "shop.example.json");
+    const wakeUp = await laterBrowserRun(own);
+    await serverTurn(wakeUp, { systemTurnKind: "subagent_callback" });
+    // The user edits another site's sign-in in Settings while the wake-up runs.
+    const other = (await store().list(userId)).find((entry) => entry.name === "other.example")!;
+    await store().mutate(userId, { action: "update", id: other.id, expectedVersionId: other.versionId, name: "Other", description: "",
+      value: { action: "preserve" } });
+    const injected = { fileName: "shop.example.json", bytes: browserBytes("injected-cookie") };
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...wakeUp, files: [injected] }, () => key))
+      .toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_stale: 1 } });
+    const next = await laterBrowserRun(wakeUp);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...next, files: [injected] }, () => key))
+      .toEqual({ saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } });
+    expect(await currentBrowser(userId, "shop.example.json")).toEqual(saved);
+  });
+
+  // Each later run collects and refuses a file still on the disk again: newer refusals must not push it out of the bound.
+  it("keeps a refused file that later runs still collect when newer refusals fill the session's record", async () => {
+    const userId = await owner();
+    const own = await browserRun(userId);
+    expect(await saveBrowser(own, "user-cookie")).toMatchObject({ saved: 1 });
+    const injected = { fileName: "shop.example.json", bytes: browserBytes("injected-cookie") };
+    const refused = { saved: 0, unchanged: 0, skipped: { browser_session_server_turn: 1 } };
+    const recorded = async () => (await prisma.workspaceSession.findUniqueOrThrow({ where: { id: own.sessionId } }))
+      .browserRefusedRevisions as Array<[string, string]>;
+    const wakeUp = await laterBrowserRun(own);
+    await serverTurn(wakeUp, { systemTurnKind: "subagent_callback" });
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...wakeUp, files: [injected] }, () => key)).toEqual(refused);
+    // Refusals of other files since fill the record to its bound, this one the oldest.
+    const [shop] = await recorded();
+    await prisma.workspaceSession.update({ where: { id: own.sessionId }, data: { browserRefusedRevisions: [shop!,
+      ...Array.from({ length: BROWSER_REFUSED_REVISIONS_LIMIT - 1 }, (_, index) => [`s${index}.example.json`, "a".repeat(64)])] as
+      Prisma.InputJsonValue } });
+    const next = await laterBrowserRun(wakeUp);
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...next, files: [injected] }, () => key)).toEqual(refused);
+    expect((await recorded()).at(-1)).toEqual(shop);
+    // A newer refusal drops the oldest file nobody collected, never this one.
+    const wakeUpAgain = await laterBrowserRun(next);
+    await serverTurn(wakeUpAgain, { systemTurnKind: "subagent_callback" });
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...wakeUpAgain, files: [{ fileName: "new.example.json",
+      bytes: browserBytes("injected-new") }] }, () => key)).toEqual(refused);
+    const names = (await recorded()).map(([name]) => name);
+    expect(names).toHaveLength(BROWSER_REFUSED_REVISIONS_LIMIT);
+    expect(names).toContain("shop.example.json");
+    expect(names).not.toContain("s0.example.json");
+    expect(await saveWorkspaceBrowserSessions(prisma, { ...(await laterBrowserRun(wakeUpAgain)), files: [injected] }, () => key))
+      .toEqual(refused);
+  });
+
   it("refuses a turn the server wrote a file holding more than the site its finished sign-in saved", async () => {
     const userId = await owner();
     const own = await browserRun(userId);
