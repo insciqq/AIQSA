@@ -177,22 +177,27 @@ export function savedSecretScreenedValues(
   return savedSecretLineEndingForms([...values]);
 }
 
-/** Whether any string in a value, object keys included, contains one of the saved values. */
-export function valueContainsSavedSecret(
-  value: unknown,
-  savedValues: readonly string[],
-  seen: WeakSet<object> = new WeakSet()
-): boolean {
-  if (savedValues.length === 0) return false;
-  if (typeof value === "string") return savedValues.some((saved) => value.includes(saved));
+/** Whitespace runs as one space, so a value rewrapped across lines still matches, as screening matches it (`./screen.ts`). */
+function foldedWhitespace(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+/** Whether any string in a value, object keys included, contains one of the saved values, whatever whitespace separates its words. */
+export function valueContainsSavedSecret(value: unknown, savedValues: readonly string[]): boolean {
+  const folded = savedValues.map(foldedWhitespace).filter(Boolean);
+  return folded.length > 0 && containsFoldedValue(value, folded, new WeakSet());
+}
+
+function containsFoldedValue(value: unknown, folded: readonly string[], seen: WeakSet<object>): boolean {
+  if (typeof value === "string") {
+    const text = foldedWhitespace(value);
+    return folded.some((saved) => text.includes(saved));
+  }
   if (typeof value !== "object" || value === null || seen.has(value)) return false;
   seen.add(value);
-  if (Array.isArray(value)) {
-    return value.some((entry) => valueContainsSavedSecret(entry, savedValues, seen));
-  }
+  if (Array.isArray(value)) return value.some((entry) => containsFoldedValue(entry, folded, seen));
   return Object.entries(value).some(([entryKey, entry]) =>
-    savedValues.some((saved) => entryKey.includes(saved)) ||
-    valueContainsSavedSecret(entry, savedValues, seen));
+    containsFoldedValue(entryKey, folded, seen) || containsFoldedValue(entry, folded, seen));
 }
 
 /**

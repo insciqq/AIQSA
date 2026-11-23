@@ -35,6 +35,11 @@ describe("saved secret matching", () => {
     const saved = savedSecretScreenedValues([{ name: "Login", value: { kind: "text", text: crlf } }]);
     expect(saved).toEqual([crlf, "account=demo\npass=fixture-pass-42"]);
     expect(valueContainsSavedSecret("Login:\naccount=demo\npass=fixture-pass-42", saved)).toBe(true);
+    // A value rewrapped across lines or spaces still counts, as screening matches it; a value of only whitespace never does.
+    expect(valueContainsSavedSecret({ note: "Vault: correct horse\nbattery  staple" }, ["correct horse battery staple"])).toBe(true);
+    expect(valueContainsSavedSecret({ "account=demo pass=fixture-pass-42": 1 }, saved)).toBe(true);
+    expect(valueContainsSavedSecret("correct horse, battery staple", ["correct horse battery staple"])).toBe(false);
+    expect(valueContainsSavedSecret("any text", [" \n\t"])).toBe(false);
     expect(redactSavedSecretValues("x account=demo\npass=fixture-pass-42 y", saved).text).toBe(`x ${SAVED_SECRET_MARKER} y`);
   });
 
