@@ -22,6 +22,10 @@ import {
  * Line breaks become LF in the text and in the values before anything is matched, so CRLF text and an LF value (or
  * the reverse) still match: a value inside a text is still inside it once both have LF line breaks. The result's
  * line breaks are LF.
+ *
+ * A saved value matches with any run of whitespace in the text standing for any run of whitespace in the value
+ * (review 2026-11-23): callers fold whitespace after screening (a search query, a title, a passage header), so a
+ * passphrase split by a line break, left whole by an exact match, was folded back into the saved value.
  */
 
 /** A stretch of the text to replace, with the marker it would take; on a tie for the longest, the lower rank's. */
@@ -36,21 +40,40 @@ const MARKER_RANK = 3;
 
 export type ScreenedText = Readonly<{ redacted: boolean; text: string }>;
 
-/** The values as they read with LF line breaks, once each; a value with nothing but whitespace is left out. */
-function lineFeedForms(values: readonly string[]): readonly string[] {
-  const forms = new Set<string>();
+/** Characters with a meaning in a regular expression, escaped so a value's words match as written. */
+const PATTERN_SYNTAX = /[\\^$.*+?()[\]{}|/]/gu;
+
+/**
+ * The pattern a value matches by: its words as written, each run of whitespace between them standing for any run of
+ * whitespace, and whitespace at either edge for one whitespace character there. None for a value of whitespace alone,
+ * which would match ordinary text.
+ */
+function savedValuePattern(value: string): RegExp | undefined {
+  const words = value.trim();
+  if (!words) return undefined;
+  const body = words.split(/\s+/u).map((word) => word.replace(PATTERN_SYNTAX, "\\$&")).join(String.raw`\s+`);
+  const lead = /^\s/u.test(value) ? String.raw`\s` : "";
+  const trail = /\s$/u.test(value) ? String.raw`\s` : "";
+  return new RegExp(`${lead}${body}${trail}`, "gu");
+}
+
+/** The values' patterns, read with LF line breaks, once each. */
+function savedValuePatterns(values: readonly string[]): readonly RegExp[] {
+  const patterns = new Map<string, RegExp>();
   for (const value of values) {
-    const form = savedSecretLineFeeds(value);
-    if (form.trim()) forms.add(form);
+    const pattern = savedValuePattern(savedSecretLineFeeds(value));
+    if (pattern) patterns.set(pattern.source, pattern);
   }
-  return [...forms];
+  return [...patterns.values()];
 }
 
 function savedCovers(text: string, values: readonly string[]): Cover[] {
   const covers: Cover[] = [];
-  for (const value of lineFeedForms(values)) {
-    for (let start = text.indexOf(value); start !== -1; start = text.indexOf(value, start + 1)) {
-      covers.push({ end: start + value.length, placeholder: SAVED_SECRET_MARKER, rank: SAVED_RANK, start });
+  for (const pattern of savedValuePatterns(values)) {
+    // Each search starts one past the last match's start, so overlapping occurrences are all found.
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      covers.push({ end: match.index + match[0].length, placeholder: SAVED_SECRET_MARKER, rank: SAVED_RANK, start: match.index });
+      pattern.lastIndex = match.index + 1;
     }
   }
   return covers;

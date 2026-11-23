@@ -86,6 +86,38 @@ describe("saved secret matching", () => {
     ], kind: "env" } }])).toEqual(["https://jira.example.com:fixture-pass-42"]);
   });
 
+  it("never exempts a value that reads as a credential, whatever its variable is called", () => {
+    const hex40 = "0123456789abcdef0123456789abcdef01234567";
+    const tokens = [
+      // A code-quality server's login holds a user token; a code host's personal token under a login name.
+      ["SONAR_LOGIN", `squ_${hex40}`], ["GIT_LOGIN", "ghp_abcdefghijklmnopqrstuvwxyz1234567890"],
+      // Flagged by the recognized-secret detector.
+      ["CLOUD_USER", "AKIAABCDEFGHIJKLMNOP"], ["API_LOGIN", "sk-abcdefghijklmnopqrstuvwxyz123456"],
+      // A word of 20 or more characters mixing letters and digits, alone, as a host label or as an email's local part.
+      ["SERVICE_USER", "a1b2c3d4e5f6g7h8i9j0"], ["DB_HOST", "k8s2f9q7x3m1v6b4n0z5.example.org"],
+      ["JIRA_EMAIL", "a1b2c3d4e5f6g7h8i9j0@example.com"],
+      // 32 or more characters of a token alphabet: hex, base64url with no digit, a UUID.
+      ["DEPLOY_USER", hex40.slice(0, 32)], ["DEPLOY_USER", "abcdefghijklmnopqrstuvwxyzABCDEF_-"],
+      ["TENANT_ACCOUNT", "0f8fad5b-d9cb-469f-a165-70867728950e"],
+      // A known prefix with a short tail, and one after a separator.
+      ["CHAT_USER", "xoxb-12345678"], ["CI_LOGIN", "bot.glpat-abcdefgh"]
+    ];
+    for (const [name, value] of tokens) expect(savedSecretIdentifierVariable(name, value), `${name}=${value}`).toBe(false);
+    const ordinary = [
+      ["SERVICE_LOGIN", "admin"], ["SERVICE_LOGIN", "deploy-bot"], ["SAUCEDEMO_USERNAME", "standard_user"],
+      ["JIRA_EMAIL", "ivan.petrov+alerts@example.com"], ["DB_HOST", "ip-172-31-23-45.eu-central-1.compute.internal"],
+      ["DB_HOST", "mydb-instance-1.c9akciq32.eu-central-1.rds.example.com"], ["AWS_REGION", "ap-southeast-2"],
+      ["DB_PORT", "5432"], ["DB_HOST", "10.0.0.5"], ["JIRA_HOST", "https://jira.example.com:8443/"],
+      ["AWS_ACCOUNT", "123456789012"], ["DESK_USER", "bask-keyboard-team"], ["GCP_PROJECT", "analytics-prod-2026"]
+    ];
+    for (const [name, value] of ordinary) expect(savedSecretIdentifierVariable(name, value), `${name}=${value}`).toBe(true);
+    const saved = savedSecretScreenedValues([{ name: "Code quality", value: { entries: [
+      { name: "SONAR_HOST", value: "https://sonar.example.com" }, { name: "SONAR_LOGIN", value: `squ_${hex40}` },
+      { name: "TRACKER_URL", value: `https://${hex40}.example.com` }
+    ], kind: "env" } }]);
+    expect(saved).toEqual([`squ_${hex40}`, `https://${hex40}.example.com`]);
+  });
+
   it("finds a screened value only, so facts naming a plain setting are kept", () => {
     const saved = savedSecretScreenedValues([{ name: "Env", value: { entries: [
       { name: "DB_HOST", value: "localhost" }, { name: "TOKEN", value: TOKEN }], kind: "env" } }]);

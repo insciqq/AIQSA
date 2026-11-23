@@ -21,6 +21,8 @@ import { chatSearchSavedSecretValues, type ChatSearchSavedSecretReader } from ".
 const SCAN_WINDOWS = Object.freeze({ maxCodeUnits: 100_000, windowCodeUnits: 100_000 });
 /** The markers `lib/server/redaction/` puts in place of a secret (`[REDACTED:TOKEN]`, `[REDACTED_SECRET]`, `[REDACTED:SAVED_SECRET]`). */
 const REDACTION_MARKER = /\[REDACTED[:_][A-Z0-9_:]*\]/gu;
+/** Screenings of a search query at most: each drops every marker, so only a value hidden inside another takes more than two. */
+const QUERY_SCREENING_PASSES = 8;
 
 export type SavedSecretValuesReader = (userId: string) => Promise<readonly string[]>;
 
@@ -39,11 +41,24 @@ export function redactPastChatText(text: string, savedValues: readonly string[])
  * to the provider boundary (`redactSearchQuery`), and the markers dropped,
  * since a marker searched for would find other redacted text. Empty when
  * nothing searchable is left or the query is too long to scan.
+ *
+ * Dropping a marker joins the words around it, so the joined text is screened
+ * again until nothing more goes (review 2026-11-23): `correct horse <token>
+ * battery staple` would otherwise become a saved passphrase once the token's
+ * marker is gone. Each pass that changes the text shortens it, so this ends;
+ * past the bound the query is dropped rather than passed on unscreened.
  */
 export function pastChatSearchQuery(query: string, savedValues: readonly string[]): string {
   if (query.length > SEARCH_QUERY_MAX_CODE_UNITS) return "";
-  const redacted = redactSearchQuery(redactSecretsAndSavedValues(query, savedValues).text);
-  return redacted.eligible ? redacted.safeText.replace(REDACTION_MARKER, " ").replace(/\s+/gu, " ").trim() : "";
+  let text = query;
+  for (let pass = 0; pass < QUERY_SCREENING_PASSES; pass += 1) {
+    const redacted = redactSearchQuery(redactSecretsAndSavedValues(text, savedValues).text);
+    if (!redacted.eligible) return "";
+    const joined = redacted.safeText.replace(REDACTION_MARKER, " ").replace(/\s+/gu, " ").trim();
+    if (joined === redacted.safeText.replace(/\s+/gu, " ").trim()) return joined;
+    text = joined;
+  }
+  return "";
 }
 
 /** A chat's title as a result names it: redacted, one line, clipped; "Untitled chat" when nothing is left. */

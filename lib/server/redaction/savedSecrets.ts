@@ -1,5 +1,6 @@
 import { workspaceActivitySecretValues } from "../workspace/activityText";
 import type { AcceptedWorkspaceSecret } from "../workspace/secrets/store";
+import { redactSecrets } from "./secrets";
 
 /**
  * How derived text recognizes the values of the owner's saved secrets
@@ -77,17 +78,61 @@ function identifierValueShape(lastNamePart: string, value: string): boolean {
     ((lastNamePart === "HOST" || lastNamePart === "HOSTNAME") && HOST_AND_PORT.test(trimmed));
 }
 
+/** A word: letters, digits, `_` and `-`, as a username, a host label or a token is written. */
+const WORD = /[\p{L}\p{M}\p{N}_-]+/gu;
+/** A word this long that mixes letters and digits reads as a token, not a name. */
+const TOKEN_WORD_MIN_LENGTH = 20;
+/** A run this long of hex, base64 or base64url characters reads as a token, whatever it mixes. */
+const TOKEN_RUN = /[A-Za-z0-9+/=_-]{32,}/u;
+/** Prefixes that open a credential in common formats: code hosts, code quality, chat, payments, cloud and package registries. */
+const TOKEN_PREFIXES = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "gldt-", "glrt-", "glsa_", "squ_",
+  "sqp_", "sqa_", "xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-", "xapp-", "sk-", "sk_live_", "sk_test_", "rk_live_", "rk_test_",
+  "AKIA", "ASIA", "AIza", "ya29.", "npm_", "pypi-", "hf_", "dop_v1_", "shpat_", "shpss_"];
+/** Characters after a prefix before it opens a credential, so a short name that happens to start like one stays a name. */
+const TOKEN_PREFIX_MIN_TAIL = 8;
+const TOKEN_TAIL = /^[A-Za-z0-9+/=._-]+/u;
+
+function opensWithTokenPrefix(value: string): boolean {
+  for (const prefix of TOKEN_PREFIXES) {
+    for (let start = value.indexOf(prefix); start !== -1; start = value.indexOf(prefix, start + 1)) {
+      // Only at the start of a word: `task-ghp_...` opens one, `bask-key` does not hold `sk-`.
+      if (start > 0 && /[A-Za-z0-9]/u.test(value[start - 1] ?? "")) continue;
+      const tail = TOKEN_TAIL.exec(value.slice(start + prefix.length))?.[0] ?? "";
+      if (tail.length >= TOKEN_PREFIX_MIN_TAIL) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a value reads as a credential whatever its variable is called (review 2026-11-23): one the recognized-secret
+ * detector flags, a word of 20 or more characters that mixes letters and digits, 32 or more characters of a token
+ * alphabet, or a known token prefix. A login variable may hold a token (a code-quality server's login field holds a
+ * user token), so the format wins over the name; usernames, emails, dotted host names, regions, ports, IPv4 addresses
+ * and bare origins keep their exemption. Screening too much only hides a word; too little leaks a credential.
+ */
+function credentialShapedValue(value: string): boolean {
+  const trimmed = value.trim();
+  if (TOKEN_RUN.test(trimmed) || opensWithTokenPrefix(trimmed)) return true;
+  for (const [word] of trimmed.matchAll(WORD)) {
+    if ([...word].length >= TOKEN_WORD_MIN_LENGTH && /\p{L}/u.test(word) && /\p{N}/u.test(word)) return true;
+  }
+  return redactSecrets(trimmed).containsSecret;
+}
+
 /**
  * Whether an env variable is an identifier, not a credential: its name's last part names a login, an email, a host
- * or a region (DB_USER, AWS_DEFAULT_REGION), no part of it names a secret (USER_PW, LOGIN_CODE stay secrets), and its
- * value has that identifier's shape (`identifierValueShape`). `manage_secret` lets an answer name these (operator
- * decision 2026-10-27), and derived text keeps them as ordinary text.
+ * or a region (DB_USER, AWS_DEFAULT_REGION), no part of it names a secret (USER_PW, LOGIN_CODE stay secrets), its
+ * value has that identifier's shape (`identifierValueShape`) and does not read as a credential
+ * (`credentialShapedValue`). `manage_secret` lets an answer name these (operator decision 2026-10-27), and derived
+ * text keeps them as ordinary text.
  */
 export function savedSecretIdentifierVariable(name: unknown, value: unknown): boolean {
   if (typeof name !== "string" || typeof value !== "string") return false;
   const upper = name.toUpperCase();
   const last = upper.split("_").at(-1) ?? "";
-  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(last) && identifierValueShape(last, value);
+  return !SECRET_NAME_PATTERN.test(upper) && IDENTIFIER_NAME_PARTS.has(last) && identifierValueShape(last, value) &&
+    !credentialShapedValue(value);
 }
 
 /**
@@ -100,7 +145,8 @@ function savedSecretEntryIsPlain(name: string, value: string): boolean {
   if (savedSecretIdentifierVariable(name, value)) return true;
   const parts = name.toUpperCase().split("_");
   const last = parts.pop() ?? "";
-  return (last === "URL" || last === "URI") && BARE_ORIGIN.test(value.trim()) && !SECRET_NAME_PATTERN.test(parts.join("_"));
+  return (last === "URL" || last === "URI") && BARE_ORIGIN.test(value.trim()) && !SECRET_NAME_PATTERN.test(parts.join("_")) &&
+    !credentialShapedValue(value);
 }
 
 function extractedValues(secrets: readonly Pick<AcceptedWorkspaceSecret, "name" | "value">[]): string[] {
