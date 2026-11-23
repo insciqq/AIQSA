@@ -75,7 +75,7 @@ type ProviderFields = ProviderIdentity & CaughtError & Readonly<{
   cause?: "max_output_tokens" | "content_filter";
   provider_status?: "completed" | "failed" | "cancelled" | "incomplete" | "queued" | "in_progress" | "retrying" | "unknown";
   /** Why an answer stream ended before its completion event. */
-  stream_drop?: "truncated" | "error_event" | "response_failed" | "reset";
+  stream_drop?: "truncated" | "error_event" | "response_failed" | "reset" | "inconsistent";
   /** The provider's own error identity from providerErrorCodes.json; any other is `other`. */
   provider_error_code?: string;
   /** A timed-out stream's progress: milliseconds since its last byte and last parsed event, and whether an event arrived. */

@@ -1,15 +1,17 @@
 import { ProviderStreamSafetyError } from "./streamSafety";
 
 /**
- * Why an answer stream ended before its completion event: it ended or broke
- * mid-frame (`truncated`), the provider sent an `error` event
- * (`error_event`) or a `response.failed` terminal (`response_failed`), or
- * the connection was reset while the body was read (`reset`). A closed,
- * content-free vocabulary for telemetry and the dropped-round decision.
+ * Why an answer stream gave no answer it proved: it ended or broke mid-frame
+ * (`truncated`), the provider sent an `error` event (`error_event`) or a
+ * `response.failed` terminal (`response_failed`), the connection was reset
+ * while the body was read (`reset`), or its completion event disagreed with
+ * the text it streamed (`inconsistent`, as a proxy that switched upstream
+ * mid-stream sends). A closed, content-free vocabulary for
+ * telemetry and the dropped-round decision.
  */
-export type ProviderStreamDrop = "truncated" | "error_event" | "response_failed" | "reset";
+export type ProviderStreamDrop = "truncated" | "error_event" | "response_failed" | "reset" | "inconsistent";
 
-const drops = new Set<string>(["truncated", "error_event", "response_failed", "reset"]);
+const drops = new Set<string>(["truncated", "error_event", "response_failed", "reset", "inconsistent"]);
 
 // Socket codes a reader reports when an established connection breaks
 // (Node's http client and undici); never inferred from message text.

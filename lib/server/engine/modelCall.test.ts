@@ -6,12 +6,14 @@ import { ProviderRequestTimeoutError } from "../providers/network";
 import { providerFailureMessage } from "../providers/providerFailureMessage";
 import { providerResponseFailure } from "../providers/responseFailure";
 import { createProviderRuntimeBinding } from "../providers/runtimeFactory";
-import { markProviderStreamDrop } from "../providers/streamDrop";
+import { markProviderStreamDrop, providerStreamDrop } from "../providers/streamDrop";
 import { markProviderStreamProgress, providerStreamProgressFacts } from "../providers/streamProgress";
 import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import { engineTestFaults } from "./faults";
 import { callModel, MODEL_CALL_RESEARCH_RETRY, MODEL_CALL_RETRY, MODEL_CALL_UNATTENDED_RETRY, modelCallRetryDecision, type ModelCallPorts } from "./modelCall";
+import { providerFailureCode } from "./roundFailure";
+import { subagentFailureCode } from "./subagents/runner";
 
 type Script = readonly (Readonly<{ events?: readonly ModelRunSseEvent[]; fail?: unknown; text?: string }>)[];
 
@@ -434,6 +436,34 @@ describe("native model call", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // A proxy that switched upstream mid-stream completed with another text than it streamed (production, codex-lb).
+    const mismatched: Step = [[0, created], [0, delta("Hel")], [0, completed("Hello, world")], [0, "close"]];
+
+    it("sends a stream whose completion disagrees with its text again and keeps only the retried answer", async () => {
+      const provider = upstream([mismatched, [[0, created], [0, delta("Hello")], [0, completed("Hello")], [0, "close"]]]);
+      const call = ports(codexLb(provider.fetchFn));
+      const result = await callModel(call, streamed);
+      expect(result.finalText).toBe("Hello");
+      expect(provider.fetchFn).toHaveBeenCalledTimes(2);
+      // The mismatched attempt's draft is dropped before the retried one streams.
+      expect(call.discarded).toEqual([1]);
+      expect(call.events.filter((event) => event.type === "token").map((event) => event.type === "token" && event.data.delta))
+        .toEqual(["Hel", "Hello"]);
+      // Both attempts were billed.
+      expect(call.usages).toHaveLength(2);
+    });
+
+    it("fails with the mismatch's own code once repeated mismatches spent the attempts", async () => {
+      const provider = upstream([mismatched]);
+      const call = ports(codexLb(provider.fetchFn));
+      const failure = await callModel(call, streamed).then(() => null, (error: unknown) => error);
+      expect(failure).toMatchObject({ code: "openai_response_terminal_text_mismatch" });
+      expect(providerStreamDrop(failure)).toBe("inconsistent");
+      expect(provider.fetchFn).toHaveBeenCalledTimes(MODEL_CALL_RETRY.maxAttempts);
+      expect(providerFailureCode(failure, "run_execution_failed")).toBe("openai_response_terminal_text_mismatch");
+      expect(subagentFailureCode(failure)).toBe("openai_response_terminal_text_mismatch");
     });
 
     it("never sends again a live stream that reached its ceiling", async () => {

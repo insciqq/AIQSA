@@ -12,6 +12,7 @@ import {
   type ParseOpenAIResponsesSseInput
 } from "./openaiResponsesResponse";
 import { DEFAULT_PROVIDER_STREAM_LIMITS } from "./network";
+import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
 import { PROVIDER_RESPONSE_MAX_TOOL_CALLS } from "../tools/types";
 import { observedFailure } from "./providerObservability";
 import { providerOutputObserved, providerStreamDrop } from "./streamDrop";
@@ -562,7 +563,13 @@ describe("OpenAI Responses response normalization", () => {
       await expect(stream.next()).resolves.toMatchObject({ value: { type: "token" } });
       // The refused terminal was still billed: its usage precedes the failure.
       await expect(stream.next()).resolves.toMatchObject({ value: { type: "usage", data: { totalTokens: 2 } } });
-      await expect(stream.next()).rejects.toThrow("openai_response_terminal_text_mismatch");
+      const failure = await stream.next().then(() => null, (error: unknown) => error);
+      // Neither text is proven the response's own (a proxy that switched upstream mid-stream): a drop the round
+      // owner sends again, under its own code.
+      expect(failure).toMatchObject({ code: "openai_response_terminal_text_mismatch", message: "openai_response_terminal_text_mismatch" });
+      expect(providerStreamDrop(failure)).toBe("inconsistent");
+      expect(observedFailure(failure)).toMatchObject({ code: "openai_response_terminal_text_mismatch", stream_drop: "inconsistent" });
+      expect(compatibleDroppedRoundDecision(failure)).toEqual({ retryAfterMs: null });
     }
   });
 
