@@ -1,4 +1,4 @@
-import { SAVED_SECRET_MARKER, savedSecretLineFeeds } from "./savedSecrets";
+import { SAVED_SECRET_MARKER, savedSecretFoldedValues, savedSecretLineFeeds } from "./savedSecrets";
 import {
   redactionMarkerRanges,
   redactSecrets,
@@ -25,7 +25,11 @@ import {
  *
  * A saved value matches with any run of whitespace in the text standing for any run of whitespace in the value
  * (review 2026-11-23): callers fold whitespace after screening (a search query, a title, a passage header), so a
- * passphrase split by a line break, left whole by an exact match, was folded back into the saved value.
+ * passphrase split by a line break, left whole by an exact match, was folded back into the saved value. Matching is
+ * literal (`savedCovers`): a value was once compiled into a regular expression, and a value starting with an emoji
+ * made the search restart inside its surrogate pair and match at the same offset forever, while a large valid value
+ * (a 118 KB file) failed to compile, so every search of its owner failed. Only a value's trimmed words are covered;
+ * whitespace at its edges is not.
  */
 
 /** A stretch of the text to replace, with the marker it would take; on a tie for the longest, the lower rank's. */
@@ -40,40 +44,63 @@ const MARKER_RANK = 3;
 
 export type ScreenedText = Readonly<{ redacted: boolean; text: string }>;
 
-/** Characters with a meaning in a regular expression, escaped so a value's words match as written. */
-const PATTERN_SYNTAX = /[\\^$.*+?()[\]{}|/]/gu;
+/**
+ * The text with each maximal run of whitespace as one space, and where each of its characters starts in the source:
+ * `sourceOffsets[i]` for character `i`, with one more entry, the source's length, after the last. The source is cut
+ * into these characters without a gap, so a stretch `[start, end)` of the folded text is `[sourceOffsets[start],
+ * sourceOffsets[end])` of the source, a space standing for its whole run.
+ */
+type FoldedText = Readonly<{ sourceOffsets: Int32Array; text: string }>;
+
+function foldedWithOffsets(source: string): FoldedText {
+  const sourceOffsets = new Int32Array(source.length + 1);
+  const parts: string[] = [];
+  let length = 0;
+  let cursor = 0;
+  const keepUntil = (end: number): void => {
+    for (let offset = cursor; offset < end; offset += 1) {
+      sourceOffsets[length] = offset;
+      length += 1;
+    }
+    parts.push(source.slice(cursor, end));
+  };
+  for (const run of source.matchAll(/\s+/gu)) {
+    keepUntil(run.index);
+    sourceOffsets[length] = run.index;
+    length += 1;
+    parts.push(" ");
+    cursor = run.index + run[0].length;
+  }
+  keepUntil(source.length);
+  sourceOffsets[length] = source.length;
+  return { sourceOffsets: sourceOffsets.subarray(0, length + 1), text: parts.join("") };
+}
+
+const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+
+/** A stretch widened to whole characters, so a value holding half a surrogate pair never leaves the other half alone. */
+function wholeCharacters(source: string, start: number, end: number): Readonly<{ end: number; start: number }> {
+  const splitsAt = (offset: number): boolean => offset > 0 && offset < source.length &&
+    isHighSurrogate(source.charCodeAt(offset - 1)) && isLowSurrogate(source.charCodeAt(offset));
+  return { end: splitsAt(end) ? end + 1 : end, start: splitsAt(start) ? start - 1 : start };
+}
 
 /**
- * The pattern a value matches by: its words as written, each run of whitespace between them standing for any run of
- * whitespace, and whitespace at either edge for one whitespace character there. None for a value of whitespace alone,
- * which would match ordinary text.
+ * Every occurrence of the saved values, overlapping ones included, as stretches of the source: each value folded and
+ * trimmed (`savedSecretFoldedValues`) is found literally in the folded source, so a run of whitespace in the text
+ * stands for any run in the value. Each search restarts one code unit past the last match's start, which always
+ * makes progress, whatever the value holds.
  */
-function savedValuePattern(value: string): RegExp | undefined {
-  const words = value.trim();
-  if (!words) return undefined;
-  const body = words.split(/\s+/u).map((word) => word.replace(PATTERN_SYNTAX, "\\$&")).join(String.raw`\s+`);
-  const lead = /^\s/u.test(value) ? String.raw`\s` : "";
-  const trail = /\s$/u.test(value) ? String.raw`\s` : "";
-  return new RegExp(`${lead}${body}${trail}`, "gu");
-}
-
-/** The values' patterns, read with LF line breaks, once each. */
-function savedValuePatterns(values: readonly string[]): readonly RegExp[] {
-  const patterns = new Map<string, RegExp>();
-  for (const value of values) {
-    const pattern = savedValuePattern(savedSecretLineFeeds(value));
-    if (pattern) patterns.set(pattern.source, pattern);
-  }
-  return [...patterns.values()];
-}
-
-function savedCovers(text: string, values: readonly string[]): Cover[] {
+function savedCovers(source: string, values: readonly string[]): Cover[] {
+  const folded = savedSecretFoldedValues(values);
+  if (folded.length === 0) return [];
+  const { sourceOffsets, text } = foldedWithOffsets(source);
   const covers: Cover[] = [];
-  for (const pattern of savedValuePatterns(values)) {
-    // Each search starts one past the last match's start, so overlapping occurrences are all found.
-    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-      covers.push({ end: match.index + match[0].length, placeholder: SAVED_SECRET_MARKER, rank: SAVED_RANK, start: match.index });
-      pattern.lastIndex = match.index + 1;
+  for (const value of folded) {
+    for (let start = text.indexOf(value); start !== -1; start = text.indexOf(value, start + 1)) {
+      const span = wholeCharacters(source, sourceOffsets[start], sourceOffsets[start + value.length]);
+      covers.push({ ...span, placeholder: SAVED_SECRET_MARKER, rank: SAVED_RANK });
     }
   }
   return covers;

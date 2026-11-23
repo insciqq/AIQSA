@@ -72,13 +72,37 @@ describe("screening recognized secrets and saved values together", () => {
     // Characters with a meaning in patterns match only themselves.
     expect(screen("pw a.b*c+(d) [e]|f$ end", ["a.b*c+(d) [e]|f$"])).toBe(`pw ${SAVED_SECRET_MARKER} end`);
     expect(screen("pw axb*c+(d) [e]|f$ end", ["a.b*c+(d) [e]|f$"])).toBe("pw axb*c+(d) [e]|f$ end");
-    // Whitespace at a value's edge needs whitespace there, and covers one character of it.
-    expect(screen("x\n\n fixture-pass-42\n\ny", [" fixture-pass-42\n"])).toBe(`x\n\n${SAVED_SECRET_MARKER}\ny`);
-    expect(screen("xfixture-pass-42 y", [" fixture-pass-42"])).toBe("xfixture-pass-42 y");
+    // Only a value's trimmed words are matched and covered: whitespace at its edges is neither needed nor covered.
+    expect(screen("x\n\n fixture-pass-42\n\ny", [" fixture-pass-42\n"])).toBe(`x\n\n ${SAVED_SECRET_MARKER}\n\ny`);
+    expect(screen("xfixture-pass-42 y", [" fixture-pass-42"])).toBe(`x${SAVED_SECRET_MARKER} y`);
     // A value of whitespace alone never matches, whatever kind.
     expect(screen("a \t \n b", [" \t", " ", "\n\n"])).toBe("a \t \n b");
     // Overlapping occurrences are all covered.
     expect(screen("p ab ab ab q", ["ab ab"])).toBe(`p ${SAVED_SECRET_MARKER} q`);
+  });
+
+  it("finishes on a value that starts with or holds a surrogate pair, and screens it", () => {
+    expect(screen("key 🔑fixture-password-42 here", ["🔑fixture-password-42"])).toBe(`key ${SAVED_SECRET_MARKER} here`);
+    expect(screen("a 🔑fixture 🔑fixture 🔑fixture b", ["🔑fixture 🔑fixture"])).toBe(`a ${SAVED_SECRET_MARKER} b`);
+    expect(screen("x pass-😀-word-42\nend", ["pass-😀-word-42"])).toBe(`x ${SAVED_SECRET_MARKER}\nend`);
+    expect(screen("x pass-😀-word-43 end", ["pass-😀-word-42"])).toBe("x pass-😀-word-43 end");
+    // A value holding half a pair covers the whole character, so no half is left alone.
+    expect(screen("x 😀abc-1234 y", ["\uDE00abc-1234"])).toBe(`x ${SAVED_SECRET_MARKER} y`);
+  });
+
+  it("matches large saved values literally and fast, so a valid file value never fails screening", () => {
+    for (const repeats of [3_200, 13_600]) {
+      const value = "- host: reports.example\n  user: demo\n".repeat(repeats);
+      expect(value.length).toBeGreaterThan(repeats === 3_200 ? 118_000 : 500_000);
+      const started = performance.now();
+      expect(redactSecretsAndSavedValues("meeting notes from tuesday", [value]))
+        .toEqual({ redacted: false, text: "meeting notes from tuesday" });
+      expect(performance.now() - started).toBeLessThan(1_000);
+      // The value's trailing line break is edge whitespace, so it stays.
+      expect(screen(`before\n${value}after`, [value])).toBe(`before\n${SAVED_SECRET_MARKER}\nafter`);
+      // The same file reflowed onto one line is still the saved value.
+      expect(screen(`before ${value.replace(/\s+/gu, " ").trim()} after`, [value])).toBe(`before ${SAVED_SECRET_MARKER} after`);
+    }
   });
 
   it("keeps markers already in the text, so screening screened text changes nothing", () => {
