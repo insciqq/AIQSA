@@ -141,6 +141,28 @@ describe("imported chat title", () => {
   });
 });
 
+describe("imported messages", () => {
+  it("keep a continued chat's summary prompt the server's, and every other message as before", async () => {
+    const written: Array<Record<string, unknown>> = [];
+    const tx = {
+      chat: { create: async () => ({ id: "chat" }), update: async () => ({ id: "chat" }) },
+      message: { createMany: async ({ data }: { data: Array<Record<string, unknown>> }) => { written.push(...data); return { count: data.length }; } }
+    };
+    const db = { $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx), chat: { findFirst: async () => null } };
+    const base = document();
+    const [question, answer] = base.chat.messages;
+    const continued: ChatExportDocument = { ...base, version: 2, chat: { ...base.chat, messages: [
+      { ...question!, serverTurn: "conversation_summary", text: "Continue from the conversation summary below." }, answer!] } };
+    expect(await importChatForUser(db as never, "user-1", { document: continued, source: "AIQSA" }))
+      .toEqual({ messages: 2, status: "imported" });
+    expect(written.map((message) => [message.role, message.systemTurnKind ?? null])).toEqual([
+      ["user", "conversation_summary"], ["assistant", null]]);
+    written.length = 0;
+    await importChatForUser(db as never, "user-1", { document: base, source: "AIQSA" });
+    expect(written.every((message) => !("systemTurnKind" in message))).toBe(true);
+  });
+});
+
 describe("chat import source key", () => {
   const aiqsa = (doc: ChatExportDocument): ChatImportItem => ({ document: doc, source: "AIQSA" });
 

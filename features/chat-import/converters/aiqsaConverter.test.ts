@@ -77,6 +77,22 @@ describe("AIQSA converter", () => {
     expect(chat.chat.document.chat).toMatchObject({ activeLeafId: "m4", pinned: true, title: "Cats" });
   });
 
+  it("keeps a continued chat's summary prompt the server's, so the imported chat never reads it as the user's request", async () => {
+    const base = exportDocument("Continued");
+    const messages = [
+      { createdAt: "2026-09-01T10:00:00.000Z", id: "m1", parentId: null, role: "user" as const, serverTurn: "conversation_summary" as const,
+        status: "complete" as const, text: "Continue from the conversation summary below." },
+      { createdAt: "2026-09-01T10:01:00.000Z", id: "m2", parentId: "m1", role: "assistant" as const, status: "complete" as const,
+        text: "Conversation summary\n\nThe plan so far." }
+    ];
+    const output = await events([await file(pretty({ ...base, version: 2, chat: { ...base.chat, activeLeafId: "m2", messages } }),
+      "continued.json")]);
+    const chat = output.find((event) => event.type === "chat");
+    if (chat?.type !== "chat") throw new Error("no chat");
+    expect(chat.chat.document.version).toBe(2);
+    expect(chat.chat.document.chat.messages.map((message) => message.serverTurn ?? null)).toEqual(["conversation_summary", null]);
+  });
+
   it("says how an answer without text ended, since imported messages are stored complete", async () => {
     const base = exportDocument("Endings");
     const messages = base.chat.messages.map((message) =>

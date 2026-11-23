@@ -133,7 +133,7 @@ describe("chat export source", () => {
     expect(findMany).toHaveBeenCalledTimes(1);
     // The same published version, which import still reads.
     const exported = chatExportDocument(source, at(11));
-    expect(exported.version).toBe(CHAT_EXPORT_VERSION);
+    expect(exported.version).toBe(1);
     expect(decodeChatExportDocument(JSON.parse(JSON.stringify(exported))).ok).toBe(true);
     // The readable branch holds the starting point and the update only.
     expect(chatExportActiveBranchMarkdown(source).match(/Check the release page/gu)).toHaveLength(2);
@@ -208,6 +208,28 @@ describe("single-chat export route", () => {
     }
     expect(load).toHaveBeenCalledOnce();
     expect(load).toHaveBeenCalledWith({ chatId: "someone-elses-chat", userId: auth.session.userId });
+  });
+
+  it("keeps a continued chat's summary prompt the server's in version 2, and writes a chat without one as version 1", async () => {
+    const rows = [
+      { ...noRuns, content: text("Continue from the conversation summary below."), createdAt: at(1), id: "db-prompt", modelId: null,
+        parentMessageId: null, provider: null, role: "user", status: "complete", systemTurnKind: "conversation_summary" },
+      { ...noRuns, content: text("Conversation summary\n\nThe plan so far."), createdAt: at(2), id: "db-summary", modelId: null,
+        parentMessageId: "db-prompt", provider: null, role: "assistant", status: "complete" }];
+    const source = await loadChatExportSource(fakeReadClient(rows) as never, { ...chatRow, activeLeafMessageId: "db-summary" });
+    const exported = JSON.parse(JSON.stringify(chatExportDocument(source, at(10))));
+    expect(exported.version).toBe(CHAT_EXPORT_VERSION);
+    expect(exported.chat.messages).toEqual([
+      expect.objectContaining({ role: "user", serverTurn: "conversation_summary", text: "Continue from the conversation summary below." }),
+      expect.not.objectContaining({ serverTurn: expect.anything() })
+    ]);
+    const decoded = decodeChatExportDocument(exported);
+    expect(decoded.ok && decoded.value.chat.messages[0]?.serverTurn).toBe("conversation_summary");
+    // The prompt still reads as its text in the readable branch.
+    expect(chatExportActiveBranchMarkdown(source)).toContain("Continue from the conversation summary below.");
+    const plain = await loadChatExportSource(fakeReadClient() as never, chatRow);
+    expect(chatExportDocument(plain, at(10)).version).toBe(1);
+    expect(JSON.stringify(chatExportDocument(plain, at(10)))).not.toContain("serverTurn");
   });
 
   it("downloads the whole tree as a valid aiqsa.chat document", async () => {

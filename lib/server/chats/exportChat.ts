@@ -89,7 +89,9 @@ export async function loadChatExportSource(db: ChatExportReadClient, chat: ChatE
       parentKey: row.parentMessageId,
       provider: row.provider,
       role: row.role,
-      status: row.status
+      status: row.status,
+      // A continued chat's summary prompt stays the server's in a chat imported from this export.
+      ...(row.role === "user" && row.systemTurnKind === "conversation_summary" ? { serverTurn: "conversation_summary" as const } : {})
     }))
   };
 }

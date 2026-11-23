@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createQueryCountingClient } from "@/tests/support/prismaQueryLog";
 import { CHAT_HISTORY_PAGE_SIZE } from "../../contracts/chats";
-import { CHAT_EXPORT_VERSION, decodeChatExportDocument } from "../../contracts/chatExport";
+import { decodeChatExportDocument } from "../../contracts/chatExport";
 import { textMessageContent } from "../../domain/content";
 import { chatExportDocument } from "../../domain/chatExportDocument";
 import { prisma } from "../prisma";
@@ -269,7 +269,8 @@ describe("a task chat's quiet checks", () => {
     expect(source!.messages.find((message) => message.key === chat.shown[4])?.parentKey).toBe(chat.shown[3]);
     expect(source!.chat.activeLeafKey).toBe(chat.shown.at(-1));
     const document = chatExportDocument(source!, new Date(start));
-    expect(document.version).toBe(CHAT_EXPORT_VERSION);
+    // A chat without a server-written turn the export carries stays the first published version.
+    expect(document.version).toBe(1);
     expect(decodeChatExportDocument(JSON.parse(JSON.stringify(document))).ok).toBe(true);
 
     const shares = createPrismaShareRepository(prisma);
