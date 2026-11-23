@@ -2,13 +2,18 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { titleFromMessageContent } from "../../chats/titlePolicy";
 import { prisma } from "../../prisma";
+import { SAVED_SECRET_MARKER } from "../../redaction/savedSecrets";
 import type { ChatSearchEmbedder, ChatSearchEmbeddingModel } from "../embedder";
+import { createPastChatReader, createPrismaPastChatReadStore } from "../search/read";
+import { createPastChatSearch } from "../search/retrieval";
+import { createPrismaPastChatSearchStore } from "../search/store";
 import { recordChatSearchUsage } from "../usage";
 import { runChatSearchBackfillPass } from "./backfill";
 import { clearChatSearch, markChatSearchDirty, markOwnerChatsSearchDirty, scheduleChatSearchReembedding } from "./dirty";
 import { chatSearchContentHash } from "./passages";
-import { runChatSearchIndexPass } from "./pass";
+import { runChatSearchIndexPass, runChatSearchIndexPassOn } from "./pass";
 import { createPrismaChatSearchIndexStore } from "./prismaStore";
 
 /**
@@ -283,6 +288,37 @@ describe("the past-chat index in PostgreSQL", () => {
     }
   });
 
+  it("sends no further request once the owner turns search off during a chat's first one, and resumes when it is on", async () => {
+    const userId = await owner();
+    const { chatId } = await chat(userId, [["Hotel?", "The river one."], ["Train?", "The 9:10."], ["Pack?", "An umbrella."]]);
+    await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+    let calls = 0;
+    const embedder: ChatSearchEmbedder = {
+      currentModel: async () => ({ kind: "model", providerModelId: "fake-embed-a" }),
+      async embed(request) {
+        calls += 1;
+        if (calls === 1) {
+          await prisma.userSettings.upsert({ create: { pastChatSearchEnabled: false, userId }, update: { pastChatSearchEnabled: false },
+            where: { userId } });
+        }
+        return { dimension: 3, vectors: request.texts.map((value) => [value.length, 1, 0.5]) };
+      }
+    };
+    expect(await runChatSearchIndexPass({ db: prisma, embedder, limits: { batchTexts: 1, ownerIds: [userId] } }))
+      .toMatchObject({ embedded: 1, failed: 0, indexed: 1 });
+    expect(calls).toBe(1);
+    expect((await passages(chatId)).map((row) => row.embeddingProviderModelId)).toEqual([null, null, "fake-embed-a"]);
+    expect(await prisma.chatSearchState.findUniqueOrThrow({ where: { chatId } }))
+      .toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+
+    await prisma.userSettings.update({ data: { pastChatSearchEnabled: true }, where: { userId } });
+    expect(await runChatSearchBackfillPass({ db: prisma, embedder, limits: { ownerIds: [userId] } })).toMatchObject({ vectors: 1 });
+    await drain(embedder, [userId]);
+    // The two turns still without a vector, in one request.
+    expect(calls).toBe(2);
+    expect((await passages(chatId)).every((row) => row.embeddingProviderModelId === "fake-embed-a")).toBe(true);
+  });
+
   it("builds no passage for a turn with a message the old Memory kept out, and follows the rest of the branch", async () => {
     const userId = await owner();
     const { chatId, ids } = await chat(userId, [["Before the reset", "Old answer"], ["Kept question", "Paused answer"],
@@ -302,6 +338,50 @@ describe("the past-chat index in PostgreSQL", () => {
     await prisma.chat.delete({ where: { id: chatId } });
     expect(await prisma.$queryRaw<Array<{ count: number }>>`
       SELECT count(*)::integer AS "count" FROM "ChatSearchExcludedMessage" WHERE "chatId" = ${chatId}`).toEqual([{ count: 0 }]);
+  });
+
+  it("names a chat by its search title in passages, results and reads: screened, and untitled once its first message is kept out", async () => {
+    const userId = await owner();
+    const saved = "DB_PASSWORD=fixture-pass-42\r\nDB_HOST=cache.example";
+    // A new chat takes its first message's first line as its title (`titleFromMessageContent`), here part of a saved secret.
+    const { chatId, ids } = await chat(userId, [[saved, "Stored."], ["Which port?", "Port 5432 on the replica."]],
+      { title: titleFromMessageContent(text(saved)) });
+    const words = fakeEmbedder({ kind: "unset" });
+    const store = createPrismaChatSearchIndexStore(prisma);
+    const index = async () => {
+      await prisma.$transaction((tx) => markChatSearchDirty(tx, { chatId, userId }));
+      for (let pass = 0; pass < 10; pass += 1) {
+        if (!(await runChatSearchIndexPassOn({ ...store, loadSavedSecretValues: async () => [saved] },
+          { embedder: words.embedder, limits: { ownerIds: [userId] } })).more) return;
+      }
+    };
+    const search = createPastChatSearch({ embedder: words.embedder, recordUsage: () => undefined, savedSecretValues: async () => [saved],
+      store: createPrismaPastChatSearchStore(prisma) });
+    const reader = createPastChatReader({ savedSecretValues: async () => [saved], store: createPrismaPastChatReadStore(prisma) });
+    const titles = async () => {
+      const found = await search.search({ currentChatId: randomUUID(), input: { query: "replica" }, ownerId: userId, timeZone: "UTC" });
+      const read = await reader.read({ input: { chat_id: chatId }, ownerId: userId, timeZone: "UTC" });
+      return { read: read.kind === "read" ? read.result.chatTitle : read.kind,
+        results: found.kind === "searched" ? found.result.results.map((result) => result.chatTitle) : found.kind };
+    };
+
+    await index();
+    const texts = (await passages(chatId)).map((row) => row.text);
+    expect(texts).toHaveLength(2);
+    expect(texts.join("\n")).not.toContain("fixture-pass-42");
+    expect(texts.every((value) => value.startsWith(`Chat: ${SAVED_SECRET_MARKER}\n`))).toBe(true);
+    expect(await titles()).toEqual({ read: SAVED_SECRET_MARKER, results: [SAVED_SECRET_MARKER] });
+
+    // The first message was written before the chat's old Resume: no title made from it is shown or searchable.
+    await prisma.$executeRaw`
+      INSERT INTO "ChatSearchExcludedMessage" ("chatId", "messageId", "userId") VALUES (${chatId}, ${ids[0]!}, ${userId})`;
+    await index();
+    expect((await passages(chatId)).map((row) => row.text)).toEqual(["Chat:\n\nUser: Which port?\n\nAssistant: Port 5432 on the replica."]);
+    expect(await titles()).toEqual({ read: "Untitled chat", results: ["Untitled chat"] });
+    // The owner's own title is the owner's words and stays.
+    await prisma.chat.update({ data: { title: "Replica settings", titleRevision: { increment: 1 } }, where: { id: chatId } });
+    await index();
+    expect(await titles()).toEqual({ read: "Replica settings", results: ["Replica settings"] });
   });
 
   it("records past-chat search usage without a Memory binding, as the usage checks allow", async () => {

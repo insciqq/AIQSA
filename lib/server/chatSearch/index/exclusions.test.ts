@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearChatSearchExclusions, copyChatSearchExclusions } from "./exclusions";
+import { chatSearchWithheldMessages, clearChatSearchExclusions, copyChatSearchExclusions } from "./exclusions";
 import { chatSnapshot } from "./indexer.testFixtures";
 import { recordingTransaction } from "./markRecorder.testFixtures";
 import { buildChatSearchPassages } from "./passages";
@@ -22,6 +22,32 @@ describe("messages past-chat search never holds", () => {
     expect(questions(snapshot.path.filter((message) => !["m-q0", "m-a0", "m-q1"].includes(message.id)))).toEqual(["m-q2"]);
     const passages = buildChatSearchPassages({ ...snapshot, path: snapshot.path.filter((message) => message.id !== "m-a0") }, []);
     expect(passages.map((passage) => passage.text).join("\n")).not.toContain("before the reset");
+  });
+
+  it("withhold both messages of a turn when either is excluded, and nothing else, as reads show the branch", () => {
+    const messages = new Map([
+      ["q0", { parentMessageId: null, role: "user" }], ["a0", { parentMessageId: "q0", role: "assistant" }],
+      ["q1", { parentMessageId: "a0", role: "user" }], ["a1", { parentMessageId: "q1", role: "assistant" }],
+      ["wake", { parentMessageId: "a1", role: "user" }], ["a2", { parentMessageId: "wake", role: "assistant" }]
+    ]);
+    // A read omits the wake-up from what it shows; its answer still answers it.
+    const path = ["q0", "a0", "q1", "a1", "a2"];
+    const withheld = (excluded: readonly string[]) => [...chatSearchWithheldMessages(path, messages, new Set(excluded))].sort();
+    expect(withheld([])).toEqual([]);
+    expect(withheld(["q0"])).toEqual(["a0", "q0"]);
+    expect(withheld(["a1"])).toEqual(["a1", "q1"]);
+    expect(withheld(["wake"])).toEqual(["a2", "wake"]);
+    // The indexer's passages agree: either message of a turn takes the turn, and no other one.
+    const snapshot = chatSnapshot({ turns });
+    const indexed = (excluded: string) => buildChatSearchPassages({ ...snapshot,
+      path: snapshot.path.filter((message) => message.id !== excluded) }, []).map((passage) => [passage.userMessageId,
+      passage.assistantMessageId]).flat();
+    const all = snapshot.path.map((message) => message.id);
+    for (const excluded of all) {
+      const branchWithheld = chatSearchWithheldMessages(all, new Map(snapshot.path.map((message) => [message.id, message])),
+        new Set([excluded]));
+      expect(indexed(excluded).sort()).toEqual(all.filter((id) => !branchWithheld.has(id)).sort());
+    }
   });
 
   it("follow a branch copy message by message, and only from the owner's own source chat", async () => {

@@ -7,6 +7,8 @@ import {
   chatSearchContentHash,
   chatSearchMessageText,
   chatSearchPassageBody,
+  chatSearchPassageTitle,
+  chatSearchTitle,
   chatSearchTurns,
   chatSearchWindowSpans
 } from "./passages";
@@ -183,6 +185,55 @@ describe("past-chat passages", () => {
     const renamed = buildChatSearchPassages(chatSnapshot({ title: "New title", turns }), []);
     expect(renamed.map((passage) => passage.contentHash)).not.toEqual(expect.arrayContaining(first.map((passage) => passage.contentHash)));
     expect(renamed.map((passage) => chatSearchPassageBody(passage.text))).toEqual(first.map((passage) => chatSearchPassageBody(passage.text)));
+  });
+
+  it("names a chat by what search holds of the first message its title was made from", () => {
+    const saved = "DB_PASSWORD=fixture-pass-42\r\nDB_HOST=cache.example";
+    const firstLine = "DB_PASSWORD=fixture-pass-42";
+    const origin = (content: unknown, excluded = false) => ({ firstMessage: { content, excluded }, serverSet: true });
+    const headerOf = (title: string, titleOrigin: Parameters<typeof chatSearchTitle>[1], values: readonly string[] = []) => {
+      const passages = buildChatSearchPassages(chatSnapshot({ title, titleOrigin, turns: [{ answer: "Stored.", question: saved }] }), values);
+      return passages[0]!.text.split("\n")[0];
+    };
+    // The fallback title is the first line of a message saved as a secret: the screened line takes its place everywhere.
+    expect(chatSearchTitle(firstLine, origin(text(saved)), [saved])).toBe(SAVED_SECRET_MARKER);
+    expect(headerOf(firstLine, origin(text(saved)), [saved])).toBe(`Chat: ${SAVED_SECRET_MARKER}`);
+    expect(chatSearchTitle(`Branch: ${firstLine}`, origin(text(saved)), [saved])).toBe(`Branch: ${SAVED_SECRET_MARKER}`);
+    // A title the model made from that turn, or one that does not hold the line, goes untitled.
+    expect(chatSearchTitle("Database credentials", origin(text(saved)), [saved])).toBe("");
+    // The first message was kept out of search: no title made from it is shown, nor its first line in any passage.
+    const kept = origin(text("Notes about the reorg\nmore"), true);
+    expect(chatSearchTitle("Notes about the reorg", kept, [])).toBe("");
+    expect(headerOf("Notes about the reorg", kept)).toBe("Chat:");
+    expect(chatSearchPassageTitle(buildChatSearchPassages(chatSnapshot({ title: "Notes about the reorg", titleOrigin: kept,
+      turns: [{ answer: "A", question: "Q" }] }), [])[0]!.text)).toBe("");
+    // Nothing to screen: the stored title stays, and so does any title the owner set.
+    expect(chatSearchTitle("Trip planning", origin(text("Where should we stay?")), [])).toBe("Trip planning");
+    expect(chatSearchTitle(firstLine, { firstMessage: null, serverSet: false }, [saved])).toBe(firstLine);
+    expect(chatSearchTitle(firstLine, { firstMessage: { content: text(saved), excluded: true }, serverSet: false }, [])).toBe(firstLine);
+  });
+
+  it("screens the title as it screens the turn's words, and reads it back from the header", () => {
+    const passage = buildChatSearchPassages(chatSnapshot({ title: `Deploy  ${SAVED_VALUE}\twith ${GITHUB_TOKEN}`,
+      turns: [{ answer: "A", question: "Q" }] }), [SAVED_VALUE])[0]!.text;
+    expect(passage).not.toContain(SAVED_VALUE);
+    expect(passage).not.toContain(GITHUB_TOKEN);
+    expect(chatSearchPassageTitle(passage)).toMatch(/^Deploy \[REDACTED:SAVED_SECRET\] with \[REDACTED/u);
+    expect(chatSearchPassageTitle(buildChatSearchPassages(chatSnapshot({ title: "Rome", turns: [{ answer: "A", question: "Q",
+      questionFiles: ["plan.pdf"] }] }), [])[0]!.text)).toBe("Rome");
+    expect(chatSearchPassageTitle("User: no header")).toBe("");
+  });
+
+  it("screens a header in one pass and whole, so neither a saved login nor a clip leaves a password behind", () => {
+    const address = "https://deploy-bot:fixture-pass-42@db.example.org";
+    const textsOf = (title: string, files: readonly string[] = []) => buildChatSearchPassages(chatSnapshot({ title,
+      turns: [{ answer: "Done.", question: "Go", questionFiles: files }] }), ["deploy-bot"]).map((passage) => passage.text).join("\n");
+    // A saved login taken out first would leave an address no longer recognized, and its password with it.
+    expect(textsOf(`Deploy ${address}`)).not.toContain("fixture-pass-42");
+    // Clipped first, the address would no longer be recognized and its start would stay.
+    const long = textsOf(`${"x".repeat(270)} ${address}`, [`${"y".repeat(220)} ${address}.txt`]);
+    expect(long).not.toContain("fixture-p");
+    expect(long).not.toContain("deploy-bot");
   });
 
   it("keeps a turn with only files, and drops one with nothing to search", () => {

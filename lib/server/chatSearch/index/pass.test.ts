@@ -290,6 +290,28 @@ describe("the past-chat index pass", () => {
     expect(memory.states.get("chat-1")).toMatchObject({ dirtyAt: null, lastErrorCode: null });
   });
 
+  it("asks again before every request, so a switch turned off during a chat's first request stops the rest", async () => {
+    const { fake, memory, run } = setup([{ answer: "The river hotel.", question: "Which hotel?" },
+      { answer: "The 9:10.", question: "Which train?" }, { answer: "An umbrella.", question: "What to pack?" }]);
+    // The owner turns past-chat search off while the first request is out.
+    fake.state.during = () => memory.ownersOff.add(OWNER);
+    expect(await run({ limits: { batchTexts: 1 } })).toMatchObject({ embedded: 1, failed: 0, indexed: 1, more: false });
+    expect(fake.calls).toHaveLength(1);
+    // The vector already made stays, the words of every turn stay, and the chat waits for the switch without a retry.
+    expect(memory.chatPassages("chat-1").filter((row) => row.embedding !== null)).toHaveLength(1);
+    expect(memory.chatPassages("chat-1")).toHaveLength(3);
+    expect(memory.states.get("chat-1")).toMatchObject({ attemptCount: 0, dirtyAt: null, lastErrorCode: "owner_search_off", nextAttemptAt: null });
+
+    // Switched on: the backfill marks the chat, and the next pass sends only the two turns still without a vector.
+    fake.state.during = null;
+    memory.ownersOff.delete(OWNER);
+    memory.mark("chat-1", "background");
+    expect(await run({ limits: { batchTexts: 1 } })).toMatchObject({ embedded: 2 });
+    expect(fake.calls).toHaveLength(3);
+    expect(memory.chatPassages("chat-1").every((row) => row.embedding !== null)).toBe(true);
+    expect(memory.states.get("chat-1")).toMatchObject({ dirtyAt: null, lastErrorCode: null });
+  });
+
   it("never embeds with another model while the role is unusable, and says why", async () => {
     const { fake, memory, run } = setup([{ answer: "Answer.", question: "Question" }]);
     fake.state.model = { code: "credential_revoked", kind: "unavailable", providerModelId: "embed-a" };

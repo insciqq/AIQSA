@@ -1,11 +1,14 @@
 import type { ChatSearchEligibilityFields } from "../eligibility";
-import type { ChatSearchChatSnapshot, ChatSearchSourceMessage } from "./passages";
+import type { ChatSearchChatSnapshot, ChatSearchSourceMessage, ChatSearchTitleOrigin } from "./passages";
 
 /** Synthetic chats for the indexer's unit tests; not imported by production code. */
 
 export const ORDINARY: ChatSearchEligibilityFields = Object.freeze({
   discord: false, importSource: null, memoryMode: "NORMAL", permanentDeletionAt: null, scheduledTaskId: null, userId: "owner-1"
 });
+
+/** A title the owner set: search keeps it as it is. */
+export const OWNER_TITLE: ChatSearchTitleOrigin = Object.freeze({ firstMessage: null, serverSet: false });
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 1, 12, minute));
 
@@ -27,6 +30,8 @@ export function text(value: string) {
 export function chatSnapshot(input: Readonly<{
   chatId?: string;
   title?: string;
+  /** By default a title the owner set. */
+  titleOrigin?: ChatSearchTitleOrigin;
   turns: readonly FixtureTurn[];
   eligibility?: Partial<ChatSearchEligibilityFields>;
   prefix?: string;
@@ -58,7 +63,8 @@ export function chatSnapshot(input: Readonly<{
     eligibility: { ...ORDINARY, ...input.eligibility },
     fileNames,
     path,
-    title: input.title ?? "Trip planning"
+    title: input.title ?? "Trip planning",
+    titleOrigin: input.titleOrigin ?? OWNER_TITLE
   };
 }
 

@@ -112,7 +112,12 @@ async function seedChat(input: Readonly<{ userId: string; title: string; turns: 
   }
   // Parents come first, so a batch never names a parent a later batch inserts.
   for (let start = 0; start < messages.length; start += 1_000) await prisma.message.createMany({ data: messages.slice(start, start + 1_000) });
-  if (parentMessageId) await prisma.chat.update({ data: { activeLeafMessageId: parentMessageId }, where: { id: chat.id } });
+  if (parentMessageId) {
+    await prisma.chat.update({ data: { activeLeafMessageId: parentMessageId }, where: { id: chat.id } });
+    // Indexed at that leaf, as the indexer records it, so search takes every passage as on the active branch unwalked.
+    await prisma.$executeRaw`INSERT INTO "ChatSearchState" ("chatId", "userId", "indexedLeafMessageId", "updatedAt")
+      VALUES (${chat.id}, ${input.userId}, ${parentMessageId}, CURRENT_TIMESTAMP)`;
+  }
   return { chatId: chat.id, passages };
 }
 
@@ -387,5 +392,34 @@ describe("past-chat search SQL", { timeout: 20_000 }, () => {
     // A chat with no active leaf has no branch to search, as the indexer builds none.
     await prisma.chat.update({ data: { activeLeafMessageId: null }, where: { id: chat.id } });
     expect(await readIds()).toEqual([]);
+  });
+
+  it("keeps a live match when an abandoned branch's passages would fill a lane before the indexer drops them", async () => {
+    // 52 turns that all match, indexed while the newest answer was the leaf, older than every other fixture chat.
+    const seeded = await seedChat({ firstMinute: 30_000, text: (turn) => `Chat: Special flood\n\nUser: Quillwort survey ${turn}\n\nAssistant: Noted.`,
+      title: "Special flood", turns: 52, userId: fixture.owner, windows: 1 });
+    await insertPassages(seeded.passages);
+    const axisIndex = 7;
+    await prisma.$executeRaw(Prisma.sql`UPDATE "ChatSearchPassage"
+      SET "embedding" = ${axisVectorSql(axisIndex)}, "embeddingProviderModelId" = ${MODEL}, "embeddingDimension" = ${DIMENSION}
+      WHERE "chatId" = ${seeded.chatId}`);
+    // The root turn, the oldest: the first seeded.
+    const oldest = seeded.passages[0]!;
+    expect((await wordSearch("quillwort")).filter((hit) => hit.chatId === seeded.chatId)).toHaveLength(50);
+
+    // The owner goes back to the oldest answer: every later turn is now off the branch, still indexed.
+    await prisma.chat.update({ data: { activeLeafMessageId: oldest.assistantMessageId }, where: { id: seeded.chatId } });
+    const words = await timed("words_moved_leaf", () => wordSearch("quillwort"));
+    expect(words.map((hit) => hit.id)).toEqual([oldest.id]);
+    const meaning = await store.vectorHits(scope(), { providerModelId: MODEL, values: axis(axisIndex) }, 50);
+    expect(meaning.filter((hit) => hit.chatId === seeded.chatId).map((hit) => hit.id)).toEqual([oldest.id]);
+    expect(chatIds(await searchAs(fixture.owner, fixture.current, "quillwort", { quillwort: axis(axisIndex) }))).toContain(seeded.chatId);
+    expect((await store.recent(scope({ range: { from: new Date(BASE - 30_100 * 60_000), until: new Date(BASE - 29_900 * 60_000) } }), 8))
+      .map((row) => row.id)).toEqual([oldest.id]);
+
+    // Indexed again at the new leaf (the later turns' passages gone), the chat is no longer walked and still found.
+    await prisma.chatSearchPassage.deleteMany({ where: { chatId: seeded.chatId, id: { not: oldest.id } } });
+    await prisma.chatSearchState.update({ data: { indexedLeafMessageId: oldest.assistantMessageId }, where: { chatId: seeded.chatId } });
+    expect((await wordSearch("quillwort")).map((hit) => hit.id)).toEqual([oldest.id]);
   });
 });

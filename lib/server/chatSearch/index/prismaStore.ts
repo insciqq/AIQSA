@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import { chatSearchEligibilityFields, chatSearchEligibilitySelect } from "../eligibility";
 import { chatSearchOwnerEmbeddingSql } from "./ownerEmbedding";
-import type { ChatSearchChatSnapshot, ChatSearchSourceMessage } from "./passages";
+import type { ChatSearchChatSnapshot, ChatSearchSourceMessage, ChatSearchTitleOrigin } from "./passages";
 import { planChatSearchPassages, type StoredChatSearchPassage } from "./plan";
 import { chatSearchSavedSecretValues } from "./savedSecrets";
 import type {
@@ -38,6 +38,33 @@ type PathRow = {
 /** A timestamp as the `timestamp(3)` columns hold it: UTC wall time, the zone ignored by the cast. */
 function timestamp(value: Date): Prisma.Sql {
   return Prisma.sql`CAST(${value.toISOString()} AS timestamp(3))`;
+}
+
+/** The chat columns `chatSearchTitleOrigin` reads. */
+export const chatSearchTitleSelect = {
+  id: true, title: true, titleGeneration: { select: { status: true, titleRevision: true } }, titleRevision: true
+} as const satisfies Prisma.ChatSelect;
+
+/**
+ * Where the chat's title came from (`ChatSearchTitleOrigin`), in the caller's transaction. Every rename and every
+ * title the title model applies moves `titleRevision` on, and only a rename leaves no settled title request one
+ * revision behind, so a title is the server's while the revision is 0 or the model set it last. A rename that races a
+ * request still in flight counts as the model's, which at worst leaves that chat untitled in search.
+ */
+export async function chatSearchTitleOrigin(
+  db: Pick<Prisma.TransactionClient, "message">,
+  chat: Prisma.ChatGetPayload<{ select: typeof chatSearchTitleSelect }>
+): Promise<ChatSearchTitleOrigin> {
+  const generation = chat.titleGeneration;
+  const serverSet = chat.titleRevision === 0 ||
+    (generation?.status === "settled" && chat.titleRevision === generation.titleRevision + 1);
+  if (!serverSet) return { firstMessage: null, serverSet };
+  const first = await db.message.findFirst({
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { content: true, searchExclusion: { select: { messageId: true } } },
+    where: { chatId: chat.id, role: "user" }
+  });
+  return { firstMessage: first ? { content: first.content, excluded: first.searchExclusion !== null } : null, serverSet };
 }
 
 function sameVersion(dirtyAt: Date | null, claim: ChatSearchClaim): boolean {
@@ -137,10 +164,11 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
     async loadSnapshot(chatId) {
       return db.$transaction(async (tx): Promise<ChatSearchChatSnapshot | null> => {
         const chat = await tx.chat.findUnique({
-          select: { activeLeafMessageId: true, title: true, ...chatSearchEligibilitySelect },
+          select: { activeLeafMessageId: true, ...chatSearchTitleSelect, ...chatSearchEligibilitySelect },
           where: { id: chatId }
         });
         if (!chat) return null;
+        const titleOrigin = await chatSearchTitleOrigin(tx, chat);
         // The walk follows every message of the branch; a message search never holds (`ChatSearchExcludedMessage`)
         // leaves the path afterwards, and its turn with it: its question and answer are then no longer parent and
         // child side by side, so `chatSearchTurns` makes no turn of them.
@@ -183,7 +211,8 @@ export function createPrismaChatSearchIndexStore(db: PrismaClient): ChatSearchIn
           eligibility: chatSearchEligibilityFields(chat),
           fileNames,
           path,
-          title: chat.title
+          title: chat.title,
+          titleOrigin
         };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     },
