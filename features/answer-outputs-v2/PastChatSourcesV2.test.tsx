@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeContextCompactionStatus } from "@/lib/contracts/contextCompaction";
 import type { PastChatSource } from "@/lib/contracts/pastChats";
 import { AnswerProcessV2 } from "./AnswerProcessV2";
 import { groupPastChatSources, pastChatExcerptText, PastChatSourcesV2 } from "./PastChatSourcesV2";
@@ -54,11 +55,39 @@ describe("PastChatSourcesV2", () => {
 });
 
 describe("AnswerProcessV2 with past-chat sources", () => {
-  it("lists them in the fold where Memory's sources were, and the line counts them when there is no other work", () => {
+  it("names them once: a line that counts them is their only heading, and the fold opens straight onto the chats", () => {
     render(<AnswerProcessV2 pastChatSources={[source(1, 1), source(2, 1), source(2, 2)]} />);
+    const fold = screen.getByTestId("tool-activity-disclosure") as HTMLDetailsElement;
+    const line = fold.querySelector(":scope > summary")!;
+    expect(line).toHaveTextContent("Past chats · 2");
+    expect(screen.getAllByText(/Past chats/u)).toHaveLength(1);
+    const sources = within(fold).getByTestId("past-chat-sources");
+    expect(sources.querySelector(":scope > summary")).toBeNull();
+    expect(within(sources).queryByRole("heading")).toBeNull();
+    // The line is the one control: it opens the fold, and the chats are links right inside it.
+    expect(fold.open).toBe(false);
+    fireEvent.click(line);
+    expect(fold.open).toBe(true);
+    expect(within(sources).getByRole("link", { name: "Open Deployment 1 at this message" })).toHaveAttribute("href", "/c/chat_1?message=msg_1_1");
+    expect(within(sources).getByRole("link", { name: "Open Deployment 2 at this message" })).toBeVisible();
+  });
+
+  it("titles them as a section when the line names them beside other fold sections", () => {
+    render(<AnswerProcessV2 contextCompactionFailures={[makeContextCompactionStatus({ outcome: "summary_failed", state: "failed" })]}
+      pastChatSources={[source(1, 1)]} />);
     const fold = screen.getByTestId("tool-activity-disclosure");
-    expect(fold.querySelector(":scope > summary")).toHaveTextContent("Past chats · 2");
-    expect(within(fold).getByTestId("past-chat-sources").querySelector("summary")).toHaveTextContent("Past chats · 2");
+    expect(fold.querySelector(":scope > summary")).toHaveTextContent(/^Past chats · 1/u);
+    const sources = within(fold).getByTestId("past-chat-sources");
+    expect(sources.querySelector(":scope > summary")).toBeNull();
+    expect(within(sources).getByRole("heading", { hidden: true })).toHaveTextContent(/^Past chats$/u);
+  });
+
+  it("keeps their own counted disclosure when the line names other work", () => {
+    render(<AnswerProcessV2 pastChatSources={[source(1, 1), source(2, 1)]} reasoningTexts={["Checking the earlier plan."]}
+      workDurationMs={8_000} />);
+    const fold = screen.getByTestId("tool-activity-disclosure");
+    expect(fold.querySelector(":scope > summary")).toHaveTextContent("Thought for 8s");
+    expect(within(fold).getByTestId("past-chat-sources").querySelector(":scope > summary")).toHaveTextContent("Past chats · 2");
   });
 });
 
