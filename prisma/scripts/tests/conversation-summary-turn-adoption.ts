@@ -22,10 +22,10 @@ type MessageSpec = Readonly<{
 
 const summary = (text: string) => `Conversation summary\n\n${text}`;
 
-// A source chat and the chat its continuation made, as the previous release wrote them: the prompt and its summary, a
-// regenerated summary beside it, the user's edit of the prompt to the same words with its own answer, a later turn in
-// those words and an approval continuation. Beside them, a chat no completed continuation names, as one whose record
-// went with its source chat.
+// A source chat and the chats its continuations made, as the previous release wrote them. The first holds the prompt and
+// its summary, a regenerated summary beside it, the user's edit of the prompt to the same words with its own answer, a
+// later turn in those words and an approval continuation; the second, only the prompt and its summary. Beside them, a
+// chat no completed continuation names, as one whose record went with its source chat.
 const messages: readonly MessageSpec[] = [
   { chat: "cst-source", id: "cst-s-q", role: "user", text: "Plan the release" },
   { chat: "cst-source", id: "cst-s-a", model: true, parent: "cst-s-q", role: "assistant", text: "A plan." },
@@ -39,18 +39,27 @@ const messages: readonly MessageSpec[] = [
   { chat: "cst-continued", id: "cst-c-allow", kind: "mcp_approval_continuation", parent: "cst-c-a2", role: "user",
     text: "The user approved the call." },
   { chat: "cst-continued", id: "cst-c-allow-a", model: true, parent: "cst-c-allow", role: "assistant", text: "Done." },
+  { chat: "cst-unindexed", id: "cst-u-prompt", role: "user", text: PROMPT },
+  { chat: "cst-unindexed", id: "cst-u-summary", parent: "cst-u-prompt", role: "assistant", text: summary("Never indexed.") },
   { chat: "cst-orphan", id: "cst-o-prompt", role: "user", text: PROMPT },
   { chat: "cst-orphan", id: "cst-o-summary", parent: "cst-o-prompt", role: "assistant", text: summary("Its source is gone.") }
 ];
 const leaves: Readonly<Record<string, string>> = {
   "cst-continued": "cst-c-allow-a",
   "cst-orphan": "cst-o-summary",
-  "cst-source": "cst-s-a"
+  "cst-source": "cst-s-a",
+  "cst-unindexed": "cst-u-summary"
 };
 /** The answers a run wrote: the regenerated summary, the edit's answer and the later turns. */
 const runs = messages.filter((message) => message.model && message.chat === "cst-continued");
-/** The one turn the backfill recognizes. */
-const RECOGNIZED = "cst-c-prompt";
+/** The turns the backfill recognizes. */
+const RECOGNIZED: ReadonlySet<string> = new Set(["cst-c-prompt", "cst-u-prompt"]);
+/**
+ * The past-chat index state of the chats that have one: the first continued chat's, waiting out a failed pass, which
+ * the backfill marks; the source's and the orphan's, settled, which it leaves. The second continued chat has none, and
+ * gets none.
+ */
+const MARKED = "cst-continued";
 
 const content = (text: string): string => quote(JSON.stringify({ blocks: [{ text, type: "text" }] }));
 const sqlOrNull = (value: string | undefined): string => value === undefined ? "NULL" : quote(value);
@@ -59,23 +68,28 @@ const messageRows = messages.map((message) => `(${[quote(message.id), quote(mess
   message.model ? "'synthetic-model'" : "NULL", sqlOrNull(message.kind), quote(BEFORE), quote(BEFORE)].join(", ")})`)
   .join(",\n  ");
 
-/** One digest of a table's rows (less the named keys), so a proof can show they did not change. */
-const rowsDigest = (table: string, minus: readonly string[] = []): string => {
+/** One digest of a table's rows (less the named keys, and only those `where` keeps), so a proof can show they did not change. */
+const rowsDigest = (table: string, minus: readonly string[] = [], where = "true"): string => {
   const row = minus.length > 0 ? `(to_jsonb(r) - ARRAY[${list(minus)}]::text[])` : "to_jsonb(r)";
-  return `(SELECT md5(COALESCE(string_agg(${row}::text, ',' ORDER BY ${row}::text), '')) FROM "${table}" AS r)`;
+  return `(SELECT md5(COALESCE(string_agg(${row}::text, ',' ORDER BY ${row}::text), '')) FROM "${table}" AS r WHERE ${where})`;
 };
 
-/** What the backfill must leave as it was: every row, less the kind, which the proof reads itself. */
+/**
+ * What the backfill must leave as it was: every row, less the kind, which the proof reads itself, and less the marked
+ * state's version, backoff and write time.
+ */
 const keptDigest = `md5(concat_ws('|', ${[
   rowsDigest("User"),
   rowsDigest("Chat"),
   rowsDigest("ChatContinuation"),
   rowsDigest("ModelRun"),
-  rowsDigest("Message", ["systemTurnKind"])
+  rowsDigest("Message", ["systemTurnKind"]),
+  rowsDigest("ChatSearchState", [], `r."chatId" <> ${quote(MARKED)}`),
+  rowsDigest("ChatSearchState", ["dirtyAt", "nextAttemptAt", "updatedAt"], `r."chatId" = ${quote(MARKED)}`)
 ].join(",\n  ")}))`;
 
 // The rows the previous release may hold, written in replica mode (no triggers or keys, checks kept) in the order the
-// tree needs: a completed continuation that names its chat, and a failed one, which never names one.
+// tree needs: the completed continuations that name their chats, and a failed one, which never names one.
 export const conversationSummaryTurnFixtureSql = `
 BEGIN;
 SET LOCAL session_replication_role = replica;
@@ -94,17 +108,24 @@ INSERT INTO "ChatContinuation" (id, "sourceChatId", "sourceMessageId", "snapshot
   status, "newChatId", "createdAt", "updatedAt") VALUES
   ('cst-continuation', 'cst-source', 'cst-s-a', '${BEFORE}', 'cst-owner', 'cst-attempt', 'complete', 'cst-continued',
     '${BEFORE}', '${BEFORE}'),
+  ('cst-continuation-unindexed', 'cst-source', 'cst-s-a', '2026-11-01 07:30:00', 'cst-owner', 'cst-attempt-unindexed',
+    'complete', 'cst-unindexed', '${BEFORE}', '${BEFORE}'),
   ('cst-continuation-failed', 'cst-source', 'cst-s-a', '2026-11-01 08:00:00', 'cst-owner', 'cst-attempt-failed', 'failed',
     NULL, '${BEFORE}', '${BEFORE}');
+INSERT INTO "ChatSearchState" ("chatId", "userId", "indexedLeafMessageId", "dirtyAt", "attemptCount", "nextAttemptAt",
+  "lastErrorCode", "updatedAt") VALUES
+  (${quote(MARKED)}, 'cst-owner', 'cst-c-allow-a', '${BEFORE}', 3, '2026-11-02 07:00:00', 'synthetic_failure', '${BEFORE}'),
+  ('cst-source', 'cst-owner', 'cst-s-a', NULL, 0, NULL, NULL, '${BEFORE}'),
+  ('cst-orphan', 'cst-owner', 'cst-o-summary', NULL, 0, NULL, NULL, '${BEFORE}');
 COMMIT;
 
 CREATE TABLE "_ConversationSummaryTurnFixture" AS SELECT ${keptDigest} AS kept;
 `;
 
 const byCode = (left: string, right: string): number => (left < right ? -1 : left > right ? 1 : 0);
-/** Every fixture message with the kind it holds after the backfill: the recognized prompt the new one, any other its own. */
+/** Every fixture message with the kind it holds after the backfill: a recognized prompt the new one, any other its own. */
 const expectedKinds = [...messages].sort((left, right) => byCode(left.id, right.id))
-  .map((message) => `${message.id}:${message.id === RECOGNIZED ? "conversation_summary" : message.kind ?? "-"}`)
+  .map((message) => `${message.id}:${RECOGNIZED.has(message.id) ? "conversation_summary" : message.kind ?? "-"}`)
   .join(",");
 
 // A deploy repeated over the same rows changes nothing, so the proof also serves as the repeat proof.
@@ -118,11 +139,19 @@ BEGIN
       AND conname = 'Message_system_turn_kind_check' AND convalidated)
     THEN RAISE EXCEPTION 'conversation_summary_turn_kind'; END IF;
 
-  -- Only the prompt a completed continuation wrote takes the kind; the user's edit to the same words, a later turn in
+  -- Only a prompt a completed continuation wrote takes the kind; the user's edit to the same words, a later turn in
   -- them and a chat no completed continuation names stay as they were, other kinds included.
   IF (SELECT string_agg(id || ':' || COALESCE("systemTurnKind"::text, '-'), ',' ORDER BY id COLLATE "C") FROM "Message"
       WHERE id LIKE 'cst-%') IS DISTINCT FROM ${quote(expectedKinds)}
     THEN RAISE EXCEPTION 'conversation_summary_turn_backfill'; END IF;
+
+  -- The index state of a chat whose turn changed moves forward and drops its backoff; no state is created for a chat
+  -- without one, and every other state stays as it was.
+  IF NOT EXISTS (SELECT 1 FROM "ChatSearchState" WHERE "chatId" = ${quote(MARKED)} AND "dirtyAt" > '${BEFORE}'
+      AND "nextAttemptAt" IS NULL)
+    OR (SELECT string_agg("chatId", ',' ORDER BY "chatId" COLLATE "C") FROM "ChatSearchState" WHERE "chatId" LIKE 'cst-%')
+      IS DISTINCT FROM 'cst-continued,cst-orphan,cst-source'
+    THEN RAISE EXCEPTION 'conversation_summary_turn_search_mark'; END IF;
   IF (SELECT kept FROM "_ConversationSummaryTurnFixture") IS DISTINCT FROM ${keptDigest}
     THEN RAISE EXCEPTION 'conversation_summary_turn_changed_what_stays'; END IF;
 END $$;
