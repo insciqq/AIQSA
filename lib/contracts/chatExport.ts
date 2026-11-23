@@ -8,7 +8,19 @@
  * root manifest of the bulk archive and lists its per-chat documents.
  */
 export const CHAT_EXPORT_FORMAT = "aiqsa.chat";
-export const CHAT_EXPORT_VERSION = 1;
+/**
+ * The newest `aiqsa.chat` version. Version 2 adds `serverTurn` to user messages; a document that needs none is still
+ * written as version 1, unchanged, so an older installation keeps reading it.
+ */
+export const CHAT_EXPORT_VERSION = 2;
+export type ChatExportVersion = 1 | typeof CHAT_EXPORT_VERSION;
+/**
+ * The user turns the server wrote that an export carries as such (version 2): only kinds that take authority away,
+ * never one that would grant any. A continued chat's first turn above its summary (`lib/contracts/chatContinuation.ts`)
+ * is no request of the user's, in the chat it came from or in one imported from it.
+ */
+export const CHAT_EXPORT_SERVER_TURNS = ["conversation_summary"] as const;
+export type ChatExportServerTurn = (typeof CHAT_EXPORT_SERVER_TURNS)[number];
 export const CHAT_ARCHIVE_FORMAT = "aiqsa.chat-archive";
 export const CHAT_ARCHIVE_VERSION = 1;
 export const CHAT_ARCHIVE_MANIFEST_PATH = "manifest.json";
@@ -37,6 +49,8 @@ export type ChatExportDocumentMessage = Readonly<{
   text: string;
   model?: Readonly<{ provider: string; modelId: string }>;
   attachments?: readonly ChatExportDocumentAttachment[];
+  /** Version 2, user messages only: the server wrote this turn (`CHAT_EXPORT_SERVER_TURNS`). */
+  serverTurn?: ChatExportServerTurn;
 }>;
 
 export type ChatExportDocumentChat = Readonly<{
@@ -52,7 +66,7 @@ export type ChatExportDocumentChat = Readonly<{
 
 export type ChatExportDocument = Readonly<{
   format: typeof CHAT_EXPORT_FORMAT;
-  version: typeof CHAT_EXPORT_VERSION;
+  version: ChatExportVersion;
   exportedAt: string;
   chat: ChatExportDocumentChat;
 }>;
@@ -140,14 +154,17 @@ function decodeAttachment(value: unknown): ChatExportDocumentAttachment | null {
 
 type MessageDecode = ChatExportDocumentMessage | DecodeFailure<ChatExportDecodeErrorCode>;
 
-function decodeMessage(value: unknown): MessageDecode {
+function decodeMessage(value: unknown, version: ChatExportVersion): MessageDecode {
   if (!isRecord(value) ||
-    !hasOnlyKeys(value, ["id", "parentId", "role", "createdAt", "status", "text"], ["model", "attachments"]) ||
+    !hasOnlyKeys(value, ["id", "parentId", "role", "createdAt", "status", "text"],
+      version === 1 ? ["model", "attachments"] : ["model", "attachments", "serverTurn"]) ||
     typeof value.id !== "string" || !LOCAL_ID.test(value.id) ||
     !(value.parentId === null || typeof value.parentId === "string" && LOCAL_ID.test(value.parentId)) ||
     (value.role !== "user" && value.role !== "assistant") ||
     !CHAT_EXPORT_MESSAGE_STATUSES.includes(value.status as ChatExportMessageStatus) ||
-    typeof value.text !== "string" || value.text.includes("\0")) return fail("chat_export_shape_invalid");
+    typeof value.text !== "string" || value.text.includes("\0") ||
+    (value.serverTurn !== undefined && (value.role !== "user" ||
+      !(CHAT_EXPORT_SERVER_TURNS as readonly unknown[]).includes(value.serverTurn)))) return fail("chat_export_shape_invalid");
   if (!isInstant(value.createdAt)) return fail("chat_export_date_invalid");
   let model: ChatExportDocumentMessage["model"];
   if (value.model !== undefined) {
@@ -175,7 +192,8 @@ function decodeMessage(value: unknown): MessageDecode {
     status: value.status as ChatExportMessageStatus,
     text: value.text,
     ...(model ? { model } : {}),
-    ...(attachments ? { attachments } : {})
+    ...(attachments ? { attachments } : {}),
+    ...(value.serverTurn !== undefined ? { serverTurn: value.serverTurn as ChatExportServerTurn } : {})
   };
 }
 
@@ -205,7 +223,7 @@ function treeFailure(messages: readonly ChatExportDocumentMessage[]): ChatExport
   return null;
 }
 
-function decodeChatV1(value: unknown): ChatExportDocumentChat | DecodeFailure<ChatExportDecodeErrorCode> {
+function decodeChat(value: unknown, version: ChatExportVersion): ChatExportDocumentChat | DecodeFailure<ChatExportDecodeErrorCode> {
   if (!isRecord(value) ||
     !hasOnlyKeys(value, ["title", "createdAt", "updatedAt", "archived", "pinned", "activeLeafId", "messages"]) ||
     !boundedString(value.title, CHAT_EXPORT_MAX_TITLE_LENGTH, true) ||
@@ -216,7 +234,7 @@ function decodeChatV1(value: unknown): ChatExportDocumentChat | DecodeFailure<Ch
   if (value.messages.length > CHAT_EXPORT_MAX_MESSAGES) return fail("chat_export_too_large");
   const messages: ChatExportDocumentMessage[] = [];
   for (const item of value.messages) {
-    const message = decodeMessage(item);
+    const message = decodeMessage(item, version);
     if ("ok" in message) return message;
     messages.push(message);
   }
@@ -237,20 +255,21 @@ function decodeChatV1(value: unknown): ChatExportDocumentChat | DecodeFailure<Ch
 }
 
 /**
- * Validates an untrusted chat export document of any published version and
- * returns it in the current shape. Only version 1 is published.
+ * Validates an untrusted chat export document of any published version (1, and 2 with `serverTurn`) and returns it in
+ * the current shape, keeping its version.
  */
 export function decodeChatExportDocument(
   value: unknown
 ): ChatExportDecodeResult<ChatExportDocument, ChatExportDecodeErrorCode> {
   if (!isRecord(value)) return fail("chat_export_shape_invalid");
   if (value.format !== CHAT_EXPORT_FORMAT) return fail("chat_export_format_unsupported");
-  if (value.version !== CHAT_EXPORT_VERSION) return fail("chat_export_version_unsupported");
+  if (value.version !== 1 && value.version !== CHAT_EXPORT_VERSION) return fail("chat_export_version_unsupported");
+  const version: ChatExportVersion = value.version;
   if (!hasOnlyKeys(value, ["format", "version", "exportedAt", "chat"])) return fail("chat_export_shape_invalid");
   if (!isInstant(value.exportedAt)) return fail("chat_export_date_invalid");
-  const chat = decodeChatV1(value.chat);
+  const chat = decodeChat(value.chat, version);
   if ("ok" in chat) return chat;
-  return { ok: true, value: { format: CHAT_EXPORT_FORMAT, version: CHAT_EXPORT_VERSION, exportedAt: value.exportedAt, chat } };
+  return { ok: true, value: { format: CHAT_EXPORT_FORMAT, version, exportedAt: value.exportedAt, chat } };
 }
 
 /** A relative POSIX path inside the archive, without traversal or control characters. */

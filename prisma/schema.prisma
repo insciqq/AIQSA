@@ -2294,6 +2294,10 @@ model WorkspaceSession {
   lastActiveAt     DateTime              @default(now())
   stoppedAt        DateTime?
   expiresAt        DateTime
+  /// The browser session files whose save from a turn the server wrote was refused while this disk still holds them:
+  /// file name to the refused bytes' SHA-256, so collecting the same bytes later saves nothing
+  /// (`lib/server/workspace/secrets/browserSignInAuthority.ts`).
+  browserRefusedRevisions Json?
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
   chat             Chat                  @relation(fields: [chatId], references: [id], onDelete: Restrict, onUpdate: Restrict)

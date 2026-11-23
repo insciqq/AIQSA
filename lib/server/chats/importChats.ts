@@ -76,7 +76,8 @@ type ImportClient = Pick<PrismaClient, "$transaction" | "chat">;
  * Creates one imported personal chat in its own transaction: Excluded from
  * Memory, the source title, dates, archive and pin state, no default model;
  * messages with new ids, mapped parents and plain text content, complete,
- * without provider, model, token counts or runs; then the active leaf. A
+ * without provider, model, token counts or runs, a turn the document marks as
+ * the server's kept so; then the active leaf. A
  * second import of the same conversation, including one racing this one
  * through the unique key, reports "already imported".
  */
@@ -127,6 +128,8 @@ export async function importChatForUser(
             parentMessageId: message.parentId === null ? null : ids.get(message.parentId)!,
             role: message.role,
             status: "complete" as const,
+            // Only a kind that takes authority away (`CHAT_EXPORT_SERVER_TURNS`), on a user turn, as the decoder checked.
+            ...(message.role === "user" && message.serverTurn ? { systemTurnKind: message.serverTurn } : {}),
             updatedAt: new Date(message.createdAt)
           }))
         });

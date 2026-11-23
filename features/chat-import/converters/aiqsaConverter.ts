@@ -98,7 +98,7 @@ const EMPTY_ANSWER_NOTES: Readonly<Partial<Record<ChatExportDocumentMessage["sta
   streaming: "_[Answer incomplete]_"
 });
 
-/** Attachments are not imported: each becomes a note in its message; model labels stay out. */
+/** Attachments are not imported: each becomes a note in its message; model labels stay out; a server's turn stays one. */
 function importableMessage(message: ChatExportDocumentMessage): ChatExportDocumentMessage {
   const names = message.attachments?.map((attachment) => attachment.name) ?? [];
   const ending = message.role === "assistant" && !message.text.trim() ? EMPTY_ANSWER_NOTES[message.status] : undefined;
@@ -111,7 +111,9 @@ function importableMessage(message: ChatExportDocumentMessage): ChatExportDocume
     status: message.status,
     text: names.length
       ? appendNotes(text, [notImportedNote(names.length === 1 ? "Attachment" : "Attachments", names)])
-      : text
+      : text,
+    // A turn the server wrote stays the server's in the imported chat.
+    ...(message.serverTurn ? { serverTurn: message.serverTurn } : {})
   };
 }
 

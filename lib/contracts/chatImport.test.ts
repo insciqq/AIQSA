@@ -75,7 +75,7 @@ describe("chat import contract", () => {
     const base = document();
     const cases: Array<[unknown, string]> = [
       [{ ...base, format: "other" }, "chat_export_format_unsupported"],
-      [{ ...base, version: 2 }, "chat_export_version_unsupported"],
+      [{ ...base, version: 3 }, "chat_export_version_unsupported"],
       [{ ...base, chat: { ...base.chat, messages: [{ ...message("m1", null, "user"), role: "system" }] } }, "chat_export_shape_invalid"],
       [{ ...base, chat: { ...base.chat, createdAt: "yesterday" } }, "chat_export_date_invalid"],
       [{ ...base, chat: { ...base.chat, messages: [message("m1", null, "user"), message("m1", null, "user")] } }, "chat_export_message_id_duplicate"],

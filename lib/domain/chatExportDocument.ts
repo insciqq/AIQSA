@@ -3,6 +3,7 @@ import {
   CHAT_EXPORT_MESSAGE_STATUSES,
   CHAT_EXPORT_VERSION,
   type ChatExportDocument,
+  type ChatExportServerTurn,
   type ChatExportDocumentAttachment,
   type ChatExportDocumentChat,
   type ChatExportDocumentMessage,
@@ -23,6 +24,8 @@ export type ChatExportSourceMessage = Readonly<{
   provider: string | null;
   modelId: string | null;
   followups?: RunFollowupState | null;
+  /** A user turn the server wrote that the document carries as such (`CHAT_EXPORT_SERVER_TURNS`). */
+  serverTurn?: ChatExportServerTurn;
 }>;
 
 export type ChatExportSourceChat = Readonly<{
@@ -142,7 +145,8 @@ export function chatExportDocumentChat(source: ChatExportSource): ChatExportDocu
       status: exportStatus(message.status),
       text: chatExportText(message.content),
       ...(model ? { model } : {}),
-      ...(attachments.length ? { attachments } : {})
+      ...(attachments.length ? { attachments } : {}),
+      ...(message.role === "user" && message.serverTurn ? { serverTurn: message.serverTurn } : {})
     });
     const descendants = children.get(message.key) ?? [];
     for (let index = descendants.length - 1; index >= 0; index -= 1) {
@@ -160,12 +164,14 @@ export function chatExportDocumentChat(source: ChatExportSource): ChatExportDocu
   };
 }
 
+/** A document that carries no server-written turn is written as version 1, as before version 2 existed. */
 export function chatExportDocument(source: ChatExportSource, exportedAt: Date): ChatExportDocument {
+  const chat = chatExportDocumentChat(source);
   return {
     format: CHAT_EXPORT_FORMAT,
-    version: CHAT_EXPORT_VERSION,
+    version: chat.messages.some((message) => message.serverTurn !== undefined) ? CHAT_EXPORT_VERSION : 1,
     exportedAt: exportedAt.toISOString(),
-    chat: chatExportDocumentChat(source)
+    chat
   };
 }
 

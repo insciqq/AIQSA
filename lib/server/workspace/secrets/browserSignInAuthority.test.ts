@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { browserSignInSaveFiles, completedSignInFile, serverWrittenBrowserTurn } from "./browserSignInAuthority";
+import {
+  BROWSER_REFUSED_REVISIONS_LIMIT, browserSessionHoldsOnlySite, browserSignInSaveAllowed, browserSignInSaveFiles, completedSignInFile,
+  nextRefusedBrowserRevisions, refusedBrowserRevisions, serverWrittenBrowserTurn
+} from "./browserSignInAuthority";
 
 /** A run's stored turn whose chain, current turn first, the fake database reads (`storedUserRequest`). */
 function stored(chain: readonly Readonly<{ scheduledTaskPrompt: boolean; systemTurnKind: string | null }>[],
@@ -85,5 +88,65 @@ describe("the sign-in a stored handoff shows the user finishing", () => {
       .toEqual(new Set(["example.com.json", "shop.example.json"]));
     expect(findMany).toHaveBeenCalledWith({ select: { arguments: true, result: true, state: true }, where: {
       arguments: { equals: "sign_in", path: ["reason"] }, modelRunId: "run-1", state: "complete", toolName: "browser_handoff" } });
+  });
+});
+
+const state = (cookies: readonly string[], origins: readonly string[] = []) => new TextEncoder().encode(JSON.stringify({
+  cookies: cookies.map((domain) => ({ domain, expires: -1, httpOnly: true, name: "session", path: "/", sameSite: "Lax", secure: true,
+    value: "synthetic" })),
+  origins: origins.map((origin) => ({ localStorage: [], origin }))
+}));
+
+describe("a sign-in file of one site", () => {
+  it("holds the site alone with its own names and their origins", () => {
+    expect(browserSessionHoldsOnlySite(state(["example.com", ".example.com", "mail.example.com", "WWW.Example.com."],
+      ["https://example.com", "https://accounts.example.com:8443"]), "example.com")).toBe(true);
+    expect(browserSessionHoldsOnlySite(state([]), "example.com")).toBe(true);
+  });
+
+  it.each([
+    ["another site's cookie", state(["example.com", "bank.example"]), "example.com"],
+    ["another site's origin", state(["example.com"], ["https://bank.example"]), "example.com"],
+    ["a name that only ends like the site", state(["notexample.com"]), "example.com"],
+    ["a cookie on a parent name", state(["mail.example.com", ".example.com"]), "mail.example.com"]
+  ])("holds more than the site with %s", (_name, bytes, site) => {
+    expect(browserSessionHoldsOnlySite(bytes, site)).toBe(false);
+  });
+
+  it("reads nothing alone from a file that is no storage state", () => {
+    expect(browserSessionHoldsOnlySite(new TextEncoder().encode("not JSON"), "example.com")).toBe(false);
+    expect(browserSessionHoldsOnlySite(new TextEncoder().encode(JSON.stringify({ cookies: [] })), "example.com")).toBe(false);
+  });
+
+  it("lets a finished sign-in save its own file of its site alone, nothing else", () => {
+    const finished = new Set(["example.com.json"]);
+    expect(browserSignInSaveAllowed(finished, { bytes: state(["example.com"]), fileName: "example.com.json" })).toBe(true);
+    expect(browserSignInSaveAllowed(finished, { bytes: state(["example.com", "bank.example"]), fileName: "example.com.json" })).toBe(false);
+    expect(browserSignInSaveAllowed(finished, { bytes: state(["bank.example"]), fileName: "bank.example.json" })).toBe(false);
+    expect(browserSignInSaveAllowed(new Set(), { bytes: state(["example.com"]), fileName: "example.com.json" })).toBe(false);
+  });
+});
+
+describe("the revisions a Workspace session keeps refused", () => {
+  const digest = (value: string) => value.repeat(64);
+
+  it("reads the stored list, and anything malformed as none", () => {
+    expect(refusedBrowserRevisions([["a.json", digest("a")], ["b.json", digest("b")]]))
+      .toEqual(new Map([["a.json", digest("a")], ["b.json", digest("b")]]));
+    for (const value of [null, {}, "a", [["a.json"]], [["a.json", "not-a-digest"]], [[1, digest("a")]]]) {
+      expect(refusedBrowserRevisions(value)).toEqual(new Map());
+    }
+  });
+
+  it("keeps one revision per file, the newest last, within its bound, and drops a file that saved", () => {
+    const current = refusedBrowserRevisions([["a.json", digest("a")], ["b.json", digest("b")]]);
+    expect(nextRefusedBrowserRevisions(current, "a.json", digest("c"))).toEqual([["b.json", digest("b")], ["a.json", digest("c")]]);
+    expect(nextRefusedBrowserRevisions(current, "a.json", null)).toEqual([["b.json", digest("b")]]);
+    expect(nextRefusedBrowserRevisions(refusedBrowserRevisions([["a.json", digest("a")]]), "a.json", null)).toBeNull();
+    const full = new Map(Array.from({ length: BROWSER_REFUSED_REVISIONS_LIMIT }, (_, index) => [`s${index}.json`, digest("a")] as const));
+    const next = nextRefusedBrowserRevisions(full, "new.json", digest("b"))!;
+    expect(next).toHaveLength(BROWSER_REFUSED_REVISIONS_LIMIT);
+    expect(next[0]![0]).toBe("s1.json");
+    expect(next.at(-1)).toEqual(["new.json", digest("b")]);
   });
 });

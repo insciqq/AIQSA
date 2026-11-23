@@ -14,7 +14,8 @@ import {
 } from "./browserSession";
 import type { WorkspaceBrowserSaveItem } from "./browserCollection";
 import {
-  BROWSER_SESSION_SERVER_TURN, browserSignInSaveFiles, serverWrittenBrowserTurn, type BrowserSaveTurn
+  BROWSER_SESSION_SERVER_TURN, browserSignInSaveAllowed, browserSignInSaveFiles, nextRefusedBrowserRevisions, refusedBrowserRevisions,
+  serverWrittenBrowserTurn, type BrowserSaveTurn
 } from "./browserSignInAuthority";
 import { logEvent } from "../../observability";
 
@@ -38,7 +39,7 @@ type FileOutcome = "saved" | "unchanged" | "unauthorized" | WorkspaceBrowserSkip
 // or run state change between files ends this save without a later write. The
 // run's stored turn comes with it: whose turn it was decides what it may save.
 async function authorizedRun(tx: Prisma.TransactionClient, input: WorkspaceBrowserSaveInput):
-  Promise<Readonly<{ sequence: bigint; turn: BrowserSaveTurn }> | null> {
+  Promise<Readonly<{ refused: ReadonlyMap<string, string>; sequence: bigint; turn: BrowserSaveTurn }> | null> {
   const session = await lockWorkspaceSession(tx, input.sessionId);
   if (!session || session.state === "DELETING" || session.runtimeSandboxId !== input.runtimeSandboxId ||
     session.version !== input.operation.generation || session.operationOwner !== input.operation.owner) return null;
@@ -53,7 +54,15 @@ async function authorizedRun(tx: Prisma.TransactionClient, input: WorkspaceBrows
   const handoffOwner = input.handoffToken && input.operation.owner === `export:${input.runId}:${input.handoffToken}` &&
     binding.exportLeaseToken === input.handoffToken && binding.exportLeaseExpiresAt && binding.exportLeaseExpiresAt > new Date() &&
     ["preparing", "queued", "in_progress", "streaming"].includes(binding.modelRun.status);
-  return runOwner || handoffOwner ? { sequence: binding.browserSessionSequence, turn: binding.modelRun } : null;
+  return runOwner || handoffOwner ? { refused: refusedBrowserRevisions(session.browserRefusedRevisions),
+    sequence: binding.browserSessionSequence, turn: binding.modelRun } : null;
+}
+
+/** The session's refused revisions (`refusedBrowserRevisions`), under the session lock the caller holds; its other columns stay. */
+async function storeRefusedRevisions(tx: Prisma.TransactionClient, sessionId: string,
+  value: ReturnType<typeof nextRefusedBrowserRevisions>): Promise<void> {
+  await tx.$executeRaw`UPDATE "WorkspaceSession" SET "browserRefusedRevisions" = ${value === null ? null : JSON.stringify(value)}::jsonb
+    WHERE "id" = ${sessionId}`;
 }
 
 /** The stamp inside a saved revision, read only when a stamped file competes with it. */
@@ -76,9 +85,10 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
   // What this run was given at admission: a file it collects back unchanged is no write of its own.
   const given = existing ? await tx.workspaceRunSecret.findUnique({
     where: { modelRunId_secretId: { modelRunId: input.runId, secretId: existing.id } }, include: { value: true } }) : null;
+  const checksum = workspaceBrowserSessionChecksum(file.bytes);
   // Freshness of the guest's writes, under the run's operation fence; a manual settings change fences every older run.
   const order = workspaceBrowserSaveOrder({ sequence, manualSequence: owner.workspaceBrowserManualSequence, now: now(),
-    incoming: { checksum: workspaceBrowserSessionChecksum(file.bytes), savedAt: workspaceBrowserSessionSavedAt(file.bytes) },
+    incoming: { checksum, savedAt: workspaceBrowserSessionSavedAt(file.bytes) },
     current: existing ? { checksum: existing.value.checksum, writerSequence: existing.browserWriterSequence,
       createdAt: existing.value.createdAt, savedAt: () => revisionSavedAt(existing.value, input.userId, key) } : null,
     given: given && given.valueId !== existing?.valueId ? { checksum: given.value.checksum,
@@ -92,10 +102,16 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
     }
     return "unchanged";
   }
-  // A turn the server wrote saves or replaces only a sign-in the user finished in it, and the saved one stays otherwise
-  // (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what its browser
-  // holds.
-  if (await serverWrittenBrowserTurn(tx, run.turn) && !(await browserSignInSaveFiles(tx, input.runId)).has(file.fileName)) {
+  // A turn the server wrote saves or replaces only a sign-in the user finished in it, of that site alone, and the saved one
+  // stays otherwise (operator decision 2026-11-23); the user's own turn, an Allow's continuation of it included, saves what
+  // its browser holds. A refused file stays on the disk, so the same bytes collected by any later run of the chat are
+  // held to the same rule, and only a sign-in finished in that run saves them.
+  const refusedHere = run.refused.get(file.fileName) === checksum;
+  if ((refusedHere || await serverWrittenBrowserTurn(tx, run.turn)) &&
+    !browserSignInSaveAllowed(await browserSignInSaveFiles(tx, input.runId), file)) {
+    if (!refusedHere) {
+      await storeRefusedRevisions(tx, input.sessionId, nextRefusedBrowserRevisions(run.refused, file.fileName, checksum));
+    }
     return BROWSER_SESSION_SERVER_TURN;
   }
   if (!existing && await tx.workspaceSecret.count({ where: { userId: input.userId, browserFileName: { not: null } } }) >= WORKSPACE_BROWSER_SESSION_MAX_COUNT) {
@@ -113,6 +129,10 @@ async function commitFile(tx: Prisma.TransactionClient, input: WorkspaceBrowserS
   else await tx.workspaceSecret.create({ data: { id: secretId, userId: input.userId, valueId, browserFileName: file.fileName, browserWriterSequence: sequence } });
   // The replaced revision goes unless an accepted run still binds it.
   await pruneWorkspaceSecretRevisions(tx, input.userId);
+  // A saved file replaces whatever its name held refused.
+  if (run.refused.has(file.fileName)) {
+    await storeRefusedRevisions(tx, input.sessionId, nextRefusedBrowserRevisions(run.refused, file.fileName, null));
+  }
   return "saved";
 }
 

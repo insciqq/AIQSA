@@ -38,9 +38,24 @@ describe("aiqsa.chat decoder", () => {
     expect(code(document([], { activeLeafId: null }))).toBe("ok");
   });
 
+  // Version 2 adds only the server's own turns that take authority away; version 1 stays exactly as published.
+  it("carries a continued chat's summary prompt as the server's in version 2 alone, on a user turn, of a known kind", () => {
+    const prompt = node("m1", null, { serverTurn: "conversation_summary", text: "Continue from the conversation summary below." });
+    const input = document([prompt, node("m2", "m1")], {}, { version: 2 });
+    expect(decodeChatExportDocument(input)).toEqual({ ok: true, value: input });
+    expect(code(document([node("m1", null), node("m2", "m1")], {}, { version: 2 }))).toBe("ok");
+    for (const invalid of [
+      document([prompt, node("m2", "m1")]),
+      document([node("m1", null), node("m2", "m1", { serverTurn: "conversation_summary" })], {}, { version: 2 }),
+      document([node("m1", null, { serverTurn: "mcp_approval_continuation" }), node("m2", "m1")], {}, { version: 2 }),
+      document([node("m1", null, { serverTurn: "subagent_callback" }), node("m2", "m1")], {}, { version: 2 }),
+      document([node("m1", null, { serverTurn: true }), node("m2", "m1")], {}, { version: 2 })
+    ]) expect(code(invalid)).toBe("chat_export_shape_invalid");
+  });
+
   it("rejects foreign formats and unpublished versions before the shape", () => {
     expect(code(document([], {}, { format: "other" }))).toBe("chat_export_format_unsupported");
-    expect(code(document([], {}, { version: 2 }))).toBe("chat_export_version_unsupported");
+    expect(code(document([], {}, { version: 3 }))).toBe("chat_export_version_unsupported");
     expect(code(document([], {}, { version: "1" }))).toBe("chat_export_version_unsupported");
     expect(code(null)).toBe("chat_export_shape_invalid");
     expect(code([])).toBe("chat_export_shape_invalid");
