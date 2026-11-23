@@ -6,7 +6,7 @@ import { createPrismaAttachmentDownloadRepository } from "../uploads/downloadRep
 import type { StorageAdapter } from "../uploads/storage";
 import { createTelegramRunArtifacts, telegramAnswerArtifacts, type TelegramAnswerArtifact, type TelegramRunArtifacts } from "./artifacts";
 import { onTelegramRunEvent, type TelegramRunEventContext, type TelegramRunListener } from "./bridge/events";
-import { telegramFailureCode } from "./codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "./codes";
 import type { TelegramAccessResolver } from "./control/access";
 import { telegramFilesSummaryText } from "./copy";
 import type { TelegramOutbound } from "./outbound";
@@ -83,14 +83,15 @@ export function telegramRunExport(state: string | null | undefined): TelegramRun
   return state === "COMPLETE" ? "complete" : state === "FAILED" ? "failed" : "pending";
 }
 
-/** Content-free: codes, counts and HTTP status. */
-function log(fields: Readonly<{
-  code: string; count?: number; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed"; stage: "dispatch" | "read";
+/** Content-free: codes, counts, HTTP status and transport category. */
+function log(fields: TelegramFailureLogFields & Readonly<{
+  count?: number; error?: unknown; outcome: "degraded" | "failed"; stage: "dispatch" | "read";
 }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.count === undefined ? {} : { count: fields.count }),
     ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
-    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), outcome: fields.outcome, stage: fields.stage, subsystem: "telegram"
+    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), ...(fields.category ? { category: fields.category } : {}),
+    outcome: fields.outcome, stage: fields.stage, subsystem: "telegram"
   });
 }
 
@@ -267,8 +268,7 @@ export async function deliverTelegramFiles(input: Readonly<{
     }
     // The chat may no longer receive files: the rest stays in AIQSA, and nothing more goes there to name it.
     if (outcome.kind === "unreachable") return { failed: failed + plan.items.length - index, left: plan.left, sent };
-    log({ code: telegramFailureCode(outcome.failure.kind, outcome.failure.errorCode), httpStatus: outcome.failure.status, outcome: "failed",
-      stage: "dispatch" });
+    log({ ...telegramFailureLogFields(outcome.failure), outcome: "failed", stage: "dispatch" });
     if (ambiguous(outcome.failure)) continue;
     failed += plan.items.length - index;
     break;

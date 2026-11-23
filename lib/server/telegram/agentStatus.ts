@@ -6,7 +6,7 @@ import type { TelegramInlineKeyboardMarkup, TelegramSendOptions, TelegramSentMes
 import {
   onTelegramRunEvent, type TelegramRunDeliveredEvent, type TelegramRunEventContext, type TelegramRunListener
 } from "./bridge/events";
-import { telegramFailureCode } from "./codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "./codes";
 import type { TelegramAccessResolver } from "./control/access";
 import { reachTelegramChat } from "./control/reach";
 import type { TelegramSessionProvider } from "./control/session";
@@ -78,19 +78,19 @@ type RunStatus = {
   chain: Promise<void>;
 };
 
-/** Content-free: run identity, codes and HTTP status. */
-function log(fields: Readonly<{
-  code: string; error?: unknown; httpStatus?: number; outcome: "degraded" | "failed" | "skipped"; runId: string;
+/** Content-free: run identity, codes, HTTP status and transport category. */
+function log(fields: TelegramFailureLogFields & Readonly<{
+  error?: unknown; outcome: "degraded" | "failed" | "skipped"; runId: string;
 }>): void {
   logEvent("service_operation", {
     code: fields.code, ...(fields.error ? { error: fields.error, prisma_code: databaseFailureCode(fields.error) } : {}),
-    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), outcome: fields.outcome, run_id: fields.runId, stage: "dispatch",
-    subsystem: "telegram"
+    ...(fields.httpStatus ? { httpStatus: fields.httpStatus } : {}), ...(fields.category ? { category: fields.category } : {}),
+    outcome: fields.outcome, run_id: fields.runId, stage: "dispatch", subsystem: "telegram"
   });
 }
 
 function logFailure(failure: TelegramFailure, runId: string): void {
-  log({ code: telegramFailureCode(failure.kind, failure.errorCode), httpStatus: failure.status, outcome: "failed", runId });
+  log({ ...telegramFailureLogFields(failure), outcome: "failed", runId });
 }
 
 function unchanged(failure: TelegramFailure): boolean {

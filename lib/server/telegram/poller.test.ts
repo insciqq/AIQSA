@@ -185,6 +185,7 @@ describe("Telegram poller", () => {
     expect(health).toEqual([{ code: "telegram_token_rejected", success: false }]);
     expect(delays).toEqual([]);
 
+    const capture = await captureRunObservation();
     fake.failNext("getUpdates", { drop: true });
     fake.inject.text(fake.inject.addUser(), "after the outage");
     poller.reevaluate();
@@ -192,6 +193,12 @@ describe("Telegram poller", () => {
     expect(health[1]).toEqual({ code: "telegram_unreachable", success: false });
     expect(delays).toEqual([1_000]);
     expect(health[2]).toEqual({ code: null, success: true });
+    // Both records say how the connection failed, so an audit tells DNS from connect failures.
+    const records = capture.records();
+    expect(records).toContainEqual(expect.objectContaining({
+      category: "reset", code: "telegram_network_after_send", event: "service_operation", stage: "reconcile"
+    }));
+    expect(records).toContainEqual(expect.objectContaining({ category: "reset", code: "telegram_unreachable", event: "runtime_lifecycle" }));
   });
 
   it("goes idle when the bot is switched off and drops a batch polled across the change", async () => {

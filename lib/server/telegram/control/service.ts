@@ -3,7 +3,7 @@ import {
 } from "../../../contracts/telegram";
 import { logEvent } from "../../observability";
 import type { TelegramBotApi } from "../botApi";
-import { telegramFailureCode } from "../codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "../codes";
 import { TELEGRAM_BOT_COMMANDS } from "../copy";
 import type { TelegramFailure } from "../transport";
 import type { TelegramControlHooks } from "./hooks";
@@ -73,8 +73,8 @@ export function telegramAdminState(record: TelegramControlRecord): TelegramAdmin
 }
 
 /** Content-free: stages, outcomes and stable codes only. */
-function log(fields: Readonly<{
-  code?: string; httpStatus?: number; outcome: "completed" | "failed" | "skipped"; stage: "probe" | "publish" | "write";
+function log(fields: Partial<TelegramFailureLogFields> & Readonly<{
+  outcome: "completed" | "failed" | "skipped"; stage: "probe" | "publish" | "write";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
 }
@@ -129,7 +129,7 @@ export function createTelegramControlService(deps: Readonly<{
         return "telegram_unreachable";
       }
       if (!outcome.ok) {
-        log({ code: telegramFailureCode(outcome.kind, outcome.errorCode), httpStatus: outcome.status, outcome: "failed", stage: "publish" });
+        log({ ...telegramFailureLogFields(outcome), outcome: "failed", stage: "publish" });
         return telegramTokenFailureCode(outcome);
       }
     }
@@ -177,7 +177,10 @@ export function createTelegramControlService(deps: Readonly<{
       const me = await withDeadline(api.getMe(), deadlineMs);
       if (me === "timeout" || !me.ok) {
         const code = me === "timeout" ? "telegram_unreachable" : telegramTokenFailureCode(me);
-        log({ code, httpStatus: me === "timeout" ? undefined : me.status, outcome: "failed", stage: "probe" });
+        log({
+          code, outcome: "failed", stage: "probe",
+          ...(me === "timeout" ? {} : { httpStatus: me.status, ...(me.category ? { category: me.category } : {}) })
+        });
         return refused(code);
       }
       // A token always names its own bot; anything else is not a usable bot token.

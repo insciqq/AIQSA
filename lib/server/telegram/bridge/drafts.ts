@@ -1,6 +1,6 @@
 import { logEvent } from "../../observability";
 import type { TelegramBotApi, TelegramInputRichMessage } from "../botApi";
-import { telegramFailureCode } from "../codes";
+import { telegramFailureLogFields } from "../codes";
 import { plainTelegramMessage, renderTelegramAnswer } from "../render";
 import type { TelegramOutcome } from "../transport";
 
@@ -63,10 +63,7 @@ export function createTelegramDraftStreamer(deps: Readonly<{
 
   function report(outcome: TelegramOutcome<true>): void {
     if (outcome.ok) return;
-    logEvent("service_operation", {
-      code: telegramFailureCode(outcome.kind, outcome.errorCode), httpStatus: outcome.status, outcome: "degraded", stage: "dispatch",
-      subsystem: "telegram"
-    });
+    logEvent("service_operation", { ...telegramFailureLogFields(outcome), outcome: "degraded", stage: "dispatch", subsystem: "telegram" });
   }
 
   /** The draft's last outcome; `unreachable` when the chat could no longer receive it. */

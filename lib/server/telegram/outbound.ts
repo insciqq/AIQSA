@@ -4,7 +4,7 @@ import type {
   TelegramBotApi, TelegramFileInput, TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup, TelegramInputRichMessage,
   TelegramReplyParameters, TelegramSendAuthority, TelegramSentMessage
 } from "./botApi";
-import { telegramFailureCode } from "./codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "./codes";
 import { plainTelegramMessage } from "./render";
 import type { TelegramCallbackInput, TelegramCallbackStore } from "./store/callbacks";
 import type { TelegramMessageRefOwner, TelegramMessageRefStore } from "./store/messageRefs";
@@ -61,13 +61,13 @@ export type TelegramOutbound = Readonly<{
   replyMarkup(input: Readonly<{ keyboard?: TelegramKeyboard; linkId?: string }>): Promise<TelegramInlineKeyboardMarkup | undefined>;
 }>;
 
-/** Content-free: codes and HTTP status only. */
-function log(fields: Readonly<{ code: string; httpStatus?: number; outcome: "failed" | "degraded" }>): void {
+/** Content-free: codes, HTTP status and transport category only. */
+function log(fields: TelegramFailureLogFields & Readonly<{ outcome: "failed" | "degraded" }>): void {
   logEvent("service_operation", { stage: "dispatch", subsystem: "telegram", ...fields });
 }
 
 function logFailure(failure: TelegramFailure): void {
-  log({ code: telegramFailureCode(failure.kind, failure.errorCode), httpStatus: failure.status, outcome: "failed" });
+  log({ ...telegramFailureLogFields(failure), outcome: "failed" });
 }
 
 /** Splits text at 4096 UTF-16 units, preferring line and word ends, never inside a surrogate pair. */

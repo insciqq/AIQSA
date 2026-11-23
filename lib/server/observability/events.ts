@@ -15,6 +15,9 @@ export type DatabaseFailureKind = "transaction_expired" | "transaction_start_tim
  * (error class, application code site, fingerprint) and the closed facts of
  * its cause chain (failureFacts.cjs); never serialized itself. */
 export type CaughtError = Readonly<{ error?: unknown }>;
+/** Why a pinned HTTPS exchange failed (`lib/server/connectors/pinnedHttps.ts`): a closed category, never a host or address. */
+export type TransportFailureCategory = "dns" | "connect" | "tls" | "timeout" | "reset" | "network_unreachable" | "forbidden_address" |
+  "upload_source" | "invalid_response" | "unknown";
 export type LifecycleFields = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; outcome: LifecycleOutcome;
   work_stage?: LifecycleStage;
@@ -22,11 +25,14 @@ export type LifecycleFields = CaughtError & Readonly<{
   /** Time a timed transaction spent in its lock statements (transactionTiming.ts). */
   lock_wait_ms?: number;
   code?: string; prisma_code?: string; db_failure?: DatabaseFailureKind; httpStatus?: number; action?: LifecycleAction;
+  /** A failed outbound call's transport category, so DNS, connect and TLS failures read apart. */
+  category?: TransportFailureCategory;
   delay_ms?: number; retry_at?: string; count?: number; repeat_count?: number;
   claimed_count?: number; failed_count?: number; completed_count?: number; pending_count?: number;
 }>;
 export type SubsystemFailure = CaughtError & Readonly<{
   subsystem: Subsystem; stage: LifecycleStage; code?: string; prisma_code?: string; httpStatus?: number; action?: LifecycleAction;
+  category?: TransportFailureCategory;
   /** Server-owned identity used only to distinguish internal health states. */
   scope_id?: string;
 }>;

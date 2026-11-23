@@ -5,7 +5,7 @@ import { databaseFailureCode } from "../observability/databaseFailure";
 import {
   decodeTelegramUpdate, type TelegramBotApi, type TelegramCallbackQuery, type TelegramMessage, type TelegramUpdate
 } from "./botApi";
-import { telegramFailureCode } from "./codes";
+import { telegramFailureLogFields, type TelegramFailureLogFields } from "./codes";
 import type { TelegramAccessResolver, TelegramAccessRefusal } from "./control/access";
 import { TELEGRAM_COPY, telegramReasonText } from "./copy";
 import type { TelegramOutbound } from "./outbound";
@@ -199,8 +199,8 @@ export type TelegramDispatcherDeps = Readonly<{
 }>;
 
 /** Content-free: stages, outcomes, stable codes and counts only. */
-function log(fields: Readonly<{
-  action?: "retry" | "skip"; code?: string; error?: unknown; httpStatus?: number;
+function log(fields: Partial<TelegramFailureLogFields> & Readonly<{
+  action?: "retry" | "skip"; error?: unknown;
   outcome: "completed" | "failed" | "skipped"; prisma_code?: string; stage: "claim" | "dispatch" | "process";
 }>): void {
   logEvent("service_operation", { subsystem: "telegram", ...fields });
@@ -422,7 +422,7 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
         ...(reply.text ? { text: bounded(reply.text, CALLBACK_ANSWER_MAX_LENGTH) } : {}),
         ...(reply.showAlert ? { show_alert: true } : {})
       });
-      if (!answered.ok) log({ code: telegramFailureCode(answered.kind, answered.errorCode), httpStatus: answered.status, outcome: "failed", stage: "dispatch" });
+      if (!answered.ok) log({ ...telegramFailureLogFields(answered), outcome: "failed", stage: "dispatch" });
     }
   }
 
@@ -442,7 +442,7 @@ export function createTelegramDispatcher(deps: TelegramDispatcherDeps): Telegram
     // Only private chats: the bot leaves every group and channel it is added to.
     const left = await session.api.leaveChat(change.chat.id);
     if (left.ok) log({ code: "telegram_group_left", outcome: "completed", stage: "dispatch" });
-    else log({ code: telegramFailureCode(left.kind, left.errorCode), httpStatus: left.status, outcome: "failed", stage: "dispatch" });
+    else log({ ...telegramFailureLogFields(left), outcome: "failed", stage: "dispatch" });
   }
 
   async function route(update: TelegramUpdate, session: TelegramBotSession): Promise<void> {
