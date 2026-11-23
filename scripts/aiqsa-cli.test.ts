@@ -1127,7 +1127,12 @@ describe("backup", () => {
       /database is at migration 20261001000000_init, but the newest migration of this checkout is 20261002000000_latest/u],
     ["a failed migration", (f: Fixture) => { f.rules.unshift({ match: "_prisma_migrations", stdout: `${latestMigration}|1\n` }); },
       /1 migration\(s\) are unfinished or failed/u],
-    ["a non-empty target", (f: Fixture) => { mkdirSync(f.file("target")); writeFileSync(f.file("target/x"), ""); }, /target is not empty/u]
+    ["a non-empty target", (f: Fixture) => { mkdirSync(f.file("target")); writeFileSync(f.file("target/x"), ""); }, /target is not empty/u],
+    // Stopping the services leaves a hand-started `docker compose run` (a prune, say) deleting objects during the copy.
+    ["a running one-off container", (f: Fixture) => { f.rules.unshift({
+      match: "^ps --format \\{\\{\\.Names\\}\\} --filter label=com\\.docker\\.compose\\.project=aiqsa-test --filter label=com\\.docker\\.compose\\.oneoff=True$",
+      stdout: "aiqsa-test-app-run-1a2b3c\naiqsa-test-storage-init-run-4d5e\n"
+    }); }, /one-off containers of aiqsa-test are running: aiqsa-test-app-run-1a2b3c, aiqsa-test-storage-init-run-4d5e\.\nWait for them to finish/u]
   ])("refuses %s with exit 4 before stopping anything", (_name, setup, message) => {
     const fixture = new Fixture();
     fixture.writeEnv();

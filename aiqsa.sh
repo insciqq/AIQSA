@@ -1779,7 +1779,7 @@ backup_manifest() {
 # failure restarts the stopped services and removes the partial backup.
 backup_create() {
   local dir=$1 started=$SECONDS rows service state postgres="" running=" " writers=() restart=() services orphans=()
-  local external=0 size_db size_objects=0 available required volume image images migration old_umask errors log file files
+  local external=0 size_db size_objects=0 available required volume image images migration old_umask errors log file files oneoffs
   [[ -f $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") does not exist; there is no installation to back up."
   [[ -r $ENV_FILE ]] || backup_refuse "$(display_path "$ENV_FILE") is not readable by $(id -un); run ./aiqsa.sh as its owner."
   env_load
@@ -1808,6 +1808,14 @@ backup_create() {
     if [[ $ONE_SHOT_SERVICES != *" $service "* ]]; then restart+=("$service"); fi
   done
   (( ! ${#orphans[@]} )) || note "Leaving containers of removed services untouched: ${orphans[*]} (./aiqsa.sh up removes them)."
+  # A one-off `docker compose run` (such as `npm run prune -- --execute`) holds
+  # the same database and storage credentials as the app, and stopping the
+  # services does not stop it: it could delete objects the dump still names.
+  oneoffs=$(run docker ps --format '{{.Names}}' --filter "label=com.docker.compose.project=$PROJECT_NAME" \
+    --filter "label=com.docker.compose.oneoff=True" 2>/dev/null) \
+    || backup_refuse "the running containers of $PROJECT_NAME could not be listed; run ./aiqsa.sh doctor."
+  [[ -z $oneoffs ]] || backup_refuse "one-off containers of $PROJECT_NAME are running: ${oneoffs//$'\n'/, }." \
+    "Wait for them to finish or stop them (docker stop NAME), then back up."
   schema_check || backup_refuse "the database schema does not match this checkout: $REPLY." \
     "Bring the installation to this checkout's release first (./aiqsa.sh up), then back up."
   ensure_temp_dir
