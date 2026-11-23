@@ -23,7 +23,7 @@ export async function freezeGuardAuthority(db: PrismaClient, input: GuardAuthori
   const branch = input.messages.filter(message => message.role === "user" && !message.purpose && message.id !== "current-user-message").reverse().slice(0, MCP_GUARD_LIMITS.messages);
   const stored = branch.filter(message => !message.followupOf).map(message => message.id);
   const own = await db.message.findMany({ where: { id: { in: stored }, chatId: input.chatId,
-    OR: [{ authorUserId: input.userId }, { authorUserId: null, chat: { userId: input.userId, importSource: null } }],
+    chat: { userId: input.userId, importSource: null },
     role: "user", scheduledTaskPrompt: false, systemTurnKind: null }, select: { id: true } });
   const ids = new Set(own.map(message => message.id));
   const inherited = input.inheritedFollowups;
@@ -73,8 +73,7 @@ export async function readGuardAuthority(db: PrismaClient, input: Readonly<{
   if (admission.currentMessageId && !currentId) return { ok: false, code: "unavailable" };
   const [messages, followups] = await Promise.all([
     db.message.findMany({ where: { id: { in: references.filter(ref => ref.kind === "message").map(ref => ref.id) }, chatId: scope.chatId,
-      OR: [{ authorUserId: input.userId }, { authorUserId: null, chat: { userId: input.userId, importSource: null } },
-        ...(currentId ? [{ id: currentId }] : [])],
+      OR: [{ chat: { userId: input.userId, importSource: null } }, ...(currentId ? [{ id: currentId }] : [])],
       role: "user", scheduledTaskPrompt: false, systemTurnKind: null }, select: { id: true, content: true } }),
     verifiedFollowups(db, { chatId: scope.chatId, userId: input.userId,
       references: references.filter((ref): ref is Extract<McpGuardReference, { kind: "followup" }> => ref.kind === "followup") })

@@ -16,7 +16,7 @@ const MAX_SESSIONS = 10_000;
 const MAX_RUNTIME_PAGES = MAX_SESSIONS / WORKSPACE_RUNTIME_INVENTORY_PAGE_SIZE;
 type Observation = WorkspaceRuntimeInventoryPage["entries"][number];
 export type WorkspaceOverviewRecord = Readonly<{
-  context: "personal" | null;
+  context: "personal";
   id: string;
   lastActiveAt: Date;
   runtimeSandboxId: string | null;
@@ -77,11 +77,10 @@ export function createPrismaWorkspaceOverviewRepository(
       // Never turn a safety limit into a plausible partial total.
       if (records.length > MAX_SESSIONS) throw new Error("workspace_overview_limit_exceeded");
       return records.map((record) => ({
-        // A chat without an owner is a removed Project's chat awaiting deletion.
-        context: record.chat.user ? "personal" as const : null,
+        context: "personal" as const,
         id: record.id, lastActiveAt: record.lastActiveAt, runtimeSandboxId: record.runtimeSandboxId,
         sandboxName: record.sandboxName, state: record.state,
-        user: record.chat.user?.displayName ?? null
+        user: record.chat.user.displayName
       }));
     }
   };

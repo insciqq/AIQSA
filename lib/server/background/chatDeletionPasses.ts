@@ -65,8 +65,7 @@ export function createPrismaChatDeletionWorkStore(client: PrismaClient): ChatDel
       return client.$queryRaw<Array<{ chatId: string; userId: string }>>(Prisma.sql`
         SELECT chat."id" AS "chatId", chat."userId"
         FROM "Chat" AS chat
-        WHERE chat."userId" IS NOT NULL
-          AND ${dueSql(duty, now)}
+        WHERE ${dueSql(duty, now)}
           AND ${backgroundWorkItemClaimableSql(duty, Prisma.sql`chat."id"`, now)}
         ORDER BY chat."updatedAt" ASC, chat."id" ASC
         LIMIT ${limit}

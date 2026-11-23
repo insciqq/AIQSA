@@ -606,10 +606,10 @@ describe("chat wire contracts", () => {
   });
 
   it("ignores the Knowledge defaults and Project fields a server from before their removal still sends", () => {
-    const folder = { id: "folder-1", name: "Research", parentId: null, projectMemory: "", sortOrder: 0 };
+    const folder = { id: "folder-1", name: "Research", parentId: null, sortOrder: 0 };
     expect(decodeWorkspaceChatsResponse({
       chats: [{ ...summary, defaultKnowledgePlan: { baseIds: ["base-a"] }, projectId: null }],
-      folders: [{ ...folder, defaultKnowledgePlan: { baseIds: ["base-a"] } }]
+      folders: [{ ...folder, defaultKnowledgePlan: { baseIds: ["base-a"] }, projectMemory: "" }]
     })).toEqual({ chats: [summary], folders: [folder] });
   });
 

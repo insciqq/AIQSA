@@ -80,7 +80,7 @@ describe("chat import against PostgreSQL", () => {
     expect(byText.get("Edited question")?.parentMessageId).toBeNull();
     expect(chat.messages.every((message) => message.status === "complete" && message.provider === null &&
       message.modelId === null && message.inputTokens === null && message.outputTokens === null &&
-      message.reasoningTokens === null && message.authorUserId === null)).toBe(true);
+      message.reasoningTokens === null)).toBe(true);
     expect(await prisma.modelRun.count({ where: { chatId: chat.id } })).toBe(0);
     expect(await prisma.usageEvent.count({ where: { userId } })).toBe(0);
     expect(chat).toMatchObject({ totalInputTokens: 0, totalOutputTokens: 0 });

@@ -19,7 +19,6 @@ const folder: FolderSummary = {
   id: "folder-1",
   name: "Workspace folder",
   parentId: null,
-  projectMemory: "Existing project memory",
   sortOrder: 0
 };
 

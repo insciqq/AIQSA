@@ -112,7 +112,7 @@ function fixture(options: Readonly<{
     loadModelPricing: async () => null,
     loadPersonalFirstSend: async (input) => input.chatId === newChatId && input.userId === owner.id ? {
       activeLeafMessageId: null, defaultModelId: "fake-qsa", defaultProvider: "fake", folderId: input.folderId, id: input.chatId,
-      memoryMode: input.memoryMode, messageCount: 0, projectMemory: null, title: "New Chat", workspaceEnabled: false
+      memoryMode: input.memoryMode, messageCount: 0, title: "New Chat", workspaceEnabled: false
     } : null,
     loadWorkspaceFileFacts: async () => ({ hasEarlierExports: false, hasFiles: false }),
     markRunAnswerStarted: async () => undefined,
@@ -187,7 +187,7 @@ function ownerMcp() {
 
 const taskChat: RunOwnedChatRecord = {
   activeLeafMessageId: "assistant-message-0", defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-task",
-  memoryMode: "EXCLUDED", messageCount: 2, projectMemory: null, title: "Synthetic brief"
+  memoryMode: "EXCLUDED", messageCount: 2, title: "Synthetic brief"
 };
 const say = (id: string, role: "assistant" | "user", text: string): ProviderConversationMessage =>
   ({ content: textMessageContent(text), id, role });

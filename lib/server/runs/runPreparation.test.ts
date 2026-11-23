@@ -751,7 +751,6 @@ function sendInput(
       defaultModelId: "fake-qsa",
       defaultProvider: "fake",
       id: "chat-1",
-      projectMemory: "  Server project memory  ",
       ...chatOverrides
     },
     kind: "send"
@@ -788,8 +787,7 @@ function regenerateInput(
       chat: {
         defaultModelId: "fake-qsa",
         defaultProvider: "fake",
-        id: "chat-1",
-        projectMemory: "  Server project memory  "
+        id: "chat-1"
       },
       userMessage: {
         content: textMessageContent("Shared question"),
@@ -936,7 +934,7 @@ describe("memory note and past-chat search admission", () => {
     expect(preparedFrom(await prepareRun(deps, sendInput())).preparedChatMode).toBe("NORMAL");
     expect(preparedFrom(await prepareRun(deps, sendInput(successBody(), { memoryMode: "EXCLUDED" }))).preparedChatMode).toBe("EXCLUDED");
     expect(preparedFrom(await prepareRun(deps, regenerateInput(successBody(), { chat: { defaultModelId: "fake-qsa",
-      defaultProvider: "fake", id: "chat-1", memoryMode: "EXCLUDED", projectMemory: null } }))).preparedChatMode).toBe("EXCLUDED");
+      defaultProvider: "fake", id: "chat-1", memoryMode: "EXCLUDED" } }))).preparedChatMode).toBe("EXCLUDED");
   });
 
   it("lets only the user's own message change the note: never a turn the server wrote, sent or regenerated", async () => {
@@ -979,7 +977,7 @@ describe("memory note and past-chat search admission", () => {
     const deps = { ...harness.deps, ...memory };
     const regenerate = (text: string, memoryMode: "NORMAL" | "EXCLUDED",
       prompt: Readonly<{ scheduledTaskMemory?: true; scheduledTaskPrompt: boolean }>) => regenerateInput(successBody(), {
-      chat: { defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", memoryMode, projectMemory: null },
+      chat: { defaultModelId: "fake-qsa", defaultProvider: "fake", id: "chat-1", memoryMode },
       userMessage: { content: textMessageContent(text), id: "stored-user-message", ...prompt }
     });
     // A task with Memory off, a deleted task or a branch copy: the prompt reads nothing even in an ordinary chat.

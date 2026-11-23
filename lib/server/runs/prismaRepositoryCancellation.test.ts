@@ -13,7 +13,7 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
     $queryRaw: vi.fn(async (query: { sql: string } | TemplateStringsArray) => {
       const sql = "sql" in query ? query.sql : query.join("");
       if (sql.includes('SELECT r."chatId", r."userId" FROM "ModelRun" r')) return [{ chatId, userId }];
-      // The terminal chat write locks only a chat of this owner; a legacy Project chat has none.
+      // The terminal chat write finds the chat gone or fenced for deletion and leaves it alone.
       if (sql.includes('"memoryMode"::text AS "memoryMode"')) return [];
       if (/FROM "(?:User|Chat)"/.test(sql)) return [{ id: "locked-scope" }];
       if (sql.includes('FROM "ModelRun"')) {
@@ -35,10 +35,6 @@ function repositoryCancellationHarness(mode: "cancel" | "fail") {
       }
       return pendingCallIds.map((id) => ({ id }));
     }),
-    chat: {
-      // A legacy Project chat: no personal owner, so its chat is left alone at settlement.
-      findUnique: vi.fn(async () => ({ userId: null }))
-    },
     message: {
       updateMany: vi.fn(async () => ({ count: 1 }))
     },

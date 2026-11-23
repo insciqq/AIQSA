@@ -94,7 +94,7 @@ describe("scheduled task end to end", () => {
     const [occurrence] = await prisma.scheduledTaskOccurrence.findMany({ where: { taskId: task.id } });
     expect(occurrence).toMatchObject({ chatId: first.chatId, reasonCode: null, state: "COMPLETED", taskGeneration: 1, trigger: "schedule" });
     // The task's chat is the one of its run's month, titled with that month.
-    expect(await prisma.chat.findUniqueOrThrow({ where: { id: first.chatId! } })).toMatchObject({ memoryMode: "EXCLUDED", projectId: null,
+    expect(await prisma.chat.findUniqueOrThrow({ where: { id: first.chatId! } })).toMatchObject({ memoryMode: "EXCLUDED",
       title: scheduledTaskMonthChatTitle("Synthetic brief", occurrence!.scheduledFor, "Europe/Moscow"), userId });
     expect(occurrence!.unseenAt).not.toBeNull();
     const firstRun = await prisma.modelRun.findUniqueOrThrow({ where: { id: occurrence!.runId! } });

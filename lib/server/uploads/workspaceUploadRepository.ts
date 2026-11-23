@@ -24,8 +24,7 @@ async function lock(tx: Prisma.TransactionClient, id: string) {
 }
 
 async function authorized(tx: Prisma.TransactionClient, row: WorkspaceUploadRecord, userId: string) {
-  // An upload a removed Project started never completes.
-  if (row.userId !== userId || row.projectScoped || row.projectId !== null) return false;
+  if (row.userId !== userId) return false;
   return Boolean(await tx.user.findFirst({ where: { id: userId, status: "active" }, select: { id: true } }));
 }
 
@@ -217,9 +216,9 @@ export function createWorkspaceUploadRepository(db: PrismaClient) {
     async claimCleanup(now = new Date()) {
       return db.$transaction(async tx => {
         await tx.attachmentUpload.updateMany({ where: { state: "uploading", expiresAt: { lte: now } }, data: { state: "expired" } });
-        // Uploads of deleted accounts and of removed Projects end here.
-        await tx.attachmentUpload.updateMany({ where: { state: { in: ["uploading", "verifying"] },
-          OR: [{ userId: null }, { projectScoped: true }] }, data: { state: "expired" } });
+        // Uploads of deleted accounts end here.
+        await tx.attachmentUpload.updateMany({ where: { state: { in: ["uploading", "verifying"] }, userId: null },
+          data: { state: "expired" } });
         const candidates = await tx.$queryRaw<{ id: string }[]>`
           SELECT u."id" FROM "AttachmentUpload" u WHERE u."state" IN ('completed','cancelled','expired','failed')
           AND u."cleanedAt" IS NULL AND (u."leaseExpiresAt" IS NULL OR u."leaseExpiresAt" <= ${now})

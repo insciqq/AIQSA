@@ -24,6 +24,10 @@ import {
 } from "./drop-answer-review-storage-adoption";
 import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
 import {
+  DROP_PROJECT_LEFTOVERS_MIGRATION, DROP_PROJECT_LEFTOVERS_REFUSAL, dropProjectLeftoversFixtureSql, dropProjectLeftoversProofSql,
+  dropProjectLeftoversRefusedFixtureSql, dropProjectLeftoversRefusedProofSql
+} from "./drop-project-leftovers-adoption";
+import {
   DROP_REMOVED_FEATURE_STORAGE_MIGRATION, dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql
 } from "./drop-removed-feature-storage-adoption";
 import {
@@ -175,11 +179,12 @@ function psqlScalar(database: string, sql: string): string {
   );
 }
 
-function app(
+/** Runs a command in the disposable app container against `database` and returns its outcome, whatever it is. */
+function appOutcome(
   database: string,
   command: string[],
   extraEnvironment: Record<string, string> = {},
-): string {
+): CommandResult {
   assertDisposableDatabase(database);
   const environment = {
     DATABASE_URL: databaseUrl(database),
@@ -189,8 +194,16 @@ function app(
     "-e",
     `${name}=${value}`,
   ]);
+  return compose(["exec", "-T", ...environmentArgs, APP_SERVICE, ...command]);
+}
+
+function app(
+  database: string,
+  command: string[],
+  extraEnvironment: Record<string, string> = {},
+): string {
   return requireSuccess(
-    compose(["exec", "-T", ...environmentArgs, APP_SERVICE, ...command]),
+    appOutcome(database, command, extraEnvironment),
     `${command.join(" ")} against ${database}`,
   );
 }
@@ -544,6 +557,9 @@ function migrationPrefixTree(database: string, migrations: readonly string[]): s
   return root;
 }
 
+/** The migration after the summary turn backfill; the backfill proof ends before it. */
+const WORKSPACE_BROWSER_REFUSED_REVISIONS_MIGRATION = "20261123030200_workspace_browser_refused_revisions";
+
 /**
  * Writes the fixture against the predecessors of `migration`, then proves the
  * deployed history twice. A proof that reads storage a later migration drops
@@ -577,6 +593,38 @@ function runForwardAdoptionProof(
     if (repeatProof) psqlScalar(database, repeatProof);
     if (proofEnd < committed.length) app(database, ["npx", "prisma", "migrate", "deploy"]);
     assertDeployedMigrations(database, committed);
+  } finally {
+    for (const root of trees) {
+      app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", root]);
+    }
+  }
+}
+
+/**
+ * Writes the fixture against the predecessors of `migration`, then proves that deploying `migration` fails with
+ * `refusal` and, since a migration file runs as one transaction, that `unchanged` still holds.
+ */
+function runRefusedAdoptionProof(
+  database: string, committed: readonly string[], migration: string, fixture: string, refusal: RegExp, unchanged: string
+): void {
+  const index = committed.indexOf(migration);
+  assert.ok(index > 0, "refused adoption migration is missing");
+  dropDatabase(database);
+  createDatabase(database);
+  const trees: string[] = [];
+  const prefixSchema = (end: number): string => {
+    const root = migrationPrefixTree(database, committed.slice(0, end));
+    trees.push(root);
+    return `${root}/schema.prisma`;
+  };
+  try {
+    app(database, ["npx", "prisma", "migrate", "deploy", "--schema", prefixSchema(index)]);
+    psqlScalar(database, fixture);
+    const refused = appOutcome(database, ["npx", "prisma", "migrate", "deploy", "--schema", prefixSchema(index + 1)]);
+    const output = `${refused.stdout}\n${refused.stderr}`;
+    assert.notEqual(refused.status, 0, `${migration} deployed over rows it must refuse`);
+    assert.match(output, refusal, `${migration} failed, but not with its refusal:\n${output}`);
+    psqlScalar(database, unchanged);
   } finally {
     for (const root of trees) {
       app(database, ["node", "-e", "require('node:fs').rmSync(process.argv[1], { recursive: true, force: true })", root]);
@@ -618,10 +666,20 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
   runForwardAdoptionProof(database, migrations, DROP_ANSWER_REVIEW_STORAGE_MIGRATION,
     dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql, dropAnswerReviewStorageProofSql,
     CONVERSATION_SUMMARY_TURN_KIND_MIGRATION);
-  // A continued chat's first turn becomes the server's: only the prompt a completed continuation wrote, exactly as it
-  // wrote it, and nothing else changes. Its proof reads only what stays, so it runs over the whole history.
+  // A continued chat's first turn becomes the server's: only the prompt a continuation wrote, exactly as it wrote it,
+  // and nothing else changes. Its proof digests whole tables, which the next migrations widen or narrow, so it ends
+  // before them.
   runForwardAdoptionProof(database, migrations, CONVERSATION_SUMMARY_TURN_KIND_MIGRATION,
-    conversationSummaryTurnFixtureSql, conversationSummaryTurnProofSql, conversationSummaryTurnProofSql);
+    conversationSummaryTurnFixtureSql, conversationSummaryTurnProofSql, conversationSummaryTurnProofSql,
+    WORKSPACE_BROWSER_REFUSED_REVISIONS_MIGRATION);
+  // What removed Projects left goes: a chat and a share without an owner go with the chat's turns and runs, its usage
+  // keeps its rows, an upload it started ends, the Project columns and type go and every chat has an owner, while the
+  // owner's own rows stay as they were. A chat without an owner that still holds a file refuses the migration and
+  // changes nothing.
+  runForwardAdoptionProof(database, migrations, DROP_PROJECT_LEFTOVERS_MIGRATION,
+    dropProjectLeftoversFixtureSql, dropProjectLeftoversProofSql, dropProjectLeftoversProofSql);
+  runRefusedAdoptionProof(database, migrations, DROP_PROJECT_LEFTOVERS_MIGRATION, dropProjectLeftoversRefusedFixtureSql,
+    DROP_PROJECT_LEFTOVERS_REFUSAL, dropProjectLeftoversRefusedProofSql);
 }
 
 function main(database: string, shadowDatabase: string): void {
@@ -639,7 +697,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}, ${CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}, ${CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION}, ${DROP_PROJECT_LEFTOVERS_MIGRATION} with its refusal), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

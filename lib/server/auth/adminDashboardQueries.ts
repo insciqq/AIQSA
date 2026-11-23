@@ -256,11 +256,9 @@ export async function listAdminDashboard(
         ]
       }
     }),
-    // Personal chats only: a chat a missed Project retirement left behind has no owner.
     prisma.modelRun.groupBy({
       _count: { _all: true },
-      by: ["userId"],
-      where: { chat: { userId: { not: null } } }
+      by: ["userId"]
     })
   ]);
   const personalModelRunCountByUserId = new Map(personalModelRunCounts.map((row) => [

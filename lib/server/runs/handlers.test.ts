@@ -513,7 +513,6 @@ function createMemoryRepository(
 	              defaultProvider: "fake",
 	              id: chatId,
 	              messageCount: 1,
-	              projectMemory: "Project prefers short bullet answers.",
 	              title: "Existing chat"
 	            }
         : null,
@@ -539,8 +538,7 @@ function createMemoryRepository(
             chat: {
               defaultModelId: "fake-qsa",
               defaultProvider: "fake",
-              id: "chat-1",
-              projectMemory: "Project prefers short bullet answers."
+              id: "chat-1"
             },
             userMessage: {
               content: {
@@ -993,7 +991,6 @@ describe("model run route handlers", () => {
           id: chatId,
           memoryMode: "NORMAL",
           messageCount: 0,
-          projectMemory: null,
           title: "New Chat",
           workspaceEnabled: false
         }
@@ -2698,7 +2695,6 @@ describe("model run route handlers", () => {
             defaultProvider: "fake",
             id: chatId,
             messageCount: 0,
-            projectMemory: null,
             title: "New Chat"
           }
         : null;
@@ -2832,7 +2828,6 @@ describe("model run route handlers", () => {
             defaultProvider: "fake",
             id: chatId,
             messageCount: 0,
-            projectMemory: null,
             title: "New Chat"
           }
         : null;
@@ -3762,7 +3757,6 @@ describe("model run route handlers", () => {
             defaultProvider: "fake",
             id: chatId,
             messageCount: 0,
-            projectMemory: null,
             title: "New Chat"
           }
         : null;
@@ -4273,8 +4267,7 @@ describe("model run route handlers", () => {
               chat: {
                 defaultModelId: "anthropic/claude-opus-4.8",
                 defaultProvider: "openrouter",
-                id: "chat-1",
-                projectMemory: "Project prefers short bullet answers."
+                id: "chat-1"
               },
               userMessage: {
                 content: { blocks: [{ text: "Original question", type: "text" }] },

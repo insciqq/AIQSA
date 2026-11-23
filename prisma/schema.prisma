@@ -54,13 +54,6 @@ enum UserKind {
   service
 }
 
-enum ProjectRole {
-  VIEWER
-  CONTRIBUTOR
-  MANAGER
-  OWNER
-}
-
 enum MessageStatus {
   queued
   streaming
@@ -498,9 +491,6 @@ model User {
   mcpToolApprovals                    McpToolApproval[]
   modelPolicyUpdates                  ModelPolicy[]                      @relation("ModelPolicyUpdater")
   providerCredentialAssignments       ProviderUserCredentialAssignment[]
-  projectAttachmentsUploaded          Attachment[]                       @relation("ProjectAttachmentUploader")
-  projectChatsCreated                 Chat[]                             @relation("ProjectChatCreator")
-  projectMessagesAuthored             Message[]                          @relation("ProjectMessageAuthor")
   searchPolicyUpdates                 SearchPolicy[]                     @relation("SearchPolicyUpdater")
   settings                            UserSettings?
   sharedSnapshots                     SharedChatSnapshot[]
@@ -1381,7 +1371,6 @@ model Folder {
   userId               String
   parentId             String?
   name                 String
-  projectMemory        String   @default("")
   sortOrder            Int      @default(0)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -2012,11 +2001,7 @@ model Chat {
   continuationWorkspaceSeeds ChatContinuationWorkspaceSeed[] @relation("ContinuationWorkspaceSeedSource")
   receivedWorkspaceSeeds ChatContinuationWorkspaceSeed[] @relation("ContinuationWorkspaceSeedDestination")
   id                              String               @id @default(uuid())
-  userId                          String?
-  projectId                       String?
-  projectFolderId                 String?
-  createdByUserId                 String?
-  createdByDisplayName            String               @default("")
+  userId                          String
   folderId                        String?
   title                           String
   titleRevision                   Int                  @default(0)
@@ -2071,13 +2056,12 @@ model Chat {
   activeLeafMessage               Message?             @relation("ChatActiveLeaf", fields: [id, activeLeafMessageId], references: [chatId, id], onDelete: SetNull, onUpdate: Restrict, map: "Chat_id_activeLeafMessageId_fkey")
   assistant                       AssistantDefinition? @relation(fields: [assistantId], references: [id], onDelete: SetNull)
   attachments                     Attachment[]
-  createdBy                       User?                @relation("ProjectChatCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
   folder                          Folder?              @relation(fields: [folderId], references: [id], onDelete: SetNull)
   defaultProviderModel            ProviderModel?       @relation("ChatDefaultProviderModel", fields: [defaultProviderModelId], references: [id], onDelete: Restrict)
   messages                        Message[]            @relation("ChatMessages")
   modelRuns                       ModelRun[]
   sharedSnapshots                 SharedChatSnapshot[]
-  user                            User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceSession                WorkspaceSession?
   scheduledTasks                  ScheduledTask[]           @relation("ScheduledTaskChat")
   scheduledTaskOccurrences        ScheduledTaskOccurrence[]
@@ -2099,8 +2083,6 @@ model Chat {
   @@index([defaultProviderModelId])
   @@index([scheduledTaskId])
   @@index([memoryMode, temporaryRetentionDeadline])
-  @@index([projectId, archived, updatedAt])
-  @@index([projectFolderId])
   @@index([userId, permanentDeletionAt])
   @@index([userId, archived, updatedAt])
   @@index([userId, assistantId, updatedAt])
@@ -2344,9 +2326,6 @@ model Message {
   outputTokens           Int?
   reasoningTokens        Int?
   errorMessage           String?
-  authorUserId           String?
-  authorDisplayName      String?
-  authorProjectRole      ProjectRole?
   branchSourceModelRunId String?
   branchFollowups        Json?
   /// A user message a scheduled task posted (its prompt, possibly model-written). Set
@@ -2358,7 +2337,6 @@ model Message {
   createdAt              DateTime          @default(now())
   updatedAt              DateTime          @updatedAt
   assistantModelRuns     ModelRun[]        @relation("AssistantMessageRun")
-  author                 User?             @relation("ProjectMessageAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   branchSourceModelRun   ModelRun?         @relation("BranchSourceModelRun", fields: [branchSourceModelRunId], references: [id], onDelete: SetNull, onUpdate: Restrict)
   activeLeafForChats     Chat[]            @relation("ChatActiveLeaf")
   chat                   Chat              @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
@@ -2377,7 +2355,6 @@ model Message {
   @@unique([chatId, id], map: "Message_chatId_id_key")
   @@index([chatId, parentMessageId])
   @@index([chatId, createdAt])
-  @@index([authorUserId])
   @@index([branchSourceModelRunId])
 }
 
@@ -3570,8 +3547,6 @@ model DocumentProcessingFairnessCursor {
 model AttachmentUpload {
   id             String   @id @default(uuid())
   userId         String?
-  projectId      String?
-  projectScoped  Boolean  @default(false)
   idempotencyKey String   @db.VarChar(64)
   fileName       String   @db.VarChar(512)
   mimeType       String   @db.VarChar(255)
@@ -3595,7 +3570,6 @@ model AttachmentUpload {
   @@unique([userId, idempotencyKey])
   @@index([state, nextAttemptAt])
   @@index([expiresAt])
-  @@index([projectId])
 }
 
 // Object identities are durable before any storage write, including abandoned
@@ -3624,10 +3598,8 @@ model Attachment {
   chatPdfPreparations  ChatPdfAttachmentPreparation[]
   chatPdfArtifacts     ChatPdfArtifact[]
   id                  String                   @id @default(uuid())
+  /// Always set: a SQL check requires the owner (Prisma keeps the column optional).
   userId              String?
-  projectId           String?
-  uploaderUserId      String?
-  uploaderDisplayName String?
   chatId              String?
   messageId           String?
   kind                String
@@ -3648,16 +3620,13 @@ model Attachment {
   chat                Chat?                    @relation(fields: [chatId], references: [id], onDelete: SetNull)
   processingJob       AttachmentProcessingJob?
   producerModelRun    ModelRun?                @relation("WorkspaceProducedAttachment", fields: [producerModelRunId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  uploader            User?                    @relation("ProjectAttachmentUploader", fields: [uploaderUserId], references: [id], onDelete: SetNull)
   user                User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspaceRunOutput  WorkspaceRunOutput?
 
   @@unique([id, userId])
   @@index([userId, createdAt])
   @@index([userId, savedAt])
-  @@index([projectId, createdAt])
   @@index([producerModelRunId])
-  @@index([uploaderUserId])
   @@index([messageId])
   @@index([storageKey])
 }
@@ -4042,9 +4011,8 @@ model AttachmentDeletionJob {
 
 model SharedChatSnapshot {
   id                   String    @id @default(uuid())
+  /// Always set: a SQL check requires the owner (Prisma keeps the column optional).
   ownerUserId          String?
-  projectId            String?
-  createdByDisplayName String?
   chatId               String?
   slugHash             String    @unique
   title                String
@@ -4057,7 +4025,6 @@ model SharedChatSnapshot {
 
   @@index([chatId, createdAt])
   @@index([ownerUserId, createdAt])
-  @@index([projectId, createdAt])
 }
 
 model UsageEvent {
@@ -4082,7 +4049,6 @@ model UsageEvent {
   purpose                         UsagePurpose
   chatId                          String?
   modelRunId                      String?
-  projectId                       String?
   provider                        String
   modelId                         String
   providerModelId                 String?
@@ -4108,7 +4074,6 @@ model UsageEvent {
   @@index([createdAt])
   @@index([userId, createdAt])
   @@index([provider, modelId])
-  @@index([projectId, createdAt])
 }
 
 // One immutable Workspace image analysis dispatch per persisted tool call.

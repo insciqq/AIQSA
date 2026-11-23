@@ -59,7 +59,7 @@ describe("chat route handlers", () => {
       updatedAt: "2026-09-27T00:00:00.000Z"
     });
     const folderRecord = (id: string, name: string) => ({
-      id, name, parentId: null, projectMemory: "", sortOrder: 10
+      id, name, parentId: null, sortOrder: 10
     });
     const repository: ChatRepository = {
       ...historyRepositoryMethods,
@@ -653,7 +653,6 @@ describe("chat route handlers", () => {
           id: input.folderId,
           name: input.name ?? "Renamed Folder",
           parentId: null,
-          projectMemory: "",
           sortOrder: 20
         };
       }
@@ -687,8 +686,7 @@ describe("chat route handlers", () => {
       folder: {
         id: "folder-1",
         name: "Renamed Folder",
-        parentId: null,
-        projectMemory: ""
+        parentId: null
       }
     });
   });

@@ -779,14 +779,12 @@ export type FolderWire = {
   id: string;
   name: string;
   parentId: string | null;
-  projectMemory: string;
   sortOrder: number;
 };
 
 export type UpdateFolderRequestWire = {
   name?: string | null;
   parentId?: string | null;
-  projectMemory?: string;
 };
 
 export type WorkspaceChatsResponseWire = {
@@ -1602,13 +1600,11 @@ function decodeFolderWire(value: unknown): FolderWire | null {
   const id = requiredString(value.id);
   const name = requiredString(value.name);
   const parentId = nullableId(value.parentId);
-  const projectMemory = typeof value.projectMemory === "string" ? value.projectMemory : null;
   const sortOrder = finiteNumber(value.sortOrder);
   if (
     !id ||
     !name ||
     parentId === undefined ||
-    projectMemory === null ||
     sortOrder === null
   ) {
     return null;
@@ -1618,7 +1614,6 @@ function decodeFolderWire(value: unknown): FolderWire | null {
     id,
     name,
     parentId,
-    projectMemory,
     sortOrder
   };
 }
