@@ -149,8 +149,7 @@ async function unreachable(text: string, fail: (send: number) => TelegramFailure
     linkedAt: new Date(START), pendingAssistantId: null, searchEnabled: false, selectedModelId: null, selectedProvider: null,
     telegramChatId: user.id, telegramUserId: user.id, telegramUsername: null, userId: "user-1"
   };
-  const allowed: TelegramAccessDecision = { allowed: true, control: {} as never, link };
-  const gate = { decision: allowed };
+  const gate: { decision: TelegramAccessDecision } = { decision: { allowed: true, control: {} as never, link } };
   const access = { revoke: () => { gate.decision = { allowed: false, link, reasonCode: "telegram_access_off" }; } };
   const runLinks = memoryRunLinkStore();
   await runLinks.store.create({ draftId: 7, linkId: "link-1", now: new Date(START), runId: "run-1", telegramChatId: user.id, userId: "user-1" });
