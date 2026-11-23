@@ -565,6 +565,11 @@ a.v2-answer-source-title:hover {
   margin-top: 0.75rem;
 }
 
+/* Open in the fold under a line that already names them. */
+.v2-past-chat-sources[data-heading="none"] > .v2-past-chat-list {
+  margin-top: 0;
+}
+
 .v2-past-chat {
   min-width: 0;
 }

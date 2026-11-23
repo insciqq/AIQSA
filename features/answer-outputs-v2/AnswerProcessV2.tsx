@@ -2,6 +2,7 @@
 
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { useDisclosurePreference } from "@/components/app-shell/disclosurePreferences";
+import { MEMORY_NOTE_COPY } from "@/components/app-shell/memoryNoteUiCopy";
 import { useState } from "react";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import type { ThreadMcpUnavailableServer, ThreadToolActivity } from "@/lib/contracts/chats";
@@ -34,7 +35,7 @@ import {
   workspacePlanV2,
   workspaceProcessLabelV2
 } from "@/features/run-lifecycle-v2/workspaceActivityPresentation";
-import { groupPastChatSources, PastChatSourcesV2 } from "./PastChatSourcesV2";
+import { groupPastChatSources, type PastChatSourcesHeading, PastChatSourcesV2 } from "./PastChatSourcesV2";
 import { McpCallDetailsV2 } from "./McpCallDetailsV2";
 import { ResearchPlanCardV2, researchPlanCardRowV2 } from "./ResearchPlanCardV2";
 
@@ -457,6 +458,11 @@ function AnswerProcessFoldV2({
         stepCount: calls.length,
         workDurationMs
       });
+  // A settled line that already reads "Past chats · N" is their heading: the
+  // fold shows the list without repeating it, titled only beside other sections.
+  const pastChatsOnLine = !live && !timeline && label === MEMORY_NOTE_COPY.pastChatsHeading(pastChatGroupCount);
+  const pastChatsHeading: PastChatSourcesHeading = !pastChatsOnLine ? "summary"
+    : compactionLabel || plan || searchEngines || documentRows.length > 0 ? "title" : "none";
   // The work time leads. Search or a read PDF speak only when nothing else
   // would, except a search that entirely failed, which always stays on the line.
   const searchFailed = searchOutcome?.failed === true;
@@ -595,7 +601,9 @@ function AnswerProcessFoldV2({
               </ol>
             </section>
           ) : null}
-          {pastChatGroupCount > 0 ? <PastChatSourcesV2 onOpenChatMessage={onOpenChatMessage} sources={pastChatSources} /> : null}
+          {pastChatGroupCount > 0 ? (
+            <PastChatSourcesV2 heading={pastChatsHeading} onOpenChatMessage={onOpenChatMessage} sources={pastChatSources} />
+          ) : null}
         </div>
       </details>
       {warning}

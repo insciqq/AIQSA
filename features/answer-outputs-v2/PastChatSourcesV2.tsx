@@ -81,11 +81,20 @@ export function pastChatExcerptText(excerpt: string): string {
 }
 
 /**
+ * How the sources are headed in the answer's fold. `summary`: their own "Past chats · N" disclosure beside other work.
+ * When the fold's own line already reads "Past chats · N", a second heading would only repeat it, so the list sits
+ * open in the fold: `title` heads it "Past chats" among the fold's other sections, `none` leaves it unheaded as the
+ * fold's only content.
+ */
+export type PastChatSourcesHeading = "summary" | "title" | "none";
+
+/**
  * "Past chats · N" under an answer: the past chats the answer's search brought into its context, each with its title,
  * date and excerpt, linking to the chat at the turn it came from. `onOpenChatMessage` opens it in the shell; without
  * it the link loads the chat page. Counts describe what entered the context, not proven influence.
  */
-export function PastChatSourcesV2({ onOpenChatMessage, sources }: Readonly<{
+export function PastChatSourcesV2({ heading = "summary", onOpenChatMessage, sources }: Readonly<{
+  heading?: PastChatSourcesHeading;
   onOpenChatMessage?: OpenChatMessage;
   sources: readonly PastChatSource[];
 }>) {
@@ -93,9 +102,8 @@ export function PastChatSourcesV2({ onOpenChatMessage, sources }: Readonly<{
   const listId = `past-chat-sources-${useId()}`;
   const groups = groupPastChatSources(sources);
   if (groups.length === 0) return null;
-  return (
-    <details className="v2-answer-process-section v2-memory-disclosure" data-testid="past-chat-sources">
-      <summary className="v2-focusable">{copy.pastChatsHeading(groups.length)}</summary>
+  const body = (
+    <>
       <div id={listId} className="v2-past-chat-list">
         {groups.map((group, index) => (
           <PastChatGroupV2 group={group} hidden={!showAll && index >= SHOWN_CHATS} key={group.chatId} onOpen={onOpenChatMessage} />
@@ -107,6 +115,20 @@ export function PastChatSourcesV2({ onOpenChatMessage, sources }: Readonly<{
           {showAll ? copy.pastChatsShowLess : copy.pastChatsShowAll(groups.length)}
         </button>
       ) : null}
+    </>
+  );
+  if (heading !== "summary") {
+    return (
+      <section className="v2-answer-process-section v2-past-chat-sources" data-heading={heading} data-testid="past-chat-sources">
+        {heading === "title" ? <h3>{copy.pastChatsTitle}</h3> : null}
+        {body}
+      </section>
+    );
+  }
+  return (
+    <details className="v2-answer-process-section v2-memory-disclosure" data-testid="past-chat-sources">
+      <summary className="v2-focusable">{copy.pastChatsHeading(groups.length)}</summary>
+      {body}
     </details>
   );
 }

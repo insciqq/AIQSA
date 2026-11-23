@@ -98,6 +98,7 @@ export const MEMORY_NOTE_COPY = Object.freeze({
   offerFailed: "That did not work. Try again.",
   // Past chats under an answer.
   pastChatsHeading: (count: number) => `Past chats · ${count}`,
+  pastChatsTitle: "Past chats",
   pastChatsShowAll: (count: number) => `Show all ${count}`,
   pastChatsShowLess: "Show less",
   pastChatOpenLabel: (title: string) => `Open ${title} at this message`,

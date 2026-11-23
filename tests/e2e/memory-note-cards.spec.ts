@@ -160,10 +160,12 @@ test("a past-chat source opens its chat at the message", async ({ page }, info) 
   ]);
   await prepare(page, [chat, earlier], `/c/${chat.id}`);
   const fold = page.getByTestId("tool-activity-disclosure");
-  await fold.locator(":scope > summary").click({ timeout: 30_000 });
+  // With no other work the line is the sources' one heading, and opening it shows the chats.
+  await expect(fold.locator(":scope > summary")).toHaveText("Past chats · 1", { timeout: 30_000 });
+  await fold.locator(":scope > summary").click();
   const sources = page.getByTestId("past-chat-sources");
-  await expect(sources.locator(":scope > summary")).toHaveText("Past chats · 1");
-  await sources.locator(":scope > summary").click();
+  await expect(sources.locator(":scope > summary")).toHaveCount(0);
+  await expect(fold.getByText(/Past chats/u)).toHaveCount(1);
   const link = sources.getByRole("link", { name: "Open Staging deploy checklist at this message" });
   await expect(link).toHaveAttribute("href", `/c/${earlier.id}?message=${source.messageId}`);
   await captureState(page, info, "past-chat-source", { anchor: link, sizes, atEachSize: async () => {
