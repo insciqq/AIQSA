@@ -157,7 +157,9 @@ BEGIN
   INNER JOIN "Chat" AS source_chat ON source_chat.id = source_run."chatId"
   WHERE source_run.id = NEW."branchSourceModelRunId";
 
-  IF destination_user_id IS NULL OR source_user_id IS DISTINCT FROM destination_user_id THEN
+  -- The personal branch of the previous rule, with its NULL semantics: a source run no longer found when this
+  -- deferred check fires (removed later in the same transaction) leaves the comparison unknown and passes, as before.
+  IF NOT (destination_user_id IS NOT NULL AND source_user_id = destination_user_id) THEN
     RAISE EXCEPTION 'branch source model run tenant mismatch';
   END IF;
 
