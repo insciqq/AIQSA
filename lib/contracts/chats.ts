@@ -544,7 +544,8 @@ export type ChatMessageWire = {
   status: string;
   /**
    * A user message the server wrote for the user (the continuation after an
-   * MCP approval): never shown as the user's speech.
+   * MCP approval): never shown as the user's speech. A continued chat's first
+   * turn (`conversation_summary`) shows as its text above the summary.
    */
   systemTurnKind?: MessageSystemTurnKind;
   /**

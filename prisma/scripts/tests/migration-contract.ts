@@ -16,6 +16,10 @@ import {
   CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION, chatSearchCarriedExclusionsFixtureSql, chatSearchCarriedExclusionsProofSql
 } from "./chat-search-carried-exclusions-adoption";
 import {
+  CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION, CONVERSATION_SUMMARY_TURN_KIND_MIGRATION, conversationSummaryTurnFixtureSql,
+  conversationSummaryTurnProofSql
+} from "./conversation-summary-turn-adoption";
+import {
   DROP_ANSWER_REVIEW_STORAGE_MIGRATION, dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql
 } from "./drop-answer-review-storage-adoption";
 import { DROP_OLD_MEMORY_MIGRATION, dropOldMemoryFixtureSql, dropOldMemoryProofSql } from "./drop-old-memory-adoption";
@@ -609,9 +613,15 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
     dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql, dropRemovedFeatureStorageProofSql,
     DROP_ANSWER_REVIEW_STORAGE_MIGRATION);
   // Answer Review's storage goes: its sessions' steps stay in their chats as ordinary turns, each branch as stored, the
-  // other server-written kinds as they were, and nothing that stays names what went.
+  // other server-written kinds as they were, and nothing that stays names what went. Its proof reads the turn kinds
+  // its release keeps, to which the next release adds one, so it ends before that.
   runForwardAdoptionProof(database, migrations, DROP_ANSWER_REVIEW_STORAGE_MIGRATION,
-    dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql, dropAnswerReviewStorageProofSql);
+    dropAnswerReviewStorageFixtureSql, dropAnswerReviewStorageProofSql, dropAnswerReviewStorageProofSql,
+    CONVERSATION_SUMMARY_TURN_KIND_MIGRATION);
+  // A continued chat's first turn becomes the server's: only the prompt a completed continuation wrote, exactly as it
+  // wrote it, and nothing else changes. Its proof reads only what stays, so it runs over the whole history.
+  runForwardAdoptionProof(database, migrations, CONVERSATION_SUMMARY_TURN_KIND_MIGRATION,
+    conversationSummaryTurnFixtureSql, conversationSummaryTurnProofSql, conversationSummaryTurnProofSql);
 }
 
 function main(database: string, shadowDatabase: string): void {
@@ -629,7 +639,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}, ${CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

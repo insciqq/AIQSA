@@ -86,14 +86,17 @@ describe("past-chat passages", () => {
       // A server-written kind the index does not list stays out until it is listed.
       { answer: "Unlisted answer", question: "Unlisted server turn", systemTurnKind: "unlisted_server_turn" },
       { answer: "Done after approval.", question: "Continue after approval", systemTurnKind: "mcp_approval_continuation" },
-      { answer: "Sub-agents reported.", question: "Wake up", systemTurnKind: "subagent_callback" }
+      { answer: "Sub-agents reported.", question: "Wake up", systemTurnKind: "subagent_callback" },
+      { answer: "Conversation summary\n\nThe plan so far.", question: "Continue from the conversation summary below.",
+        systemTurnKind: "conversation_summary" }
     ] });
-    expect(chatSearchTurns(snapshot.path).map((turn) => turn.user.id)).toEqual(["m-q0", "m-q6", "m-q7"]);
+    expect(chatSearchTurns(snapshot.path).map((turn) => turn.user.id)).toEqual(["m-q0", "m-q6", "m-q7", "m-q8"]);
     const passages = buildChatSearchPassages(snapshot, []);
     expect(passages.map((passage) => chatSearchPassageBody(passage.text))).toEqual([
       "User: Ordinary question\n\nAssistant: Settled answer.",
       "Assistant: Done after approval.",
-      "Assistant: Sub-agents reported."
+      "Assistant: Sub-agents reported.",
+      "Assistant: Conversation summary\n\nThe plan so far."
     ]);
   });
 

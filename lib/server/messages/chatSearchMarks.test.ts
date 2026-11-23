@@ -109,4 +109,27 @@ describe("message writers mark past-chat search in their own transaction", () =>
     expect(recorder.calls[carried]!.values).toEqual(["copy-1", OWNER, ["question-1", "answer-1"], ["copied-0", "copied-1"],
       CHAT.id, OWNER]);
   });
+
+  it("a branch copy of a continued chat keeps its summary prompt the server's, so answering it there is no request of the user's", async () => {
+    let copied = 0;
+    const { recorder, repository: messages } = repository({
+      "chat.create": () => ({ id: "copy-1" }),
+      "chat.findUniqueOrThrow": () => ({ activeLeafMessageId: "copied", createdAt: new Date(), defaultProviderModel: null,
+        folderId: null, id: "copy-1", importSource: null, importSourceModel: null, pinned: false, title: "Branch: Trip plans",
+        updatedAt: new Date() }),
+      "message.create": () => ({ id: `copied-${copied++}` }),
+      "message.findFirst": () => ({ chatId: CHAT.id, id: "answer-1", role: "assistant", status: "complete" }),
+      "message.findMany": () => MESSAGES.map((message) => ({ ...message,
+        assistantModelRuns: [], branchFollowups: null, branchSourceModelRunId: null, errorMessage: null, inputTokens: null,
+        modelId: null, outputTokens: null, provider: null, reasoningTokens: null, scheduledTaskPrompt: false,
+        systemTurnKind: message.role === "user" ? "conversation_summary" : null }))
+    });
+
+    await messages.createChatBranchFromMessage({ sourceMessageId: "answer-1", userId: OWNER });
+
+    const created = recorder.calls.filter((call) => call.name === "message.create")
+      .map((call) => (call.args as { data: { role: string; systemTurnKind?: string } }).data);
+    expect(created.map((message) => [message.role, message.systemTurnKind ?? null])).toEqual([
+      ["user", "conversation_summary"], ["assistant", null]]);
+  });
 });

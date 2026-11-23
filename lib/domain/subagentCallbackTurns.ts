@@ -7,6 +7,7 @@ export type CallbackTurnNode = Readonly<{ id: string; parentId: string | null; r
  * Server-written user turns that a copy leaving the chat leaves out: a sub-agent wake-up turn and a Sign in again
  * request (`lib/contracts/browserSignIn.ts`). Neither is the user's speech, and outside the chat nothing could show
  * that, so neither may read as a user message there. An approval continuation stays: its text says the user approved.
+ * So does a continued chat's summary prompt, whose text says it introduces the summary below it.
  */
 const OMITTED_TURN_KINDS: ReadonlySet<string> = new Set([SUBAGENT_CALLBACK_TURN_KIND, BROWSER_SIGN_IN_TURN_KIND]);
 

@@ -78,6 +78,8 @@ describe("the run fence of a self-service change", () => {
     // A turn the server wrote authorizes nothing, as the memory note's service reads it (`storedUserRequest`).
     [[allowed], [{ ...own, systemTurnKind: "subagent_callback" }]],
     [[allowed], [{ ...own, systemTurnKind: "browser_sign_in_request" }]],
+    // A continued chat's summary prompt is the server's too, in its chat and a branch copy alike.
+    [[allowed], [{ ...own, systemTurnKind: "conversation_summary" }]],
     // Nor does an Allow of a call such a turn made, however far back, nor a continuation that names no Allow.
     [[allowed], [allow, { ...own, systemTurnKind: "subagent_callback" }]],
     [[allowed], [allow, { ...own, systemTurnKind: "browser_sign_in_request" }]],

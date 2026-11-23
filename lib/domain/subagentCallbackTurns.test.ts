@@ -28,4 +28,13 @@ describe("sub-agent wake-up turns outside the chat", () => {
     expect(graph.resolve("s2")).toBe("a1");
     expect(graph.resolve("s1")).toBeNull();
   });
+
+  it("keeps a continued chat's summary prompt, which shows as its own words above the summary", () => {
+    const graph = omitSubagentCallbackTurns([
+      { id: "p", parentId: null, role: "user", systemTurnKind: "conversation_summary" },
+      { id: "summary", parentId: "p", role: "assistant", systemTurnKind: null }
+    ]);
+    expect(graph.removed.size).toBe(0);
+    expect(graph.resolve("p")).toBe("p");
+  });
 });

@@ -40,9 +40,12 @@ export const CHAT_SEARCH_PASSAGE_LIMITS = Object.freeze({
   fileNamesLineChars: 1_000
 });
 
-/** Server-written user turns whose answer is the user's to search, without the turn's own text (it is not their speech). */
+/**
+ * Server-written user turns whose answer is the user's to search, without the turn's own text (it is not their speech):
+ * a continued chat's summary too.
+ */
 const ANSWER_ONLY_TURN_KINDS: ReadonlySet<string> = new Set([
-  "mcp_approval_continuation", "subagent_callback", "browser_sign_in_request"
+  "mcp_approval_continuation", "subagent_callback", "browser_sign_in_request", "conversation_summary"
 ]);
 
 const TITLE_LABEL = "Chat:";
