@@ -176,52 +176,86 @@ function incomingBody(request: IncomingMessage): ReadableStream<Uint8Array> {
 }
 
 /**
- * Resolves once the response takes more bytes or once it closed. `once(response, "drain")` never settles when the
- * client's socket closes while the runner waits on it (a closed response emits "close", not "error"), which left the
- * export handler, its batch and its operation pending with nothing logged, and the next handover waiting for its drain
- * timeout (production 2026-11-18: checkpoint uploads cut short while the runner logged nothing). After a close the
- * reader is already cancelled (`abort`), so the stream ends as a visible export failure.
+ * Resolves true once the response emits `event`, false once it closed or the operation ended first.
+ * `once(response, "drain")` never settles when the client's socket closes while the runner waits on it (a closed
+ * response emits "close", not "error"), which left the export handler, its batch and its operation pending with nothing
+ * logged, and the next handover waiting for its drain timeout (production 2026-11-18). After a close or an abort the
+ * reader is already cancelled, so the stream ends as a visible export failure.
  */
-function drainOrClose(response: ServerResponse): Promise<void> {
-  if (response.destroyed) return Promise.resolve();
+function responseEvent(response: ServerResponse, event: "drain" | "finish", signal: AbortSignal): Promise<boolean> {
+  if (response.destroyed || signal.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const done = () => {
-      response.off("drain", done);
-      response.off("close", done);
-      resolve();
+    const settle = (value: boolean) => () => {
+      response.off(event, reached);
+      response.off("close", ended);
+      signal.removeEventListener("abort", ended);
+      resolve(value);
     };
-    response.on("drain", done);
-    response.on("close", done);
+    const reached = settle(true);
+    const ended = settle(false);
+    response.on(event, reached);
+    response.on("close", ended);
+    signal.addEventListener("abort", ended, { once: true });
   });
 }
 
-async function pipeOutput(response: ServerResponse, pending: PendingOutput, signal: AbortSignal): Promise<void> {
+/** What an export stream wrote, for the record its close leaves. */
+type ExportProgress = { bytes: number; readonly started: number };
+
+/**
+ * Streams one output handle and returns once its last byte reached the socket.
+ *
+ * `connection: close`: the app drains an output at the pace of its object-storage upload, so a large file's tail can
+ * wait in socket buffers past the keep-alive idle timeout, which starts once the last write reaches the kernel. That
+ * close reached undici while its parser was paused on the final bytes, and undici failed the response as "other side
+ * closed", fetch dropping the tail it held, although this side had completed and logged nothing (production 2026-11-18
+ * and 2026-11-20: checkpoints of files over 16 MiB failed as truncated uploads). Undici checks a closing response
+ * against its content-length when the connection ends, so a complete one completes.
+ */
+async function pipeOutput(response: ServerResponse, pending: PendingOutput, signal: AbortSignal, progress: ExportProgress): Promise<void> {
+  const { byteSize } = pending.output;
   const reader = pending.output.body.getReader();
-  let written = 0;
   response.writeHead(200, {
     "cache-control": "private, no-store",
+    connection: "close",
     "content-disposition": "attachment",
-    "content-length": String(pending.output.byteSize),
+    "content-length": String(byteSize),
     "content-type": pending.output.mimeType,
     "x-content-type-options": "nosniff"
   });
-  const abort = () => void reader.cancel("client_disconnected").catch(() => undefined);
-  response.on("close", abort);
-  signal.addEventListener("abort", abort, { once: true });
+  // Why the stream stopped before its end: its client went away, or its operation passed to another owner.
+  let stopped: WorkspaceRuntimeError["code"] | null = null;
+  const stop = (code: WorkspaceRuntimeError["code"]) => () => {
+    stopped ??= code;
+    void reader.cancel(code).catch(() => undefined);
+  };
+  const clientClosed = stop("workspace_output_stream_incomplete");
+  const operationEnded = stop("workspace_operation_stale");
+  response.on("close", clientClosed);
+  signal.addEventListener("abort", operationEnded, { once: true });
   try {
-    signal.throwIfAborted();
+    if (signal.aborted) throw new WorkspaceRuntimeError("workspace_operation_stale");
     while (true) {
-      const next = await reader.read();
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        throw new WorkspaceRuntimeError(stopped ?? "workspace_output_export_failed", { factsOf: error });
+      }
       if (next.done) break;
-      written += next.value.byteLength;
-      if (written > pending.output.byteSize) throw new Error("stream_size_mismatch");
-      if (!response.write(next.value)) await drainOrClose(response);
+      progress.bytes += next.value.byteLength;
+      if (progress.bytes > byteSize) throw new WorkspaceRuntimeError("workspace_output_export_failed");
+      if (!response.write(next.value)) await responseEvent(response, "drain", signal);
     }
-    if (written !== pending.output.byteSize) throw new Error("stream_size_mismatch");
+    if (progress.bytes !== byteSize) throw new WorkspaceRuntimeError(stopped ?? "workspace_output_export_failed");
+    response.off("close", clientClosed);
+    signal.removeEventListener("abort", operationEnded);
+    const flushed = responseEvent(response, "finish", signal);
     response.end();
+    if (!await flushed) throw new WorkspaceRuntimeError(signal.aborted ? "workspace_operation_stale" : "workspace_output_stream_incomplete");
   } finally {
-    response.off("close", abort);
-    signal.removeEventListener("abort", abort);
+    response.off("close", clientClosed);
+    signal.removeEventListener("abort", operationEnded);
     reader.releaseLock();
   }
 }
@@ -284,6 +318,7 @@ export function createWorkspaceRunnerServer(input: Readonly<{
     }
     const url = new URL(request.url ?? "/", "http://workspace-runner.invalid");
     let stage: LifecycleStage = "preflight";
+    let exported: ExportProgress | undefined;
     try {
       if (request.method === "GET" && url.pathname === "/health") {
         stage = "health";
@@ -660,8 +695,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
         batch.handles.delete(opaqueFileId);
         batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
         batch.activeStreams += 1;
+        const progress: ExportProgress = { bytes: 0, started: performance.now() };
+        exported = progress;
         try {
-          await execute(batch.operation, (signal) => pipeOutput(response, pending, signal));
+          await execute(batch.operation, (signal) => pipeOutput(response, pending, signal, progress));
         } catch (error) {
           // A stale operation is rejected before pipeOutput takes ownership
           // of the body. Release that unopened handle as well.
@@ -672,6 +709,10 @@ export function createWorkspaceRunnerServer(input: Readonly<{
           batch.expiresAt = clock() + PENDING_OUTPUT_INACTIVITY_MS;
           if (batch.handles.size === 0 && batch.activeStreams === 0) batches.delete(batchId);
         }
+        // Every export stream leaves one record when it closes, a completed one too: its bytes say how far this side
+        // got, whatever the app saw. A failed one's record carries them from the catch below.
+        logEvent("runtime_lifecycle", { subsystem: "workspace", stage, outcome: "completed", count: progress.bytes,
+          duration_ms: performance.now() - progress.started });
         return;
       }
 
@@ -756,7 +797,8 @@ export function createWorkspaceRunnerServer(input: Readonly<{
       const failure = workspaceLifecycleFailure(error);
       const httpStatus = errorCode(error) === "workspace_operation_stale" ? 409 : 400;
       if (stage === "health") reportSubsystemFailure({ error, subsystem: "workspace", stage, scope_id: "runner", ...failure, httpStatus, action: "wait" });
-      else logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage, ...failure, httpStatus, action: "stop" });
+      else logEvent("runtime_lifecycle", { error, subsystem: "workspace", stage, ...failure, httpStatus, action: "stop",
+        ...(exported ? { count: exported.bytes, duration_ms: performance.now() - exported.started } : {}) });
       // A failed tool call's error carries the cause this runner observed.
       if (!response.headersSent) sendJson(response, errorCode(error) === "workspace_operation_stale" ? 409 : 400,
         workspaceToolErrorWire(errorCode(error), error));

@@ -414,6 +414,8 @@ export class WorkspaceRuntimeError extends Error {
     | "workspace_operation_stale"
     | "workspace_output_limit_exceeded"
     | "workspace_output_export_failed"
+    /** An output stream stopped before its declared end: its reader went away, or the runner's body broke or fell short. */
+    | "workspace_output_stream_incomplete"
     | "workspace_runtime_incompatible"
     | "workspace_runtime_unavailable"
     | "workspace_session_create_failed"

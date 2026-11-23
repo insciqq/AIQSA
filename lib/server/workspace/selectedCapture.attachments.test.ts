@@ -20,11 +20,11 @@ const config = getWorkspaceConfig({ AIQSA_TEST_MODE: "1", AIQSA_WORKSPACE_DETERM
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
-async function fixture(ownerRunId = "main") {
+async function fixture(ownerRunId = "main", content?: Buffer) {
   const directory = await mkdtemp(join(tmpdir(), "selected-capture-attachments-"));
   cleanups.push(() => rm(directory, { recursive: true, force: true }));
   const spool = new WorkspaceOutputCaptureStore(directory, config);
-  const bytes = await sharp({ create: { width: 3, height: 2, channels: 3, background: "#ff0000" } }).png().toBuffer();
+  const bytes = content ?? await sharp({ create: { width: 3, height: 2, channels: 3, background: "#ff0000" } }).png().toBuffer();
   const operation = { generation: 7, owner: `run:${ownerRunId}` };
   const session = { id: "session", chatId: "chat", state: "RUNNING", runtimeSandboxId: "sandbox",
     version: operation.generation, operationOwner: operation.owner };
@@ -131,6 +131,24 @@ function request(runId: string): ProviderRunRequest {
     searchPlan: { mode: "all_selected", options: [] }, toolMode: "auto", visionAnalysis: plan, workspaceImageView: true,
     workspace: { enabled: true, outputDirectory: `/workspace/output/${runId}` } as ProviderRunRequest["workspace"] };
 }
+
+describe("selected capture reads", () => {
+  it("delivers a large file in validated batches, under a lease sized for it", async () => {
+    const content = Buffer.from(Array.from({ length: 3 * 1024 * 1024 + 5 }, (_, index) => index % 251));
+    const f = await fixture("main", content);
+    const capture = await f.create("main");
+    f.db.workspaceCaptureReadLease.findFirst.mockClear();
+    const opened = Date.now();
+    const body = await f.service.openFile({ ...f.scope("main"), captureId: capture.id, relativePath: "project/image.png" });
+    const { expiresAt } = f.db.workspaceCaptureReadLease.create.mock.calls.at(-1)![0].data as unknown as { expiresAt: Date };
+    expect(Buffer.from(await new Response(body).arrayBuffer()).equals(content)).toBe(true);
+    // One check on opening and two per batch of about 1 MiB, where every 64 KiB chunk took two (101 for this file).
+    expect(f.db.workspaceCaptureReadLease.findFirst.mock.calls.length).toBe(1 + 2 * 4);
+    // The 120 s base and a second per started MiB.
+    expect(expiresAt.getTime() - opened).toBeGreaterThanOrEqual(124_000 - 1_000);
+    expect(expiresAt.getTime() - opened).toBeLessThanOrEqual(124_000 + 1_000);
+  });
+});
 
 describe("selected captures from attached runs", () => {
   it.each(["main", "subagent"])("keeps each capture on its own run when %s holds the shared fence", async owner => {

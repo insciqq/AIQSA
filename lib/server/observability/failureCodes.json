@@ -993,6 +993,7 @@
   "workspace_operation_stale",
   "workspace_output_export_failed",
   "workspace_output_limit_exceeded",
+  "workspace_output_stream_incomplete",
   "workspace_path_access_denied",
   "workspace_path_not_found",
   "workspace_policy_action_failed",

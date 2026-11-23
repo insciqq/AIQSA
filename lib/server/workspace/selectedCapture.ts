@@ -12,6 +12,17 @@ import { workspaceRunHoldsOperation } from "./attachments";
 import { WorkspaceRuntimeError, type WorkspaceRuntime, type WorkspaceOutputStream } from "./runtime";
 
 const LEASE_MS = 120_000;
+/**
+ * A file's read and upload lease adds time for its bytes at this floor rate, so the largest configured output fits:
+ * production stored checkpoints at about 1.5 MB/s (2026-11-20), and a fixed lease cut a 256 MiB file at 120 s.
+ */
+const LEASE_FLOOR_BYTES_PER_SECOND = 1024 * 1024;
+const leaseMs = (byteSize: number) => LEASE_MS + Math.ceil(byteSize / LEASE_FLOOR_BYTES_PER_SECOND) * 1_000;
+/**
+ * A read delivers up to this much per validation. Every delivered byte is still read before the check that releases
+ * it, while a large file no longer locks its owner's rows twice per 64 KiB transport chunk.
+ */
+const READ_BATCH_BYTES = 1024 * 1024;
 const MAX_CAPTURES_PER_RUN = 100;
 const MAX_REFERENCES_PER_CAPTURE = 100;
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -251,10 +262,10 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
       });
       if (await tx.workspaceCaptureReadLease.count({ where: { captureId: input.captureId, expiresAt: { gt: new Date() } } }) >= 16) throw limit();
       const token = randomUUID();
-      await tx.workspaceCaptureReadLease.create({ data: { token, captureId: input.captureId, expiresAt: new Date(Date.now() + LEASE_MS) } });
+      await tx.workspaceCaptureReadLease.create({ data: { token, captureId: input.captureId, expiresAt: new Date(Date.now() + leaseMs(file.byteSize)) } });
       return { ...current, file, token };
     });
-    const deadline = AbortSignal.timeout(LEASE_MS);
+    const deadline = AbortSignal.timeout(leaseMs(lease.file.byteSize));
     const signal = input.signal ? AbortSignal.any([input.signal, deadline]) : deadline;
     const validateRead = () => prisma.$transaction(async tx => {
       await authority(tx, input);
@@ -307,15 +318,21 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
             signal.throwIfAborted();
             if (closed) throw unavailable();
             await validateRead();
-            const next = await readStreamWithAbort(() => reader!.read(), signal);
-            await validateRead();
-            if (next.done) {
-              if (total !== lease.file.byteSize || hash.digest("hex") !== lease.file.checksum) throw unavailable();
-              await finish(); controller.close(); return;
+            const chunks: Uint8Array[] = [];
+            let batch = 0;
+            let done = false;
+            while (batch < READ_BATCH_BYTES) {
+              const next = await readStreamWithAbort(() => reader!.read(), signal);
+              if (next.done) { done = true; break; }
+              total += next.value.byteLength;
+              if (total > lease.file.byteSize) throw unavailable();
+              hash.update(next.value); chunks.push(next.value); batch += next.value.byteLength;
             }
-            total += next.value.byteLength;
-            if (total > lease.file.byteSize) throw unavailable();
-            hash.update(next.value); controller.enqueue(next.value);
+            await validateRead();
+            // The final batch is released only with the whole file's size and digest proven.
+            if (done && (total !== lease.file.byteSize || hash.digest("hex") !== lease.file.checksum)) throw unavailable();
+            if (batch) controller.enqueue(chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks));
+            if (done) { await finish(); controller.close(); }
           } catch (error) { await finish().catch(() => undefined); controller.error(error); }
         },
         cancel: finish
@@ -345,12 +362,12 @@ export function createWorkspaceSelectedCaptures(deps: Readonly<{
         // retains its deletion obligation and can never overwrite canonical bytes.
         await tx.attachmentDeletionJob.create({ data: { storageKey, claimToken: token, claimedAt: new Date() } });
         await tx.workspaceCapturedFile.update({ where: { id: row.id }, data: {
-          storageKey, storageState: "STORING", storageToken: token, storageLeaseExpiresAt: new Date(Date.now() + LEASE_MS)
+          storageKey, storageState: "STORING", storageToken: token, storageLeaseExpiresAt: new Date(Date.now() + leaseMs(row.byteSize))
         } });
         return { token, storageKey, id: row.id };
       });
       if (!attempt) continue;
-      const timeout = AbortSignal.timeout(LEASE_MS);
+      const timeout = AbortSignal.timeout(leaseMs(file.byteSize));
       const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
       try {
         const body = await openFile({ ...input, relativePath: file.relativePath, signal });

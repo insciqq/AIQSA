@@ -3251,7 +3251,9 @@ export function createWorkspaceCoordinator(input: Readonly<{
         if (!leaseLost) {
           await exportStep(() => input.repository.markExportFailed({ ...lease, code: recorded })).catch(() => undefined);
         }
-        return failedExport({ code, retryable, status: "failed" }, error);
+        // A runner stream that broke off reaches the run as the export failure it is; the record above names it.
+        return failedExport({ code: code === "workspace_output_stream_incomplete" ? "workspace_output_export_failed" : code,
+          retryable, status: "failed" }, error);
       } finally {
         clearInterval(heartbeatTimer);
         // A renewal still retrying stops after its current attempt.

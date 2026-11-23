@@ -139,9 +139,17 @@ async function jsonResponse(response: Response, limit: ResponseLimit = PROTOCOL_
  * A genuinely lazy body: the runner handle is opened on the first read, not
  * when the listing returns. With the default high-water mark the stream would
  * pull immediately and open every single-use guest stream at listing time.
+ *
+ * Once the runner answered, a body that breaks or ends away from its declared
+ * size is `workspace_output_stream_incomplete`, keeping the transport's facts,
+ * so a consumer never takes the bytes it got for the whole output. A caller's
+ * own abort stays that abort.
  */
-function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
+function remoteBody(open: () => Promise<Response>, byteSize: number, signal?: AbortSignal): ReadableStream<Uint8Array> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let received = 0;
+  const incomplete = (cause?: unknown) =>
+    new WorkspaceRuntimeError("workspace_output_stream_incomplete", cause === undefined ? undefined : { factsOf: cause });
   return new ReadableStream<Uint8Array>({
     async cancel(reason) {
       await reader?.cancel(reason).catch(() => undefined);
@@ -155,9 +163,23 @@ function remoteBody(open: () => Promise<Response>): ReadableStream<Uint8Array> {
           }
           reader = response.body.getReader();
         }
-        const next = await reader.read();
-        if (next.done) controller.close();
-        else controller.enqueue(next.value);
+        let next: ReadableStreamReadResult<Uint8Array>;
+        try {
+          next = await reader.read();
+        } catch (error) {
+          throw signal?.aborted ? error : incomplete(error);
+        }
+        if (next.done) {
+          if (received !== byteSize) throw incomplete();
+          controller.close();
+          return;
+        }
+        received += next.value.byteLength;
+        if (received > byteSize) {
+          await reader.cancel().catch(() => undefined);
+          throw incomplete();
+        }
+        controller.enqueue(next.value);
       } catch (error) {
         controller.error(error);
       }
@@ -623,7 +645,7 @@ export class RemoteWorkspaceRuntime implements WorkspaceRuntime {
           `?opaqueFileId=${encodeURIComponent(metadata.opaqueFileId)}` +
           `&batchId=${encodeURIComponent(metadata.batchId ?? "")}`,
         { signal }
-      ))
+      ), metadata.byteSize, signal)
     };
   }
 
