@@ -11,7 +11,8 @@ import type { PastChatLaneHit, PastChatWordHit } from "./rank";
  * Every query joins the passage's chat and applies the one eligibility rule
  * (`chatSearchEligibleSql`): the owner's own ordinary chats, never Temporary,
  * Excluded, imported, scheduled, Discord or fenced ones, and never the current
- * chat. User text only ever travels as bound parameters. Exact vector distance
+ * chat, and keeps to each chat's active branch (`ON_ACTIVE_BRANCH`) before it
+ * limits anything. User text only ever travels as bound parameters. Exact vector distance
  * over the owner's passages of the current embedding model is enough at the
  * measured sizes (about 6 000 passages per user); there is no approximate index.
  */
@@ -85,18 +86,24 @@ function scopeSql(scope: Omit<PastChatScope, "range"> & Partial<Pick<PastChatSco
 }
 
 /**
- * The `active_path` CTE (without a trailing comma, under `WITH RECURSIVE`): every message from each chat's active
- * leaf up to its root, for the `("chatId", "activeLeafMessageId")` rows `leaves` selects. A passage is on the active
- * branch when its answer is (its question is that answer's parent). Checked where a passage's text is read, so after
- * a branch switch, or while the upgrade backfill runs, an abandoned branch's passage is never returned before the
- * indexer drops it, and the ancestry both branches share stays searchable (review 2026-11-23). The ranking lanes do
- * not walk the paths: a stale passage they rank is left out when its text is read, like one of a chat no longer
- * eligible. `UNION` ends a walk that meets a message twice.
+ * The `moved_leaves` and `active_path` CTEs (without a trailing comma, under `WITH RECURSIVE`) that `ON_ACTIVE_BRANCH`
+ * reads. A chat's passages are all built from one active leaf (`ChatSearchState.indexedLeafMessageId`), so while that
+ * is still the chat's leaf every passage is on its active branch; only the owner's chats whose leaf moved since (a
+ * branch switch, a turn not yet indexed, the upgrade backfill still running) are walked, from the current leaf up to
+ * the root. `UNION` ends a walk that meets a message twice.
  */
-function activePathSql(leaves: Prisma.Sql): Prisma.Sql {
-  return Prisma.sql`active_path AS (
+function activeBranchSql(ownerId: string): Prisma.Sql {
+  return Prisma.sql`moved_leaves AS MATERIALIZED (
+    SELECT c."id" AS "chatId", c."activeLeafMessageId"
+    FROM "Chat" c
+    WHERE c."userId" = ${ownerId}
+      AND EXISTS (SELECT 1 FROM "ChatSearchPassage" indexed WHERE indexed."chatId" = c."id")
+      AND NOT EXISTS (SELECT 1 FROM "ChatSearchState" s
+        WHERE s."chatId" = c."id" AND s."indexedLeafMessageId" = c."activeLeafMessageId")
+  ),
+  active_path AS (
     SELECT m."chatId", m."id", m."parentMessageId"
-    FROM (${leaves}) leaf
+    FROM moved_leaves leaf
     JOIN "Message" m ON m."chatId" = leaf."chatId" AND m."id" = leaf."activeLeafMessageId"
     UNION
     SELECT parent."chatId", parent."id", parent."parentMessageId"
@@ -104,6 +111,18 @@ function activePathSql(leaves: Prisma.Sql): Prisma.Sql {
     JOIN "Message" parent ON parent."chatId" = a."chatId" AND parent."id" = a."parentMessageId"
   )`;
 }
+
+/**
+ * Passage `p` is on its chat's active branch: its chat's leaf has not moved since it was indexed, or its answer is on
+ * the path from the current leaf (its question is that answer's parent). Every lane and every read applies it before
+ * it limits anything, so after a branch switch an abandoned branch's passages can neither be returned nor fill a
+ * lane's candidates ahead of a live match before the indexer drops them, and the ancestry both branches share stays
+ * searchable (reviews 2026-11-23). A chat with no leaf has no branch. Needs `activeBranchSql`.
+ */
+const ON_ACTIVE_BRANCH = Prisma.sql`(
+  NOT EXISTS (SELECT 1 FROM moved_leaves moved WHERE moved."chatId" = p."chatId")
+  OR EXISTS (SELECT 1 FROM active_path a WHERE a."chatId" = p."chatId" AND a."id" = p."assistantMessageId")
+)`;
 
 function textArray(values: readonly string[]): Prisma.Sql {
   return values.length ? Prisma.sql`${[...values]}::text[]` : Prisma.sql`ARRAY[]::text[]`;
@@ -147,7 +166,8 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
       if (units.length === 0) return [];
       const rows = await db.$queryRaw<Array<{ id: string; chatId: string; userMessageId: string; turnAt: Date; pinned: boolean; terms: string[];
         score: number }>>(Prisma.sql`
-        WITH units AS MATERIALIZED (
+        WITH RECURSIVE ${activeBranchSql(scope.ownerId)},
+        units AS MATERIALIZED (
           SELECT u.term, u.query::tsquery AS q, u.weight, u.pin, u.admits
           FROM unnest(${units.map((unit) => unit.term)}::text[], ${units.map((unit) => unit.query)}::text[],
             ${units.map((unit) => unit.weight)}::float8[], ${units.map((unit) => unit.pin)}::boolean[],
@@ -159,7 +179,7 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
           FROM units u
           JOIN "ChatSearchPassage" p ON p."searchVectorSimple" @@ u.q
           JOIN "Chat" c ON c."id" = p."chatId"
-          WHERE ${scopeSql(scope)}
+          WHERE ${scopeSql(scope)} AND ${ON_ACTIVE_BRANCH}
           GROUP BY p."id", p."chatId", p."userMessageId", p."turnAt", u.term
         )
         SELECT m."id", m."chatId", m."userMessageId", m."turnAt", bool_or(m.pin) AS pinned,
@@ -181,6 +201,7 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
       if (!literal) return [];
       // The CASE keeps a passage of another dimension from ever reaching the operator, whatever order the planner evaluates in.
       return db.$queryRaw<PastChatLaneHit[]>(Prisma.sql`
+        WITH RECURSIVE ${activeBranchSql(scope.ownerId)}
         SELECT ranked."id", ranked."chatId", ranked."userMessageId", ranked."turnAt"
         FROM (
           SELECT p."id", p."chatId", p."userMessageId", p."turnAt",
@@ -190,6 +211,7 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
           WHERE ${scopeSql(scope)}
             AND p."embeddingProviderModelId" = ${vector.providerModelId}
             AND p."embeddingDimension" = ${dimension}
+            AND ${ON_ACTIVE_BRANCH}
         ) ranked
         WHERE ranked.distance IS NOT NULL AND ranked.distance <> 'NaN'::float8
         ORDER BY ranked.distance, ranked."id"
@@ -198,31 +220,23 @@ export function createPrismaPastChatSearchStore(db: SearchDb): PastChatSearchSto
 
     async passages(scope: Omit<PastChatScope, "range">, ids: readonly string[]): Promise<PastChatPassageRow[]> {
       if (ids.length === 0) return [];
+      // Checked again where the text is read: the branch may have moved since the lanes ranked it.
       return withTitles(await db.$queryRaw<StoredPassageRow[]>(Prisma.sql`
-        WITH RECURSIVE candidates AS MATERIALIZED (
-          SELECT p."id", p."chatId", p."userMessageId", p."assistantMessageId", p."turnAt", p."text", c."activeLeafMessageId"
-          FROM "ChatSearchPassage" p
-          JOIN "Chat" c ON c."id" = p."chatId"
-          WHERE p."id" = ANY(${[...ids]}::text[]) AND ${scopeSql(scope)}
-        ),
-        ${activePathSql(Prisma.sql`SELECT DISTINCT k."chatId", k."activeLeafMessageId" FROM candidates k`)}
-        SELECT k."id", k."chatId", k."userMessageId", k."turnAt", k."text"
-        FROM candidates k
-        WHERE EXISTS (SELECT 1 FROM active_path a WHERE a."chatId" = k."chatId" AND a."id" = k."assistantMessageId")`));
+        WITH RECURSIVE ${activeBranchSql(scope.ownerId)}
+        SELECT p."id", p."chatId", p."userMessageId", p."turnAt", p."text"
+        FROM "ChatSearchPassage" p
+        JOIN "Chat" c ON c."id" = p."chatId"
+        WHERE p."id" = ANY(${[...ids]}::text[]) AND ${scopeSql(scope)} AND ${ON_ACTIVE_BRANCH}`));
     },
 
     async recent(scope: PastChatScope, limit: number): Promise<PastChatPassageRow[]> {
       return withTitles(await db.$queryRaw<StoredPassageRow[]>(Prisma.sql`
-        WITH RECURSIVE ${activePathSql(Prisma.sql`SELECT DISTINCT c."id" AS "chatId", c."activeLeafMessageId"
-          FROM "ChatSearchPassage" p
-          JOIN "Chat" c ON c."id" = p."chatId"
-          WHERE ${scopeSql(scope)}`)},
+        WITH RECURSIVE ${activeBranchSql(scope.ownerId)},
         latest AS MATERIALIZED (
           SELECT DISTINCT ON (p."chatId") p."id", p."chatId", p."turnAt"
           FROM "ChatSearchPassage" p
           JOIN "Chat" c ON c."id" = p."chatId"
-          JOIN active_path a ON a."chatId" = p."chatId" AND a."id" = p."assistantMessageId"
-          WHERE ${scopeSql(scope)}
+          WHERE ${scopeSql(scope)} AND ${ON_ACTIVE_BRANCH}
           ORDER BY p."chatId", p."turnAt" DESC, p."ordinal", p."id"
         ),
         newest AS MATERIALIZED (
