@@ -4,6 +4,7 @@ import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import { ProviderEmptyAnswerError } from "../providers/emptyAnswer";
+import { markProviderStreamDrop } from "../providers/streamDrop";
 import { providerResponseFailure } from "../providers/responseFailure";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
 import type { MaterializedPreparedRunData } from "../runs/runPreparation";
@@ -13,6 +14,7 @@ import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineTestFaults } from "./faults";
 import { ANSWER_STANDS_INSTRUCTION, createNativeRunExecutionResponse, NATIVE_TURN_LIMITS, type NativeEngineDeps } from "./execution";
 import { ANSWER_NOW_INSTRUCTION, MAX_CORRECTION_ROUNDS, TOOLS_CLOSED_INSTRUCTIONS } from "./loop";
+import { MODEL_CALL_RETRY } from "./modelCall";
 import type { NativeRunStore } from "./runStore";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
 import type { TranscriptItem } from "./transcript";
@@ -1055,6 +1057,33 @@ describe("native run execution", () => {
     expect(repos[1]!.failRun).toHaveBeenCalledWith("empty-run-1", expect.anything(), expect.objectContaining({ code: "model_answer_empty" }),
       expect.anything());
     expect(JSON.stringify([repos[1]!.appendAssistantText.mock.calls, repos[1]!.failRun.mock.calls])).not.toContain("PRIVATE_HIDDEN");
+  });
+
+  it("keeps none of a round whose completion disagreed with its stream, and the earlier rounds' text, once attempts ran out", async () => {
+    // A proxy that switched upstream mid-stream (codex-lb): the adapter rejects what the round streamed.
+    const code = "openai_response_terminal_text_mismatch";
+    const mismatch = () => markProviderStreamDrop(Object.assign(new Error(code), { code }), "inconsistent");
+    const { adapter, requests } = scriptedAdapter([
+      { calls: [{ arguments: { key: "A-1" }, id: "call-1", name: "mcp_jira_get_issue" }], text: "Let me check. " },
+      { fail: mismatch(), text: "PRIVATE_REJECTED " }
+    ]);
+    const callTool = vi.fn(async () => ({ isError: false, text: ["A-1: open"], unsupportedContentTypes: [] }));
+    const repo = repository();
+    const memory = memoryEngine();
+    let result: ModelRunSseEvent[] = [];
+    vi.useFakeTimers();
+    try {
+      const reading = events(createNativeRunExecutionResponse({ adapter, created, engine: memory.engine,
+        mcpRuntime: () => ({ callTool, ensureAcceptedGeneration: async () => true }) as never,
+        prepared: prepared({ mcp: snapshot }), repository: repo as unknown as RunRepository, services: {}, userId: "user" }));
+      await vi.advanceTimersByTimeAsync(120_000);
+      result = await reading;
+    } finally { vi.useRealTimers(); }
+    expect(requests).toHaveLength(1 + MODEL_CALL_RETRY.maxAttempts);
+    expect(result.at(-1)).toMatchObject({ data: { code }, type: "error" });
+    expect(repo.failRun).toHaveBeenCalledWith("run-1", expect.anything(), expect.objectContaining({ code }), expect.anything());
+    expect(repo.appendAssistantText).toHaveBeenLastCalledWith("answer-1", "Let me check. ", { runId: "run-1" });
+    expect(JSON.stringify([repo.appendAssistantText.mock.calls, repo.failRun.mock.calls, memory.published()])).not.toContain("PRIVATE_REJECTED");
   });
 
 });

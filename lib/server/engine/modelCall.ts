@@ -14,6 +14,7 @@ import {
   type ProviderRetryBackoff
 } from "../providers/providerRetry";
 import { isProviderConnectionExpired, PROVIDER_CONTEXT_LENGTH_EXCEEDED } from "../providers/responseFailure";
+import { providerStreamDrop } from "../providers/streamDrop";
 import { providerStreamProgress } from "../providers/streamProgress";
 import { ProviderStreamIdleTimeoutError } from "../providers/streamSafety";
 import type { ProviderAdapter, ProviderRunRequest, ProviderRunResult } from "../providers/types";
@@ -128,7 +129,7 @@ export type ModelCallPorts = Readonly<{
   deadlineAt: number;
   faults?: EngineTestFaults;
   now?: () => number;
-  /** The attempt failed and is sent again, or was a final empty round: drop what it streamed. */
+  /** The attempt failed and is sent again, or was a final empty or `inconsistent` round: drop what it streamed. */
   onDiscard(attempt: number): Promise<void>;
   /** A live event of the current attempt (text, reasoning headings, outputs). */
   onEvent(event: ModelRunSseEvent, attempt: number): Promise<void>;
@@ -229,8 +230,9 @@ export async function callModel(ports: ModelCallPorts, request: ProviderRunReque
         (policy.failureWindowMs !== undefined && failedAt + delayMs - firstFailedAt > policy.failureWindowMs)) {
         if (decision || empty) logEvent("provider_retry", { action: "stop", attempt, code: failure.code, reason: failure.reason, stage,
           ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}) });
-        // What an empty round streamed is text its visible answer leaves out, never part of the answer so far.
-        if (empty) await ports.onDiscard(attempt);
+        // What an empty round streamed is text its visible answer leaves out, and what a round whose completion disagreed
+        // with its stream showed is text the adapter rejected: neither is part of the answer so far.
+        if (empty || providerStreamDrop(error) === "inconsistent") await ports.onDiscard(attempt);
         throw error;
       }
       logEvent("provider_retry", { action: "retry", attempt, code: failure.code, delay_ms: delayMs, reason: failure.reason, stage,
