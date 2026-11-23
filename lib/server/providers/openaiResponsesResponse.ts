@@ -401,7 +401,11 @@ function normalizeOpenAIResponseResult(
   }
   const terminalRawText = extractOpenAIText(response, maxOutputChars, snapshot);
   if (streamedRawText !== undefined && terminalRawText !== streamedRawText) {
-    throw new Error("openai_response_terminal_text_mismatch");
+    // Neither text is proven the response's own: a proxy such as codex-lb that switched upstream mid-stream sends this,
+    // as it sends a new identity (`reissuedFailureDrop`). The round is dropped, so the run sends it again within its
+    // drop budget and discards what this attempt streamed.
+    const code = "openai_response_terminal_text_mismatch";
+    throw markProviderStreamDrop(Object.assign(new Error(code), { code }), "inconsistent");
   }
   const rawFinalText = terminalRawText || streamedRawText || "";
   const finalText = visibleAnswerText(rawFinalText);
