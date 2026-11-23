@@ -26,6 +26,17 @@ describe("the memory note's credential screen of a whole change", () => {
     expect(memoryNoteChangeAddsSecret(before, composed(before, "Token", "Old token"), [SAVED])).toBe(false);
   });
 
+  it("refuses a saved value an edit completes across a line break, and lets one an edit only moves or rewraps through", () => {
+    const saved = "host=reports.example password=fixture-pass-42";
+    const before = "Use host=reports.example";
+    expect(memoryNoteChangeAddsSecret(before, `${before}\npassword=fixture-pass-42`, [saved])).toBe(true);
+    expect(memoryNoteChangeAddsSecret(before, `${before}\n\n  password=fixture-pass-42 later`, [saved])).toBe(true);
+    const holding = `Rules first.\nLogin host=reports.example\npassword=fixture-pass-42\nEnd.`;
+    expect(memoryNoteChangeAddsSecret(holding, "Login host=reports.example password=fixture-pass-42\nRules first.\nEnd.", [saved]))
+      .toBe(false);
+    expect(memoryNoteChangeAddsSecret(holding, composed(holding, "Rules first.", "Rules second."), [saved])).toBe(false);
+  });
+
   it("lets an edit through that adds no credential to a note that already held one, a removal included", () => {
     const before = `Use tables.\nOld key ${SAVED}\nStaging: https://demo:fixture-pass@staging.example.org/`;
     expect(memoryNoteChangeAddsSecret(before, composed(before, "Use tables.", "Use lists."), [SAVED])).toBe(false);

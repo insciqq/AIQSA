@@ -1,5 +1,5 @@
 import { loadSavedSecretScreenedValues, type SavedSecretReader } from "../redaction/savedSecretLoader";
-import { valueContainsSavedSecret } from "../redaction/savedSecrets";
+import { savedSecretFoldedValues, savedSecretFoldedWhitespace, valueContainsSavedSecret } from "../redaction/savedSecrets";
 import { containsSecret, parseSecrets } from "../redaction/secrets";
 
 /**
@@ -42,7 +42,14 @@ function recognizedSecrets(text: string): Map<string, number> {
  * whole note (`memoryNoteTextHoldsSecret`).
  */
 export function memoryNoteChangeAddsSecret(before: string, after: string, savedValues: readonly string[]): boolean {
-  if (savedValues.some((value) => value && occurrences(after, value) > occurrences(before, value))) return true;
+  // Counted with whitespace folded, as `memoryNoteTextHoldsSecret` finds them: a value is still added when the edit
+  // completes it across a line break (review 2026-11-23).
+  const folded = savedSecretFoldedValues(savedValues);
+  if (folded.length > 0) {
+    const foldedBefore = savedSecretFoldedWhitespace(before);
+    const foldedAfter = savedSecretFoldedWhitespace(after);
+    if (folded.some((value) => occurrences(foldedAfter, value) > occurrences(foldedBefore, value))) return true;
+  }
   const held = recognizedSecrets(before);
   for (const [value, count] of recognizedSecrets(after)) {
     if (count > (held.get(value) ?? 0)) return true;
