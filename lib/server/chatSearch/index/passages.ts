@@ -2,9 +2,8 @@ import { createHash } from "node:crypto";
 import { clipPastChatLine, PAST_CHATS_LIMITS } from "../../../contracts/pastChats";
 import { chatExportText } from "../../../domain/chatExport";
 import { titleFromMessageContent } from "../../chats/titlePolicy";
-import { redactSavedSecretValues, savedSecretLineFeeds } from "../../redaction/savedSecrets";
+import { savedSecretLineFeeds } from "../../redaction/savedSecrets";
 import { redactSecretsAndSavedValues } from "../../redaction/screen";
-import { redactSecrets } from "../../redaction/secrets";
 import type { ChatSearchEligibilityFields } from "../eligibility";
 
 /**
@@ -198,11 +197,23 @@ function cleanLine(value: string, maximum: number): string {
   return clipPastChatLine(value.replace(BIDI_CONTROLS, " "), maximum);
 }
 
-function turnFileNames(turn: Turn, fileNames: ReadonlyMap<string, readonly string[]>): string[] {
+/**
+ * One line of a passage's header (the chat's title, a file name): screened whole first, then made one line and
+ * clipped, since a secret clipped first is no longer recognized and its start would stay (review 2026-11-23).
+ */
+function headerLine(value: string, savedForms: readonly string[], maximum: number): string {
+  const screened = redactSecretsAndSavedValues(value, savedForms, {
+    maxCodeUnits: CHAT_SEARCH_PASSAGE_LIMITS.messageScanChars,
+    windowCodeUnits: CHAT_SEARCH_PASSAGE_LIMITS.messageScanChars
+  }).text;
+  return cleanLine(screened, maximum);
+}
+
+function turnFileNames(turn: Turn, fileNames: ReadonlyMap<string, readonly string[]>, savedForms: readonly string[]): string[] {
   const names: string[] = [];
   let length = 0;
   for (const raw of [...(fileNames.get(turn.user.id) ?? []), ...(fileNames.get(turn.answer.id) ?? [])]) {
-    const name = cleanLine(raw, PAST_CHATS_LIMITS.fileNameChars);
+    const name = headerLine(raw, savedForms, PAST_CHATS_LIMITS.fileNameChars);
     if (!name || names.includes(name)) continue;
     if (names.length >= CHAT_SEARCH_PASSAGE_LIMITS.fileNamesPerTurn) break;
     if (length + name.length + 2 > CHAT_SEARCH_PASSAGE_LIMITS.fileNamesLineChars) break;
@@ -237,10 +248,8 @@ export function chatSearchTitle(title: string, origin: ChatSearchTitleOrigin, sa
 }
 
 /** The header every passage of a turn starts with; it always ends with a blank line (`chatSearchPassageBody`). */
-function passageHeader(title: string, files: readonly string[], savedSecretValues: readonly string[]): string {
-  // Screened as the turn's words are, before it becomes one line, so a saved value matches as it was written.
-  const screened = chatSearchMessageText(title, savedSecretValues);
-  const chat = `${TITLE_LABEL} ${cleanLine(screened, PAST_CHATS_LIMITS.titleChars)}`.trimEnd();
+function passageHeader(title: string, files: readonly string[], savedForms: readonly string[]): string {
+  const chat = `${TITLE_LABEL} ${headerLine(title, savedForms, PAST_CHATS_LIMITS.titleChars)}`.trimEnd();
   return files.length > 0 ? `${chat}\nFiles: ${files.join(", ")}${HEADER_END}` : `${chat}${HEADER_END}`;
 }
 
@@ -313,7 +322,7 @@ function turnPassages(
   const question = turn.answerOnly ? "" : chatSearchMessageText(turn.user.content, savedSecretValues);
   const answer = chatSearchMessageText(turn.answer.content, savedSecretValues);
   const savedForms = normalizedSavedValues(savedSecretValues);
-  const files = turnFileNames(turn, fileNames);
+  const files = turnFileNames(turn, fileNames, savedForms);
   if (!question && !answer && files.length === 0) return [];
 
   let body = "";
@@ -329,7 +338,7 @@ function turnPassages(
     ...segments.map((segment) => ({ end: segment.textStart, start: segment.labelStart })),
     ...markerRanges(body)
   ];
-  const header = passageHeader(title, files, savedSecretValues);
+  const header = passageHeader(title, files, savedForms);
   const userSegment = segments.find((segment) => segment.user);
   const context = userSegment
     ? `${USER_LABEL}${boundedText(question, CHAT_SEARCH_PASSAGE_LIMITS.contextQuestionChars)}${SEGMENT_SEPARATOR}`
@@ -347,7 +356,8 @@ function turnPassages(
       prefix = context;
     }
     const raw = `${header}${prefix}${slice.trim()}`;
-    const text = redactSecrets(redactSavedSecretValues(raw, savedForms).text).redactedText;
+    // Once more as a whole, in one pass, so no join of header, context and window forms a secret either.
+    const text = redactSecretsAndSavedValues(raw, savedForms).text;
     return {
       assistantMessageId: turn.answer.id,
       contentHash: chatSearchContentHash(text),

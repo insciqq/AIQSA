@@ -224,6 +224,18 @@ describe("past-chat passages", () => {
     expect(chatSearchPassageTitle("User: no header")).toBe("");
   });
 
+  it("screens a header in one pass and whole, so neither a saved login nor a clip leaves a password behind", () => {
+    const address = "https://deploy-bot:fixture-pass-42@db.example.org";
+    const textsOf = (title: string, files: readonly string[] = []) => buildChatSearchPassages(chatSnapshot({ title,
+      turns: [{ answer: "Done.", question: "Go", questionFiles: files }] }), ["deploy-bot"]).map((passage) => passage.text).join("\n");
+    // A saved login taken out first would leave an address no longer recognized, and its password with it.
+    expect(textsOf(`Deploy ${address}`)).not.toContain("fixture-pass-42");
+    // Clipped first, the address would no longer be recognized and its start would stay.
+    const long = textsOf(`${"x".repeat(270)} ${address}`, [`${"y".repeat(220)} ${address}.txt`]);
+    expect(long).not.toContain("fixture-p");
+    expect(long).not.toContain("deploy-bot");
+  });
+
   it("keeps a turn with only files, and drops one with nothing to search", () => {
     const passages = buildChatSearchPassages(chatSnapshot({ turns: [
       { answer: "", question: "", questionFiles: ["scan.jpg"] },
