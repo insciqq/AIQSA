@@ -236,6 +236,16 @@ describe("past-chat passages", () => {
     expect(long).not.toContain("deploy-bot");
   });
 
+  it("never lets a header made one line fold a saved passphrase back together", () => {
+    const passphrase = "correct horse battery staple";
+    const texts = buildChatSearchPassages(chatSnapshot({ title: "Vault correct horse\nbattery staple",
+      turns: [{ answer: "Done.", question: "Unlock correct\thorse\n\nbattery staple", questionFiles: ["correct horse\r\nbattery staple.txt"] }] }),
+    [passphrase]).map((passage) => passage.text).join("\n");
+    expect(texts).not.toMatch(/correct\s+horse\s+battery\s+staple/u);
+    expect(texts).not.toContain("battery");
+    expect(texts).toContain(SAVED_SECRET_MARKER);
+  });
+
   it("keeps a turn with only files, and drops one with nothing to search", () => {
     const passages = buildChatSearchPassages(chatSnapshot({ turns: [
       { answer: "", question: "", questionFiles: ["scan.jpg"] },

@@ -61,6 +61,26 @@ describe("screening recognized secrets and saved values together", () => {
     expect(screen("a\r\n\r\nb", ["\r\n\r\n"])).toBe("a\n\nb");
   });
 
+  it("matches a saved value with any run of whitespace in the text for any run in the value", () => {
+    const passphrase = "correct horse battery staple";
+    expect(screen("a correct horse\nbattery staple b", [passphrase])).toBe(`a ${SAVED_SECRET_MARKER} b`);
+    expect(screen("a correct\t\thorse  battery\r\n\r\nstaple b", [passphrase])).toBe(`a ${SAVED_SECRET_MARKER} b`);
+    expect(screen("a correct horse battery staple b", ["correct\n  horse\tbattery staple"])).toBe(`a ${SAVED_SECRET_MARKER} b`);
+    // Words still match as written: no match without whitespace where the value has it; inside a longer word, as before.
+    expect(screen("a correcthorse battery staple b", [passphrase])).toBe("a correcthorse battery staple b");
+    expect(screen("a correct horse battery stapler", [passphrase])).toBe(`a ${SAVED_SECRET_MARKER}r`);
+    // Characters with a meaning in patterns match only themselves.
+    expect(screen("pw a.b*c+(d) [e]|f$ end", ["a.b*c+(d) [e]|f$"])).toBe(`pw ${SAVED_SECRET_MARKER} end`);
+    expect(screen("pw axb*c+(d) [e]|f$ end", ["a.b*c+(d) [e]|f$"])).toBe("pw axb*c+(d) [e]|f$ end");
+    // Whitespace at a value's edge needs whitespace there, and covers one character of it.
+    expect(screen("x\n\n fixture-pass-42\n\ny", [" fixture-pass-42\n"])).toBe(`x\n\n${SAVED_SECRET_MARKER}\ny`);
+    expect(screen("xfixture-pass-42 y", [" fixture-pass-42"])).toBe("xfixture-pass-42 y");
+    // A value of whitespace alone never matches, whatever kind.
+    expect(screen("a \t \n b", [" \t", " ", "\n\n"])).toBe("a \t \n b");
+    // Overlapping occurrences are all covered.
+    expect(screen("p ab ab ab q", ["ab ab"])).toBe(`p ${SAVED_SECRET_MARKER} q`);
+  });
+
   it("keeps markers already in the text, so screening screened text changes nothing", () => {
     const already = `a ${TOKEN_MARKER}${SAVED_SECRET_MARKER} b`;
     expect(redactSecretsAndSavedValues(already, ["SAVED_SECRET", "REDACTED:TOKEN"])).toEqual({ redacted: false, text: already });
