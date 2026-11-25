@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS } from "@/lib/contracts/adminProviderQuickSetup";
 import {
   getAdminProviderQuickSetup,
   submitAdminProviderQuickSetup
@@ -70,6 +71,21 @@ describe("admin provider Quick setup API", () => {
       ...base, outcome: "partial", checkRun: { ...checkRun, credentialVersionId: "private-id" }
     })))).resolves.toMatchObject({ ok: false, error: { code: "provider_quick_setup_response_invalid" } });
   });
+  it("accepts a provider offering as many models as the contract allows, and no more", async () => {
+    const withOpenRouterModels = (count: number) => ({
+      providers: snapshot().providers.map((provider) => provider.provider === "openrouter"
+        ? { ...provider, candidateModels: Array.from({ length: count }, (_, index) => ({ displayName: `Model ${index + 1}` })) }
+        : provider)
+    });
+    // OpenRouter offered 22 models while the browser capped the list at 16.
+    for (const count of [22, ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS]) {
+      await expect(getAdminProviderQuickSetup(async () => response(withOpenRouterModels(count))))
+        .resolves.toEqual({ data: withOpenRouterModels(count), ok: true });
+    }
+    await expect(getAdminProviderQuickSetup(async () => response(withOpenRouterModels(ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS + 1))))
+      .resolves.toEqual({ error: { code: "provider_quick_setup_response_invalid" }, ok: false });
+  });
+
   it("decodes the exact provider snapshot and sends same-origin GET", async () => {
     const fetcher = vi.fn(async () => response(snapshot()));
     await expect(getAdminProviderQuickSetup(fetcher)).resolves.toEqual({

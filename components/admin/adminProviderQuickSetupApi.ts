@@ -2,6 +2,7 @@ import { ADMIN_PROVIDER_SETUP_STREAM_TYPE, type AdminProviderSetupProgress } fro
 import { adminProviderSetupFailureCode, readAdminProviderSetupResponse } from "./adminProviderSetupStream";
 import { isAdminProviderCheckRun } from "./adminProvidersApi";
 import {
+  ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS,
   ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS,
   type AdminProviderQuickSetupCandidate,
   type AdminProviderQuickSetupModelDisplay,
@@ -118,7 +119,7 @@ function searchReceipt(
 }
 
 function models(value: unknown): value is AdminProviderQuickSetupModel[] {
-  return Array.isArray(value) && value.length > 0 && value.length <= 16 && value.every(model) &&
+  return Array.isArray(value) && value.length > 0 && value.length <= ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS && value.every(model) &&
     new Set(value.map((entry) => (entry as AdminProviderQuickSetupModel).displayName)).size === value.length;
 }
 
@@ -208,7 +209,8 @@ function result(value: unknown): AdminProviderQuickSetupResult | null {
   ]) && providerId(value.provider) && safeText(value.providerDisplayName, 80) &&
     timestamp(value.checkedAt) && safeText(value.expectedState, 512) &&
     Number.isSafeInteger(value.policyVersion) && Number(value.policyVersion) > 0 &&
-    Array.isArray(value.candidates) && value.candidates.length > 0 && value.candidates.length <= 16 &&
+    Array.isArray(value.candidates) && value.candidates.length > 0 &&
+    value.candidates.length <= ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS &&
     value.candidates.every(choice) &&
     new Set(value.candidates.map((entry) => entry.candidateId)).size === value.candidates.length) {
     return value as AdminProviderQuickSetupSelectionResult;

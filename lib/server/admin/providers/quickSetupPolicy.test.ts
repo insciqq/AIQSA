@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS,
+  ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS
+} from "../../../contracts/adminProviderQuickSetup";
+import {
   ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION,
   adminProviderQuickSetupPolicy,
   decideAdminProviderQuickSetupModel
@@ -86,6 +90,20 @@ describe("provider Quick setup policy", () => {
     expect(adminProviderQuickSetupPolicy("openrouter").candidates.find(
       ({ templateKey }) => templateKey.includes("perplexity/sonar-pro-search")
     )).toMatchObject({ configuration: { answerSelectable: false } });
+  });
+
+  it("offers each provider no more models than the browser accepts, under distinct names", () => {
+    // OpenRouter grew to 22 offered models in policy v12-v13 while the browser
+    // still capped the list at 16, so the snapshot failed to decode and Add
+    // provider broke for every family.
+    for (const provider of ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS) {
+      const offered = adminProviderQuickSetupPolicy(provider).candidates
+        .filter(({ legacy }) => !legacy)
+        .map(({ displayName }) => displayName);
+      expect(offered.length, provider).toBeGreaterThan(0);
+      expect(offered.length, provider).toBeLessThanOrEqual(ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS);
+      expect(new Set(offered).size, provider).toBe(offered.length);
+    }
   });
 
   it("ignores remote ordering and picks the code-owned recommendation", () => {

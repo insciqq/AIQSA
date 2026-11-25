@@ -11,6 +11,14 @@ export const ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS = [
 export type AdminProviderQuickSetupProviderId =
   (typeof ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS)[number];
 
+/**
+ * The most models one provider's Quick Setup may offer, and so the most a
+ * snapshot, a receipt or a selection lists. The browser rejects a longer list
+ * as malformed, which blocks Add provider for every family, so a policy test
+ * holds each provider's offered candidates under it.
+ */
+export const ADMIN_PROVIDER_QUICK_SETUP_MAX_MODELS = 64;
+
 export type AdminProviderQuickSetupModelDisplay = Readonly<{
   displayName: string;
 }>;
