@@ -6,7 +6,7 @@ import {
   type ToolObservationSource,
   type ToolObservationSourceBinding
 } from "../toolObservations/contract";
-import { searchToolResultFairShare } from "../search/toolResult";
+import { searchToolResultEntrySpans, searchToolResultFairShare } from "../search/toolResult";
 import { readObservationOriginal } from "../toolObservations/searchOriginal";
 import type { ToolObservationService } from "../toolObservations/service";
 import type { ToolObservationAgentKind } from "../toolObservations/storeFailure";
@@ -23,8 +23,8 @@ import type { WorkspaceImageEvidence } from "../workspace/directImageEvidence";
  * out of the context and name where it lives (decision 2026-10-23,
  * `agent_docs/RUN_CONTRACTS.md`).
  * The model receives a text up to `inlineChars` whole, and a longer one as
- * its head and tail with the handle (a merged search result: a fair share of
- * each engine, `toolModelOutput`); `read_tool_result` reads any part of a
+ * its head and tail with the handle (a search result: a fair share of each
+ * engine in whole entries, `toolModelOutput`); `read_tool_result` reads any part of a
  * saved result by handle, with the call's tool and arguments, from any later
  * turn of the same user's chat (compaction included), and never runs the
  * tool again. Nothing is cut silently: an excerpt always says what it left
@@ -64,34 +64,56 @@ export function toolResultImage(result: Pick<ToolExecutionResult, "content" | "n
   return images.length === 1 ? images[0] : undefined;
 }
 
-export type ToolOutputExcerpt = Readonly<{ handle: string | null; output: string; truncated: boolean }>;
+/** `unsavedReason`: why a truncated excerpt's whole text was not saved. */
+export type ToolOutputExcerpt = Readonly<{ handle: string | null; output: string; truncated: boolean; unsavedReason?: string }>;
+
+/** The head up to `headEnd` and the tail from `tailStart`, with a note naming the omitted characters and how to read them. */
+function headAndTail(text: string, headEnd: number, tailStart: number, handle: string | null, unsavedReason: string): string {
+  const omitted = tailStart - headEnd;
+  const note = handle
+    ? `[${omitted} of ${text.length} characters omitted here (characters ${headEnd}-${tailStart}). ` +
+      `The whole result is saved: call ${READ_TOOL_RESULT_NAME} with handle "${handle}" and offset ${headEnd} ` +
+      `(limit up to ${TOOL_RESULT_LIMITS.readChars}) to read it.]`
+    : `[${omitted} of ${text.length} characters omitted here (characters ${headEnd}-${tailStart}). ` +
+      `The whole result could not be saved (${unsavedReason}), so the omitted part cannot be read later.]`;
+  return `${text.slice(0, headEnd)}\n\n${note}\n\n${text.slice(tailStart)}`;
+}
 
 /** The model-facing output of a result text: whole, or head and tail with what was left out; with the saved result's handle. */
 export function toolOutputExcerpt(text: string, saved: Readonly<{ handle: string } | { unsavedReason: string }> | null): ToolOutputExcerpt {
   const handle = saved && "handle" in saved ? saved.handle : null;
   if (text.length <= TOOL_RESULT_LIMITS.inlineChars) return { handle, output: text, truncated: false };
-  const head = text.slice(0, TOOL_RESULT_LIMITS.headChars);
-  const tailStart = text.length - TOOL_RESULT_LIMITS.tailChars;
-  const tail = text.slice(tailStart);
-  const omitted = tailStart - TOOL_RESULT_LIMITS.headChars;
-  const note = handle
-    ? `[${omitted} of ${text.length} characters omitted here (characters ${TOOL_RESULT_LIMITS.headChars}-${tailStart}). ` +
-      `The whole result is saved: call ${READ_TOOL_RESULT_NAME} with handle "${handle}" and offset ${TOOL_RESULT_LIMITS.headChars} ` +
-      `(limit up to ${TOOL_RESULT_LIMITS.readChars}) to read it.]`
-    : `[${omitted} of ${text.length} characters omitted here (characters ${TOOL_RESULT_LIMITS.headChars}-${tailStart}). ` +
-      `The whole result could not be saved (${saved && "unsavedReason" in saved ? saved.unsavedReason : "storage_unavailable"}), ` +
-      "so the omitted part cannot be read later.]";
-  return { handle, output: `${head}\n\n${note}\n\n${tail}`, truncated: true };
+  const unsavedReason = saved && "unsavedReason" in saved ? saved.unsavedReason : "storage_unavailable";
+  const output = headAndTail(text, TOOL_RESULT_LIMITS.headChars, text.length - TOOL_RESULT_LIMITS.tailChars, handle, unsavedReason);
+  return { handle, output, truncated: true, ...handle ? {} : { unsavedReason } };
+}
+
+/** The head and tail cut moved out of the given spans: the head ends before a span it would split, the tail starts after one. */
+function spanAlignedExcerpt(text: string, spans: readonly (readonly [number, number])[], unsavedReason: string): string {
+  let headEnd: number = TOOL_RESULT_LIMITS.headChars;
+  let tailStart = text.length - TOOL_RESULT_LIMITS.tailChars;
+  for (const [start, end] of spans) {
+    // The blank lines between entries go with the omitted part.
+    if (start < headEnd && headEnd < end) headEnd = text.slice(0, start).trimEnd().length;
+    if (start < tailStart && tailStart < end) tailStart = text.length - text.slice(end).trimStart().length;
+  }
+  return headAndTail(text, headEnd, Math.max(headEnd, tailStart), null, unsavedReason);
 }
 
 /**
- * What the model reads of a result, wherever it reaches one (main agent, researchers, sub-agents): the excerpt, except that a saved
- * search result of several engines too long to show whole gives each engine a fair share of the same visible budget
- * (`searchToolResultFairShare`) instead of the head and tail, which hid every engine but the first. The saved copy and the call's row
- * keep the whole text; a result that could not be saved keeps the head and tail, whose note says so.
+ * What the model reads of a result, wherever it reaches one (main agent, researchers, sub-agents): the excerpt, except for a search
+ * result too long to show whole. A saved one gives each engine a fair share of the same visible budget (`searchToolResultFairShare`)
+ * instead of the head and tail, which hid every engine but the first and cut a ranked list at a fixed character; one that could not be
+ * saved keeps the head and tail, whose note says so, but moves both cuts to the edges of the entries they fall in, so no result loses
+ * its URL. The saved copy and the call's row keep the whole text.
  */
-export function toolModelOutput(result: ToolExecutionResult, text: string, excerpt: Readonly<{ handle: string | null; output: string }>): string {
-  if (!excerpt.handle || text.length <= TOOL_RESULT_LIMITS.inlineChars) return excerpt.output;
+export function toolModelOutput(result: ToolExecutionResult, text: string,
+  excerpt: Readonly<{ handle: string | null; output: string; unsavedReason?: string }>): string {
+  if (text.length <= TOOL_RESULT_LIMITS.inlineChars || excerpt.output === text) return excerpt.output;
+  if (!excerpt.handle) {
+    const spans = searchToolResultEntrySpans(result, text);
+    return spans ? spanAlignedExcerpt(text, spans, excerpt.unsavedReason ?? "storage_unavailable") : excerpt.output;
+  }
   const shared = searchToolResultFairShare(result, text, TOOL_RESULT_LIMITS.headChars + TOOL_RESULT_LIMITS.tailChars);
   if (!shared) return excerpt.output;
   // The note's opening names the whole length the way the head-and-tail note does (`resultLength`, `compaction/retained.ts`).

@@ -30,8 +30,9 @@ import { SEARCH_NO_RESULTS_FINDINGS } from "./evidence";
 
 const SEARCH_GUIDANCE_TEXT = "Search before answering anything that may have changed or that you are not sure about: " +
   "news, prices, rates, versions, releases, schedules, people, laws, documentation. Write one focused query in the " +
-  "language most likely to find good sources, and search again with a refined query when results are thin. Results " +
-  "give findings and numbered sources with URLs; cite the sources you use.";
+  "language most likely to find good sources, and search again with a refined query when results are thin. Each result " +
+  "is numbered and gives its title, site, date when known, URL and an excerpt. Cite the results you rely on as markdown " +
+  "links to their listed URLs, such as [Example](https://example.com/page), not as numbers or citation markers.";
 
 function option(id: string, overrides: Partial<NormalizedSearchPlanOption> = {}): NormalizedSearchPlanOption {
   return {
@@ -336,7 +337,8 @@ describe("Search plan tool router", () => {
 
     expect(router.tools).toEqual([
       expect.objectContaining({
-        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT,
+        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT +
+          " Each query is at most 100 characters.",
         name: "search_engine_1"
       })
     ]);
@@ -349,7 +351,8 @@ describe("Search plan tool router", () => {
       runtimes: {}
     })!;
     expect(router.tools).toEqual([expect.objectContaining({
-      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT,
+      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT +
+        " Each query is at most 100 characters.",
       name: "search_selected_engines"
     })]);
   });
@@ -405,9 +408,9 @@ describe("Search plan tool router", () => {
     // Each engine's findings are followed by that engine's own sources.
     expect((result.content[0] as { text: string }).text).toBe([
       'Search source "first":\nFinding from model-first',
-      'Sources for "first":\n[1] Source model-first — https://example.com/shared#one',
+      'Sources for "first":\n[1] Source model-first — example.com\nhttps://example.com/shared#one',
       'Search source "second":\nFinding from model-second',
-      'Sources for "second":\n[1] Source model-second — https://example.com/shared#two'
+      'Sources for "second":\n[1] Source model-second — example.com\nhttps://example.com/shared#two'
     ].join("\n\n"));
     expect(executions).toEqual(expect.arrayContaining([
       expect.objectContaining({ findings: "Finding from model-first" }),
@@ -538,12 +541,12 @@ describe("Search plan tool router", () => {
     expect(text).toContain([
       'Search source "openai":\nOpenAI findings.',
       `Sources for "openai":\n${[...cited, ...browsed].map((source, index) =>
-        `[${index + 1}] ${source.title} — ${source.url}`).join("\n")}`
+        `[${index + 1}] ${source.title} — example.com\n${source.url}`).join("\n\n")}`
     ].join("\n\n"));
     expect(text.endsWith([
       'Search source "perplexity":\nFact [1]; later fact [50].',
       `Sources for "perplexity":\n${Array.from({ length: 50 }, (_, index) =>
-        `[${index + 1}] Source ${index + 1} — https://example.com/perplexity/${index + 1}`).join("\n")}`
+        `[${index + 1}] Source ${index + 1} — example.com\nhttps://example.com/perplexity/${index + 1}`).join("\n\n")}`
     ].join("\n\n"))).toBe(true);
     // The durable result still fits and replays the same text.
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
@@ -1118,7 +1121,9 @@ describe("Search plan tool router", () => {
         }
       })!;
       for (const tool of router.tools) {
-        expect(tool.description).not.toMatch(/at most|limit|budget|maximum|\d+ times/iu);
+        // Only the admitted query limit is stated; no retired call or result limit is.
+        expect(tool.description).toContain("Each query is at most 4000 characters.");
+        expect(tool.description.replace("Each query is at most 4000 characters.", "")).not.toMatch(/at most|limit|budget|maximum|\d+ times/iu);
         expect(tool.inputSchema).toMatchObject({ properties: { query: { maxLength: 4_000 } } });
       }
       // Exceed both the old defaults and the largest configurable call budget.
@@ -1524,7 +1529,7 @@ describe("DeepSeek Search API engine", () => {
     expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
   }
 
-  it("gives any answer model the results as findings and cited sources, billed once", async () => {
+  it("gives any answer model each result as an entry of its cited source, billed once", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => Response.json({ results: [{
       date: "2026-10-01", site_name: "Example News", snippet: "Short snippet.",
       summary: "The longer summary the model reads.", title: "Example headline", url: "https://example.com/story"
@@ -1536,16 +1541,16 @@ describe("DeepSeek Search API engine", () => {
 
     // The tool advertises the API's query bound; only the generated query is sent.
     expect(router.tools[0]!.inputSchema).toMatchObject({ properties: { query: { maxLength: 128 } } });
-    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({ count: 50, need_content: false, query: "bounded query" });
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toEqual({ count: 10, need_content: false, query: "bounded query" });
     expect(JSON.stringify(fetchFn.mock.calls)).not.toContain("private");
     expect(result.status).toBe("complete");
-    expect((result.content[0] as { text: string }).text).toBe([
-      'Search source "DeepSeek Search API":\n[1] Example headline — Example News · 2026-10-01\nThe longer summary the model reads.',
-      'Sources for "DeepSeek Search API":\n[1] Example headline — https://example.com/story'
-    ].join("\n\n"));
+    // A result list: no findings of its own, each result an entry with its URL and the summary as its excerpt.
+    expect((result.content[0] as { text: string }).text).toBe('Search source "DeepSeek Search API":\n' +
+      "[1] Example headline — example.com, 2026-10-01\nhttps://example.com/story\nThe longer summary the model reads.");
     expect(execution).toMatchObject({
       costUsd: 0.00075, modelId: "deepseek-search-api", provider: "deepseek", status: "complete",
-      sources: [{ citation: 1, date: "2026-10-01", rank: 1, snippet: "Short snippet.", title: "Example headline", url: "https://example.com/story" }]
+      sources: [{ citation: 1, date: "2026-10-01", rank: 1, snippet: "The longer summary the model reads.", title: "Example headline",
+        url: "https://example.com/story" }]
     });
     expect(searchUsageAttribution(execution!)).toMatchObject({
       estimatedCostMicros: 750, modelId: "deepseek-search-api", operationCount: 1, provider: "deepseek",
@@ -1554,7 +1559,7 @@ describe("DeepSeek Search API engine", () => {
     roundTrips(result);
   });
 
-  it("requests the provider maximum and persists every returned result", async () => {
+  it("asks for ten results and persists every result the provider returns", async () => {
     const results = Array.from({ length: 50 }, (_, index) => ({
       summary: `Summary ${index + 1}`, title: `Result ${index + 1}`, url: `https://example.com/result/${index + 1}`
     }));
@@ -1562,11 +1567,11 @@ describe("DeepSeek Search API engine", () => {
     const router = apiRouter(fetchFn);
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
 
-    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({ count: 50 });
+    expect(JSON.parse(String(fetchFn.mock.calls[0]?.[1]?.body))).toMatchObject({ count: 10 });
     const [execution] = searchExecutionsFromToolResult(result);
     expect(execution?.sources).toHaveLength(50);
     expect(execution?.sources.at(-1)).toMatchObject({ citation: 50, rank: 50, url: results[49]!.url });
-    expect((result.content[0] as { text: string }).text).toContain("[50] Result 50 — https://example.com/result/50");
+    expect((result.content[0] as { text: string }).text).toContain("\n\n[50] Result 50 — example.com\nhttps://example.com/result/50\nSummary 50");
     roundTrips(result);
   });
 
@@ -1791,5 +1796,72 @@ describe("Search engine retries", () => {
     expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
       failure: { code: "openai_search_sources_invalid" }, usage: expect.objectContaining({ inputTokens: 1 })
     })]);
+  });
+});
+
+describe("Search failures the model can act on", () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  function openAiRouter(fetchFn: typeof fetch) {
+    const searchAdapter = createOpenAIResponsesSearchAdapter({
+      client: createFetchOpenAIResponsesClient({ apiKey: "fake", fetchFn }), provider: "openai"
+    });
+    return createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [option("one")] },
+      retry: { random: () => 0, sleep: async () => undefined },
+      runtimes: { one: { ...runtime(), searchAdapter } }
+    })!;
+  }
+
+  it.each([
+    ["a refused or expired key", 401, {}, "provider_auth_rejected"],
+    ["a forbidden key", 403, {}, "provider_auth_rejected"],
+    ["an empty balance", 402, {}, "provider_quota_exhausted"],
+    ["a rate limit past the engine's deadline", 429, { "retry-after": "60" }, "provider_rate_limited"],
+    ["an upstream failure", 502, {}, "provider_server_error"],
+    ["a rejected request", 400, {}, "provider_http_invalid_request"]
+  ])("names %s of a model-backed engine by its own code, as the DeepSeek Search API does", async (_label, status, headers, code) => {
+    const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ error: { message: "PRIVATE provider text" } }, { headers, status }));
+    const result = await openAiRouter(fetchFn).execute(call("search_engine_1"), answerRequest());
+    expect(result.status).toBe("error");
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({ failure: { code }, status: "error" })]);
+    expect((result.content[0] as { text: string }).text).toBe(`Search warnings: "one": ${code}`);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE");
+  });
+
+  it("states the query limit in the tool and names it when it refuses a longer query", async () => {
+    const onRequest = vi.fn();
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "model_choice", options: [option("one")] }, runtimes: { one: runtime({ onRequest }) }
+    })!;
+    expect(router.tools[0]!.description.endsWith(" Each query is at most 100 characters.")).toBe(true);
+    const result = await router.execute(call("search_engine_1", "x".repeat(101)), answerRequest());
+    expect(result.status).toBe("error");
+    expect((result.content[0] as { text: string }).text).toBe(
+      "Search failed: search_query_too_long. A query may have at most 100 characters; search again with a shorter query.");
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps a sibling engine's result and usage when another fails before its request", async () => {
+    const steady = vi.fn();
+    // A frozen configuration this release cannot use: no output budget at all.
+    const broken = option("broken", { config: { ...option("broken").config, maxOutputTokens: null } });
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [broken, option("steady")] },
+      runtimes: { broken: runtime(), steady: runtime({ onRequest: steady }) }
+    })!;
+    const result = await router.execute(call("search_selected_engines"), answerRequest());
+    expect(steady).toHaveBeenCalledOnce();
+    expect(result.status).toBe("complete");
+    expect(searchExecutionsFromToolResult(result)).toEqual([
+      expect.objectContaining({ failure: { code: "search_generation_budget_invalid" }, optionId: "broken", status: "error",
+        // Nothing was sent, so nothing was reported.
+        usage: expect.objectContaining({ completeness: "unavailable" }) }),
+      expect.objectContaining({ optionId: "steady", status: "complete",
+        usage: expect.objectContaining({ inputTokens: 2, outputTokens: 3, totalTokens: 5 }) })
+    ]);
+    expect(result.usage).toMatchObject({ inputTokens: 2, outputTokens: 3, totalTokens: 5 });
+    expect((result.content[0] as { text: string }).text.endsWith('Search warnings: "broken": search_generation_budget_invalid')).toBe(true);
   });
 });

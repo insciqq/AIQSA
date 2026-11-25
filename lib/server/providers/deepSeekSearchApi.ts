@@ -4,11 +4,11 @@ import { storableUtf16Text, takeUtf16SafePrefix } from "../../domain/utf16";
 import { DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS } from "../../contracts/adminSearch";
 import { parseRetryAfterMs } from "../retryAfter";
 import {
-  normalizeSearchFindings,
   normalizeSearchSources,
   SEARCH_NO_RESULTS_FINDINGS,
   type SearchSource
 } from "../search/evidence";
+import { SEARCH_RESULT_LIST_FINDINGS } from "../search/toolResult";
 import {
   isProviderDeadlineExceededError,
   ProviderResponseTooLargeError,
@@ -42,9 +42,11 @@ export const DEEPSEEK_SEARCH_API_MAX_ATTEMPTS = 3;
 /** DeepSeek admits 5 Search requests per second per account. */
 export const DEEPSEEK_SEARCH_API_REQUESTS_PER_SECOND = 5;
 
-/** DeepSeek's documented maximum `count`, independent of retired source
- * settings (https://api-docs.deepseek.com/guides/search/, checked 2026-11-01). */
-export const DEEPSEEK_SEARCH_API_MAX_RESULTS = 50;
+/** Results one request asks for (`count`; DeepSeek's documented maximum is
+ * 50, https://api-docs.deepseek.com/guides/search/). Ten whole entries fit the
+ * tool result the model reads without a cut (search-v2, 2026-11-26): fifty
+ * put the best results' links past the cut. */
+export const DEEPSEEK_SEARCH_API_RESULT_COUNT = 10;
 
 const DEFAULT_API_ROOT = "https://api.deepseek.com";
 const RESPONSE_MAX_BYTES = 1024 * 1024;
@@ -213,7 +215,7 @@ export function buildDeepSeekSearchApiRequest(request: ProviderSearchRequest): D
   if (!request.query || request.query.length > DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS) {
     throw new Error("search_query_too_long");
   }
-  return { count: DEEPSEEK_SEARCH_API_MAX_RESULTS, need_content: false, query: request.query };
+  return { count: DEEPSEEK_SEARCH_API_RESULT_COUNT, need_content: false, query: request.query };
 }
 
 /** Tokens are not part of this API's price; a request costs only when it
@@ -252,51 +254,38 @@ function plainText(value: unknown, maximum: number): string | undefined {
   return text ? takeUtf16SafePrefix(text, maximum).trimEnd() : undefined;
 }
 
-type SearchApiEntry = Readonly<{
-  label?: string;
-  source: SearchSource;
-  summary: string | undefined;
-}>;
-
 /** Each result with a usable link becomes one cited source, numbered in the
- * provider's order. Results without one cannot be cited and are dropped. */
-function searchApiEntries(results: readonly unknown[]): SearchApiEntry[] {
-  const entries: SearchApiEntry[] = [];
+ * provider's order, whose excerpt is the result's summary, else its snippet:
+ * the model reads it as that source's entry (`lib/server/search/toolResult.ts`).
+ * Results without a link cannot be cited and are dropped. */
+function searchApiSources(results: readonly unknown[]): SearchSource[] {
+  const sources: SearchSource[] = [];
   const seen = new Set<string>();
   for (const result of results) {
     if (!isRecord(result)) continue;
-    const siteName = plainText(result.site_name, LABEL_MAX_CHARACTERS);
-    const title = plainText(result.title, TITLE_MAX_CHARACTERS) ?? siteName;
-    const snippet = plainText(result.snippet, SUMMARY_MAX_CHARACTERS);
+    const title = plainText(result.title, TITLE_MAX_CHARACTERS) ?? plainText(result.site_name, LABEL_MAX_CHARACTERS);
+    const excerpt = plainText(result.summary, SUMMARY_MAX_CHARACTERS) ?? plainText(result.snippet, SUMMARY_MAX_CHARACTERS);
     const [normalized] = normalizeSearchSources([{
       ...(typeof result.date === "string" ? { date: result.date } : {}),
-      ...(snippet ? { snippet } : {}),
+      ...(excerpt ? { snippet: excerpt } : {}),
       ...(title ? { title } : {}),
       url: result.url
     }]);
     if (!normalized || seen.has(normalized.url)) continue;
     seen.add(normalized.url);
-    const citation = entries.length + 1;
-    const label = [siteName && siteName !== normalized.title ? siteName : undefined, plainText(normalized.date, 80)]
-      .filter(Boolean).join(" · ");
-    entries.push({
-      ...(label ? { label } : {}),
-      source: { ...normalized, citation, rank: citation },
-      summary: plainText(result.summary, SUMMARY_MAX_CHARACTERS) ?? snippet
-    });
+    const citation = sources.length + 1;
+    sources.push({ ...normalized, citation, rank: citation });
   }
-  return entries;
+  return sources;
 }
 
-/** The model reads each result's summary under the number its source keeps. */
-function searchApiFindings(entries: readonly SearchApiEntry[]): string {
-  return entries.map((entry) => {
-    const heading = `[${entry.source.citation}] ${entry.source.title}${entry.label ? ` — ${entry.label}` : ""}`;
-    return entry.summary ? `${heading}\n${entry.summary}` : heading;
-  }).join("\n\n");
-}
-
-function httpFailureCode(status: number): string {
+/**
+ * The typed code of a Search engine's rejected HTTP request, from its status
+ * alone: a refused key, an exhausted balance and a rate limit each have their
+ * own. The DeepSeek Search API and the model-backed engines
+ * (`lib/server/search/toolExecutor.ts`) share it.
+ */
+export function searchHttpFailureCode(status: number): string {
   if (status === 400) return "provider_http_invalid_request";
   if (status === 401 || status === 403) return "provider_auth_rejected";
   if (status === 402) return "provider_quota_exhausted";
@@ -317,7 +306,7 @@ function searchFailure(error: unknown, signal: AbortSignal): unknown {
   if (error instanceof DeepSeekSearchApiHttpError) {
     return Object.assign(new ProviderSearchExecutionError({
       artifacts: [],
-      code: httpFailureCode(error.status),
+      code: searchHttpFailureCode(error.status),
       costUsd: 0,
       usage: searchUsage(false)
     }), { httpStatus: error.status });
@@ -421,22 +410,11 @@ export function createDeepSeekSearchApiAdapter(input: Readonly<{
         };
       }
       const usage = searchUsage(true);
-      const entries = searchApiEntries(results);
-      if (entries.length === 0) {
+      const sources = searchApiSources(results);
+      if (sources.length === 0) {
         throw new ProviderSearchExecutionError({
           artifacts: [],
           code: "search_sources_invalid",
-          costUsd: DEEPSEEK_SEARCH_API_REQUEST_USD,
-          usage
-        });
-      }
-      let findings: string;
-      try {
-        findings = normalizeSearchFindings(searchApiFindings(entries));
-      } catch {
-        throw new ProviderSearchExecutionError({
-          artifacts: [],
-          code: "search_findings_invalid",
           costUsd: DEEPSEEK_SEARCH_API_REQUEST_USD,
           usage
         });
@@ -445,16 +423,16 @@ export function createDeepSeekSearchApiAdapter(input: Readonly<{
         artifacts: [],
         costUsd: DEEPSEEK_SEARCH_API_REQUEST_USD,
         finalProviderResponsePreview: {
-          findingsCharacters: findings.length,
           provider: "deepseek",
           resultCount: results.length,
-          sourceCount: entries.length,
+          sourceCount: sources.length,
           status: "completed"
         },
-        findings,
+        // A result list: the model reads each source's entry, not provider prose.
+        findings: SEARCH_RESULT_LIST_FINDINGS,
         requestPreview,
         sourceAttribution: "available",
-        sources: entries.map((entry) => entry.source),
+        sources,
         usage
       };
     }
