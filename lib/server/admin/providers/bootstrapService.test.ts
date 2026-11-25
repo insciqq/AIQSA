@@ -42,11 +42,13 @@ function fixture() {
   const adoptDecisionModel = vi.fn(async () => true);
   const searchCreate = vi.fn(async () => ({ created: true, id: "search" }));
   const searchSave = vi.fn(async () => {});
+  const searchChecked = vi.fn(async (_input: { id: string; userId: string }) => false);
   const complete = createAdminProviderBootstrap({ providers: { listConnections: async () => [connection] },
     chat: { list: async () => chat, update: chatUpdate }, roles: { list: async () => roles, update: rolesUpdate, adoptChatTitle, adoptDecisionModel },
-    search: { list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave } });
+    search: { checkedOnCurrentBinding: searchChecked, list: async () => search, createDraft: searchCreate, saveAndCheck: searchSave } });
   const run = (signal = new AbortController().signal) => complete({ connectionId: connection.id, credentialId: "cred-primary", userId: "operator", signal });
-  return { chat, chatUpdate, connection, roles, rolesUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchCreate, searchSave };
+  return { chat, chatUpdate, connection, roles, rolesUpdate, adoptChatTitle, adoptDecisionModel, run, search, searchChecked, searchCreate,
+    searchSave };
 }
 
 describe("provider automatic setup", () => {
@@ -280,6 +282,34 @@ describe("provider automatic setup", () => {
         displayName: "OpenRouter Web Search", draft: expect.objectContaining({ adapterKind: "provider_model_client",
           openRouterWebSearch: { engine: "perplexity", mode: null }, protocol: "openrouter_web_search",
           providerModelId: value.deepSeekId }) }));
+    });
+
+    it("reuses a working web source checked on the current key, and checks it again only when that check is not current", async () => {
+      const value = openRouterFixture();
+      const configuration: AdminSearchDraft = { ...adminSearchExecutionDefaults, adapterKind: "provider_model_client",
+        credentialMode: "provider_model", openRouterWebSearch: { engine: "perplexity", mode: null }, protocol: "openrouter_web_search",
+        providerModelId: value.deepSeekId };
+      value.search.integrations.push({ archivedAt: null, broaderModelSetup: "ready", configurable: true, configuration,
+        configurationActive: true, description: "Web", displayName: "OpenRouter Web Search", draftDirty: false, draftVersion: 2,
+        draftTestEvidence: null, enabled: true, executionModes: ["all_selected", "model_choice"], id: "web", kind: "web_search",
+        providerModel: null, ready: true, readiness: "ready", sourceConnectionId: value.connection.id, strategyId: "web", system: false });
+      value.searchChecked.mockImplementation(async ({ id }) => id === "web");
+      expect(await value.run()).toMatchObject({ search: "ready", searchResults: expect.arrayContaining([
+        { name: "OpenRouter Web Search", status: "ready" }]) });
+      expect(value.searchChecked).toHaveBeenCalledWith({ id: "web", userId: "operator" });
+      expect(value.searchSave).not.toHaveBeenCalled();
+
+      // A new key, model or configuration since that check (or a failed one) is checked again with the source's own settings.
+      value.searchChecked.mockResolvedValue(false);
+      await value.run();
+      expect(value.searchSave).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ draft: configuration, expectedDraftVersion: 2,
+        id: "web" }));
+      // A source that is not ready never counts as checked.
+      value.searchSave.mockClear();
+      value.searchChecked.mockResolvedValue(true);
+      Object.assign(value.search.integrations[0]!, { ready: false, readiness: "source_unavailable" });
+      await value.run();
+      expect(value.searchSave).toHaveBeenCalledOnce();
     });
 
     it("keeps an operator's web search source and never starts one on a model outside the template", async () => {

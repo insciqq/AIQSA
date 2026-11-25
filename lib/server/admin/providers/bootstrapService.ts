@@ -44,7 +44,7 @@ export function createAdminProviderBootstrap(input: {
   providers: { listConnections(): Promise<AdminProviderConnection[]> };
   chat: Pick<ReturnType<typeof createAdminModelPolicyService>, "list" | "update">;
   roles: Pick<ReturnType<typeof createAdminSystemModelPolicyService>, "list" | "update" | "adoptChatTitle" | "adoptDecisionModel">;
-  search: Pick<ReturnType<typeof createAdminSearchService>, "list" | "createDraft" | "saveAndCheck">;
+  search: Pick<ReturnType<typeof createAdminSearchService>, "checkedOnCurrentBinding" | "list" | "createDraft" | "saveAndCheck">;
 }) {
   return async function complete(value: {
     connectionId: string; credentialId: string; signal: AbortSignal; userId: string;
@@ -188,6 +188,15 @@ export function createAdminProviderBootstrap(input: {
               (target.responseTimeoutSeconds ?? adminSearchExecutionDefaults.timeoutMs / 1_000) * 1_000)
           };
         value.signal.throwIfAborted();
+        // A working source whose last check passed on this exact configuration,
+        // model and key needs no new paid check: setup also runs when an
+        // unrelated model of the connection is checked or saved.
+        if (existing?.configurationActive && existing.ready && existing.readiness === "ready" &&
+          await input.search.checkedOnCurrentBinding({ id: existing.id, userId: value.userId })) {
+          if (result.search === "skipped") result.search = "ready";
+          (result.searchResults ??= []).push({ name, status: "ready" });
+          continue;
+        }
         if (existing?.configurationActive) {
           await input.search.saveAndCheck({ description: existing.description, displayName: existing.displayName,
             draft, expectedDraftVersion: existing.draftVersion, id: existing.id, signal: value.signal, userId: value.userId });

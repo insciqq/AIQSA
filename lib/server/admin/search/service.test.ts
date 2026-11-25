@@ -1893,3 +1893,46 @@ describe("OpenRouter web search source", () => {
       draft: webDraft, userId: "admin-1" })).rejects.toMatchObject({ code: "search_test_failed" });
   });
 });
+
+describe("a source's check on the current binding", () => {
+  const webDraft: AdminSearchDraft = {
+    ...draft,
+    maxOutputTokens: null,
+    openRouterWebSearch: { engine: "perplexity", mode: null },
+    protocol: "openrouter_web_search",
+    providerModelId: "technical-1"
+  };
+  const binding = { ...PROBE_BINDING, connectionId: "connection-openrouter" };
+  const passed = { checkedAt: NOW.toISOString(), method: "provider_search", normalizedSourceCount: 10, probeBinding: binding,
+    protocol: "openrouter_web_search", status: "available" };
+
+  function service(input: Readonly<{ current?: SearchProbeBinding | Error; evidence?: unknown; stored?: AdminSearchDraft }> = {}) {
+    const row = option([child(input.stored ?? webDraft, {
+      draft: webDraft, draftTestEvidence: input.evidence === undefined ? passed : input.evidence, id: "strategy-web"
+    })], { id: "source-web", sourceConnectionId: "connection-openrouter", templateKey: null });
+    const currentBinding = vi.fn(async () => {
+      if (input.current instanceof Error) throw input.current;
+      return input.current ?? binding;
+    });
+    const prisma = { searchOption: { findUnique: vi.fn(async () => row) } } as unknown as PrismaClient;
+    return { currentBinding, service: createAdminSearchService({ prisma, tester: { currentBinding, test: vi.fn() } }) };
+  }
+  const check = (value: ReturnType<typeof service>) => value.service.checkedOnCurrentBinding({ id: "source-web", userId: "admin-1" });
+
+  it("holds only for a passing check of the active configuration on the exact current connection, model and key", async () => {
+    const current = service();
+    expect(await check(current)).toBe(true);
+    expect(current.currentBinding).toHaveBeenCalledWith(expect.objectContaining({ providerModelId: "technical-1", userId: "admin-1" }));
+    for (const stale of [
+      service({ current: { ...binding, credentialVersionId: "new-key" } }),
+      service({ current: { ...binding, modelVersion: 2 } }),
+      service({ current: new Error("search_provider_model_not_available") }),
+      service({ evidence: { ...passed, status: "unavailable" } }),
+      service({ evidence: { ...passed, normalizedSourceCount: 0 } }),
+      service({ evidence: { ...passed, probeBinding: undefined } }),
+      service({ evidence: null }),
+      // The edited configuration differs from the one in use.
+      service({ stored: { ...webDraft, openRouterWebSearch: { engine: "exa", mode: "auto" } } })
+    ]) expect(await check(stale)).toBe(false);
+  });
+});

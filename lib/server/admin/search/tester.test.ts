@@ -307,6 +307,7 @@ describe("admin Search diagnostic execution", () => {
     it.each([
       { case: "an empty query", searchQueries: [""] },
       { case: "a rewritten query", searchQueries: ["OpenAI homepage URL"] },
+      { case: "a rewritten query, then the verbatim one on the repeat", searchQueries: ["OpenAI homepage URL", "OpenAI official website"] },
       { case: "two searches", searchQueries: ["OpenAI official website", "OpenAI official website"] },
       { case: "no search", searchQueries: [] }
     ])("refuses a model that searched with $case, results or not", async ({ searchQueries }) => {

@@ -212,7 +212,18 @@ describe("OpenRouter web search results", () => {
     const { client, createResponse } = fakeClient(response({ cost: 0.005 }), response({ cost: 0.005 }));
     const result = await createOpenRouterWebSearchAdapter({ client }).search(request());
     expect(createResponse).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ costUsd: 0.01, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, searchQueries: [QUERY], sources: [] });
+    expect(result).toMatchObject({ costUsd: 0.01, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, searchQueries: [QUERY, QUERY], sources: [] });
+  });
+
+  it("reports every search of both requests, so a rewritten first search stays visible after a verbatim repeat", async () => {
+    const { client } = fakeClient(
+      response({ cost: 0.005, queries: ["USD RUB rate November 2026"] }),
+      response({ annotations: RESULTS, cost: 0.005 })
+    );
+    const result = await createOpenRouterWebSearchAdapter({ client }).search(request());
+    expect(result.sources).toHaveLength(2);
+    expect(result.searchQueries).toEqual(["USD RUB rate November 2026", QUERY]);
+    expect(result.usage).toMatchObject({ webSearchCount: 2 });
   });
 
   it("does not repeat an empty search the deadline leaves no time for", async () => {

@@ -522,9 +522,9 @@ export type ProviderSearchResult = {
   noResults?: true;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
-  /** The queries a model-run search tool executed for the accepted response,
-   * in order; only the administrator's probe reads them (OpenRouter web
-   * search). Never stored or shown. */
+  /** The queries a model-run search tool executed across every request of
+   * this search, repeats included, in order; only the administrator's probe
+   * reads them (OpenRouter web search). Never stored or shown. */
   searchQueries?: readonly string[];
   /** Omitted by legacy/test adapters means normal source attribution. */
   sourceAttribution?: "available";
