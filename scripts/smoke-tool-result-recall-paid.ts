@@ -588,7 +588,7 @@ async function deleteChat(api: Api, chatId: string): Promise<boolean> {
     }
     const admitted = decodeMemoryConsumerPermanentChatDeleteResponse(await json(api, "cleanup",
       `/api/chats/${encodeURIComponent(chatId)}/delete-permanently`, { body: {
-        alsoForgetOriginMemories: true, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
+        alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
       }, method: "POST" }));
     if (!admitted.ok) return false;
     const status = await poll("cleanup", DELETE_TIMEOUT_MS, async () => {

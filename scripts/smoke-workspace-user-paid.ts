@@ -133,7 +133,7 @@ async function main() {
   async function deleteChat(chatId: string) {
     step = "delete_chat";
     await json(await page.request.post(`/api/chats/${chatId}/delete-permanently`, { data: {
-      alsoForgetOriginMemories: true, confirmationCopyVersion: "memory-confirmation-v1", requestId: randomUUID()
+      alsoForgetOriginMemories: false, confirmationCopyVersion: "memory-confirmation-v1", requestId: randomUUID()
     } }));
     await poll(() => db.chat.count({ where: { id: chatId } }), (count) => count === 0);
     requireValue(guestCount() === 0, "guest_cleanup_failed");
