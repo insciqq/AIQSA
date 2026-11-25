@@ -26,6 +26,7 @@
     "check:hermetic": "prisma generate && next typegen && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
     "docs:check": "node scripts/docs-check.mjs",
     "calibrate:token-estimate": "tsx scripts/calibrate-token-estimate.ts",
+    "eval:web-search": "tsx scripts/eval/web-search-quality.ts",
     "release:privacy:check": "node scripts/release-privacy-check.mjs --require-origin",
     "db:generate": "prisma generate",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
