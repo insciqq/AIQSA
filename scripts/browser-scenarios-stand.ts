@@ -595,7 +595,7 @@ export async function deleteChat(api: Api, db: PostgresClient, chatId: string): 
     }
     const admitted = decodeMemoryConsumerPermanentChatDeleteResponse(await json(api,
       `/api/chats/${encodeURIComponent(chatId)}/delete-permanently`, { body: {
-        alsoForgetOriginMemories: true, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
+        alsoForgetOriginMemories: false, confirmationCopyVersion: MEMORY_CONFIRMATION_COPY_VERSION, requestId: randomUUID()
       }, method: "POST" }));
     if (!admitted.ok) return false;
     await poll(300_000, async () => {
