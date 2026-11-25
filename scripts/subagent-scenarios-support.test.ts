@@ -7,10 +7,12 @@ import { zipEntries } from "../lib/server/parsing/spreadsheetArchive.testFixture
 import { validateUpload } from "../lib/server/uploads/validation";
 import { namespacedWorkspaceToolName } from "../lib/server/workspace/toolCatalog";
 import { decodeSubagentDefinitionDraft } from "../lib/contracts/subagentDefinitions";
+import { SUBAGENT_BACKGROUND_STARTED_NOTE } from "../lib/server/subagents/tools";
 import { BROWSER_RESULT_FILE, BROWSER_SCENARIOS, SAUCEDEMO_LOGIN_VALUES, checkBrowserResult } from "./browser-scenarios-support";
 import {
   SCENARIO_R_PHRASES, SCENARIO_S_PROMPTS, SCENARIO_V_FILE_QUERY_PATTERN, oracleQ, oracleR, oracleS, oracleV, parseTestProxy, researchMetrics,
   SCENARIO_W_ANSWER_YEAR, SCENARIO_W_DRAFT, SCENARIO_W_WORKSPACE_TOOL_PATTERN, oracleW,
+  SCENARIO_X_RECEIPT_MARK, SCENARIO_X_WORKING_PATTERN, SUBAGENT_SCENARIO_NEEDS, oracleX, scenarioXFacts,
   DEFAULT_SUBAGENT_SCENARIO_IDS, S6_BASELINE, SCENARIO_J_STOP_SECONDS, SCENARIO_K_PNG_SCRIPT, SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE,
   SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION,
   SUBAGENT_NAMES, SUBAGENT_PROMPTS, SUBAGENT_SCENARIO_IDS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample,
@@ -52,7 +54,7 @@ describe("sub-agent scenario selection and options", () => {
     expect(selectedSubagentScenarios(undefined)).toEqual([...DEFAULT_SUBAGENT_SCENARIO_IDS]);
     expect(selectedSubagentScenarios(" g, c2 ,A")).toEqual(["A", "C2", "G"]);
     for (const raw of ["Z", "A,A", ","]) expect(() => selectedSubagentScenarios(raw)).toThrow("browser_scenarios_scenarios_invalid");
-    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(25);
+    expect(SUBAGENT_SCENARIO_IDS).toHaveLength(26);
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("U");
     expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("J");
     expect(selectedSubagentScenarios("J")).toEqual(["J"]);
@@ -286,6 +288,57 @@ describe("a sub-agent's children (O)", () => {
     expect(oracleW({ ...held, turns: { blocked: 0, done: 0, partial: 0, total: 0 } }).failed).toEqual(["subagent_turn_not_done"]);
     expect(oracleW({ ...held, workspaceCalls: 1 }).failed).toEqual(["workspace_tool_called"]);
     expect(oracleW({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
+  });
+
+  it("X runs only when named, keeps the code word out of every prompt and fails each acceptance line by name", () => {
+    expect(DEFAULT_SUBAGENT_SCENARIO_IDS).not.toContain("X");
+    expect(selectedSubagentScenarios("x")).toEqual(["X"]);
+    expect(SUBAGENT_SCENARIO_NEEDS.X).toEqual({});
+    expect(() => subagentHarnessOptions({}, ["X"], "m")).not.toThrow();
+    const facts = scenarioXFacts(runSecrets(new Uint8Array(16).fill(5)).nonce);
+    expect(facts.code).toMatch(/^[0-9a-f]{12}$/u);
+    // The word is what the sub-agent's command writes: the hash of the nonce it names, cut as the command cuts it.
+    expect(facts.code).toBe(createHash("sha256").update(`${facts.nonce}-x`, "utf8").digest("hex").slice(0, 12));
+    const start = SUBAGENT_PROMPTS.X.start(facts);
+    const ask = SUBAGENT_PROMPTS.X.ask();
+    for (const prompt of [start, ask]) expect(prompt).not.toContain(facts.code);
+    expect(start).toContain("background: true");
+    expect(start).toContain(SUBAGENT_NAMES.waiter);
+    expect(start).toContain(`sleep 90 && printf '%s' ${facts.nonce}-x | sha256sum | cut -c1-12 > ${facts.directory}/code.txt`);
+    expect(ask).toContain(SUBAGENT_NAMES.waiter);
+    // The receipt's mark is the product's own text, so `receiptNoted` proves the stand runs it.
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain(SCENARIO_X_RECEIPT_MARK);
+    const held = { firstTerminal: "complete", listAgentsCalls: 0, receiptNoted: true, reportHasCode: true, runningAtQuestion: true, secondBeforeReport: true,
+      secondHasCode: false, secondSaysWorking: true, secondTerminal: "complete", settled: true, turnDone: true, wakeUpHasCode: true, wakeUps: 1 };
+    expect(oracleX(held)).toEqual({ counts: { listAgentsCalls: 0, receiptNoted: 1, reportHasCode: 1, runningAtQuestion: 1, secondBeforeReport: 1,
+      secondHasCode: 0, secondSaysWorking: 1, turnDone: 1, wakeUpHasCode: 1, wakeUps: 1 }, failed: [] });
+    // Polling is recorded, never judged.
+    expect(oracleX({ ...held, listAgentsCalls: 3 }).failed).toEqual([]);
+    expect(oracleX({ ...held, firstTerminal: "error" }).failed).toEqual(["first_run_not_complete"]);
+    expect(oracleX({ ...held, receiptNoted: false }).failed).toEqual(["receipt_without_note"]);
+    expect(oracleX({ ...held, runningAtQuestion: false }).failed).toEqual(["not_running_at_question"]);
+    expect(oracleX({ ...held, secondTerminal: "failed" }).failed).toEqual(["second_run_not_complete"]);
+    expect(oracleX({ ...held, secondBeforeReport: false }).failed).toEqual(["second_answer_after_report"]);
+    // The failure this pair prevents: an answer that invents what the sub-agent found, or says nothing of its work.
+    expect(oracleX({ ...held, secondHasCode: true, secondSaysWorking: false }).failed).toEqual(["second_answer_has_code", "second_answer_not_still_working"]);
+    expect(oracleX({ ...held, turnDone: false, reportHasCode: false }).failed).toEqual(["subagent_turn_not_done", "report_without_code"]);
+    expect(oracleX({ ...held, wakeUps: 0, wakeUpHasCode: false }).failed).toEqual(["no_wake_up"]);
+    expect(oracleX({ ...held, wakeUpHasCode: false }).failed).toEqual(["wake_up_without_code"]);
+    expect(oracleX({ ...held, settled: false }).failed).toEqual(["callbacks_owed"]);
+  });
+
+  it("X's still-working pattern matches the plain ways to say so, in Russian or English, and not an invented result", () => {
+    const pattern = new RegExp(SCENARIO_X_WORKING_PATTERN, "iu");
+    for (const answer of ["Он ещё работает, отчёта пока нет.", "x-waiter еще не закончил: результат придёт позже.", "Пока не знаю — суб-агент в процессе.",
+      "Ещё выполняется.", "Отчёта ещё нет, напишу, когда придёт.", "Пока не отчитался.", "It is still working; no report yet.",
+      "x-waiter hasn't finished yet.", "It has not reported yet.", "The sub-agent is not done yet."]) {
+      expect(pattern.test(answer), answer).toBe(true);
+      // SQL matches the lowered answer.
+      expect(pattern.test(answer.toLowerCase()), answer).toBe(true);
+    }
+    for (const answer of ["Кодовое слово: 3fa9c1d2e4b7", "Он нашёл слово ALPHA-12.", "The code word is 3fa9c1d2e4b7.", "Готово."]) {
+      expect(pattern.test(answer), answer).toBe(false);
+    }
   });
 
   it("V's file-tool pattern matches a query for a way to write a file, in English or Russian, and not an ordinary search", () => {

@@ -246,6 +246,16 @@
  *   (`SCENARIO_W_WORKSPACE_TOOL_PATTERN`). `searches` counts the returned searches and is not an oracle. This needs DEEPSEEK_API_KEY
  *   for the Search source, as Q and V do. Paid calls: about 3-6 codex-lb requests (main agent 2-3, `w-searcher` 1-3) and 1 search, in
  *   a few minutes.
+ * - X: a question about a background sub-agent's result before its report came, only when named, one chat and two sends. The first message
+ *   has the main agent start `x-waiter` in the background, whose one Workspace command sleeps 90 seconds and then writes a per-run code word
+ *   (`scenarioXFacts`: a hash of a nonce, so the prompts never carry it) to a file it reads back into its report, and answer at once. Once
+ *   that answer completed, with the sub-agent still running, the second message asks for the code word. Oracles, booleans and counts from
+ *   SQL: both runs complete; a `call_subagent` result carries the receipt's note (`receiptNoted`: the stand runs this change); the
+ *   sub-agent ran when the question went out; the second answer completed before the sub-agent's turn ended and its callback went into
+ *   another run, does not contain the code word and says it is still working (`SCENARIO_X_WORKING_PATTERN`, a short Russian and English
+ *   phrase list); the turn ended `done` with the word in its report; a wake-up turn came and its answer holds the word. `listAgentsCalls`
+ *   counts the second run's `list_agents` calls and is not an oracle. With AIQSA_SUBAGENTS_ANSWERS_FILE the chat's answers go to that file
+ *   for reading by hand, as U's do. Paid calls: about 4-7 codex-lb requests (main agent 1-2 per answer and the wake-up, `x-waiter` 2-3), in about 3-5 minutes.
  * Scenario 7 (the MCP guard) is not part of this harness.
  *
  * Each run prints ONE content-free JSON line (codes, counts, booleans,
@@ -325,13 +335,13 @@ import {
 import {
   SCENARIO_L_FILE_NAME, SCENARIO_L_MIME_TYPE, SCENARIO_N_FILE_NAME, SCENARIO_N_MIME_TYPE, SEND_LOST_TO_WAKE_UP, SIDE_QUESTION, SUBAGENT_NAMES, SUBAGENT_PROMPTS, agentMessageEvidence, agentToolEvidence, appendProgression, appendSessionSample, bindingEvidence, blindImageEvidence,
   browserEvidence, callSubagentOutcomes, callbackEvidence, cleanUpScenario, failedToolCalls, imageToolEvidence, mainImageToolEvidence, notaryValue, stopSubagentCalls, oracleA, oracleB, oracleC, oracleD, oracleE, oracleFBranched, oracleFContinued, oracleH, oracleI, oracleJ, oracleKFlow, oracleKReads, oracleL, oracleM, oracleN, oracleO, oracleP, oracleQ, oracleR, oracleV, oracleW, SCENARIO_R_PHRASES, SCENARIO_V_FILE_QUERY_PATTERN, SCENARIO_W_ANSWER_YEAR, SCENARIO_W_DRAFT,
-  SCENARIO_W_WORKSPACE_TOOL_PATTERN, SUBAGENT_SCENARIO_NEEDS,
+  SCENARIO_W_WORKSPACE_TOOL_PATTERN, SCENARIO_X_RECEIPT_MARK, SCENARIO_X_WORKING_PATTERN, SUBAGENT_SCENARIO_NEEDS, oracleX, scenarioXFacts,
   SCENARIO_S_DEAD_HINT, SCENARIO_S_DEAD_NAME, SCENARIO_S_NAME, SCENARIO_S_PROMPTS, SCENARIO_T_HANDOFF_QUESTION, SCENARIO_T_QUESTIONS, oracleS, parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes,
   type PageReads, type RPhraseResult, type TDraftFinding, type TEvidenceRow, type TGateRow,
   peakConcurrentTurns, pngBytes, progressionSaw, requestedModelEvidence, restartEvidence, roundsPerAgent, runSecrets, scenarioJOrder, scenarioKFacts, scenarioLAnswerPattern,
   scenarioLFacts, scenarioLUploadChecks, scenarioLWorkspaceEvidence, scenarioMFacts, scenarioNFacts, scenarioNToolEvidence, scenarioNUploadChecks, scenarioOFacts, scenarioPFacts, selectedSubagentScenarios, sendRefusal, sessionStopEvidence, stableCode, stateCounts, stopChecks, stopEvidence, subagentCallEvidence, subagentHarnessOptions, subagentScenarioSummary, turnOutcomes, usageByPurpose,
   type KChartDownload, type LAttachmentRow, type LWorkspaceCall, type MMessageRow, type OEvidence, type PurposeUsageRow, type RestartHook, type ScenarioLFacts, type ScenarioNFacts, type ScenarioOFacts, type SessionSample, type StateCounts, type StopPath, type SubagentHarnessOptions, type SubagentRunRecord,
-  type SubagentScenarioId, type ToolRow, type TurnRow, type VEvidence, type WakeUpRow, type WEvidence
+  type SubagentScenarioId, type ToolRow, type TurnRow, type VEvidence, type WakeUpRow, type WEvidence, type XEvidence
 } from "./subagent-scenarios-support";
 import { codexLbRoute } from "./workspace-user-paid-support";
 import { readConnections } from "./context-compaction-journey-support";
@@ -1756,6 +1766,77 @@ async function scenarioW(ctx: Context, run: Run): Promise<Outcome> {
   }
 }
 
+/** X's waits: the sub-agent's turn (a VM start and its 90-second sleep) and each answer. */
+const X_TURN_MS = 10 * 60_000;
+
+type XSqlEvidence = Omit<XEvidence, "firstTerminal" | "runningAtQuestion" | "secondTerminal" | "settled">;
+
+/**
+ * X's facts over the second answer, the sub-agent's turn and the wake-ups: answers, the report and the code word are matched inside
+ * SQL (lowered, so the word's case does not matter) and only booleans and counts leave it.
+ */
+async function waitingEvidence(db: PostgresClient, input: Readonly<{ chatId: string; code: string; secondRunId: string; turnId: string | null }>):
+  Promise<XSqlEvidence> {
+  const { rows } = await db.query<XSqlEvidence>(`WITH turn AS (SELECT "endedAt", "callbackRunId", "state"::text AS "state",
+        lower(coalesce("result"->>'report', '')) AS "report" FROM "SubagentTurn" WHERE "chatId" = $1 AND "id" = $2::text),
+      second AS (SELECT r."answerCompletedAt", lower(coalesce(m."content"::text, '')) AS "text" FROM "ModelRun" r
+        LEFT JOIN "Message" m ON m."id" = r."assistantMessageId" WHERE r."chatId" = $1 AND r."id" = $3),
+      wakes AS (SELECT lower(coalesce(a."content"::text, '')) AS "text" FROM "Message" u
+        JOIN "ModelRun" r ON r."userMessageId" = u."id" AND r."subagentTurnId" IS NULL
+        LEFT JOIN "Message" a ON a."id" = r."assistantMessageId"
+        WHERE u."chatId" = $1 AND u."systemTurnKind"::text = 'subagent_callback')
+    SELECT coalesce((SELECT s."answerCompletedAt" IS NOT NULL AND t."endedAt" IS NOT NULL AND s."answerCompletedAt" < t."endedAt"
+          AND t."callbackRunId" IS DISTINCT FROM $3 FROM second s CROSS JOIN turn t), false) AS "secondBeforeReport",
+      coalesce((SELECT strpos(s."text", $4) > 0 FROM second s), false) AS "secondHasCode",
+      coalesce((SELECT s."text" ~* $5 FROM second s), false) AS "secondSaysWorking",
+      coalesce((SELECT t."state" = 'done' FROM turn t), false) AS "turnDone",
+      coalesce((SELECT strpos(t."report", $4) > 0 FROM turn t), false) AS "reportHasCode",
+      EXISTS (SELECT 1 FROM wakes WHERE strpos("text", $4) > 0) AS "wakeUpHasCode",
+      (SELECT count(*)::int FROM wakes) AS "wakeUps",
+      (SELECT count(*)::int FROM "ModelRunToolCall" WHERE "modelRunId" = $3 AND "subagentThreadId" IS NULL AND "toolName" = 'list_agents')
+        AS "listAgentsCalls",
+      EXISTS (SELECT 1 FROM "ModelRunToolCall" c JOIN "ModelRun" r ON r."id" = c."modelRunId"
+        WHERE r."chatId" = $1 AND c."toolName" = 'call_subagent' AND strpos(coalesce(c."result"::text, ''), $6) > 0) AS "receiptNoted"`,
+  [input.chatId, input.turnId, input.secondRunId, input.code.toLowerCase(), SCENARIO_X_WORKING_PATTERN, SCENARIO_X_RECEIPT_MARK]);
+  return rows[0] ?? fail("waiting_evidence_missing");
+}
+
+/**
+ * X: the user asks for a background sub-agent's result before its report came. The first message has the main agent start `x-waiter`,
+ * which sleeps 90 seconds in the Workspace and then reads back a per-run code word it wrote to a file, and answer at once; once that
+ * answer completed and the main agent is idle, the question goes while the sub-agent still runs. The second answer must say it is still
+ * working without the word, and the wake-up must give it. The word stays in memory and is matched inside SQL (`waitingEvidence`).
+ */
+async function scenarioX(ctx: Context, run: Run): Promise<Outcome> {
+  const started = Date.now();
+  const facts = scenarioXFacts(runSecrets(randomBytes(16)).nonce);
+  const name = SUBAGENT_NAMES.waiter;
+  const chat = await createScenarioChat(ctx.session.api, "Sub-agent scenario X");
+  run.chats.push(chat.id);
+  const first = await send(ctx, run, chat.id, SUBAGENT_PROMPTS.X.start(facts));
+  const firstTerminal = await waitRun(ctx, first, X_TURN_MS);
+  await waitMainIdle(ctx, chat.id, X_TURN_MS);
+  const before = await latestTurnOf(ctx.db, chat.id, name);
+  const runningAtQuestion = before?.state === "running" || before?.state === "waiting";
+  const sent = await trySend(ctx, run, chat.id, SUBAGENT_PROMPTS.X.ask());
+  if (!sent.ok) {
+    Object.assign(run.line, { admissionRefusal: stableCode(sent.code), checksFailed: ["admission_refused"], firstTerminal, runningAtQuestion,
+      wallSeconds: seconds(started) });
+    return { success: false, usage: null };
+  }
+  const secondTerminal = await waitRun(ctx, sent.runId, X_TURN_MS);
+  const turn = await waitTurnEnded(ctx, chat.id, name, X_TURN_MS);
+  // The wake-up starts after the server's coalescing window; read nothing before its answer settled.
+  await settleCallbacks(ctx, chat.id, 5 * 60_000);
+  const { settled, usage } = await commonEvidence(ctx, run, chat.id);
+  const verdict = oracleX({ ...await waitingEvidence(ctx.db, { chatId: chat.id, code: facts.code, secondRunId: sent.runId, turnId: turn?.turnId ?? null }),
+    firstTerminal: firstTerminal.status, runningAtQuestion, secondTerminal: secondTerminal.status, settled });
+  await keepAnswers(ctx, chat.id, "X");
+  Object.assign(run.line, { checksFailed: verdict.failed, oracleCounts: verdict.counts, terminals: { first: firstTerminal, second: secondTerminal },
+    wallSeconds: seconds(started) });
+  return { success: verdict.failed.length === 0, usage };
+}
+
 const R_PHRASE_MS = 5 * 60_000;
 
 async function scenarioR(ctx: Context, run: Run): Promise<Outcome> {
@@ -2758,6 +2839,7 @@ async function runScenario(ctx: Context, id: SubagentScenarioId, index: number):
       case "U": outcome = await scenarioU(ctx, run); break;
       case "V": outcome = await scenarioV(ctx, run); break;
       case "W": outcome = await scenarioW(ctx, run); break;
+      case "X": outcome = await scenarioX(ctx, run); break;
     }
   } catch (error) {
     run.line.harnessError = error instanceof BrowserScenarioError ? error.message : "subagent_scenarios_run_failed";
