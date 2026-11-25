@@ -223,6 +223,24 @@ describe("plan and form helpers", () => {
   });
 });
 
+describe("OpenRouter web search choices", () => {
+  const technical = {
+    connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash", enabled: true,
+    id: "model-flash", searchKind: "openrouter_web_search", searchReasoningSupported: false
+  } as const;
+  const sonar = { ...technical, displayName: "Sonar", id: "model-sonar", searchKind: "perplexity_search" } as const;
+
+  it("lets Configure switch the technical model of the connection's web source and keeps its engine", () => {
+    expect(configurableModels({ kind: "web_search", sourceConnectionId: "conn-openrouter" }, [sonar, technical])).toEqual([technical]);
+    expect(configurableModels({ kind: "perplexity_search", sourceConnectionId: "conn-openrouter" }, [sonar, technical])).toEqual([sonar]);
+    expect(draftForModel(technical, { ...emptySearchForm().draft, openRouterWebSearch: { engine: "exa", mode: "deep" } })).toMatchObject({
+      openRouterWebSearch: { engine: "exa", mode: "deep" }, protocol: "openrouter_web_search", providerModelId: "model-flash"
+    });
+    expect(draftForModel(technical).openRouterWebSearch).toEqual({ engine: "perplexity", mode: null });
+    expect(draftForModel(sonar)).not.toHaveProperty("openRouterWebSearch");
+  });
+});
+
 describe("DeepSeek Search API choices", () => {
   const carrier = {
     connectionDisplayName: "DeepSeek", connectionId: "conn-deepseek", displayName: "DeepSeek V4 Flash", enabled: true,

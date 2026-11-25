@@ -2,7 +2,9 @@ import type { AdminProviderBootstrapResult, AdminProviderConnection } from "../.
 import {
   adminSearchExecutionDefaults,
   DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
+  defaultOpenRouterWebSearchSettings,
   type AdminSearchDraft,
+  type AdminSearchIntegration,
   type AdminSearchProviderModelOption
 } from "../../../contracts/adminSearch";
 import { ADMIN_PROVIDER_QUICK_SETUP_PROVIDERS, type AdminProviderQuickSetupProviderId } from "../../../contracts/adminProviderQuickSetup";
@@ -12,12 +14,29 @@ import type { createAdminSystemModelPolicyService } from "./systemModelPolicySer
 import { adminProviderQuickSetupPolicy } from "./quickSetupPolicy";
 import { rerankerPresetsForFamily } from "../../../domain/rerankerModels";
 import { DEFAULT_DECISION_FEATURES, JEV_MODEL_ID } from "../../../domain/decisionModels";
+import { OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS } from "../../../domain/catalog";
 
 const searchProtocols = {
   anthropic_web_search: "anthropic_web_search", deepseek_search_api: "deepseek_search_api",
-  gemini_google_search: "gemini_google_search",
+  gemini_google_search: "gemini_google_search", openrouter_web_search: "openrouter_web_search",
   perplexity_search: "openrouter_perplexity_chat", web_search: "openai_responses_web_search"
 } as const satisfies Record<AdminSearchProviderModelOption["searchKind"], AdminSearchDraft["protocol"]>;
+
+/** A Search source provider setup owns on the connection: its own (the
+ * provider's Search, Perplexity Sonar on OpenRouter), the DeepSeek Search API,
+ * or OpenRouter's web search. */
+type SetupSearch = "deepseek_search_api" | "openrouter_web_search" | "own";
+
+function setupSourceKind(setupSearch: SetupSearch, family: string, kind: AdminSearchIntegration["kind"]): boolean {
+  if (setupSearch === "deepseek_search_api") return kind === "deepseek_search_api";
+  // An OpenRouter connection's web search is its `web_search` source.
+  if (setupSearch === "openrouter_web_search") return kind === "web_search";
+  return family === "openrouter" ? kind === "perplexity_search" : kind !== "deepseek_search_api";
+}
+
+function setupModelKind(setupSearch: SetupSearch, kind: AdminSearchProviderModelOption["searchKind"]): boolean {
+  return setupSearch === "own" ? kind !== "deepseek_search_api" && kind !== "openrouter_web_search" : kind === setupSearch;
+}
 
 /** Finish setup through the ordinary, version-fenced owners. Existing
  * destinations stay operator-owned. */
@@ -130,28 +149,41 @@ export function createAdminProviderBootstrap(input: {
     }
     // Setup owns the connection's own Search; a DeepSeek connection's is the
     // DeepSeek Search API (its hosted Search is retired, operator decision
-    // 2026-10-24). Each is checked and published on its own.
-    for (const searchApi of connection.family === "deepseek" ? [true] : [false]) {
+    // 2026-10-24), and an OpenRouter connection also gets OpenRouter's web
+    // search beside its Perplexity Sonar source. Each is checked and
+    // published on its own.
+    const setupSearches: readonly SetupSearch[] = connection.family === "deepseek" ? ["deepseek_search_api"]
+      : connection.family === "openrouter" ? ["own", "openrouter_web_search"] : ["own"];
+    for (const setupSearch of setupSearches) {
+      const searchApi = setupSearch === "deepseek_search_api";
+      const webSearch = setupSearch === "openrouter_web_search";
       let name: string | null = null;
       try {
         value.signal.throwIfAborted();
         const search = await input.search.list({ userId: value.userId });
         const existing = search.integrations.find((source) => source.sourceConnectionId === connection.id &&
-          (source.kind === "deepseek_search_api") === searchApi);
+          setupSourceKind(setupSearch, connection.family, source.kind));
         // An off switch, also one set before any setup, and an unfinished
         // Search edit remain owned by the operator, even when a different key
         // was just saved. Setup never pays for a check it cannot publish.
         if (existing && (existing.archivedAt || !existing.enabled || existing.configurationActive && existing.draftDirty)) continue;
-        const target = pick(search.providerModels.filter((model) =>
-          model.enabled && (model.searchKind === "deepseek_search_api") === searchApi));
+        const models = search.providerModels.filter((model) => model.enabled && setupModelKind(setupSearch, model.searchKind));
+        // OpenRouter's web search starts only on a template technical model,
+        // in the template's order; its check then proves that model.
+        const target = webSearch
+          ? OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS.flatMap(({ upstreamModelId }) => pick(models.filter((model) =>
+            connection.models.some((entry) => entry.id === model.id && entry.activeConfig?.upstreamModelId === upstreamModelId))) ?? [])[0]
+          : pick(models);
         if (!target) continue;
-        name = existing?.displayName ?? `${connection.displayName} ${searchApi ? "Search API" : "Search"}`;
+        name = existing?.displayName ??
+          `${connection.displayName} ${searchApi ? "Search API" : webSearch ? "Web Search" : "Search"}`;
         const draft: AdminSearchDraft = existing?.configurationActive && existing.configuration
           ? existing.configuration : {
             ...adminSearchExecutionDefaults,
             adapterKind: "provider_model_client", credentialMode: "provider_model", providerModelId: target.id,
             protocol: searchProtocols[target.searchKind],
             ...(searchApi ? { queryMaxCharacters: DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS } : {}),
+            ...(webSearch ? { openRouterWebSearch: defaultOpenRouterWebSearchSettings() } : {}),
             timeoutMs: Math.min(adminSearchExecutionDefaults.timeoutMs,
               (target.responseTimeoutSeconds ?? adminSearchExecutionDefaults.timeoutMs / 1_000) * 1_000)
           };
@@ -163,7 +195,9 @@ export function createAdminProviderBootstrap(input: {
           await input.search.createDraft({ bootstrap: true, check: true, displayName: name, draft, signal: value.signal,
             userId: value.userId, description: searchApi
               ? `Web results with source links from the ${connection.displayName} Search API.`
-              : `Web search through ${connection.displayName}.` });
+              : webSearch
+                ? `Web results with source links through ${connection.displayName} web search.`
+                : `Web search through ${connection.displayName}.` });
         }
         if (result.search === "skipped") result.search = "ready";
         (result.searchResults ??= []).push({ name, status: "ready" });

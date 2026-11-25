@@ -3,6 +3,7 @@ import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
   DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
+  decodeOpenRouterWebSearchSettings,
   type AdminSearchDraft,
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
@@ -60,6 +61,14 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
   const adapterKind = enumValue(value.adapterKind, searchAdapterKinds);
   const credentialMode = enumValue(value.credentialMode, searchCredentialModes);
   const protocol = enumValue(value.protocol, searchProtocols);
+  // Only an OpenRouter web search source names an engine; every other draft
+  // keeps its exact earlier shape and hash.
+  const openRouterWebSearch = protocol === "openrouter_web_search"
+    ? decodeOpenRouterWebSearchSettings(value.openRouterWebSearch)
+    : null;
+  if (protocol === "openrouter_web_search" ? !openRouterWebSearch : value.openRouterWebSearch !== undefined) {
+    throw new SearchConfigurationError("search_configuration_invalid");
+  }
   const normalized: AdminSearchDraft = {
     adapterKind,
     credentialMode,
@@ -68,6 +77,7 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
       adminSearchExecutionLimits.maxOutputTokens.minimum,
       adminSearchExecutionLimits.maxOutputTokens.maximum
     ),
+    ...(openRouterWebSearch ? { openRouterWebSearch } : {}),
     protocol,
     providerModelId: providerModelId(value.providerModelId),
     queryMaxCharacters: boundedInteger(
@@ -93,6 +103,7 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     (hosted && normalized.providerModelId !== null) ||
     (!hosted && normalized.providerModelId === null) ||
     (protocol === "openrouter_perplexity_chat" && hosted) ||
+    (protocol === "openrouter_web_search" && hosted) ||
     (protocol === "deepseek_search_api" &&
       (hosted || normalized.queryMaxCharacters > DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS))
   ) {
@@ -132,7 +143,7 @@ export function searchStrategyKind(
   }
   if (protocol === "gemini_google_search") return "gemini_google_search";
   if (protocol === "openrouter_perplexity_chat") return "perplexity_tool_search";
-  if (protocol === "deepseek_search_api") return "provider_model_web_search";
+  if (protocol === "deepseek_search_api" || protocol === "openrouter_web_search") return "provider_model_web_search";
   return adapterKind === "answer_provider_hosted"
     ? "openai_native_web_search"
     : "provider_model_web_search";
@@ -142,7 +153,7 @@ export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind
   if (protocol === "anthropic_web_search") {
     return adapterKind === "anthropic_messages";
   }
-  if (protocol === "openrouter_perplexity_chat") {
+  if (protocol === "openrouter_perplexity_chat" || protocol === "openrouter_web_search") {
     return adapterKind === "openrouter_chat_completions";
   }
   if (protocol === "openai_responses_web_search") {
@@ -159,13 +170,16 @@ export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind
  * model-backed protocol searches with that model, so the model's native Search
  * is required. The DeepSeek Search API only borrows the DeepSeek connection
  * and credential the model resolves; the model itself is never called.
+ * OpenRouter's web search runs as OpenRouter's own server tool beside any
+ * OpenRouter model: only the source's probe (one search with the verbatim
+ * query and a result) qualifies the model.
  */
 export function technicalSearchModelSupports(
   protocol: SearchProtocol,
   model: Readonly<{ adapterKind: string; nativeSearch?: boolean }>
 ): boolean {
   return compatibleTechnicalAdapter(protocol, model.adapterKind) &&
-    (protocol === "deepseek_search_api" || model.nativeSearch === true);
+    (protocol === "deepseek_search_api" || protocol === "openrouter_web_search" || model.nativeSearch === true);
 }
 
 export function builtInSearchDraft(input: Readonly<{

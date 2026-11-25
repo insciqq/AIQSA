@@ -1,6 +1,6 @@
 import { decodeTokenUsage, reportedCostMicros } from "../../domain/usage";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
-import { mergeSearchEvidence } from "../../domain/search";
+import { mergeSearchEvidence, searchProtocolReportsNoResults } from "../../domain/search";
 import { takeUtf16SafePrefix } from "../../domain/utf16";
 import type { ToolExecutionResult } from "../tools/types";
 import {
@@ -214,8 +214,7 @@ export function searchExecutionsFromToolResult(
     // A raw results API's empty answer carries only the server's own words.
     const explicitNoResults = sources.length === 0 &&
       sourceAttribution !== "provider_unavailable" &&
-      value.provider === "deepseek" &&
-      value.protocol === "deepseek_search_api" &&
+      searchProtocolReportsNoResults(value.protocol, value.provider) &&
       findings === SEARCH_NO_RESULTS_FINDINGS;
     if (
       sourceAttribution === "provider_unavailable" && !providerSourcesUnavailable ||

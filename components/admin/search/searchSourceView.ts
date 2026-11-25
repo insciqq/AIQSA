@@ -3,6 +3,7 @@ import {
   adminSearchExecutionDefaults,
   adminSearchExecutionLimits,
   DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
+  defaultOpenRouterWebSearchSettings,
   type AdminSearchCatalog,
   type AdminSearchDraft,
   type AdminSearchIntegration,
@@ -218,6 +219,7 @@ export function draftForModel(
   current?: Pick<
     AdminSearchDraft,
     | "maxOutputTokens"
+    | "openRouterWebSearch"
     | "queryMaxCharacters"
     | "reasoningPolicy"
     | "timeoutMs"
@@ -225,6 +227,7 @@ export function draftForModel(
 ): AdminSearchDraft {
   const queryMaxCharacters = current?.queryMaxCharacters ?? adminSearchExecutionDefaults.queryMaxCharacters;
   const searchApi = model.searchKind === "deepseek_search_api";
+  const webSearch = model.searchKind === "openrouter_web_search";
   return {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
@@ -232,15 +235,19 @@ export function draftForModel(
     maxOutputTokens: searchApi
       ? adminSearchExecutionDefaults.maxOutputTokens
       : current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
-    protocol: model.searchKind === "perplexity_search"
-      ? "openrouter_perplexity_chat"
-      : model.searchKind === "gemini_google_search"
-        ? "gemini_google_search"
-        : model.searchKind === "anthropic_web_search"
-          ? "anthropic_web_search"
-          : model.searchKind === "deepseek_search_api"
-            ? "deepseek_search_api"
-            : "openai_responses_web_search",
+    // OpenRouter's web search keeps its engine when its technical model changes.
+    ...(webSearch ? { openRouterWebSearch: current?.openRouterWebSearch ?? defaultOpenRouterWebSearchSettings() } : {}),
+    protocol: webSearch
+      ? "openrouter_web_search"
+      : model.searchKind === "perplexity_search"
+        ? "openrouter_perplexity_chat"
+        : model.searchKind === "gemini_google_search"
+          ? "gemini_google_search"
+          : model.searchKind === "anthropic_web_search"
+            ? "anthropic_web_search"
+            : model.searchKind === "deepseek_search_api"
+              ? "deepseek_search_api"
+              : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: searchApi
       ? Math.min(queryMaxCharacters, DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS)
@@ -308,7 +315,8 @@ export function configurableModels(
   return providerModels.filter((model) =>
     model.connectionId === source.sourceConnectionId &&
     (source.kind === model.searchKind ||
-      (source.kind === "web_search" && model.searchKind === "anthropic_web_search")));
+      (source.kind === "web_search" &&
+        (model.searchKind === "anthropic_web_search" || model.searchKind === "openrouter_web_search"))));
 }
 
 export function sourceIdentityFor(model: AdminSearchProviderModelOption): Readonly<{

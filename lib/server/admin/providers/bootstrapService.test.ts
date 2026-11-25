@@ -252,6 +252,54 @@ describe("provider automatic setup", () => {
     });
   });
 
+  describe("on an OpenRouter connection", () => {
+    function openRouterFixture() {
+      const value = fixture();
+      value.connection.family = "openrouter";
+      value.connection.displayName = "OpenRouter";
+      const [luna, deepSeek] = value.connection.models;
+      luna!.activeConfig = { ...luna!.activeConfig!, upstreamModelId: "openai/gpt-6-luna" };
+      deepSeek!.activeConfig = { ...deepSeek!.activeConfig!, upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" };
+      // Every tool-calling model may run OpenRouter's web search; the first is also the Sonar carrier here.
+      value.search.providerModels = [
+        { ...value.search.providerModels[0]!, connectionDisplayName: "OpenRouter", searchKind: "perplexity_search" as const },
+        ...value.search.providerModels.map((model) => ({ ...model, connectionDisplayName: "OpenRouter",
+          searchKind: "openrouter_web_search" as const }))
+      ];
+      return { ...value, deepSeekId: deepSeek!.id, lunaId: luna!.id };
+    }
+
+    it("sets up OpenRouter's web search on the template's preferred technical model beside Sonar", async () => {
+      const value = openRouterFixture();
+      expect(await value.run()).toMatchObject({ search: "ready", searchResults: [
+        { name: "OpenRouter Search", status: "ready" }, { name: "OpenRouter Web Search", status: "ready" }] });
+      expect(value.searchCreate).toHaveBeenCalledTimes(2);
+      expect(value.searchCreate).toHaveBeenNthCalledWith(1, expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "openrouter_perplexity_chat" }) }));
+      expect(value.searchCreate).toHaveBeenNthCalledWith(2, expect.objectContaining({ bootstrap: true, check: true,
+        displayName: "OpenRouter Web Search", draft: expect.objectContaining({ adapterKind: "provider_model_client",
+          openRouterWebSearch: { engine: "perplexity", mode: null }, protocol: "openrouter_web_search",
+          providerModelId: value.deepSeekId }) }));
+    });
+
+    it("keeps an operator's web search source and never starts one on a model outside the template", async () => {
+      const value = openRouterFixture();
+      value.search.integrations.push({ archivedAt: null, broaderModelSetup: "ready", configurable: true, configuration: null,
+        configurationActive: true, description: "Web", displayName: "Web", draftDirty: false, draftVersion: 2, draftTestEvidence: null,
+        enabled: false, executionModes: ["all_selected"], id: "web", kind: "web_search", providerModel: null, ready: true,
+        readiness: "ready", sourceConnectionId: value.connection.id, strategyId: "web", system: false });
+      await value.run();
+      expect(value.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "openrouter_perplexity_chat" }) }));
+
+      const other = openRouterFixture();
+      for (const model of other.connection.models) model.activeConfig = { ...model.activeConfig!, upstreamModelId: "vendor/other" };
+      await other.run();
+      expect(other.searchCreate).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        draft: expect.objectContaining({ protocol: "openrouter_perplexity_chat" }) }));
+    });
+  });
+
   it("sets up only its own Search on a connection of another family", async () => {
     const value = fixture();
     value.search.providerModels = [

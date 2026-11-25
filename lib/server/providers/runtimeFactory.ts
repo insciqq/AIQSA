@@ -32,6 +32,11 @@ import {
   createOpenRouterPerplexitySearchAdapter
 } from "./openRouterChat";
 import {
+  createFetchOpenRouterResponsesSearchClient,
+  createOpenRouterWebSearchAdapter,
+  OPENROUTER_WEB_SEARCH_STRATEGY_ID
+} from "./openRouterWebSearch";
+import {
   codexLbConnection,
   normalizeProviderConnectionConfiguration,
   normalizeProviderDefaultParams,
@@ -48,7 +53,7 @@ import { markProviderStreamProgress, providerStreamProgressFacts } from "./strea
 import { effectiveOpenAIBackgroundPollTimeoutMs } from "./openaiBackgroundPolling";
 import { compatibleDroppedRoundDecision } from "./openaiResponsesTransport";
 import { PROVIDER_BEFORE_OUTPUT_RETRY_WINDOW } from "./providerRetry";
-import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderSearchAdapter } from "./types";
+import type { ProviderAdapter, ProviderDroppedRoundRetry, ProviderSearchAdapter, ProviderSearchRequest } from "./types";
 import { warnProviderStreamSafetyOnce } from "./streamSafetyObservability";
 import {
   observeProviderDeadline,
@@ -554,9 +559,25 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn
       });
+      const perplexitySearch = createOpenRouterPerplexitySearchAdapter({ client });
+      // OpenRouter's web search runs on the Responses API of the same
+      // connection and key; the source's policy picks the route.
+      const webSearch = createOpenRouterWebSearchAdapter({
+        client: createFetchOpenRouterResponsesSearchClient({
+          apiKey: clientSecret,
+          baseUrl,
+          defaultTimeoutMs: responseTimeoutMs,
+          fetchFn
+        })
+      });
+      const searchAdapterFor = (request: ProviderSearchRequest) =>
+        request.searchPolicy.strategyId === OPENROUTER_WEB_SEARCH_STRATEGY_ID ? webSearch : perplexitySearch;
       return {
         adapter: createOpenRouterChatAdapter({ client }),
-        searchAdapter: createOpenRouterPerplexitySearchAdapter({ client }),
+        searchAdapter: {
+          buildRequestPreview: (request) => searchAdapterFor(request).buildRequestPreview(request),
+          search: (request, options) => searchAdapterFor(request).search(request, options)
+        },
         structuredOutputAdapter: createOpenRouterStructuredOutputAdapter({
           client,
           model: snapshot.model

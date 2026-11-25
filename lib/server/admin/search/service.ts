@@ -182,6 +182,9 @@ function logicalKind(value: unknown): AdminSearchKind | null {
     : null;
 }
 
+/** The stored kind of a draft's source. OpenRouter's web search is a
+ * `web_search` source of its OpenRouter connection, beside that connection's
+ * Perplexity Sonar source (`perplexity_search`). */
 function draftKind(draft: AdminSearchDraft): AdminSearchKind {
   if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
@@ -206,6 +209,7 @@ function draftClientSearchKind(
   if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
   if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
+  if (draft.protocol === "openrouter_web_search") return "openrouter_web_search";
   return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
 }
 
@@ -316,6 +320,7 @@ type RuntimeProviderModel = Omit<AdminSearchProviderModelOption, "responseTimeou
   adapterKind: string;
   nativeSearch: boolean;
   responseTimeoutSeconds: number;
+  toolCalling: boolean;
 };
 
 type SearchChild = {
@@ -548,9 +553,10 @@ export function createAdminSearchService(input: Readonly<{
     const configuration = providerModelConfiguration(model.activeConfig);
     if (
       !configuration ||
-      // The DeepSeek Search API is offered beside a DeepSeek model's own
-      // Search kind: any DeepSeek answer model may carry the connection key.
-      draft.protocol !== "deepseek_search_api" &&
+      // The DeepSeek Search API and OpenRouter's web search are offered beside
+      // a model's own Search kind: any DeepSeek answer model may carry the
+      // connection key, and any OpenRouter model may run OpenRouter's search.
+      draft.protocol !== "deepseek_search_api" && draft.protocol !== "openrouter_web_search" &&
         clientSearchKind(configuration.adapterKind) !== draftClientSearchKind(draft) ||
       !technicalSearchModelSupports(draft.protocol, {
         adapterKind: configuration.adapterKind,
@@ -748,7 +754,8 @@ export function createAdminSearchService(input: Readonly<{
           configuration.adapterKind === "openai_responses_compatible" ||
           configuration.adapterKind === "gemini_interactions_native") &&
           Boolean(lowestSupportedOpenAIResponsesSearchEffort(configuration.capabilities)),
-        searchKind
+        searchKind,
+        toolCalling: configuration.capabilities.toolCalling === true
       }];
     });
     return {
@@ -786,6 +793,21 @@ export function createAdminSearchService(input: Readonly<{
               responseTimeoutSeconds: model.responseTimeoutSeconds,
               searchReasoningSupported: false,
               searchKind: "deepseek_search_api" as const
+            }]
+          : []),
+        // And a tool-calling OpenRouter model may run OpenRouter's web search;
+        // only the source's probe qualifies it.
+        ...runtimeModels.flatMap((model) => model.toolCalling &&
+          technicalSearchModelSupports("openrouter_web_search", model)
+          ? [{
+              connectionDisplayName: model.connectionDisplayName,
+              connectionId: model.connectionId,
+              displayName: model.displayName,
+              enabled: model.enabled,
+              id: model.id,
+              responseTimeoutSeconds: model.responseTimeoutSeconds,
+              searchReasoningSupported: false,
+              searchKind: "openrouter_web_search" as const
             }]
           : [])
       ]

@@ -144,6 +144,32 @@ describe("Search adapter configuration", () => {
     expect(technicalSearchModelSupports("anthropic_web_search", { adapterKind: "anthropic_messages", nativeSearch: true })).toBe(true);
   });
 
+  it("admits OpenRouter's web search as a client route that names an offered engine and mode", () => {
+    const web = { ...clientDraft, openRouterWebSearch: { engine: "parallel", mode: "fast" }, protocol: "openrouter_web_search" } as const;
+    expect(normalizeSearchDraft(web)).toEqual(web);
+    expect(decodeAdminSearchDraft(web)).toEqual(web);
+    expect(normalizeSearchDraft({ ...web, openRouterWebSearch: { engine: "perplexity", mode: null } }).openRouterWebSearch)
+      .toEqual({ engine: "perplexity", mode: null });
+    expect(searchStrategyKind(web.protocol, web.adapterKind)).toBe("provider_model_web_search");
+    for (const invalid of [
+      { ...web, openRouterWebSearch: undefined },
+      { ...web, openRouterWebSearch: { engine: "firecrawl", mode: null } },
+      { ...web, openRouterWebSearch: { engine: "parallel", mode: "deep" } },
+      { ...web, openRouterWebSearch: { engine: "perplexity", mode: "fast" } },
+      { ...web, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", providerModelId: null },
+      // Another protocol never carries an engine, so its stored hash stays the same.
+      { ...clientDraft, openRouterWebSearch: { engine: "exa", mode: "auto" } }
+    ]) {
+      expect(() => normalizeSearchDraft(invalid)).toThrow("search_configuration_invalid");
+      if (invalid.adapterKind === "provider_model_client") expect(decodeAdminSearchDraft(invalid)).toBeNull();
+    }
+    // Any OpenRouter model may run it; only the probe qualifies one.
+    expect(technicalSearchModelSupports("openrouter_web_search", { adapterKind: "openrouter_chat_completions", nativeSearch: false }))
+      .toBe(true);
+    expect(technicalSearchModelSupports("openrouter_web_search", { adapterKind: "openai_responses_native", nativeSearch: true }))
+      .toBe(false);
+  });
+
   it("refuses a stored draft of DeepSeek's retired hosted Search, so its route reads as unavailable", () => {
     // Retired 2026-10-24; the upgrade archived its sources, whose revisions still name it.
     const hosted = { ...clientDraft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", providerModelId: null };
