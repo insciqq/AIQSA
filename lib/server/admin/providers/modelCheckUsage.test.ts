@@ -170,7 +170,7 @@ describe("administrator model-check usage", () => {
       usage: { inputTokens: 18, outputTokens: 28 } });
   });
 
-  it("charges both image probes, including an edit judged inconclusive", async () => {
+  it("charges every image probe, including both attempts of an edit judged inconclusive", async () => {
     const reference = await sharp({ create: { width: 256, height: 256, channels: 3, background: "#ee2828" } }).png().toBuffer();
     const { recordUsage, rows } = writer();
     let call = 0;
@@ -185,7 +185,8 @@ describe("administrator model-check usage", () => {
       providerModelId: "image-1"
     }));
     expect(outcome.evidence.capabilitySetup?.checks).toMatchObject({ imageGeneration: "verified", imageEditing: "incomplete" });
-    expect(rows).toEqual([1, 2].map(() => expect.objectContaining({ modelClass: "image", provider: "openai",
+    // Generation, then the edit and its one automatic retry.
+    expect(rows).toEqual([1, 2, 3].map(() => expect.objectContaining({ modelClass: "image", provider: "openai",
       providerModelId: "image-1", usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } })));
   });
 

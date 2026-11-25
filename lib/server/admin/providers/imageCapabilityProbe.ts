@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { createImageGenerationAdapter, ImageGenerationError } from "../../providers/imageGeneration";
+import { sleepWithSignal } from "../../providers/providerRetry";
 import { decodeImageVerificationEvidence } from "../../providers/imageGenerationEvidence";
 import { imageParameterDefinitions, type ImageGenerationParameters } from "../../../contracts/imageGeneration";
 import type { AdminProviderCapabilityCheckStatus, AdminProviderTestEvidence } from "../../../contracts/adminProviders";
@@ -8,9 +9,19 @@ import type { ProviderConnectionConfiguration } from "../../providers/providerCo
 import { unsupportedAdminProviderCompatibilityEvidence } from "./compatibilityEvidence";
 import { reusableCapabilitySetupEvidence } from "./initialCapabilitySetup";
 
+/**
+ * Each capability gets a second request after a failure before it is called
+ * incomplete: Gemini answered a setup probe with HTTP 400 that the next request
+ * passed (operator request 2026-11-25). A refused key (401, 403) or an
+ * unsupported route (404, 405) is not asked again.
+ */
+const IMAGE_PROBE_ATTEMPTS = 2;
+const IMAGE_PROBE_RETRY_DELAY_MS = 2_000;
+
 /** Two separate requests and deadlines; a failed generator does not suppress the editor probe. */
 export async function testImageCapabilities(input: AdminProviderDraftTesterInput, options: {
   createFetch?: (configuration: ProviderConnectionConfiguration) => typeof fetch;
+  retryDelayMs?: number;
 }): Promise<AdminProviderDraftTestOutcome> {
   const model = input.model;
   if (!model.image || ["anthropic", "deepseek"].includes(input.providerFamily)) throw new Error("provider_image_configuration_invalid");
@@ -51,6 +62,56 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
     evidence.compatibility!.modelAccess = available ? "verified" : "not_supported";
     return { status: available ? "available" : "unavailable", evidence: structuredClone(evidence) };
   };
+  /** One paid request for one capability; true when a second request may still settle it. */
+  const probeOnce = async (capability: "imageEditing" | "imageGeneration", attempt: number): Promise<boolean> => {
+    try {
+      const result = await adapter.generate({
+        prompt: capability === "imageGeneration" ? "Create one simple flat image: a blue circle centered on a white background, no text."
+          : "Edit this image: retain its red background and add a large white circle in the center. Return one image.",
+        ...(capability === "imageEditing" ? { images: [{ bytes: reference, mimeType: "image/png" as const }] } : {}),
+        parameters, signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)])
+      });
+      // The returned image is paid whatever its judgement below.
+      input.onProviderUsage?.({ usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens,
+        totalTokens: result.usage.totalTokens }, reportedCostUsd: result.usage.costUsd });
+      input.signal?.throwIfAborted();
+      if (capability === "imageEditing" && Buffer.from(result.bytes).equals(reference)) {
+        attempts[capability] = { attempts: attempt, status: "incomplete", reason: "semantic_inconclusive" };
+        if (!priorProofs[capability]) checks[capability] = "incomplete";
+        return true;
+      }
+      attempts[capability] = { attempts: attempt, status: "verified", reason: "verified" };
+      checks[capability] = "verified";
+      evidence[capability] = { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true };
+      return false;
+    } catch (error) {
+      // A completed answer rejected by the adapter is paid too; the adapter attaches its reported receipt.
+      if (error instanceof ImageGenerationError && error.usage) {
+        input.onProviderUsage?.({ usage: { inputTokens: error.usage.inputTokens, outputTokens: error.usage.outputTokens,
+          totalTokens: error.usage.totalTokens }, reportedCostUsd: error.usage.costUsd });
+      }
+      input.signal?.throwIfAborted();
+      let status: AdminProviderCapabilityCheckStatus = "incomplete";
+      if (error instanceof ImageGenerationError) {
+        if ([404, 405].includes(error.httpStatus ?? 0)) status = "unsupported";
+        else if ([400, 422].includes(error.httpStatus ?? 0)) status = "rejected";
+        else if (["image_response_invalid", "image_output_missing", "image_generation_refused"].includes(error.code)) status = "rejected";
+      }
+      const httpStatus = error instanceof ImageGenerationError ? error.httpStatus : undefined;
+      const diagnostic = error instanceof ImageGenerationError ? error.diagnostic : undefined;
+      attempts[capability] = { attempts: attempt, status: status === "unsupported" ? "unsupported" : "incomplete",
+        reason: status === "unsupported" ? "route_unsupported" : httpStatus === 400 || httpStatus === 422 ? "invalid_input"
+          : httpStatus === 429 ? "rate_limit" : httpStatus === 401 || httpStatus === 403 ? "authorization"
+            : httpStatus ? "http_error" : error instanceof ImageGenerationError && error.code === "image_request_timed_out" ? "timeout"
+              : error instanceof ImageGenerationError && error.code === "image_provider_request_failed" ? "network" : "semantic_inconclusive",
+        ...(httpStatus ? { httpStatus } : {}), ...(diagnostic ? { imageFailure: diagnostic } : {}) };
+      if (status === "unsupported" || !priorProofs[capability]) {
+        checks[capability] = status === "unsupported" ? "unsupported" : "incomplete";
+        delete evidence[capability];
+      }
+      return error instanceof ImageGenerationError && status !== "unsupported" && httpStatus !== 401 && httpStatus !== 403;
+    }
+  };
   for (const capability of ["imageGeneration", "imageEditing"] as const) {
     input.signal?.throwIfAborted();
     input.onCapabilityProgress?.({ capability, completed, total: 2 });
@@ -63,50 +124,10 @@ export async function testImageCapabilities(input: AdminProviderDraftTesterInput
       checks[capability] = "unsupported";
       delete evidence[capability];
     } else {
-      try {
-        const result = await adapter.generate({
-          prompt: capability === "imageGeneration" ? "Create one simple flat image: a blue circle centered on a white background, no text."
-            : "Edit this image: retain its red background and add a large white circle in the center. Return one image.",
-          ...(capability === "imageEditing" ? { images: [{ bytes: reference, mimeType: "image/png" as const }] } : {}),
-          parameters, signal: AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(60_000)])
-        });
-        // The returned image is paid whatever its judgement below.
-        input.onProviderUsage?.({ usage: { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens,
-          totalTokens: result.usage.totalTokens }, reportedCostUsd: result.usage.costUsd });
-        input.signal?.throwIfAborted();
-        if (capability === "imageEditing" && Buffer.from(result.bytes).equals(reference)) {
-          attempts[capability] = { attempts: 1, status: "incomplete", reason: "semantic_inconclusive" };
-          if (!priorProofs[capability]) checks[capability] = "incomplete";
-        } else {
-          attempts[capability] = { attempts: 1, status: "verified", reason: "verified" };
-          checks[capability] = "verified";
-          evidence[capability] = { adapterKind: model.adapterKind, upstreamModelId: model.upstreamModelId, probeVersion: 1, verified: true };
-        }
-      } catch (error) {
-        // A completed answer rejected by the adapter is paid too; the adapter attaches its reported receipt.
-        if (error instanceof ImageGenerationError && error.usage) {
-          input.onProviderUsage?.({ usage: { inputTokens: error.usage.inputTokens, outputTokens: error.usage.outputTokens,
-            totalTokens: error.usage.totalTokens }, reportedCostUsd: error.usage.costUsd });
-        }
-        input.signal?.throwIfAborted();
-        let status: AdminProviderCapabilityCheckStatus = "incomplete";
-        if (error instanceof ImageGenerationError) {
-          if ([404, 405].includes(error.httpStatus ?? 0)) status = "unsupported";
-          else if ([400, 422].includes(error.httpStatus ?? 0)) status = "rejected";
-          else if (["image_response_invalid", "image_output_missing", "image_generation_refused"].includes(error.code)) status = "rejected";
-        }
-        const httpStatus = error instanceof ImageGenerationError ? error.httpStatus : undefined;
-        const diagnostic = error instanceof ImageGenerationError ? error.diagnostic : undefined;
-        attempts[capability] = { attempts: 1, status: status === "unsupported" ? "unsupported" : "incomplete",
-          reason: status === "unsupported" ? "route_unsupported" : httpStatus === 400 || httpStatus === 422 ? "invalid_input"
-            : httpStatus === 429 ? "rate_limit" : httpStatus === 401 || httpStatus === 403 ? "authorization"
-              : httpStatus ? "http_error" : error instanceof ImageGenerationError && error.code === "image_request_timed_out" ? "timeout"
-                : error instanceof ImageGenerationError && error.code === "image_provider_request_failed" ? "network" : "semantic_inconclusive",
-          ...(httpStatus ? { httpStatus } : {}), ...(diagnostic ? { imageFailure: diagnostic } : {}) };
-        if (status === "unsupported" || !priorProofs[capability]) {
-          checks[capability] = status === "unsupported" ? "unsupported" : "incomplete";
-          delete evidence[capability];
-        }
+      for (let attempt = 1; ; attempt += 1) {
+        const retry = await probeOnce(capability, attempt);
+        if (!retry || attempt >= IMAGE_PROBE_ATTEMPTS) break;
+        await sleepWithSignal(options.retryDelayMs ?? IMAGE_PROBE_RETRY_DELAY_MS, input.signal ?? new AbortController().signal);
       }
     }
     completed += 1;
