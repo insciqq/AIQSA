@@ -17,7 +17,9 @@
  * Environment (keys are read from the environment, never from .env, and never
  * printed): CODEX_LB_API_KEY and CODEX_LB_ROOT (or --root, without /v1) for
  * every paid command; DEEPSEEK_API_KEY (and optionally DEEPSEEK_API_ROOT) for
- * the deepseek engine. The output directory must lie outside the repository.
+ * the deepseek engine; OPENROUTER_API_KEY (OPENROUTER_SEARCH_MODEL and
+ * OPENROUTER_API_ROOT optional) for perplexity, parallel and exa;
+ * GEMINI_API_KEY (GEMINI_API_ROOT optional) for gemini. The output directory must lie outside the repository.
  * Progress lines and the report go to stderr (the report also to
  * <out>/report.txt); the product's content-free event lines go to stdout, so
  * `>/dev/null` hides them.
@@ -59,7 +61,8 @@ import {
 export const USAGE = `Usage: npx tsx scripts/eval/web-search-quality.ts <build|run|report> [flags]
 
 Environment: CODEX_LB_API_KEY and CODEX_LB_ROOT (or --root) for every paid command;
-  DEEPSEEK_API_KEY (DEEPSEEK_API_ROOT optional) for the deepseek engine. Nothing is read from .env.
+  DEEPSEEK_API_KEY (DEEPSEEK_API_ROOT optional) for the deepseek engine; OPENROUTER_API_KEY (OPENROUTER_SEARCH_MODEL,
+  OPENROUTER_API_ROOT optional) for perplexity, parallel and exa; GEMINI_API_KEY for gemini. Nothing is read from .env.
 
 build --out DIR             writes DIR/questions.jsonl, caching downloads and verdicts in DIR/build/
   --simpleqa N --frames N --ruwiki N   questions kept per set (default 40, 40, 50)

@@ -25,6 +25,8 @@ import {
   DEEPSEEK_SEARCH_API_MODEL_ID
 } from "../../lib/server/providers/deepSeekSearchApi";
 import { openAIResponseStatus } from "../../lib/server/providers/openaiResponsesResponse";
+import { createGeminiInteractionsSearchAdapter } from "../../lib/server/providers/geminiInteractionsSearch";
+import { createFetchGeminiInteractionsClient } from "../../lib/server/providers/geminiInteractionsTransport";
 import { createOpenAIResponsesSearchAdapter } from "../../lib/server/providers/openaiResponsesSearch";
 import { createFetchOpenAIResponsesClient, type OpenAIResponsesClient } from "../../lib/server/providers/openaiResponsesTransport";
 import {
@@ -182,9 +184,14 @@ const CLIENT_SEARCH_MODEL_CAPABILITIES: ProviderModelCapabilities = {
   streaming: true, toolCalling: true, vision: false
 };
 
-/**
- * Engines by id. Gemini Google Search joins with the slice that adds its adapter; see `PENDING_ENGINES`.
- */
+const GEMINI_SEARCH_MODEL = "gemini-3.8-flash";
+
+/** Catalog Gemini models save no levels, so `lowest_supported` sends the catalog's lowest (`low` on 3.8 Flash). */
+const GEMINI_SEARCH_MODEL_CAPABILITIES: ProviderModelCapabilities = {
+  nativePdfInput: false, nativeSearch: true, pdf: false, reasoning: true, streaming: true, toolCalling: true, vision: false
+};
+
+/** Engines by id. */
 export const ENGINES: Readonly<Record<string, EngineDefinition>> = {
   none: {
     description: "no search: the answer model alone (baseline)",
@@ -239,15 +246,32 @@ export const ENGINES: Readonly<Record<string, EngineDefinition>> = {
   },
   perplexity: openRouterEngine("perplexity"),
   parallel: openRouterEngine("parallel"),
-  exa: openRouterEngine("exa")
-  // Gemini (`gemini`, GEMINI_API_KEY) joins the same way once its engine slice lands; it is left out of the comparison for
-  // now (operator 2026-11-26).
+  exa: openRouterEngine("exa"),
+  // Named only: left out of the default comparison (operator 2026-11-26).
+  gemini: {
+    description: "Gemini Google Search (`lib/server/providers/geminiInteractionsSearch.ts`): redirects resolved to pages, " +
+      "the cited answer segments as excerpts; its cost is tokens plus billed queries, unknown to the eval",
+    env: ["GEMINI_API_KEY"],
+    id: "gemini",
+    prepare(setup) {
+      const apiRoot = setup.env.GEMINI_API_ROOT?.trim() || "https://generativelanguage.googleapis.com/v1beta";
+      const client = createFetchGeminiInteractionsClient({ apiKey: required(setup.env, "GEMINI_API_KEY"), apiRoot,
+        defaultTimeoutMs: setup.timeoutMs, fetchFn: safeFetch(apiRoot, setup.timeoutMs), initialRequestRetry: { maxAttempts: 3 } });
+      return clientEngine({
+        adapter: createGeminiInteractionsSearchAdapter({ client }),
+        config: { maxOutputTokens: 2_048, modelCapabilities: GEMINI_SEARCH_MODEL_CAPABILITIES,
+          queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters, reasoningPolicy: "lowest_supported", timeoutMs: setup.timeoutMs },
+        displayName: "Gemini Google Search",
+        modelId: GEMINI_SEARCH_MODEL,
+        protocol: "gemini_google_search",
+        provider: "gemini"
+      });
+    }
+  }
 };
 
 /** Engines named in the plan whose product adapter has not landed yet. */
-export const PENDING_ENGINES: Readonly<Record<string, string>> = {
-  gemini: "the Gemini engine slice"
-};
+export const PENDING_ENGINES: Readonly<Record<string, string>> = {};
 
 /** The default comparison (task Decisions): in-answer OpenAI, the OpenAI client engine, OpenRouter Perplexity and DeepSeek. */
 export const DEFAULT_ENGINES = ["openai-in-answer", "openai-client", "perplexity", "deepseek"] as const;

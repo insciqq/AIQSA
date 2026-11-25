@@ -248,8 +248,10 @@ describe("command line", () => {
     // OpenRouter's engines drive the product adapter and need only the OpenRouter key.
     expect(await main(["run", "--questions", questionsPath, "--out", out, "--engines", "perplexity"], ports)).toBe(2);
     expect(printed.some((line) => line.startsWith("eval_env_missing:OPENROUTER_API_KEY"))).toBe(true);
-    expect(Object.keys(PENDING_ENGINES)).toEqual(["gemini"]);
+    expect(printed.some((line) => line.startsWith("eval_env_missing:GEMINI_API_KEY"))).toBe(true);
+    expect(Object.keys(PENDING_ENGINES)).toEqual([]);
     for (const id of ["perplexity", "parallel", "exa"]) expect(ENGINES[id]).toMatchObject({ env: ["OPENROUTER_API_KEY"], id });
+    expect(ENGINES.gemini).toMatchObject({ env: ["GEMINI_API_KEY"], id: "gemini" });
   });
 });
 
