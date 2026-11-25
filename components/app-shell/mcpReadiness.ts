@@ -50,6 +50,18 @@ export function mcpSetupAttention(server: Pick<UserMcpServer, "fields" | "oauthS
   return null;
 }
 
+/**
+ * The warning a server raises on its Settings row and the MCP servers tab: only
+ * a server the user turned on can be in trouble. One they never turned on still
+ * offers Connect to enable and the Needs setup filter, but raises no signal
+ * (operator decision 2026-11-25, `agent_docs/FRONTEND.md`).
+ */
+export function mcpAttentionSignal(
+  server: Pick<UserMcpServer, "enabled" | "fields" | "oauthState" | "readiness">
+) {
+  return server.enabled ? mcpSetupAttention(server) : null;
+}
+
 export function isMcpReadinessTransitioning(readiness: McpReadiness): boolean {
   return presentations[readiness].kind === "progress";
 }

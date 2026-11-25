@@ -436,8 +436,10 @@ describe("Composer v2", () => {
     const config: ComposerConfig = {
       ...composerGalleryConfig,
       mcpServers: [
-        { id: "tracker", name: "Tracker", description: "", enabled: false, knownToolCount: 0, readiness: "disabled", attention: "needs_authorization" },
+        { id: "tracker", name: "Tracker", description: "", enabled: true, knownToolCount: 0, readiness: "idle", attention: "needs_authorization" },
         { id: "files", name: "Files", description: "", enabled: true, knownToolCount: 1, readiness: "reauthorization_required" },
+        // Never turned on: it needs setup only if the user wants it, so it raises no warning.
+        { id: "workspace", name: "Workspace", description: "", enabled: false, knownToolCount: 0, readiness: "disabled", attention: "needs_authorization" },
         { id: "idle", name: "Idle", description: "", enabled: true, knownToolCount: 1, readiness: "idle" }
       ]
     };
@@ -449,6 +451,7 @@ describe("Composer v2", () => {
     fireEvent.click(chip);
     expect(screen.getByRole("status")).toHaveTextContent("Tracker · Needs authorization");
     expect(screen.getByRole("status")).toHaveTextContent("Files · Reconnect required");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Workspace");
     fireEvent.click(screen.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
     expect(onOpenMcpSettings).toHaveBeenCalledOnce();
     rerender(<ComposerV2 {...props({ config: { ...config, mcpServers: [config.mcpServers[2]] }, onOpenMcpSettings })} />);
@@ -1002,6 +1005,27 @@ describe("Composer v2", () => {
 
     expect(screen.getByRole("menuitemradio", { name: /^Research editor's servers/ }))
       .toHaveTextContent("All tools of: alpha, bravo, charlie and 3 more");
+  });
+
+  it("still warns about a server the Assistant's exact list names although the user never turned it on", () => {
+    const servers = [
+      { attention: "needs_authorization" as const, description: "", enabled: false, id: "mcp-tracker", knownToolCount: 1,
+        name: "Tracker", readiness: "disabled" as const },
+      { attention: "needs_authorization" as const, description: "", enabled: false, id: "mcp-unused", knownToolCount: 1,
+        name: "Unused", readiness: "disabled" as const }
+    ];
+    const assistant = galleryAssistant({
+      assistantValues: { tools: { mode: "exact", serverIds: ["mcp-tracker"] } }
+    });
+    render(<ComposerV2 {...props({
+      assistant,
+      config: { ...composerGalleryConfig, mcpServers: servers },
+      onSelectMcp: vi.fn()
+    })} />);
+
+    const chip = screen.getByRole("button", { name: "Change MCP mode" });
+    expect(chip.querySelector('[data-signal="attention"]')).not.toBeNull();
+    expect(chip.getAttribute("data-tooltip")).toContain("1 MCP server needs attention");
   });
 
   it("says in the chip's description what the menu's first line says, in every Assistant state", () => {

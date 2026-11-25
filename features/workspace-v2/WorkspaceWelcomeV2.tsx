@@ -46,7 +46,7 @@ import { ScheduledTasksPanel } from "@/features/scheduled-tasks/ScheduledTasksPa
 import { requestBrowserSignIn } from "@/features/workspace-v2/browserSignInRequest";
 import { scheduledTaskWorkspaceAvailability } from "@/features/scheduled-tasks/scheduledTaskDraft";
 import { McpSettingsSection } from "@/components/app-shell/McpSettingsSection";
-import { mcpSetupAttention } from "@/components/app-shell/mcpReadiness";
+import { mcpAttentionSignal } from "@/components/app-shell/mcpReadiness";
 import { observeMcpSettings, useMcpSettingsStore } from "@/components/app-shell/mcpSettingsStore";
 import { PersonalMcpConnectionsSection } from "@/components/app-shell/PersonalMcpConnectionsSection";
 import { TelegramConnectionSection } from "@/components/app-shell/TelegramConnectionSection";
@@ -479,13 +479,14 @@ function LibrarySurfaceV2({ composer, props, initialTab: requestedInitialTab }: 
 
 /**
  * Settings observes the shared MCP catalog for its lifetime so the MCP servers
- * tab flags setup, authorization and runtime problems before it is opened.
+ * tab flags setup, authorization and runtime problems of the servers the user
+ * turned on before it is opened.
  * The observer is ref-counted with the chat shell's, reads the catalog only
  * and never wakes idle servers; the rule is the chat chip's.
  */
 export function useStudioMcpAttentionV2(accountId: string): boolean {
   useEffect(() => observeMcpSettings(), [accountId]);
-  return useMcpSettingsStore((state) => state.servers.some((server) => mcpSetupAttention(server) !== null));
+  return useMcpSettingsStore((state) => state.servers.some((server) => mcpAttentionSignal(server) !== null));
 }
 
 export { LibrarySurfaceV2 };

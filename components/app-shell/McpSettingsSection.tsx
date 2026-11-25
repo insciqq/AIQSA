@@ -32,6 +32,7 @@ import {
   useMcpSettingsStore
 } from "./mcpSettingsStore";
 import {
+  mcpAttentionSignal,
   mcpReadinessPresentation,
   mcpSetupAttention,
   type McpReadinessPresentation
@@ -400,7 +401,7 @@ function ServerRow({
       <div className="v2-settings-server-head">
         <span className="v2-settings-server-mark-slot">
           <UiV2Monogram className="v2-settings-server-mark" label={server.name} />
-          {mcpSetupAttention(server) ? <span aria-hidden="true" className="v2-settings-server-signal" data-signal="attention" /> : null}
+          {mcpAttentionSignal(server) ? <span aria-hidden="true" className="v2-settings-server-signal" data-signal="attention" /> : null}
         </span>
         <div className="v2-settings-server-copy">
           <h4 id={`mcp-server-${server.id}`}>{server.name}</h4>

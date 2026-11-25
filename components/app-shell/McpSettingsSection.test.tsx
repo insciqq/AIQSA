@@ -566,14 +566,17 @@ describe("McpSettingsSection", () => {
     expect(container).not.toHaveTextContent(/\b(Inactive|Active|Checking)\b/);
   });
 
-  it("marks exactly the rows that need setup, authorization or a runtime with the attention signal", async () => {
+  it("marks exactly the turned-on rows that need setup, authorization or a runtime with the attention signal", async () => {
     const servers: UserMcpServer[] = [
-      userServer("mem0", "Setup server"),
-      { ...userServer("connect", "Connect server"), oauthAvailable: true, oauthState: "disconnected" },
+      { ...userServer("mem0", "Setup server"), enabled: true },
+      { ...userServer("connect", "Connect server"), enabled: true, oauthAvailable: true, oauthState: "disconnected" },
       { ...userServer("reconnect", "Reconnect server"), enabled: true, oauthAvailable: true,
         oauthState: "reauthorization_required", readiness: "reauthorization_required" },
       { ...userServer("down", "Down server"), enabled: true, readiness: "unavailable" },
       { ...userServer("ready", "Ready server"), enabled: true, readiness: "ready" },
+      // Never turned on: setup is needed only if the user wants the server.
+      { ...userServer("mem0", "Unused setup server"), id: "unused-setup" },
+      { ...userServer("workspace", "Unused connect server"), oauthAvailable: true, oauthState: "disconnected" },
       userServer("off", "Off server")
     ];
     vi.stubGlobal("fetch", vi.fn(async () => response({ servers })));
@@ -584,7 +587,11 @@ describe("McpSettingsSection", () => {
     for (const name of ["Setup server", "Connect server", "Reconnect server", "Down server"]) {
       expect(signal(name), name).toHaveAttribute("aria-hidden", "true");
     }
-    for (const name of ["Ready server", "Off server"]) expect(signal(name), name).toBeNull();
+    for (const name of ["Ready server", "Unused setup server", "Unused connect server", "Off server"]) {
+      expect(signal(name), name).toBeNull();
+    }
+    // The unused servers still show under Needs setup, beside the turned-on ones that need it.
+    expect(screen.getByRole("button", { name: /Needs setup/u })).toHaveTextContent("Needs setup 6");
   });
 
   it("lists every unavailable tool with its reason beside the usable ones", async () => {

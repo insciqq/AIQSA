@@ -55,6 +55,7 @@ The browser UI: product surfaces in `features/`, shared pieces in `components/`,
 - A task chat shows only what is worth reading (operator decision 2026-11-11: an hourly monitor's chat had become hundreds of prompts with empty answers). Checks with no update are not served at all (Run contracts, Scheduled tasks); one line at the top counts them with the last and next check, and a check's prompt shows only behind Show instructions. A failed check folds once a later check succeeded, a quiet one the history leaves out included (the chat's quiet summary dates it); only the latest failure stays open (operator decision 2026-11-08: old failure cards made a working monitor look broken, `features/scheduled-tasks/scheduledCheckGroups.ts`).
 - Destructive actions name the target and the consequences. Secret fields explain keep or replace and never echo the value.
 - Viewing MCP servers never wakes an idle one, and nothing re-enables a server the user deliberately disabled except completing its setup.
+- An MCP server raises the attention signal (its Settings row, the MCP servers tab, the composer chip) only when the user turned it on or the chat's Assistant names it in its exact list. One nobody turned on keeps Connect to enable and its place under Needs setup without a warning, because a warning about a server the user does not want could never be cleared (operator decision 2026-11-25, `components/app-shell/mcpReadiness.ts`).
 
 ## Interaction and visual intent
 

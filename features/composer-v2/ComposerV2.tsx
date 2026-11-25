@@ -1152,10 +1152,14 @@ export function ComposerV2({
   }, [deepResearchLost, onDeepResearchChange]);
   const enabledMcpServers = config?.mcpServers.filter((server) => server.enabled) ?? [];
   // Transitional states (activating, on-demand idle) are not problems; only
-  // the Settings-level "attention"/"failed" presentations count here.
+  // the Settings-level "attention"/"failed" presentations count here, and only
+  // for a server this chat would use: one the user turned on, or one the
+  // Assistant's exact list names. A server nobody turned on raises no warning
+  // (operator decision 2026-11-25, FRONTEND.md).
+  const mcpSelectedServerIds = new Set(effectiveMcpSelection.mode === "exact" ? effectiveMcpSelection.serverIds : []);
   const mcpAttentionServers = (config?.mcpServers ?? []).filter((server) => {
     const kind = mcpReadinessPresentation(server.attention ?? server.readiness).kind;
-    return (server.enabled || server.attention) && (kind === "attention" || kind === "failed");
+    return (server.enabled || mcpSelectedServerIds.has(server.id)) && (kind === "attention" || kind === "failed");
   });
   const mcpServersNeedingAttention = mcpAttentionServers.length;
   // Settings › MCP servers holds both kinds; only an installation server's problem turns Manage into Configure.
