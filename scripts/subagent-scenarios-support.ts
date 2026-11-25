@@ -61,9 +61,10 @@ const flag = (value: boolean) => value ? 1 : 0;
  * word authorizes nothing, a ping-pong stops at its bound, and Stop reaches a
  * sub-agent that waits. N: a DOCX attached in one turn and answered from in the
  * next, with the Workspace off for the installation. W: a custom sub-agent
- * with only web search, started in a chat with a Workspace.
+ * with only web search, started in a chat with a Workspace. X: the user asks
+ * for a background sub-agent's result before its report came.
  */
-export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W"] as const;
+export const SUBAGENT_SCENARIO_IDS = ["A", "B", "C1", "C2", "D5", "D1", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X"] as const;
 export type SubagentScenarioId = (typeof SUBAGENT_SCENARIO_IDS)[number];
 /** The cheap scenarios that need no hook, no second model and no live panel; the others run only when named. */
 export const DEFAULT_SUBAGENT_SCENARIO_IDS: readonly SubagentScenarioId[] = Object.freeze(["A", "B", "E", "F"]);
@@ -82,7 +83,7 @@ export type ScenarioNeeds = Readonly<{ livePanel?: "cancel" | "sign_in"; restart
 export const SUBAGENT_SCENARIO_NEEDS: Readonly<Record<SubagentScenarioId, ScenarioNeeds>> = Object.freeze({
   A: {}, B: {}, C1: { livePanel: "cancel" }, C2: { livePanel: "cancel", secondModel: true }, D5: { livePanel: "cancel" },
   D1: { livePanel: "cancel" }, E: {}, F: {}, G: { restartHook: true }, H: { livePanel: "sign_in" }, I: {}, J: {}, K: {}, L: {}, M: {}, N: {}, O: {}, P: {}, Q: { search: true }, R: { search: true }, S: { testProxy: true }, T: { search: true }, U: {}, V: { search: true },
-  W: { search: true }
+  W: { search: true }, X: {}
 });
 
 export type RestartHook = Readonly<{ command: string; timeoutMs: number }>;
@@ -206,6 +207,8 @@ export const SUBAGENT_NAMES = Object.freeze({
   handOver: { helper: "v-helper", lead: "v-lead" },
   /** W's custom sub-agent, created for the run and deleted after it: its name is its type's. */
   ownType: "w-searcher",
+  /** X's background sub-agent, asked about before its report came. */
+  waiter: "x-waiter",
   notary: "notary",
   restart: { browsing: ["browse-a", "browse-b"], sleeper: "sleeper" },
   handoff: { browse: "browse", sauce: "sauce" },
@@ -342,6 +345,17 @@ export type ScenarioPFacts = Readonly<{ note: string; word: string }>;
 
 export function scenarioPFacts(nonce: string): ScenarioPFacts {
   return { note: `NOTE-${nonce.slice(8, 16).toUpperCase()}`, word: `AMBER-${nonce.slice(0, 8).toUpperCase()}` };
+}
+
+/**
+ * X's per-run facts: the sub-agent writes its code word to a file with a Workspace command after a long sleep and reads it back, so
+ * the word exists nowhere before that file does. The prompts carry only the nonce; the word (`notaryValue`) stays in memory and is
+ * matched inside SQL.
+ */
+export type ScenarioXFacts = Readonly<{ code: string; directory: string; nonce: string }>;
+
+export function scenarioXFacts(nonce: string): ScenarioXFacts {
+  return { code: notaryValue(`${nonce}-x`), directory: `/workspace/project/subagent-x-${nonce}`, nonce };
 }
 
 /**
@@ -592,6 +606,18 @@ export const SUBAGENT_PROMPTS = Object.freeze({
     "Ему хватит ровно одного веб-поиска: не больше одного поиска, ответ взять из результатов поиска.",
     "Когда получишь его отчёт, ответь мне двумя короткими строками: лицензия и год."
   ].join("\n\n"),
+  X: Object.freeze({
+    // The word is the hash of a value only the command sees whole, written after the sleep: nobody has it before the report.
+    start: (facts: ScenarioXFacts) => [
+      `Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.waiter}. Его задание: выполнить в Workspace одной командой ` +
+        `\`mkdir -p ${facts.directory} && sleep 90 && printf '%s' ${facts.nonce}-x | sha256sum | cut -c1-12 > ${facts.directory}/code.txt\`, ` +
+        `затем прочитать файл ${facts.directory}/code.txt и написать в отчёте его содержимое, кодовое слово, дословно. ` +
+        `Сам ничего не выполняй и не вычисляй. ${NO_WEB} Не жди его: сразу после запуска ответь мне одной короткой фразой.`,
+      "Когда получишь его отчёт — в том ответе, где ты его получишь, а не сейчас, — напиши мне кодовое слово из отчёта одной строкой."
+    ].join("\n\n"),
+    // Asked while it still sleeps: the answer it can give is that it is still working.
+    ask: () => `Какое кодовое слово нашёл ${SUBAGENT_NAMES.waiter}? Ответь одной строкой.`
+  }),
   P: Object.freeze({
     // The brief says nothing about the user: following the message is the product's doing, not this prompt's.
     start: () => `Запусти в фоне (background: true) ровно одного суб-агента ${SUBAGENT_NAMES.listener} и больше ничего не делай. ` +
@@ -1693,6 +1719,77 @@ export function oracleW(input: WEvidence): OracleVerdict {
     fileToolSearches: input.fileToolSearches, mainCalls: input.mainCalls, partialTurns: input.turns.partial, reportHasAnswer: flag(input.reportHasAnswer),
     searches: input.searches, turns: input.turns.total, typeThreads: input.typeThreads, workspaceAdmitted: flag(input.workspaceAdmitted),
     workspaceCalls: input.workspaceCalls, workspaceGuidanceRecorded: flag(input.workspaceGuidanceRecorded) }, failed };
+}
+
+/**
+ * How an answer says a sub-agent is still working, in Russian or English, as a regular expression SQL matches case-insensitively (`~*`)
+ * over the lowered answer. Cyrillic capitals are spelled out, since a C collation lowers and folds only ASCII.
+ */
+export const SCENARIO_X_WORKING_PATTERN = [
+  "[еЕёЁ]щ[её] (работает|выполняется|в процессе|идёт|идет|ждёт|ждет|спит)",
+  "[еЕёЁ]щ[её] не (закончил|заверш|готов|отчита|присла|верну|приш|сообщ)",
+  "[пП]ока (что )?(работает|выполняется|в процессе|не (закончил|заверш|готов|отчита|присла|верну|приш|сообщ|извест|знаю))",
+  "(отч[её]та|результата|ответа) (от него )?(ещ[её] |пока )нет",
+  "[вВ] процессе",
+  "still (working|running|in progress|busy)",
+  "not (finished|done|ready|back|complete) yet",
+  "ha(s|ve)(n['’]t| not) (finished|reported|returned|completed|come back)",
+  "no (report|result) yet",
+  "in progress"
+].map((phrase) => `(${phrase})`).join("|");
+
+/** The words of X's receipt note that prove the stand runs this change (`SUBAGENT_BACKGROUND_STARTED_NOTE`), matched inside SQL. */
+export const SCENARIO_X_RECEIPT_MARK = "Until then you do not know its result";
+
+/** X's facts, from read-only SQL over the chat and the harness's own reads: no answer, report or code word leaves the database. */
+export type XEvidence = Readonly<{
+  /** The first message's run: it started the sub-agent and answered at once. */
+  firstTerminal: string;
+  /** `list_agents` calls of the second message's run: recorded so polling shows, never an oracle. */
+  listAgentsCalls: number;
+  /** A `call_subagent` result of the chat carries the receipt's note (`SCENARIO_X_RECEIPT_MARK`). */
+  receiptNoted: boolean;
+  /** The sub-agent's report holds the code word: it did its part. */
+  reportHasCode: boolean;
+  /** The sub-agent's turn was running or waiting when the harness sent the question. */
+  runningAtQuestion: boolean;
+  /** The second answer completed before the sub-agent's turn ended, and its callback went into another run. */
+  secondBeforeReport: boolean;
+  secondHasCode: boolean;
+  /** The second answer matches `SCENARIO_X_WORKING_PATTERN`. */
+  secondSaysWorking: boolean;
+  secondTerminal: string;
+  settled: boolean;
+  /** The sub-agent's turn ended `done`. */
+  turnDone: boolean;
+  /** A wake-up turn's answer holds the code word. */
+  wakeUpHasCode: boolean;
+  wakeUps: number;
+}>;
+
+/**
+ * X's verdict: asked for a background sub-agent's result before its report came, the main agent says it is still working and
+ * invents nothing; when the report comes, the wake-up answer gives the word. The stand runs the receipt's note, the question was
+ * asked while the sub-agent ran, and the second answer settled before its report.
+ */
+export function oracleX(input: XEvidence): OracleVerdict {
+  const failed: string[] = [];
+  if (input.firstTerminal !== "complete") failed.push("first_run_not_complete");
+  if (!input.receiptNoted) failed.push("receipt_without_note");
+  if (!input.runningAtQuestion) failed.push("not_running_at_question");
+  if (input.secondTerminal !== "complete") failed.push("second_run_not_complete");
+  if (!input.secondBeforeReport) failed.push("second_answer_after_report");
+  if (input.secondHasCode) failed.push("second_answer_has_code");
+  if (!input.secondSaysWorking) failed.push("second_answer_not_still_working");
+  if (!input.turnDone) failed.push("subagent_turn_not_done");
+  if (!input.reportHasCode) failed.push("report_without_code");
+  if (input.wakeUps === 0) failed.push("no_wake_up");
+  else if (!input.wakeUpHasCode) failed.push("wake_up_without_code");
+  if (!input.settled) failed.push("callbacks_owed");
+  return { counts: { listAgentsCalls: input.listAgentsCalls, receiptNoted: flag(input.receiptNoted), reportHasCode: flag(input.reportHasCode),
+    runningAtQuestion: flag(input.runningAtQuestion), secondBeforeReport: flag(input.secondBeforeReport), secondHasCode: flag(input.secondHasCode),
+    secondSaysWorking: flag(input.secondSaysWorking), turnDone: flag(input.turnDone), wakeUpHasCode: flag(input.wakeUpHasCode), wakeUps: input.wakeUps },
+  failed };
 }
 
 export const SCENARIO_S_NAME = "ru-test";

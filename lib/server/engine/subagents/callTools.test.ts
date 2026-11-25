@@ -7,6 +7,7 @@ import {
 } from "@/tests/support/subagentPorts";
 import { SUBAGENT_BUILT_IN_TYPE, SUBAGENT_ERROR_CODES, type SubagentCallResult } from "../../../contracts/subagents";
 import type { SubagentBackgroundControl, SubagentParentAgent, SubagentTypeSnapshot } from "../../subagents/ports";
+import { SUBAGENT_BACKGROUND_STARTED_NOTE } from "../../subagents/tools";
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, ToolExecutionResult } from "../../tools/types";
 import type { EngineToolExecution } from "../toolRegistry";
@@ -121,7 +122,7 @@ describe("call_subagent", () => {
     const background = new FakeSubagentBackgroundControl();
     const ctx = setup({ background });
     expect(value(await executeCallSubagent(ctx.deps, execution({ background: true, message: "Go", name: "shop" }))))
-      .toEqual({ continued: false, kind: "started", name: "shop", state: "running" });
+      .toEqual({ continued: false, kind: "started", name: "shop", note: SUBAGENT_BACKGROUND_STARTED_NOTE, state: "running" });
     expect(ctx.store.ensureThread).toHaveBeenCalled();
     expect(background.turns[0]!.input).toMatchObject({ kind: "start", threadId: "thread-new", userMessage: "Find me a laptop." });
     const running = setup({ background, found: visible({ active: turn({ id: "background-turn-1", mode: "background", parentRunId: "run",
@@ -132,6 +133,30 @@ describe("call_subagent", () => {
     expect(background.turns[0]!.messages).toEqual([{ nonce: "c3", origin: "main_agent", text: "Also check prices" }]);
     expect(value(await executeCallSubagent(running.deps, execution({ message: "x", model: "gpt-6-luna", name: "shop" }, "c4"))).error)
       .toBe(SUBAGENT_ERROR_CODES.busy);
+  });
+
+  it("tells the agent it does not know a background sub-agent's result until its report comes, and says so only on a start", async () => {
+    // The note: the report comes as a message, nothing is guessed meanwhile, and nothing polls for it.
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain("you do not know its result");
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain("say it is still working");
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain("list_agents");
+    // A continued thread's background turn carries it with the same fields.
+    const background = new FakeSubagentBackgroundControl();
+    const continued = setup({ background, found: visible() });
+    const resumed = await executeCallSubagent(continued.deps, execution({ background: true, message: "Go on", name: "shop" }));
+    expect(resumed.status).toBe("complete");
+    expect(value(resumed)).toEqual({ continued: true, kind: "started", name: "shop", note: SUBAGENT_BACKGROUND_STARTED_NOTE, state: "running" });
+    expect(background.turns[0]!.input).toMatchObject({ kind: "continue", threadId: "thread-1" });
+    // A foreground result, a refusal of the admission and a refusal before it carry none.
+    const foreground = setup();
+    expect(value(await executeCallSubagent(foreground.deps, execution({ message: "Go", name: "shop" })))).not.toHaveProperty("note");
+    const refusedAdmission = setup({ background: new FakeSubagentBackgroundControl({ refuse: SUBAGENT_ERROR_CODES.limitReached }) });
+    const refused = value(await executeCallSubagent(refusedAdmission.deps, execution({ background: true, message: "Go", name: "shop" })));
+    expect(refused.error).toBe(SUBAGENT_ERROR_CODES.limitReached);
+    expect(refused).not.toHaveProperty("note");
+    const unavailable = value(await executeCallSubagent(setup().deps, execution({ background: true, message: "Go", name: "shop" })));
+    expect(unavailable.error).toBe(SUBAGENT_ERROR_CODES.backgroundUnavailable);
+    expect(unavailable).not.toHaveProperty("note");
   });
 
   it("takes a frozen model the call names and refuses one outside the list or a route that is gone", async () => {
@@ -568,7 +593,7 @@ describe("a sub-agent's own children", () => {
     const deps = { ...ctx.deps, deadlineAt: () => at };
     const call = execution({ background: true, message: "Go", name: "shop" });
     expect(value(await executeCallSubagent(deps, call)))
-      .toEqual({ continued: false, kind: "started", name: "shop", state: "running" });
+      .toEqual({ continued: false, kind: "started", name: "shop", note: SUBAGENT_BACKGROUND_STARTED_NOTE, state: "running" });
     expect(ctx.store.ensureThread).toHaveBeenCalledWith(expect.objectContaining({ parentRunId: "run", parentThreadId: "thread-parent" }));
     expect(background.turns[0]!.input).toMatchObject({ deadlineAt: at, parentAgent, parentRunId: "run" });
     expect(background.turns[0]!.input.signal).toBe(call.signal);

@@ -22,7 +22,8 @@ import {
   parseCallSubagentArguments,
   parseStopSubagentArguments,
   stopChildSubagentTool,
-  stopSubagentTool
+  stopSubagentTool,
+  SUBAGENT_BACKGROUND_STARTED_NOTE
 } from "../../subagents/tools";
 import type { FrozenSubagentDefault } from "../../subagents/typeCatalog";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../../tools/types";
@@ -118,6 +119,18 @@ const resultOf = (call: ModelToolCall, result: SubagentCallResult): ToolExecutio
   content: [{ type: "json", value: result }],
   name: call.name,
   status: result.kind === "ended" && result.state !== "done" ? "error" : "complete"
+});
+
+/**
+ * A background start's receipt: the contract's `started` fields and the note on waiting for its report
+ * (`SUBAGENT_BACKGROUND_STARTED_NOTE`), new thread or continued, for the main agent and a sub-agent's helpers alike. The note is
+ * the model's text only: nothing reads a receipt back (`decodeSubagentCallResult` reads stored turn results, which are `ended`).
+ */
+const startedResultOf = (call: ModelToolCall, result: Extract<SubagentCallResult, { kind: "started" }>): ToolExecutionResult => ({
+  callId: call.id,
+  content: [{ type: "json", value: { ...result, note: SUBAGENT_BACKGROUND_STARTED_NOTE } }],
+  name: call.name,
+  status: "complete"
 });
 
 /**
@@ -343,7 +356,7 @@ export async function executeCallSubagent(deps: SubagentCallDeps, execution: Eng
       kind: lookup ? "continue" : "start", name: args.name, threadId: thread.id, type: type.type, userMessage: deps.userMessage });
     if (started.kind === "started") deps.onChildStarted?.(started.name);
     return started.kind === "started"
-      ? resultOf(call, { continued: lookup !== null, kind: "started", name: started.name, state: started.state })
+      ? startedResultOf(call, { continued: lookup !== null, kind: "started", name: started.name, state: started.state })
       : refusalOfAdmission(call, started.code);
   }
   const admitted = await deps.store.admitForeground({ binding, branchRunIds: deps.branchRunIds, chatId: deps.chatId,
