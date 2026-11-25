@@ -62,7 +62,7 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
   };
 }
 
-function searchPolicy(): Extract<ProviderSearchPolicy, { provider: "openrouter" }> {
+function searchPolicy(): Extract<ProviderSearchPolicy, { strategyId: "perplexity-tool-search" }> {
   return {
     controls: {
       maxOutputTokens: {

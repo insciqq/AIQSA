@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { normalizeTokenUsage } from "../../lib/domain/usage";
 import type { ProviderSearchAdapter } from "../../lib/server/providers/types";
 import { cbrQuestion, eolQuestions, parseCbrRates, parseGeneratedQuestion, russianDate } from "./web-search-quality-build";
-import { clientEngine } from "./web-search-quality-engines";
+import { clientEngine, ENGINES, PENDING_ENGINES } from "./web-search-quality-engines";
 import {
   answerQuestion,
   buildReport,
@@ -244,7 +244,12 @@ describe("command line", () => {
     expect(report).toContain("gpt-fake|openai-in-answer|medium");
 
     expect(() => outputDirectory(new Map([["out", resolve(".aiqsa", "eval")]]), resolve("."))).toThrow("eval_output_inside_repository");
+    expect(await main(["run", "--questions", questionsPath, "--out", out, "--engines", "gemini"], ports)).toBe(2);
+    // OpenRouter's engines drive the product adapter and need only the OpenRouter key.
     expect(await main(["run", "--questions", questionsPath, "--out", out, "--engines", "perplexity"], ports)).toBe(2);
+    expect(printed.some((line) => line.startsWith("eval_env_missing:OPENROUTER_API_KEY"))).toBe(true);
+    expect(Object.keys(PENDING_ENGINES)).toEqual(["gemini"]);
+    for (const id of ["perplexity", "parallel", "exa"]) expect(ENGINES[id]).toMatchObject({ env: ["OPENROUTER_API_KEY"], id });
   });
 });
 

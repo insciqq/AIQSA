@@ -1,9 +1,10 @@
 import { admittedOutputAllowance, isModelGenerationBudget } from "../providers/modelOutputAllowance";
 import { normalizeTokenUsage, sumTokenUsage } from "../../domain/usage";
-import type { ValidatedSearchQuery } from "../../domain/search";
+import { searchProtocolReportsNoResults, type ValidatedSearchQuery } from "../../domain/search";
 import type { ModelRunUsage } from "../../domain/modelRunEvents";
 import {
   adminSearchExecutionLimits,
+  decodeOpenRouterWebSearchSettings,
   type AdminSearchReasoningPolicy
 } from "../../contracts/adminSearch";
 import type { ProviderRuntimeBinding } from "../providers/runtimeFactory";
@@ -370,6 +371,18 @@ function queryOnlyRequest(
       provider: "deepseek",
       strategyId: "deepseek-search-api"
     };
+  } else if (option.protocol === "openrouter_web_search" && option.provider === "openrouter") {
+    const engine = decodeOpenRouterWebSearchSettings(option.config.openRouterWebSearch);
+    if (!engine) return null;
+    searchPolicy = {
+      defaultParams: configured.defaultParams,
+      engine: engine.engine,
+      mode: engine.mode,
+      modelCapabilities: configured.capabilities,
+      modelId: option.modelId ?? "",
+      provider: "openrouter",
+      strategyId: "openrouter-web-search"
+    };
   } else if (option.protocol === "gemini_google_search" && option.provider === "gemini") {
     searchPolicy = {
       maxOutputTokens: configured.maxOutputTokens,
@@ -420,7 +433,7 @@ async function consumeProviderSearch(
   if (result.noResults === true) {
     // An explicit empty answer of a raw results API is an ordinary outcome:
     // no sources and no provider text, only the server's own words.
-    if (option.protocol !== "deepseek_search_api" || option.provider !== "deepseek" || result.sources.length > 0 ||
+    if (!searchProtocolReportsNoResults(option.protocol, option.provider) || result.sources.length > 0 ||
       result.findings !== SEARCH_NO_RESULTS_FINDINGS) {
       throw new ProviderSearchExecutionError({
         artifacts: result.artifacts,

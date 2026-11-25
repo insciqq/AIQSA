@@ -1820,3 +1820,76 @@ describe("DeepSeek Search API source", () => {
     expect(state.test).not.toHaveBeenCalled();
   });
 });
+
+describe("OpenRouter web search source", () => {
+  const webDraft: AdminSearchDraft = {
+    ...draft,
+    maxOutputTokens: null,
+    openRouterWebSearch: { engine: "perplexity", mode: null },
+    protocol: "openrouter_web_search",
+    providerModelId: "technical-1"
+  };
+  const webBinding = { ...PROBE_BINDING, connectionId: "connection-openrouter" };
+  const openRouterModel = () => providerModel({ adapterKind: "openrouter_chat_completions", connectionId: "connection-openrouter" });
+
+  it("lists OpenRouter models as technical models beside Sonar, and its source as a ready web source", async () => {
+    const row = option([child(webDraft, { id: "strategy-web", strategyId: "openrouter-web-search-1:client" })], {
+      displayName: "OpenRouter Web Search", id: "source-web", optionId: "openrouter-web-search-1",
+      sourceConnectionId: "connection-openrouter", templateKey: null
+    });
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [openRouterModel()]) },
+      searchOption: { findMany: vi.fn(async () => [row]) },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+    } as unknown as PrismaClient;
+    const catalog = await createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } }).list();
+
+    expect(catalog.integrations).toEqual([expect.objectContaining({
+      broaderModelSetup: "ready", configurable: true, configuration: webDraft, executionModes: ["all_selected", "model_choice"],
+      kind: "web_search", ready: true
+    })]);
+    expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
+      "perplexity_search:technical-1",
+      "openrouter_web_search:technical-1"
+    ]);
+    expect(decodeAdminSearchCatalog(JSON.parse(JSON.stringify({ search: catalog })))).not.toBeNull();
+  });
+
+  it("adds it as a client-only web source of the OpenRouter connection after one check", async () => {
+    const optionCreate = vi.fn(async () => ({}));
+    const strategyCreate = vi.fn(async () => ({}));
+    const created = option([child(webDraft, { id: "strategy-web", strategyId: "openrouter-web-search-1:client" })], {
+      enabled: false, id: "source-web", sourceConnectionId: "connection-openrouter", templateKey: null
+    });
+    const write = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => openRouterModel()) },
+      searchIntegrationRevision: revisionRepository(),
+      searchOption: { create: optionCreate, findMany: vi.fn(async () => []), findUnique: vi.fn(async () => created), update: write },
+      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null), update: write, updateMany: write }
+    };
+    const test = vi.fn<AdminSearchTester["test"]>(async () => ({
+      method: "provider_search", normalizedSourceCount: 10, probeBinding: webBinding, protocol: "openrouter_web_search", status: "available"
+    }));
+    const service = createAdminSearchService({
+      prisma: { ...tx, $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx) } as unknown as PrismaClient,
+      tester: { currentBinding: vi.fn(async () => webBinding), test }
+    });
+    await service.createDraft({ check: true, description: "Web results.", displayName: "OpenRouter Web Search", draft: webDraft,
+      userId: "admin-1" });
+
+    expect(test).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ draft: webDraft }));
+    expect(optionCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ kind: "web_search",
+      sourceConnectionId: "connection-openrouter" }) });
+    // No hosted route: only the technical model runs OpenRouter's search.
+    expect(strategyCreate).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
+      adapterKind: "provider_model_client", kind: "provider_model_web_search", provider: "openrouter", providerModelId: "technical-1"
+    }) });
+
+    test.mockResolvedValueOnce({ method: "provider_search", normalizedSourceCount: 10, probeBinding: webBinding,
+      protocol: "openrouter_web_search", status: "unavailable" });
+    await expect(service.createDraft({ check: true, description: "Web results.", displayName: "OpenRouter Web Search",
+      draft: webDraft, userId: "admin-1" })).rejects.toMatchObject({ code: "search_test_failed" });
+  });
+});

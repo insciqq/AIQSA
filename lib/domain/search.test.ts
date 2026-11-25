@@ -89,6 +89,8 @@ describe("automatic Search source", () => {
       { protocols: ["deepseek_search_api"], strategyId: "deepseek-api" }
     ];
     expect(automaticSearchOptionId(sources)).toBe("deepseek-api");
+    expect(automaticSearchOptionId([...sources.slice(0, 3), { protocols: ["openrouter_web_search"], strategyId: "openrouter" }]))
+      .toBe("openrouter");
     expect(automaticSearchOptionId(sources.slice(0, 3))).toBe("perplexity");
     expect(automaticSearchOptionId(sources.slice(0, 2))).toBe("openai");
     expect(automaticSearchOptionId([{ protocols: [], strategyId: "hosted-only" }])).toBeNull();

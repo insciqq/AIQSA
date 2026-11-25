@@ -454,8 +454,11 @@ function routeBelongsToOption(
   route: SearchStrategyRouteCatalogEntry
 ): boolean {
   if (storedKind === "web_search") {
+    // OpenRouter's web search is a client route of a `web_search` source on
+    // an OpenRouter connection.
     return route.protocol === "anthropic_web_search" ||
-      route.protocol === "openai_responses_web_search";
+      route.protocol === "openai_responses_web_search" ||
+      route.adapterKind === "provider_model_client" && route.protocol === "openrouter_web_search";
   }
   if (storedKind === "deepseek_search_api") {
     return route.adapterKind === "provider_model_client" &&

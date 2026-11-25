@@ -408,7 +408,8 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       protocol !== "deepseek_search_api" &&
       protocol !== "gemini_google_search" &&
       protocol !== "openai_responses_web_search" &&
-      protocol !== "openrouter_perplexity_chat") ||
+      protocol !== "openrouter_perplexity_chat" &&
+      protocol !== "openrouter_web_search") ||
     (value.revisionId !== undefined && !nonEmptyString(value.revisionId))
   ) {
     return null;

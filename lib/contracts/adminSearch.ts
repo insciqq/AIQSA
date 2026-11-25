@@ -13,6 +13,9 @@ export type AdminSearchDraft = {
   adapterKind: SearchAdapterKind;
   credentialMode: SearchCredentialMode;
   maxOutputTokens: number | null;
+  /** The engine and mode of an `openrouter_web_search` source; present
+   * exactly on that protocol. */
+  openRouterWebSearch?: OpenRouterWebSearchSettings;
   protocol: SearchProtocol;
   providerModelId: string | null;
   queryMaxCharacters: number;
@@ -35,6 +38,45 @@ export const adminSearchExecutionLimits = Object.freeze({
   queryMaxCharacters: Object.freeze({ maximum: 4_000, minimum: 32 }),
   timeoutMs: Object.freeze({ maximum: 900_000, minimum: 5_000 })
 });
+
+/**
+ * The engines of OpenRouter's `openrouter:web_search` server tool a source may
+ * use, each with the modes OpenRouter offers for it (operator decisions
+ * 2026-11-26): Perplexity is the default; Parallel and Exa are offered, never
+ * defaults.
+ */
+export const OPENROUTER_WEB_SEARCH_ENGINES = Object.freeze({
+  exa: Object.freeze({ defaultMode: "auto", modes: Object.freeze(["instant", "fast", "auto", "deep"]) }),
+  parallel: Object.freeze({ defaultMode: "fast", modes: Object.freeze(["turbo", "fast", "basic", "advanced"]) }),
+  perplexity: Object.freeze({ defaultMode: null, modes: Object.freeze([] as string[]) })
+});
+
+export type OpenRouterWebSearchEngine = keyof typeof OPENROUTER_WEB_SEARCH_ENGINES;
+
+export type OpenRouterWebSearchSettings = Readonly<{
+  engine: OpenRouterWebSearchEngine;
+  /** One of the engine's modes; null for an engine without modes. */
+  mode: string | null;
+}>;
+
+export const DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE: OpenRouterWebSearchEngine = "perplexity";
+
+export function defaultOpenRouterWebSearchSettings(
+  engine: OpenRouterWebSearchEngine = DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE
+): OpenRouterWebSearchSettings {
+  return { engine, mode: OPENROUTER_WEB_SEARCH_ENGINES[engine].defaultMode };
+}
+
+/** A stored or submitted engine choice; null when it names an engine or a
+ * mode this release does not offer. */
+export function decodeOpenRouterWebSearchSettings(value: unknown): OpenRouterWebSearchSettings | null {
+  if (!isRecord(value) || typeof value.engine !== "string" ||
+    !Object.prototype.hasOwnProperty.call(OPENROUTER_WEB_SEARCH_ENGINES, value.engine)) return null;
+  const engine = value.engine as OpenRouterWebSearchEngine;
+  const modes: readonly string[] = OPENROUTER_WEB_SEARCH_ENGINES[engine].modes;
+  if (modes.length === 0) return value.mode === null ? { engine, mode: null } : null;
+  return typeof value.mode === "string" && modes.includes(value.mode) ? { engine, mode: value.mode } : null;
+}
 
 /** The DeepSeek Search API accepts queries of at most 128 characters; its
  * sources reject longer generated queries rather than truncate them. */
@@ -92,8 +134,11 @@ export type AdminSearchProviderModelOption = {
   responseTimeoutSeconds?: number;
   searchReasoningSupported: boolean;
   /** `deepseek_search_api` lists a DeepSeek model whose connection key the
-   * DeepSeek Search API uses; that model is never called for Search. */
-  searchKind: "anthropic_web_search" | "deepseek_search_api" | "gemini_google_search" | "perplexity_search" | "web_search";
+   * DeepSeek Search API uses; that model is never called for Search.
+   * `openrouter_web_search` lists an OpenRouter model that may run
+   * OpenRouter's web search as its technical model once its probe passes. */
+  searchKind: "anthropic_web_search" | "deepseek_search_api" | "gemini_google_search" | "openrouter_web_search" |
+    "perplexity_search" | "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -138,7 +183,8 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
-      value.protocol === "openrouter_perplexity_chat") &&
+      value.protocol === "openrouter_perplexity_chat" ||
+      value.protocol === "openrouter_web_search") &&
     nullableString(value.providerModelId) &&
     Number.isSafeInteger(value.queryMaxCharacters) &&
     Number(value.queryMaxCharacters) >= adminSearchExecutionLimits.queryMaxCharacters.minimum &&
@@ -148,10 +194,17 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
     Number(value.timeoutMs) >= adminSearchExecutionLimits.timeoutMs.minimum &&
     Number(value.timeoutMs) <= adminSearchExecutionLimits.timeoutMs.maximum
   )) return null;
+  const openRouterWebSearch = value.protocol === "openrouter_web_search"
+    ? decodeOpenRouterWebSearchSettings(value.openRouterWebSearch)
+    : null;
+  if (value.protocol === "openrouter_web_search" ? !openRouterWebSearch : value.openRouterWebSearch !== undefined) {
+    return null;
+  }
   return {
     adapterKind: value.adapterKind,
     credentialMode: value.credentialMode,
     maxOutputTokens: value.maxOutputTokens,
+    ...(openRouterWebSearch ? { openRouterWebSearch } : {}),
     protocol: value.protocol,
     providerModelId: value.providerModelId,
     queryMaxCharacters: Number(value.queryMaxCharacters),
@@ -171,7 +224,8 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
-      value.protocol === "openrouter_perplexity_chat") &&
+      value.protocol === "openrouter_perplexity_chat" ||
+      value.protocol === "openrouter_web_search") &&
     (value.status === "available" || value.status === "unavailable")
   );
 }
@@ -215,6 +269,7 @@ function providerModel(value: unknown): boolean {
     (value.searchKind === "anthropic_web_search" ||
       value.searchKind === "deepseek_search_api" ||
       value.searchKind === "gemini_google_search" ||
+      value.searchKind === "openrouter_web_search" ||
       value.searchKind === "perplexity_search" || value.searchKind === "web_search");
 }
 

@@ -10,7 +10,13 @@
  * environment variables it reads and building its runtime from the product
  * adapter. Keys come from the environment only and are never printed.
  */
-import { adminSearchExecutionDefaults, DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS } from "../../lib/contracts/adminSearch";
+import {
+  adminSearchExecutionDefaults,
+  DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
+  defaultOpenRouterWebSearchSettings,
+  type OpenRouterWebSearchEngine
+} from "../../lib/contracts/adminSearch";
+import { OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS } from "../../lib/domain/catalog";
 import type { SearchProtocol } from "../../lib/domain/search";
 import { MODEL_CALL_UNATTENDED_RETRY, modelCallRetryDecision } from "../../lib/server/engine/modelCall";
 import {
@@ -21,6 +27,10 @@ import {
 import { openAIResponseStatus } from "../../lib/server/providers/openaiResponsesResponse";
 import { createOpenAIResponsesSearchAdapter } from "../../lib/server/providers/openaiResponsesSearch";
 import { createFetchOpenAIResponsesClient, type OpenAIResponsesClient } from "../../lib/server/providers/openaiResponsesTransport";
+import {
+  createFetchOpenRouterResponsesSearchClient,
+  createOpenRouterWebSearchAdapter
+} from "../../lib/server/providers/openRouterWebSearch";
 import { providerRetryDelayMs, sleepWithSignal } from "../../lib/server/providers/providerRetry";
 import { createProviderSafeFetch } from "../../lib/server/providers/providerSafeFetch";
 import { providerResponseFailure } from "../../lib/server/providers/responseFailure";
@@ -125,6 +135,47 @@ export function codexLbClient(input: Readonly<{ apiKey: string; root: string; ti
   });
 }
 
+/** The OpenRouter technical model when OPENROUTER_SEARCH_MODEL names none: the template's default (DeepSeek V4.1 Flash,
+ * reasoning off), as provider setup picks it. */
+export const OPENROUTER_SEARCH_MODEL_DEFAULT = OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS[0]!.upstreamModelId;
+
+/**
+ * One of OpenRouter's web search engines (`lib/server/providers/openRouterWebSearch.ts`) at its default mode (Parallel fast,
+ * Exa auto), run by the technical model OPENROUTER_SEARCH_MODEL names. The model's routing is OpenRouter's automatic one
+ * with data collection denied, as a newly set up OpenRouter model has it.
+ */
+export function openRouterEngine(engine: OpenRouterWebSearchEngine): EngineDefinition {
+  const settings = defaultOpenRouterWebSearchSettings(engine);
+  return {
+    description: `OpenRouter web search, engine ${engine}${settings.mode ? ` (mode ${settings.mode})` : ""}, run by the ` +
+      "technical model OPENROUTER_SEARCH_MODEL (`lib/server/providers/openRouterWebSearch.ts`); cost as OpenRouter reports it",
+    env: ["OPENROUTER_API_KEY"],
+    id: engine,
+    prepare(setup) {
+      const apiRoot = setup.env.OPENROUTER_API_ROOT?.trim() || "https://openrouter.ai/api/v1";
+      const modelId = setup.env.OPENROUTER_SEARCH_MODEL?.trim() || OPENROUTER_SEARCH_MODEL_DEFAULT;
+      const client = createFetchOpenRouterResponsesSearchClient({ apiKey: required(setup.env, "OPENROUTER_API_KEY"), baseUrl: apiRoot,
+        defaultTimeoutMs: setup.timeoutMs, fetchFn: safeFetch(apiRoot, setup.timeoutMs) });
+      return clientEngine({
+        adapter: createOpenRouterWebSearchAdapter({ client }),
+        config: { maxOutputTokens: 128, modelCapabilities: OPENROUTER_SEARCH_MODEL_CAPABILITIES,
+          modelDefaultParams: { provider: { dataCollection: "deny" } }, openRouterWebSearch: settings,
+          queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters, reasoningPolicy: "provider_default", timeoutMs: setup.timeoutMs },
+        displayName: `OpenRouter ${engine}`,
+        modelId,
+        protocol: "openrouter_web_search",
+        provider: "openrouter"
+      });
+    }
+  };
+}
+
+/** An OpenRouter technical model outside the template sends its lowest supported effort; these are the efforts assumed. */
+const OPENROUTER_SEARCH_MODEL_CAPABILITIES: ProviderModelCapabilities = {
+  nativePdfInput: false, nativeSearch: false, pdf: false, reasoning: true, reasoningEfforts: ["none", "minimal", "low"],
+  streaming: true, toolCalling: true, vision: false
+};
+
 /** The technical model's capabilities as Admin › Search binds them; `lowest_supported` then asks for low effort. */
 const CLIENT_SEARCH_MODEL_CAPABILITIES: ProviderModelCapabilities = {
   nativePdfInput: false, nativeSearch: true, pdf: false, reasoning: true, reasoningEfforts: ["low", "medium", "high", "xhigh"],
@@ -132,8 +183,7 @@ const CLIENT_SEARCH_MODEL_CAPABILITIES: ProviderModelCapabilities = {
 };
 
 /**
- * Engines by id. OpenRouter's engines (`perplexity`, `parallel`, `exa`) and Gemini Google Search join with the slices that add
- * their adapters; see `PENDING_ENGINES`.
+ * Engines by id. Gemini Google Search joins with the slice that adds its adapter; see `PENDING_ENGINES`.
  */
 export const ENGINES: Readonly<Record<string, EngineDefinition>> = {
   none: {
@@ -186,20 +236,17 @@ export const ENGINES: Readonly<Record<string, EngineDefinition>> = {
         provider: "deepseek"
       });
     }
-  }
-  // Registry slot for the OpenRouter engine slice (`lib/server/providers/openRouterWebSearch.ts`, task
-  // `search-openrouter-engine`): add `perplexity`, `parallel` and `exa` here, each `env: ["OPENROUTER_API_KEY"]`, built with
-  // `clientEngine({ adapter: <the product adapter for that engine>, ... })`, and remove them from `PENDING_ENGINES`. Do not
-  // write the OpenRouter request here: the eval drives the product adapter. Gemini (`gemini`, GEMINI_API_KEY) joins the same way
-  // once its engine slice lands; it is left out of the comparison for now (operator 2026-11-26).
+  },
+  perplexity: openRouterEngine("perplexity"),
+  parallel: openRouterEngine("parallel"),
+  exa: openRouterEngine("exa")
+  // Gemini (`gemini`, GEMINI_API_KEY) joins the same way once its engine slice lands; it is left out of the comparison for
+  // now (operator 2026-11-26).
 };
 
 /** Engines named in the plan whose product adapter has not landed yet. */
 export const PENDING_ENGINES: Readonly<Record<string, string>> = {
-  exa: "the OpenRouter engine slice (lib/server/providers/openRouterWebSearch.ts)",
-  gemini: "the Gemini engine slice",
-  parallel: "the OpenRouter engine slice (lib/server/providers/openRouterWebSearch.ts)",
-  perplexity: "the OpenRouter engine slice (lib/server/providers/openRouterWebSearch.ts)"
+  gemini: "the Gemini engine slice"
 };
 
 /** The default comparison (task Decisions): in-answer OpenAI, the OpenAI client engine, OpenRouter Perplexity and DeepSeek. */

@@ -360,6 +360,19 @@ export type ProviderSearchPolicy =
       strategyId: "perplexity-tool-search";
     }>
   | Readonly<{
+      /** The technical model's own OpenRouter parameters: its provider
+       * routing and data collection apply to the search request too. */
+      defaultParams: Readonly<Record<string, unknown>>;
+      engine: import("../../contracts/adminSearch").OpenRouterWebSearchEngine;
+      /** The engine's mode; null for an engine without modes. */
+      mode: string | null;
+      modelCapabilities: ProviderModelCapabilities;
+      /** The technical model, which only runs OpenRouter's search tool. */
+      modelId: string;
+      provider: "openrouter";
+      strategyId: "openrouter-web-search";
+    }>
+  | Readonly<{
       /** The raw results API generates no model output. */
       maxOutputTokens?: never;
       /** The API's usage label, never the model that carries the key. */
@@ -509,6 +522,10 @@ export type ProviderSearchResult = {
   noResults?: true;
   providerResponseId?: string;
   requestPreview: Record<string, unknown>;
+  /** The queries a model-run search tool executed for the accepted response,
+   * in order; only the administrator's probe reads them (OpenRouter web
+   * search). Never stored or shown. */
+  searchQueries?: readonly string[];
   /** Omitted by legacy/test adapters means normal source attribution. */
   sourceAttribution?: "available";
   sources: readonly SearchSource[];

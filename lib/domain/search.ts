@@ -26,7 +26,8 @@ export const searchProtocols = [
   "deepseek_search_api",
   "gemini_google_search",
   "openai_responses_web_search",
-  "openrouter_perplexity_chat"
+  "openrouter_perplexity_chat",
+  "openrouter_web_search"
 ] as const;
 export type SearchProtocol = (typeof searchProtocols)[number];
 
@@ -119,6 +120,7 @@ export function decodeSearchPlan(value: unknown): SearchPlanDecodeResult {
  */
 const AUTOMATIC_SEARCH_PROTOCOL_PRIORITY: readonly SearchProtocol[] = [
   "deepseek_search_api",
+  "openrouter_web_search",
   "openrouter_perplexity_chat",
   "openai_responses_web_search",
   "gemini_google_search",
@@ -133,6 +135,14 @@ export function automaticSearchOptionId(
     if (source) return source.strategyId;
   }
   return null;
+}
+
+/** Results-only engines, whose empty search is an ordinary answer carrying
+ * only the server's own words: the DeepSeek Search API and OpenRouter's web
+ * search. */
+export function searchProtocolReportsNoResults(protocol: unknown, provider: unknown): boolean {
+  return protocol === "deepseek_search_api" && provider === "deepseek" ||
+    protocol === "openrouter_web_search" && provider === "openrouter";
 }
 
 /** Only OpenAI-protocol hosted Search runs inside a tool-calling answer

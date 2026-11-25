@@ -1079,6 +1079,25 @@ export function parameterControlsForModel(input: {
   });
 }
 
+/**
+ * The technical models OpenRouter's web search template offers, in the order
+ * provider setup prefers them, each with the reasoning effort its search
+ * request sends (operator decision 2026-11-26). DeepSeek V4.1 Flash with
+ * reasoning off and GPT-6 Luna at `minimal` searched once with the verbatim
+ * query in the 2026-11-26 probe; Claude Haiku 5.5, Qwen 3.7 Flash and Nova
+ * Micro did not. The October DeepSeek snapshot follows the probed one, and
+ * setup's own probe decides it. Any other OpenRouter model qualifies only by
+ * that probe and sends its lowest supported effort.
+ */
+export const OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS: readonly Readonly<{
+  reasoningEffort: "minimal" | "none";
+  upstreamModelId: string;
+}>[] = Object.freeze([
+  Object.freeze({ reasoningEffort: "none" as const, upstreamModelId: "deepseek/deepseek-v4.1-flash" }),
+  Object.freeze({ reasoningEffort: "none" as const, upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" }),
+  Object.freeze({ reasoningEffort: "minimal" as const, upstreamModelId: "openai/gpt-6-luna" })
+]);
+
 export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
   {
     description: "Question directly to Answer with no search tool.",

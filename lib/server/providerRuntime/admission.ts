@@ -897,9 +897,12 @@ function clientRouteCompatible(
   ) {
     return false;
   }
+  // OpenRouter's web search results reach any tool-calling answer model; its
+  // technical model only runs the search.
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "openai_responses_web_search";
+      route.draft.protocol === "openai_responses_web_search" ||
+      route.draft.protocol === "openrouter_web_search";
   }
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
@@ -920,7 +923,8 @@ function routeBelongsToOption(
 ): boolean {
   if (option.kind === "web_search") {
     return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "openai_responses_web_search";
+      route.draft.protocol === "openai_responses_web_search" ||
+      route.draft.adapterKind === "provider_model_client" && route.draft.protocol === "openrouter_web_search";
   }
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
@@ -1056,7 +1060,8 @@ function searchConfiguration(
       ...(role
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,
-            ...(route.draft.protocol === "openrouter_perplexity_chat"
+            // An OpenRouter technical model brings its routing and data collection.
+            ...(route.draft.protocol === "openrouter_perplexity_chat" || route.draft.protocol === "openrouter_web_search"
               ? { modelDefaultParams: role.modelConfiguration.defaultParams }
               : {})
           }

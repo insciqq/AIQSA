@@ -9,7 +9,8 @@ export type SearchProtocol =
   | "deepseek_search_api"
   | "gemini_google_search"
   | "openai_responses_web_search"
-  | "openrouter_perplexity_chat";
+  | "openrouter_perplexity_chat"
+  | "openrouter_web_search";
 
 export type SearchPlan = Readonly<{
   mode: SearchPlanMode;

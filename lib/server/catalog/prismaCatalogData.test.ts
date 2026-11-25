@@ -754,6 +754,75 @@ describe("prisma catalog data loader", () => {
     expect(searchOptionToCatalogEntry(stored("web_search"))?.routes).toEqual([]);
   });
 
+  it("publishes OpenRouter's web search as a web source of its connection for any tool-calling answer model", () => {
+    const technical = providerModel({
+      activeConfig: {
+        adapterKind: "openrouter_chat_completions",
+        capabilities: { ...capabilities, nativeSearch: false },
+        defaultParams: {},
+        openRouterRouting: { mode: "automatic", providers: [] },
+        upstreamModelId: "deepseek/deepseek-v4.1-flash"
+      },
+      connection: { family: "openrouter", id: "connection-openrouter" },
+      model: { connectionId: "connection-openrouter", id: "deployment-flash" }
+    });
+    const configuration = {
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      maxOutputTokens: null,
+      openRouterWebSearch: { engine: "parallel", mode: "fast" },
+      protocol: "openrouter_web_search",
+      providerModelId: "deployment-flash",
+      queryMaxCharacters: 1_000,
+      reasoningPolicy: "lowest_supported",
+      timeoutMs: 120_000
+    };
+    const route = searchStrategy({
+      activeRevision: {
+        adapterKind: "provider_model_client", configuration, credentialMode: "provider_model",
+        id: "search-revision-web", providerModelId: "deployment-flash"
+      },
+      activeRevisionId: "search-revision-web",
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      kind: "provider_model_web_search",
+      provider: "openrouter",
+      providerModelId: "deployment-flash",
+      strategyId: "openrouter-web-search-1:client"
+    });
+    const stored = (kind: string) => searchOption({
+      kind,
+      optionId: "openrouter-web-search-1",
+      sourceConnection: { id: "connection-openrouter" },
+      sourceConnectionId: "connection-openrouter",
+      strategies: [route]
+    });
+    const exposed = filterExposedSearchOptions({
+      availableProviderModels: [technical],
+      entitlements: entitlements({ searches: ["openrouter-web-search-1"] }),
+      exposedProviderModels: [providerModel({
+        activeConfig: {
+          adapterKind: "anthropic_messages", capabilities, defaultParams: {}, upstreamModelId: "claude-opus-5"
+        },
+        connection: { family: "anthropic", id: "connection-answer" },
+        model: { connectionId: "connection-answer", id: "deployment-answer" }
+      })],
+      searchOptions: [stored("web_search")]
+    });
+
+    expect(exposed).toEqual([expect.objectContaining({
+      kind: "web_search",
+      routes: [expect.objectContaining({
+        adapterKind: "provider_model_client",
+        config: expect.objectContaining({ openRouterWebSearch: { engine: "parallel", mode: "fast" } }),
+        protocol: "openrouter_web_search"
+      })],
+      strategyId: "openrouter-web-search-1"
+    })]);
+    // The connection's Sonar source never adopts the web search route.
+    expect(searchOptionToCatalogEntry(stored("perplexity_search"))?.routes).toEqual([]);
+  });
+
   it("publishes hosted Search only when an entitled available answer model can run it", () => {
     const hosted = searchStrategy({
       adapterKind: "answer_provider_hosted",

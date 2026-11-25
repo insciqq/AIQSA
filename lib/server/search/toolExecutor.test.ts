@@ -138,9 +138,9 @@ function runtime(input: Readonly<{
     responseTimeoutMs: input.responseTimeoutMs ?? 300_000,
     searchAdapter: {
       buildRequestPreview: (request) => ({
-        maxOutputTokens: request.searchPolicy.provider === "openrouter"
+        maxOutputTokens: request.searchPolicy.strategyId === "perplexity-tool-search"
           ? request.searchPolicy.controls.maxOutputTokens.defaultValue
-          : request.searchPolicy.maxOutputTokens,
+          : "maxOutputTokens" in request.searchPolicy ? request.searchPolicy.maxOutputTokens : undefined,
         queryCharacters: request.query.length
       }),
       async search(request, options) {
