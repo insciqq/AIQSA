@@ -6,6 +6,7 @@ import { READ_SECRET_TOOL_NAME } from "../tools/readSecret";
 import { BROWSER_HANDOFF_TOOL_NAME } from "../tools/browserHandoff";
 import {
   AGENT_MESSAGE_TOOLS,
+  SUBAGENT_BACKGROUND_STARTED_NOTE,
   SUBAGENT_CHILD_TOOLS,
   SUBAGENT_TOOLS,
   callChildSubagentForegroundTool,
@@ -90,6 +91,18 @@ describe("what a sub-agent starts its own children with", () => {
   it("tells the main agent a sub-agent may have helpers, how many, and that they are not its to continue", () => {
     expect(callSubagentTool.description).toContain(`up to ${SUBAGENT_LIMITS.childrenPerSubagent} helpers of its own`);
     expect(callSubagentTool.description).toContain("only its parent continues it");
+  });
+
+  it("tells the main agent that a background sub-agent's result is unknown until it comes back, only where background is offered", () => {
+    const line = callSubagentTool.description.split("\n").find((entry) => entry.startsWith("background: "));
+    expect(line).toContain("until then you do not know its result");
+    expect(callSubagentForegroundTool.description).not.toContain("you do not know its result");
+    // The receipt of a start says the rest, for the main agent and a sub-agent's helpers alike: no guessing, no polling.
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toMatch(/^Its report comes to you as a message when it ends\. Until then you do not know its result/u);
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain("do not guess or describe what it will find");
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).toContain("Do not call list_agents again and again");
+    // Sub-agents never ask the user, so the note names no user.
+    expect(SUBAGENT_BACKGROUND_STARTED_NOTE).not.toMatch(/user/iu);
   });
 });
 
