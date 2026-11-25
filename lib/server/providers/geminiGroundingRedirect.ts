@@ -30,7 +30,8 @@ export type GeminiGroundingRedirectFetch = (url: string, signal: AbortSignal) =>
 
 export type ResolveGeminiGroundingRedirectsOptions = Readonly<{
   fetchRedirect?: GeminiGroundingRedirectFetch;
-  limits?: Partial<typeof GEMINI_GROUNDING_REDIRECT_LIMITS>;
+  /** Tighter bounds for tests; production uses `GEMINI_GROUNDING_REDIRECT_LIMITS`. */
+  limits?: Partial<Readonly<Record<keyof typeof GEMINI_GROUNDING_REDIRECT_LIMITS, number>>>;
   signal?: AbortSignal;
 }>;
 
