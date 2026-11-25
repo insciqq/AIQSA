@@ -90,7 +90,7 @@ export function toolOutputExcerpt(text: string, saved: Readonly<{ handle: string
 
 /** The head and tail cut moved out of the given spans: the head ends before a span it would split, the tail starts after one. */
 function spanAlignedExcerpt(text: string, spans: readonly (readonly [number, number])[], unsavedReason: string): string {
-  let headEnd = TOOL_RESULT_LIMITS.headChars;
+  let headEnd: number = TOOL_RESULT_LIMITS.headChars;
   let tailStart = text.length - TOOL_RESULT_LIMITS.tailChars;
   for (const [start, end] of spans) {
     // The blank lines between entries go with the omitted part.
