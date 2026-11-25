@@ -280,7 +280,9 @@ export function createOpenRouterWebSearchAdapter(input: Readonly<{
         : null;
       const remainingMs = () => budgetMs === null ? null : Math.max(0, budgetMs - (performance.now() - startedAt));
       const answered: Accounting[] = [];
-      let queries: string[] = [];
+      // Every search the model ran in this call, the repeat's included: the
+      // probe's "exactly one, verbatim" check reads the whole history.
+      const queries: string[] = [];
       let requests = 0;
       for (;;) {
         requests += 1;
@@ -310,7 +312,7 @@ export function createOpenRouterWebSearchAdapter(input: Readonly<{
             usage: accounting.usage
           });
         }
-        queries = searchQueries(response);
+        queries.push(...searchQueries(response));
         const sources = annotationSources(response);
         const accounting = summed(answered);
         const preview = (sourceCount: number) => ({
@@ -329,7 +331,7 @@ export function createOpenRouterWebSearchAdapter(input: Readonly<{
             // A result list: the model reads each source's entry, not provider prose.
             findings: SEARCH_RESULT_LIST_FINDINGS,
             requestPreview: adapter.buildRequestPreview(request),
-            searchQueries: queries,
+            searchQueries: [...queries],
             sourceAttribution: "available",
             sources,
             usage: accounting.usage
@@ -345,7 +347,7 @@ export function createOpenRouterWebSearchAdapter(input: Readonly<{
             findings: SEARCH_NO_RESULTS_FINDINGS,
             noResults: true,
             requestPreview: adapter.buildRequestPreview(request),
-            searchQueries: queries,
+            searchQueries: [...queries],
             sourceAttribution: "available",
             sources: [],
             usage: accounting.usage

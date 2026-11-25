@@ -1273,6 +1273,40 @@ export function createAdminSearchService(input: Readonly<{
     });
   }
 
+  /**
+   * Whether a source's active configuration already carries a passing live
+   * check of exactly that configuration on the exact current binding
+   * (connection, model and key versions), so provider setup need not pay for
+   * another. Any doubt answers false and setup checks again.
+   */
+  async function checkedOnCurrentBinding(args: Readonly<{ id: string; userId: string }>): Promise<boolean> {
+    let option: SearchOptionRow;
+    try {
+      option = await loadOption(input.prisma, args.id);
+    } catch {
+      return false;
+    }
+    const editable = editableChild(option);
+    const active = editable ? activeChildDraft(editable.child) : null;
+    if (!editable || !active || !editable.draft.providerModelId) return false;
+    const hash = searchDraftHash(editable.draft);
+    const evidence = record(editable.child.draftTestEvidence);
+    const checked = searchProbeBinding(evidence.probeBinding);
+    if (searchDraftHash(active) !== hash || editable.child.testedDraftHash !== hash ||
+      evidence.method !== "provider_search" || evidence.status !== "available" ||
+      !Number.isSafeInteger(evidence.normalizedSourceCount) || Number(evidence.normalizedSourceCount) <= 0 ||
+      !checked || checked.connectionId !== option.sourceConnectionId) return false;
+    let current: SearchProbeBinding | null;
+    try {
+      current = searchProbeBinding(await input.tester.currentBinding({
+        providerModelId: editable.draft.providerModelId, store: input.prisma, userId: args.userId
+      }));
+    } catch {
+      return false;
+    }
+    return current !== null && searchValidationFingerprint(current) === searchValidationFingerprint(checked);
+  }
+
   async function testDraft(args: Readonly<{ id: string; userId: string }>): Promise<void> {
     const option = await input.prisma.searchOption.findUnique({
       include: { strategies: { include: { activeRevision: true }, orderBy: { strategyId: "asc" } } },
@@ -1347,6 +1381,7 @@ export function createAdminSearchService(input: Readonly<{
 
   return Object.freeze({
     archive,
+    checkedOnCurrentBinding,
     createDraft,
     list,
     saveAndCheck,

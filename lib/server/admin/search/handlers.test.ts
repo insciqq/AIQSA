@@ -40,6 +40,7 @@ function resolver(value: AuthenticatedSession | null): RequestAuthResolver {
 function service(overrides: Partial<SearchService> = {}): SearchService {
   return {
     archive: vi.fn(async () => undefined),
+    checkedOnCurrentBinding: vi.fn(async () => false),
     createDraft: vi.fn(async () => ({ created: true, id: "integration-1" })),
     list: vi.fn(async () => emptyCatalog),
     saveAndCheck: vi.fn(async () => undefined),
