@@ -86,7 +86,9 @@ export function imageParameterDefinitions(image: ImageModelConfiguration, modelI
     };
   }
   const secondGeneration = modelId.startsWith("gpt-image-2");
-  const sunburst = modelId.startsWith("gpt-image-2.5");
+  // Sunburst and Flare of GPT Image 2.5 and 2.6 add xhigh/max quality and transparent backgrounds
+  // (https://developers.openai.com/api/docs/guides/image-generation, 2.6 checked 2026-11-25).
+  const sunburst = modelId.startsWith("gpt-image-2.5") || modelId.startsWith("gpt-image-2.6");
   const gateway = image.profile === "codex_lb";
   return {
     size: secondGeneration ? { type: "dimensions" } : enumeration("auto", "1024x1024", "1536x1024", "1024x1536"),

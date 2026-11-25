@@ -23,7 +23,8 @@ describe("model release dates", () => {
     expect(modelReleaseDate("openai:gpt-6-sol")).toBe("2026-09-22");
     expect(modelReleaseDate("codex-lb:gpt-6-sol")).toBe("2026-09-22");
     expect(modelReleaseDate("openrouter:~google/gemini-pro-latest")).toBe("2026-04-27");
-    for (const key of [null, "", "codex-lb:gpt-image-2", "openai:gpt-image-2", "fake:fake-qsa",
+    expect(modelReleaseDate("codex-lb:gpt-image-2.6-flare")).toBe("2026-11-04");
+    for (const key of [null, "", "codex-lb:gpt-image-1", "openai:gpt-image-1", "fake:fake-qsa",
       "openrouter:qwen/qwen3-embedding-8b", "constructor", "__proto__", "codex-lb:"]) {
       expect(modelReleaseDate(key), String(key)).toBeNull();
     }

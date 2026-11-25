@@ -59,6 +59,20 @@ describe("catalog token tariffs", () => {
     expect(tariff("openrouter:google/gemini-4-neon")).toEqual([3, 0.15, null, 15, null]);
   });
 
+  it("prices GPT-6.1 Terra directly and through OpenRouter, and leaves the image models unpriced", () => {
+    const tariff = (key: string) => {
+      const { inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion,
+        cacheWriteInputTokenPriceUsdPerMillion, outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand } = catalogModelTokenPricing(key);
+      return [inputTokenPriceUsdPerMillion, cachedInputTokenPriceUsdPerMillion, cacheWriteInputTokenPriceUsdPerMillion,
+        outputTokenPriceUsdPerMillion, webSearchPriceUsdPerThousand];
+    };
+    expect(tariff("openai:gpt-6.1-terra")).toEqual([1, 0.05, 1.25, 5, 10]);
+    expect(tariff("openrouter:openai/gpt-6.1-terra")).toEqual([1, 0.05, 1.25, 5, null]);
+    for (const key of ["openai:gpt-image-2.6-sunburst", "openai:gpt-image-2.5-flare", "openrouter:openai/gpt-image-2.6-flare"]) {
+      expect(tariff(key), key).toEqual([null, null, null, null, null]);
+    }
+  });
+
   it("carries OpenRouter's published default DeepSeek tariffs and keeps codex-lb out of the key space", () => {
     expect(catalogModelTokenPricing("openrouter:deepseek/deepseek-v4-pro-0813")).toEqual({ inputTokenPriceUsdPerMillion: 0.66,
       cachedInputTokenPriceUsdPerMillion: 0.022, cacheWriteInputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: 1.98,

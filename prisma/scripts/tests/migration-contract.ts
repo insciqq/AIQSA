@@ -30,6 +30,7 @@ import {
 import {
   DROP_REMOVED_FEATURE_STORAGE_MIGRATION, dropRemovedFeatureStorageFixtureSql, dropRemovedFeatureStorageProofSql
 } from "./drop-removed-feature-storage-adoption";
+import { GPT_6_1_TERRA_PRICES_MIGRATION, gpt61TerraPricesFixtureSql, gpt61TerraPricesProofSql } from "./gpt-6-1-terra-prices-adoption";
 import {
   MEMORY_NOTE_ADOPTION_MIGRATION, memoryNoteAdoptionBareFixtureSql, memoryNoteAdoptionBareProofSql,
   memoryNoteAdoptionBareRepeatProofSql, memoryNoteAdoptionFixtureSql, memoryNoteAdoptionProofSql,
@@ -680,6 +681,10 @@ function runUnreleasedAdoptionProofs(database: string, migrations: readonly stri
     dropProjectLeftoversFixtureSql, dropProjectLeftoversProofSql, dropProjectLeftoversProofSql);
   runRefusedAdoptionProof(database, migrations, DROP_PROJECT_LEFTOVERS_MIGRATION, dropProjectLeftoversRefusedFixtureSql,
     DROP_PROJECT_LEFTOVERS_REFUSAL, dropProjectLeftoversRefusedProofSql);
+  // GPT-6.1 Terra's tariff reaches the catalog-priced rows of its identities, codex-lb ones at the OpenAI price, while
+  // administrator prices, unknown ones included, other identities and image rows stay as they were.
+  runForwardAdoptionProof(database, migrations, GPT_6_1_TERRA_PRICES_MIGRATION,
+    gpt61TerraPricesFixtureSql, gpt61TerraPricesProofSql, gpt61TerraPricesProofSql);
 }
 
 function main(database: string, shadowDatabase: string): void {
@@ -697,7 +702,7 @@ function main(database: string, shadowDatabase: string): void {
   runSeedProof(database);
 
   process.stdout.write(
-    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}, ${CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION}, ${DROP_PROJECT_LEFTOVERS_MIGRATION} with its refusal), fresh/adopted bootstrap, seed and integrity.\n`,
+    `AIQSA migration smoke ok: baseline_sha256=${BASELINE_SHA256} schema_datamodel_diff_sha256=${EXPECTED_SCHEMA_DATAMODEL_DIFF_SHA256} migrations=${migrations.length}: ordered and repeated deploy, status, reviewed SQL-only schema delta, unreleased adoptions (${MEMORY_NOTE_ADOPTION_MIGRATION}, ${CHAT_SEARCH_CARRIED_EXCLUSIONS_MIGRATION}, ${DROP_OLD_MEMORY_MIGRATION}, ${DROP_REMOVED_FEATURE_STORAGE_MIGRATION}, ${DROP_ANSWER_REVIEW_STORAGE_MIGRATION}, ${CONVERSATION_SUMMARY_TURN_BACKFILL_MIGRATION}, ${DROP_PROJECT_LEFTOVERS_MIGRATION} with its refusal, ${GPT_6_1_TERRA_PRICES_MIGRATION}), fresh/adopted bootstrap, seed and integrity.\n`,
   );
 }
 

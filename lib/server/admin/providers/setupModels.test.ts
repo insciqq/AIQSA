@@ -20,21 +20,33 @@ describe("image setup candidates", () => {
     expect(new Set(Object.values(providerModelTemplateIds)).size).toBe(Object.keys(providerModelTemplateIds).length);
   });
 
-  it("offers seven independent OpenRouter candidates without changing Flash Image identity", () => {
+  it("offers nine independent OpenRouter candidates without changing Flash Image identity", () => {
     const images = providerSetupModels("openrouter").filter((model) => model.configuration.modelClass === "image");
     expect(images.map(({ configuration }) => configuration.upstreamModelId)).toEqual([
       "google/gemini-nano-banana-2.1", "google/gemini-3.1-flash-image", "google/gemini-3.1-flash-lite-image", "google/gemini-3-pro-image",
-      "google/gemini-2.5-flash-image", "openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"
+      "google/gemini-2.5-flash-image", "openai/gpt-image-2.6-sunburst", "openai/gpt-image-2.6-flare",
+      "openai/gpt-image-2.5-sunburst", "openai/gpt-image-2.5-flare"
     ]);
     expect(images[0]?.modelId).toBe("00000000-0000-4000-8000-000000001269");
     expect(images[1]?.modelId).toBe("00000000-0000-4000-8000-000000001234");
-    expect(new Set(images.map(({ modelId }) => modelId)).size).toBe(7);
+    expect(new Set(images.map(({ modelId }) => modelId)).size).toBe(9);
+    expect(images[5]?.modelId).toBe("00000000-0000-4000-8000-000000001284");
+    expect(images[7]?.modelId).toBe("00000000-0000-4000-8000-000000001243");
     for (const model of images) expect(model.configuration).toMatchObject({ adapterKind: "openrouter_images", modelClass: "image",
       answerSelectable: false, image: { profile: "openrouter" }, openRouterRouting: { mode: "automatic", providers: [] } });
   });
 
-  it("preserves the single OpenAI initial image candidate", () => {
-    expect(providerSetupModels("openai").filter((model) => model.configuration.modelClass === "image")).toHaveLength(1);
+  it("offers the GPT Image 2.6 and 2.5 lines natively before the deprecated GPT Image 2, whose identity stays", () => {
+    const images = providerSetupModels("openai").filter((model) => model.configuration.modelClass === "image");
+    expect(images.map(({ configuration }) => configuration.upstreamModelId)).toEqual([
+      "gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"
+    ]);
+    expect(images.map(({ modelId }) => modelId)).toEqual([
+      "00000000-0000-4000-8000-000000001280", "00000000-0000-4000-8000-000000001281", "00000000-0000-4000-8000-000000001282",
+      "00000000-0000-4000-8000-000000001283", "00000000-0000-4000-8000-000000001232"
+    ]);
+    for (const model of images) expect(model).toMatchObject({ inputTokenPriceUsdPerMillion: null, outputTokenPriceUsdPerMillion: null,
+      configuration: { adapterKind: "openai_images_native", answerSelectable: false, image: { profile: "openai" } } });
   });
 });
 

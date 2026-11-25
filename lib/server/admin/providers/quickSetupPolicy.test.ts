@@ -11,7 +11,7 @@ import {
 
 describe("provider Quick setup policy", () => {
   it("keeps the current-model candidates, defaults, and recommendations explicit", () => {
-    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(13);
+    expect(ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION).toBe(14);
     expect(adminProviderQuickSetupPolicy("openai").connection.configuration.responseTimeoutMs)
       .toBe(300_000);
     const definitions = (provider: Parameters<typeof adminProviderQuickSetupPolicy>[0]) =>
@@ -25,6 +25,7 @@ describe("provider Quick setup policy", () => {
       { id: "p13-o9", recommended: true, templateKey: "openai:gpt-6.2-sol" },
       { id: "p13-o10", recommended: false, templateKey: "openai:gpt-6.2-astra" },
       { id: "p10-o8", recommended: false, templateKey: "openai:gpt-6.1-sol" },
+      { id: "p14-o11", recommended: false, templateKey: "openai:gpt-6.1-terra" },
       { id: "p9-o6", recommended: false, templateKey: "openai:gpt-6-sol" },
       { id: "p9-o7", recommended: false, templateKey: "openai:gpt-6-luna" },
       { id: "p7-o4", recommended: false, templateKey: "openai:gpt-6-astra" },
@@ -62,6 +63,7 @@ describe("provider Quick setup policy", () => {
       { id: "p13-r21", recommended: false, templateKey: "openrouter:openai/gpt-6.2-astra" },
       { id: "p10-r14", recommended: false, templateKey: "openrouter:openai/gpt-6.1-sol" },
       { id: "p10-r15", recommended: false, templateKey: "openrouter:openai/gpt-6.1-sol-pro" },
+      { id: "p14-r24", recommended: false, templateKey: "openrouter:openai/gpt-6.1-terra" },
       { id: "p13-r23", recommended: false, templateKey: "openrouter:google/gemini-4-neon" },
       { id: "p12-r18", recommended: false, templateKey: "openrouter:google/gemini-4-carbon" },
       { id: "p10-r16", recommended: false, templateKey: "openrouter:google/gemini-4-argon" },
@@ -109,16 +111,22 @@ describe("provider Quick setup policy", () => {
   it("ignores remote ordering and picks the code-owned recommendation", () => {
     const policy = adminProviderQuickSetupPolicy("openai");
     for (const modelIds of [
-      ["gpt-6-sol", "gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra"],
-      ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-sol", "gpt-6.1-sol"]
+      ["gpt-6-sol", "gpt-6.1-sol", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra"],
+      ["gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-sol", "gpt-6.1-sol"]
     ]) {
       const decision = decideAdminProviderQuickSetupModel({ modelIds, policy });
       expect(decision.kind).toBe("selected");
       if (decision.kind === "selected") expect(decision.candidate.candidateId).toBe("p13-o9");
     }
     // A catalog without the recommendation takes the first current candidate it lists.
-    expect(decideAdminProviderQuickSetupModel({ modelIds: ["gpt-6-sol", "gpt-6.1-sol"], policy }))
+    expect(decideAdminProviderQuickSetupModel({ modelIds: ["gpt-6-sol", "gpt-6.1-terra", "gpt-6.1-sol"], policy }))
       .toMatchObject({ candidate: { candidateId: "p10-o8" }, kind: "selected" });
+    // GPT-6.1 Terra is offered, never recommended, and an administrator may still pick it.
+    expect(decideAdminProviderQuickSetupModel({ modelIds: ["gpt-6.2-sol", "gpt-6.1-terra"], policy,
+      selectedModel: { candidateId: "p14-o11", policyVersion: 14 } }))
+      .toMatchObject({ candidate: { candidateId: "p14-o11", configuration: { upstreamModelId: "gpt-6.1-terra" } }, kind: "selected" });
+    expect(decideAdminProviderQuickSetupModel({ modelIds: ["openai/gpt-6.1-terra", "anthropic/claude-opus-5.5"],
+      policy: adminProviderQuickSetupPolicy("openrouter") })).toMatchObject({ candidate: { candidateId: "p9-r7" }, kind: "selected" });
   });
 
   it("chooses the first supported fallback without another user action", () => {
@@ -141,7 +149,7 @@ describe("provider Quick setup policy", () => {
       modelIds: ["gpt-5.6-terra", "gpt-6-sol"], policy: openai
     })).toMatchObject({ candidate: { candidateId: "p9-o6" }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({
-      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 13 }
+      modelIds: ["gpt-5.6-terra"], policy: openai, selectedModel: { candidateId: "p2-o1", policyVersion: 14 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["anthropic/claude-opus-5", "google/gemini-3.8-flash"], policy: adminProviderQuickSetupPolicy("openrouter")
@@ -153,9 +161,9 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter }))
       .toMatchObject({ candidate: { candidateId: "p11-r17", configuration: { upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" } }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
-      selectedModel: { candidateId: "p11-r17", policyVersion: 13 } })).toMatchObject({ candidate: { candidateId: "p11-r17" }, kind: "selected" });
+      selectedModel: { candidateId: "p11-r17", policyVersion: 14 } })).toMatchObject({ candidate: { candidateId: "p11-r17" }, kind: "selected" });
     expect(decideAdminProviderQuickSetupModel({ modelIds: bothFlashes, policy: openrouter,
-      selectedModel: { candidateId: "p8-r6", policyVersion: 13 } })).toEqual({ kind: "selection_invalid" });
+      selectedModel: { candidateId: "p8-r6", policyVersion: 14 } })).toEqual({ kind: "selection_invalid" });
   });
 
   it("requires an exact policy-owned selected candidate observed by the repeated check", () => {
@@ -163,12 +171,12 @@ describe("provider Quick setup policy", () => {
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["google/gemini-3.8-flash"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 13 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 14 }
     }).kind).toBe("selected");
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["other"],
       policy,
-      selectedModel: { candidateId: "p1-r2", policyVersion: 13 }
+      selectedModel: { candidateId: "p1-r2", policyVersion: 14 }
     })).toEqual({ kind: "selection_invalid" });
     expect(decideAdminProviderQuickSetupModel({
       modelIds: ["openai/gpt-6-sol"],

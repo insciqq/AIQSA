@@ -241,7 +241,7 @@ describe("catalog capability matrix", () => {
       supportsReasoningMode: true,
       supportsStreaming: true
     };
-    for (const upstreamModelId of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"]) {
+    for (const upstreamModelId of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol"]) {
       const controls = resolveProviderModelParameterControls({ ...codexLb, upstreamModelId });
       expect(controls.reasoningEffort.supported).toBe(true);
       expect(controls.reasoningMode).toBeUndefined();
@@ -317,7 +317,7 @@ describe("catalog capability matrix", () => {
   });
 
   it.each(["openai/gpt-6-sol", "openai/gpt-6-sol-pro", "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
-    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol"])(
+    "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol"])(
     "keeps %s on the OpenRouter contract without unsupported temperature or native modes", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
       const catalog = buildCatalogModel(model, defaultSearchStrategies);
@@ -341,6 +341,17 @@ describe("catalog capability matrix", () => {
       expect(model.parameterControls.reasoningEffort).toEqual({
         defaultValue: "medium", options: ["low", "medium", "high", "xhigh", "max"], supported: true
       });
+      expect(model.parameterControls.maxOutputTokens.maxValue).toBe(128_000);
+    }
+  );
+
+  it.each(["gpt-6.1-terra", "openai/gpt-6.1-terra"])(
+    "offers GPT-6.1 Terra every reasoning effort the API accepts, none included, for %s", (modelId) => {
+      const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
+      expect(model.parameterControls.reasoningEffort).toEqual({
+        defaultValue: "medium", options: ["none", "low", "medium", "high", "xhigh", "max"], supported: true
+      });
+      expect(model.contextWindow).toBe(1_050_000);
       expect(model.parameterControls.maxOutputTokens.maxValue).toBe(128_000);
     }
   );

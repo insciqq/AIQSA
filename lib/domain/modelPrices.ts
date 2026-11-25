@@ -1,7 +1,8 @@
 import type { AdminProviderModelClass } from "../contracts/adminProviders";
 import type { ModelTokenPricing } from "./usage";
 
-// Base token tariffs checked 2026-10-15, GPT-6.2, Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19.
+// Base token tariffs checked 2026-10-15, GPT-6.2, Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19,
+// GPT-6.1 Terra on 2026-11-25. Image models have no catalog tariff, so their prices stay unknown.
 // Runtime never refreshes saved prices.
 // https://developers.openai.com/api/docs/pricing
 // https://platform.claude.com/docs/en/about-claude/pricing
@@ -15,6 +16,8 @@ const openai: Record<string, Tariff> = {
   "gpt-6.2-sol": [2, 0.1, 2.5, 10],
   "gpt-6-astra": [10, 1, 12.5, 50],
   "gpt-6.1-sol": [2, 0.1, 2.5, 10],
+  // Short-context card with 30-minute cache writes, the retention the adapter requests for GPT-6.
+  "gpt-6.1-terra": [1, 0.05, 1.25, 5],
   "gpt-6-sol": [2, 0.2, 2.5, 10],
   "gpt-6-luna": [0.1, 0.01, 0.125, 0.5],
   "gpt-5.6-sol": [4, 0.4, 5, 20],
@@ -60,6 +63,7 @@ const openrouter: Record<string, Tariff> = {
   "openai/gpt-6-astra": openai["gpt-6-astra"],
   "openai/gpt-6.1-sol": openai["gpt-6.1-sol"],
   "openai/gpt-6.1-sol-pro": openai["gpt-6.1-sol"],
+  "openai/gpt-6.1-terra": openai["gpt-6.1-terra"],
   "openai/gpt-6-sol": openai["gpt-6-sol"],
   "openai/gpt-6-sol-pro": openai["gpt-6-sol"],
   "openai/gpt-6-luna": openai["gpt-6-luna"],

@@ -279,6 +279,7 @@ describe("provider Quick setup service", () => {
         "remote-unknown",
         "gpt-6-sol",
         "gpt-5.6-terra",
+        "gpt-6.1-terra",
         "gpt-6.1-sol",
         "gpt-5.5",
         "gpt-6-luna"
@@ -300,20 +301,22 @@ describe("provider Quick setup service", () => {
       upstreamModelId: configuration.upstreamModelId
     }))).toEqual([
       { candidateId: "p10-o8", modelId: expect.any(String), upstreamModelId: "gpt-6.1-sol" },
+      { candidateId: "p14-o11", modelId: expect.any(String), upstreamModelId: "gpt-6.1-terra" },
       { candidateId: "p9-o6", modelId: expect.any(String), upstreamModelId: "gpt-6-sol" },
       { candidateId: "p9-o7", modelId: expect.any(String), upstreamModelId: "gpt-6-luna" }
     ]);
     expect(plan.grants.map(({ modelId }) => modelId)).toEqual(
       plan.candidates.map(({ modelId }) => modelId)
     );
-    expect(new Set(plan.grants.map(({ id }) => id)).size).toBe(3);
-    expect(value.pdfInputProbe).toHaveBeenCalledTimes(3);
-    expect(plan.modelChecks).toHaveLength(3);
+    expect(new Set(plan.grants.map(({ id }) => id)).size).toBe(4);
+    expect(value.pdfInputProbe).toHaveBeenCalledTimes(4);
+    expect(plan.modelChecks).toHaveLength(4);
     expect(plan.modelChecks.every(({ evidence }) => Boolean(evidence.pdfInput))).toBe(true);
     expect(result).toMatchObject({
       model: { displayName: "GPT-6.1 Sol" },
       models: [
         { displayName: "GPT-6.1 Sol" },
+        { displayName: "GPT-6.1 Terra" },
         { displayName: "GPT-6 Sol" },
         { displayName: "GPT-6 Luna" }
       ],
@@ -489,7 +492,7 @@ describe("provider Quick setup service", () => {
         expectedState: state,
         provider: "openai",
         secret: "sk-picker",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 13 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 14 }
       }
     });
     expect(result.outcome).toBe("ready");
@@ -505,7 +508,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-legacy-choice",
-        selectedModel: { candidateId: "p2-o1", policyVersion: 13 }
+        selectedModel: { candidateId: "p2-o1", policyVersion: 14 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -997,7 +1000,7 @@ describe("provider Quick setup service", () => {
         expectedState: await expectedState(value.service, "openai"),
         provider: "openai",
         secret: "sk-second-account",
-        selectedModel: { candidateId: "p9-o7", policyVersion: 13 }
+        selectedModel: { candidateId: "p9-o7", policyVersion: 14 }
       }
     })).rejects.toMatchObject({ code: "provider_quick_setup_selection_invalid" });
     expect(value.order).toEqual([]);
@@ -1010,6 +1013,7 @@ describe("provider Quick setup service", () => {
       { displayName: "GPT-6.2 Sol" },
       { displayName: "GPT-6.2 Astra" },
       { displayName: "GPT-6.1 Sol" },
+      { displayName: "GPT-6.1 Terra" },
       { displayName: "GPT-6 Sol" },
       { displayName: "GPT-6 Luna" },
       { displayName: "GPT-6 Astra" }

@@ -35,6 +35,13 @@ describe("image model controls", () => {
     expect(imageParameterDefinitions({ profile: "codex_lb" }, "gpt-image-2")).not.toHaveProperty("thinking_level");
     expect(() => normalizeImageGenerationParameters({ background: "transparent" }, { profile: "codex_lb" }, "gpt-image-2")).toThrow();
     expect(normalizeImageGenerationParameters({ background: "transparent" }, { profile: "openai" }, "gpt-image-2.5-sunburst")).toEqual({ background: "transparent" });
+    for (const id of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-flare"]) {
+      expect(normalizeImageGenerationParameters({ background: "transparent", quality: "max", size: "1536x864" }, { profile: "openai" }, id))
+        .toEqual({ background: "transparent", quality: "max", size: "1536x864" });
+      expect(() => normalizeImageGenerationParameters({ input_fidelity: "high" }, { profile: "openai" }, id)).toThrow();
+      expect(() => normalizeImageGenerationParameters({ quality: "xhigh" }, { profile: "codex_lb" }, id)).toThrow();
+      expect(() => normalizeImageGenerationParameters({ background: "transparent" }, { profile: "codex_lb" }, id)).toThrow();
+    }
     expect(() => normalizeImageGenerationParameters({ input_fidelity: "high" }, { profile: "openai" }, "gpt-image-2")).toThrow();
     expect(() => normalizeImageGenerationParameters({ quality: "high" }, { profile: "gemini" }, "gemini-3.1-flash-image")).toThrow();
   });
