@@ -31,7 +31,7 @@ import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { engineToolCallKind } from "./toolCallKind";
 import type { ToolCallRow, ToolCallStore } from "./toolCallStore";
 import { recordToolCall, type SettledToolCall } from "./toolCallTelemetry";
-import type { EngineTool, EngineToolExecution, ToolRegistry } from "./toolRegistry";
+import type { EngineTool, EngineToolExecution, ToolRegistry, ToolResource } from "./toolRegistry";
 import { READ_TOOL_RESULT_NAME, TOOL_RESULT_LIMITS, toolModelOutput, toolOutputExcerpt, toolResultImage, toolResultOutputText } from "./toolResults";
 import type { TranscriptItem, TranscriptToolResultItem } from "./transcript";
 import type { UnknownEffects } from "./unknownEffects";
@@ -41,7 +41,8 @@ import type { UnknownEffects } from "./unknownEffects";
  * through `beforeToolCall` as it starts (unknown tool, arguments, tool time,
  * call budget, repeat guard, links, the initiator's approval), is recorded,
  * runs, and goes through `afterToolCall` (size bound with a saved whole
- * result, settled record, output events), in the response's order. A batch never re-sends a
+ * result, settled record, output events), in the response's order. Calls run side by side, but those on one shared
+ * resource (the Workspace, the computer, an MCP server) keep the response's order (`scheduleCalls`). A batch never re-sends a
  * call: only a call of a read-only tool that failed in transport is tried
  * again, and a call whose run stopped meanwhile keeps an unknown outcome.
  * Neither does the model: a call equivalent to an earlier one whose effect
@@ -225,7 +226,8 @@ export type ToolBatchDeps = Readonly<{
   toolsClosedReader?: ToolsClosedReader;
   /**
    * A turn's own call budget beside the run's (`SubagentHost.turnToolCalls`): absent, no turn counts its own calls. It counts what
-   * the run's budget counts, but its `exempt` tools, as each call starts, so the response's order decides; past `limit` a call is
+   * the run's budget counts, but its `exempt` tools, as each call starts, so the order calls start in decides (the response's, but
+   * for a call that waits for a serial call or its resource, `scheduleCalls`); past `limit` a call is
    * refused as a budget refusal, and the result of each counted call that ran ends with what is left (`turnCallsLeftLine`).
    */
   turnBudget?: ToolTurnBudget;
@@ -657,41 +659,85 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   };
 
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
-  /** The calls not started yet, in the response's order. */
-  const waiting = input.calls.map((_, index) => index);
   // Each call's place is fixed as the batch starts: a registry that stops resolving a tool meanwhile (research's scoping
-  // limit) refuses that call when it starts, and must never move it to a pool with no workers, where it would never run.
-  const serialCalls = input.calls.map((call) => deps.registry.resolve(call.name)?.serial === true);
-  const delegatedCall = input.calls.map((call) => deps.registry.resolve(call.name)?.delegated === true);
-  const isSerial = (index: number) => serialCalls[index]!;
-  const isDelegated = (index: number) => delegatedCall[index]!;
-  let serialRunning = false;
-  /**
-   * The next call that may start among the delegated calls or the others, each with its own workers. A serial call
-   * (`EngineTool.serial`) waits for the one before it here, holding no worker, so the workers take the calls behind it;
-   * the running one's worker takes the next when it ends.
-   */
-  const nextCall = (delegated: boolean) => {
-    const position = waiting.findIndex((index) => isDelegated(index) === delegated && (!serialRunning || !isSerial(index)));
-    return position < 0 ? undefined : waiting.splice(position, 1)[0];
-  };
-  const worker = (delegated: boolean) => async () => {
-    for (;;) {
-      const index = nextCall(delegated);
-      if (index === undefined) return;
-      const serial = isSerial(index);
-      if (serial) serialRunning = true;
-      try {
-        results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
-      } finally {
-        if (serial) serialRunning = false;
-      }
-    }
-  };
-  const delegatedCalls = delegatedCall.filter(Boolean).length;
-  await Promise.all([
-    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.concurrency, input.calls.length - delegatedCalls) }, worker(false)),
-    ...Array.from({ length: Math.min(TOOL_BATCH_LIMITS.delegatedConcurrency, delegatedCalls) }, worker(true))
-  ]);
+  // limit) refuses that call when it starts, and must never move it to another pool or off its resource's queue.
+  const places = input.calls.map((call) => {
+    const tool = deps.registry.resolve(call.name);
+    return { delegated: tool?.delegated === true, resource: tool?.resource?.(call), serial: tool?.serial === true };
+  });
+  await scheduleCalls(places, async (index) => {
+    results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
+  });
   return { approvals, budgetExhausted, correctable, executed, results, ...(timeExhausted ? { timeExhausted: true as const } : {}) };
+}
+
+/** Where a call of a batch runs, fixed as the batch starts (`runToolBatch`). */
+type CallPlace = Readonly<{ delegated: boolean; resource: ToolResource | undefined; serial: boolean }>;
+
+/**
+ * Runs the calls of one batch through `run` and settles once each has; the first call that throws ends the batch with its
+ * failure, and no call starts after it. Calls start in the response's order as far as their places allow: delegated calls
+ * (`EngineTool.delegated`) and the others each have their own number of places (`TOOL_BATCH_LIMITS`), a serial call
+ * (`EngineTool.serial`) waits for the one running, and a call on a resource (`ToolResource`) waits for every earlier call
+ * on it when it changes the resource, else for every earlier change. A waiting call holds no place, so the calls behind it
+ * take the free ones, and each call that settles starts every call it released, up to all free places: no place is lost
+ * while a call waits for one that runs.
+ */
+function scheduleCalls(places: readonly CallPlace[], run: (index: number) => Promise<void>): Promise<void> {
+  /** The calls not started yet, in the response's order. */
+  const waiting = places.map((_, index) => index);
+  const settled = places.map(() => false);
+  const limits = { delegated: TOOL_BATCH_LIMITS.delegatedConcurrency, shared: TOOL_BATCH_LIMITS.concurrency } as const;
+  const running = { delegated: 0, shared: 0 };
+  const pool = (index: number) => places[index]!.delegated ? "delegated" as const : "shared" as const;
+  let serialRunning = false;
+  let open = places.length;
+  const waitsForResource = (index: number) => {
+    const own = places[index]!.resource;
+    if (!own) return false;
+    for (let earlier = 0; earlier < index; earlier += 1) {
+      const other = places[earlier]!.resource;
+      if (!settled[earlier] && other?.key === own.key && !(own.reads && other.reads)) return true;
+    }
+    return false;
+  };
+  return new Promise<void>((resolve, reject) => {
+    let failed = false;
+    const fail = (error: unknown) => {
+      failed = true;
+      reject(error);
+    };
+    const start = (index: number) => {
+      const serial = places[index]!.serial;
+      running[pool(index)] += 1;
+      if (serial) serialRunning = true;
+      run(index).then(() => {
+        running[pool(index)] -= 1;
+        if (serial) serialRunning = false;
+        settled[index] = true;
+        open -= 1;
+        fill();
+      }, fail);
+    };
+    /** Starts every waiting call that may start now; a failure here ends the batch rather than leave it waiting. */
+    function fill() {
+      if (failed) return;
+      try {
+        for (let position = 0; position < waiting.length;) {
+          const index = waiting[position]!;
+          if (running[pool(index)] >= limits[pool(index)] || (serialRunning && places[index]!.serial) || waitsForResource(index)) {
+            position += 1;
+          } else {
+            waiting.splice(position, 1);
+            start(index);
+          }
+        }
+      } catch (error) {
+        fail(error);
+        return;
+      }
+      if (open === 0) resolve();
+    }
+    fill();
+  });
 }

@@ -8,11 +8,11 @@ import type { ProviderRunRequest } from "../providers/types";
 import { ToolCallRepeatHistory } from "../runs/toolCallRepeatGuard";
 import { toolCallBounds } from "../runs/turnDeadline";
 import { freezeComputerBinding } from "../tools/computerBinding";
-import { COMPUTER_TOOL_LIMITS } from "../tools/computerTools";
+import { COMPUTER_RESOURCE_KEY, COMPUTER_TOOL_EFFECTS, COMPUTER_TOOL_LIMITS } from "../tools/computerTools";
 import { subagentToolRegistry } from "./subagents/registry";
 import { runToolBatch, TOOL_BATCH_LIMITS, UNKNOWN_OUTCOME_REPEAT_OUTPUT, type ToolBatchDeps } from "./toolBatch";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "./toolCallStore";
-import { buildToolRegistry, type EngineMcpBinding, type ToolRegistry, type ToolRegistryInput } from "./toolRegistry";
+import { WORKSPACE_RESOURCE_KEY, buildToolRegistry, type EngineMcpBinding, type ToolRegistry, type ToolRegistryInput } from "./toolRegistry";
 import { createUnknownEffects } from "./unknownEffects";
 
 const USER = "user-1";
@@ -62,6 +62,26 @@ describe("the computer tools in a run's registry", () => {
     const storeless = input({ request: request({ computer: online }) });
     const { computerOutputs: _store, ...services } = storeless.services;
     expect(computerNames(await buildToolRegistry({ ...storeless, services }))).toEqual(SINGLE_OP_NAMES);
+  });
+
+  it("orders a response's calls on the run's one computer, its reads side by side between two changes", async () => {
+    const bound = await buildToolRegistry(input({ request: request({ computer: online }) }));
+    const resources = Object.fromEntries(COMPUTER_TOOL_NAMES.map((name) => [name,
+      bound.resolve(name)!.resource?.({ arguments: {}, id: "c1", name })]));
+    expect(resources).toEqual({
+      computer_attach_file: { key: COMPUTER_RESOURCE_KEY, reads: true },
+      computer_edit: { key: COMPUTER_RESOURCE_KEY, reads: false },
+      computer_glob: { key: COMPUTER_RESOURCE_KEY, reads: true },
+      computer_grep: { key: COMPUTER_RESOURCE_KEY, reads: true },
+      computer_job_output: { key: COMPUTER_RESOURCE_KEY, reads: true },
+      computer_job_stop: { key: COMPUTER_RESOURCE_KEY, reads: false },
+      computer_read: { key: COMPUTER_RESOURCE_KEY, reads: true },
+      computer_shell: { key: COMPUTER_RESOURCE_KEY, reads: false },
+      computer_write: { key: COMPUTER_RESOURCE_KEY, reads: false }
+    });
+    // The reads are exactly the tools whose effects say so; the key is the computer's own, not the Workspace's.
+    for (const name of COMPUTER_TOOL_NAMES) expect(resources[name]!.reads).toBe(COMPUTER_TOOL_EFFECTS[name] === "none");
+    expect(COMPUTER_RESOURCE_KEY).not.toBe(WORKSPACE_RESOURCE_KEY);
   });
 
   it("never offers them where a computer is never available, whatever the request holds", async () => {

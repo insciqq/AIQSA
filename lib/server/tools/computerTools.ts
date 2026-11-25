@@ -33,7 +33,7 @@ import {
   type ConnectOpResult,
   type ConnectOs
 } from "@/lib/contracts/connect";
-import type { EngineTool } from "../engine/toolRegistry";
+import type { EngineTool, ToolResource } from "../engine/toolRegistry";
 import { getComputerOps, type ComputerOps, type ComputerOpOutcome } from "../connect/computerPort";
 import { computerOsLabel, type FrozenComputerBinding } from "./computerBinding";
 import {
@@ -96,6 +96,12 @@ export const COMPUTER_TOOL_EFFECTS: Readonly<Record<ComputerToolName, Exclude<Ha
   computer_shell: "external",
   computer_write: "external"
 });
+
+/**
+ * The run's one computer, the key its calls of one response keep their order by (`ToolResource`): a command after a write
+ * runs on the written file, while reads (`COMPUTER_TOOL_EFFECTS` "none") run side by side between two changes.
+ */
+export const COMPUTER_RESOURCE_KEY = "computer";
 
 /**
  * The longest one call of the tool may take (`toolCallBounds`): a command's longest timeout and its reply, a file's
@@ -645,6 +651,7 @@ export function computerEngineTools(input: ComputerToolContext & Readonly<{
       definition,
       effects: COMPUTER_TOOL_EFFECTS[name],
       observationSource: "workspace",
+      resource: (): ToolResource => ({ key: COMPUTER_RESOURCE_KEY, reads: COMPUTER_TOOL_EFFECTS[name] === "none" }),
       execute: attachFile ?? ((execution) => executeComputerTool(input, execution.call, execution.signal, execution.round))
     }];
   });
