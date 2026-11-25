@@ -233,6 +233,10 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput, sign
   const operationEnded = stop("workspace_operation_stale");
   response.on("close", clientClosed);
   signal.addEventListener("abort", operationEnded, { once: true });
+  // Body bytes the socket confirmed it handed to the kernel, the same proof "finish" gives. A write's callback fires
+  // once its chunk, and the headers queued before it, left the socket, and with an error when a closing socket
+  // discarded it, so bytes still buffered here never count.
+  let flushed = 0;
   try {
     if (signal.aborted) throw new WorkspaceRuntimeError("workspace_operation_stale");
     while (true) {
@@ -243,16 +247,25 @@ async function pipeOutput(response: ServerResponse, pending: PendingOutput, sign
         throw new WorkspaceRuntimeError(stopped ?? "workspace_output_export_failed", { factsOf: error });
       }
       if (next.done) break;
-      progress.bytes += next.value.byteLength;
+      const length = next.value.byteLength;
+      progress.bytes += length;
       if (progress.bytes > byteSize) throw new WorkspaceRuntimeError("workspace_output_export_failed");
-      if (!response.write(next.value)) await responseEvent(response, "drain", signal);
+      const accepted = response.write(next.value, (error) => { if (!error) flushed += length; });
+      if (!accepted) await responseEvent(response, "drain", signal);
     }
     if (progress.bytes !== byteSize) throw new WorkspaceRuntimeError(stopped ?? "workspace_output_export_failed");
     response.off("close", clientClosed);
     signal.removeEventListener("abort", operationEnded);
-    const flushed = responseEvent(response, "finish", signal);
+    const finished = responseEvent(response, "finish", signal);
     response.end();
-    if (!await flushed) throw new WorkspaceRuntimeError(signal.aborted ? "workspace_operation_stale" : "workspace_output_stream_incomplete");
+    if (await finished) return;
+    if (signal.aborted) throw new WorkspaceRuntimeError("workspace_operation_stale");
+    // The app closes its connection once it holds the declared bytes, which can reach this side before the source's
+    // end does, so before `end()` and its "finish" (production 2026-11-23: 253- and 7009-byte files the app stored
+    // whole were logged as broken off). Every declared byte the socket confirmed is the completion "finish" would
+    // have proved. An empty body has none to confirm: its headers go out only with `end()`.
+    if (byteSize > 0 && flushed === byteSize) return;
+    throw new WorkspaceRuntimeError("workspace_output_stream_incomplete");
   } finally {
     response.off("close", clientClosed);
     signal.removeEventListener("abort", operationEnded);

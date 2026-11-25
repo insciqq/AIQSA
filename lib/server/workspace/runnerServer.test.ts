@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { connect, type AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workspaceSandboxName } from "@/lib/domain/workspace";
@@ -244,5 +245,115 @@ describe("Workspace runner lifecycle diagnostics", () => {
       expect.objectContaining({ event: "subsystem.recovered", repeat_count: 3 })
     ]);
     expect(probe).toHaveBeenCalledTimes(8);
+  });
+});
+
+describe("Workspace runner export streams over a socket", () => {
+  const servers: Server[] = [];
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    })));
+  });
+
+  /** Serves `source` as the one output of a listed batch and returns its stream request. */
+  async function exporting(source: ReadableStream<Uint8Array>, byteSize: number) {
+    const collectOutputs = vi.fn(async () => [{ body: source, byteSize, checksum: "a".repeat(64), mimeType: "application/octet-stream",
+      opaqueFileId: "0".repeat(64), relativePath: "out.bin" }]);
+    const runtime = { collectOutputs, stopSession: vi.fn(async () => undefined) } as unknown as WorkspaceRuntime;
+    const server = createWorkspaceRunnerServer({ runtime, token });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    const post = (suffix: string, value: unknown) => fetch(`http://127.0.0.1:${port}/v1/sessions/${sessionId}${suffix}`, {
+      body: JSON.stringify(value), method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }
+    });
+    expect((await post("/operations/claim", { operation: body.operation, runtimeSandboxId: null })).status).toBe(200);
+    const listed = await post("/outputs/list", { operation: body.operation, runtimeSandboxId: "sandbox_fixture", modelRunId: "run_fixture",
+      outputDirectory: "/workspace/out/run_fixture" });
+    expect(listed.status).toBe(200);
+    const batch = await listed.json() as { batchId: string; outputs: { opaqueFileId: string }[] };
+    return { port, path: `/v1/sessions/${sessionId}/outputs/stream?batchId=${batch.batchId}&opaqueFileId=${batch.outputs[0]!.opaqueFileId}` };
+  }
+
+  /** A raw HTTP client, as eager as the app's: it closes its socket as soon as it holds `closeAt` body bytes. */
+  function download(target: { port: number; path: string }, closeAt: number) {
+    return new Promise<{ head: string; received: number }>((resolve, reject) => {
+      const socket = connect(target.port, "127.0.0.1", () => {
+        socket.write(`GET ${target.path} HTTP/1.1\r\nhost: runner.invalid\r\nauthorization: Bearer ${token}\r\n\r\n`);
+      });
+      let buffered = Buffer.alloc(0);
+      const bodyStart = () => {
+        const split = buffered.indexOf("\r\n\r\n");
+        return split < 0 ? -1 : split + 4;
+      };
+      socket.on("data", (data: Buffer) => {
+        buffered = Buffer.concat([buffered, data]);
+        const start = bodyStart();
+        if (start >= 0 && buffered.length - start >= closeAt) socket.destroy();
+      });
+      socket.on("error", reject);
+      socket.on("close", () => {
+        const start = bodyStart();
+        resolve(start < 0 ? { head: "", received: 0 } : { head: buffered.subarray(0, start).toString("latin1"), received: buffered.length - start });
+      });
+    });
+  }
+
+  const exportRecords = (output: ReturnType<typeof capture>) => output.records()
+    .filter((record) => record.event === "runtime_lifecycle" && record.stage === "export")
+    .map(({ outcome, code, count }) => ({ outcome, code, count }));
+
+  it.each([253, 7_009])("completes a %i-byte output its client closed on once it held every declared byte (production 2026-11-23)", async (byteSize) => {
+    const output = capture();
+    let clientGone!: () => void;
+    const gone = new Promise<void>((resolve) => { clientGone = resolve; });
+    // The source's end reaches the runner only after the client, holding the declared bytes, closed its socket.
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(byteSize).fill(7)); },
+      async pull(controller) {
+        await gone;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        controller.close();
+      }
+    });
+    const downloaded = await download(await exporting(source, byteSize), byteSize);
+    clientGone();
+    expect(downloaded.head).toMatch(/^HTTP\/1\.1 200 /u);
+    expect(downloaded.received).toBe(byteSize);
+    await vi.waitFor(() => expect(exportRecords(output)).toEqual([{ outcome: "completed", code: undefined, count: byteSize }]),
+      { interval: 10, timeout: 2_000 });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(exportRecords(output)).toHaveLength(1);
+  });
+
+  it("names a client that closed before the runner wrote every declared byte, with how far it got", async () => {
+    const output = capture();
+    const cancel = vi.fn();
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(64 * 1_024)); },
+      pull: () => new Promise<void>(() => undefined),
+      cancel
+    });
+    const downloaded = await download(await exporting(source, 1_024 * 1_024), 1);
+    expect(downloaded.received).toBeLessThan(1_024 * 1_024);
+    await vi.waitFor(() => expect(exportRecords(output)).toEqual([
+      { outcome: "failed", code: "workspace_output_stream_incomplete", count: 64 * 1_024 }]), { interval: 10, timeout: 2_000 });
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("names a client that closed while declared bytes still waited in the runner's socket buffers", async () => {
+    const output = capture();
+    // One chunk larger than any loopback socket buffer: the runner handed over every declared byte, the kernel took part.
+    const byteSize = 32 * 1_024 * 1_024;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(byteSize)); },
+      pull(controller) { controller.close(); }
+    });
+    const downloaded = await download(await exporting(source, byteSize), 1);
+    expect(downloaded.received).toBeLessThan(byteSize);
+    await vi.waitFor(() => expect(exportRecords(output)).toEqual([
+      { outcome: "failed", code: "workspace_output_stream_incomplete", count: byteSize }]), { interval: 10, timeout: 5_000 });
   });
 });
