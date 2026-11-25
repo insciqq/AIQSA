@@ -4,9 +4,11 @@ import {
   adminSearchExecutionLimits
 } from "../../contracts/adminSearch";
 import {
-  extractGeminiInteractionUsage,
-  normalizeGeminiInteractionsSearchResponse
+  extractGeminiSearchUsage,
+  normalizeGeminiInteractionsSearchResponse,
+  withResolvedGeminiSearchSources
 } from "./geminiInteractionsResponse";
+import { resolveGeminiGroundingRedirects } from "./geminiGroundingRedirect";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import { citedSearchSources } from "../search/evidence";
 import { geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
@@ -37,6 +39,8 @@ export type GeminiInteractionsSearchRequestBody = Readonly<{
 
 export type GeminiInteractionsSearchAdapterOptions = Readonly<{
   client: GeminiInteractionsClient;
+  /** Test seam: the grounding redirect resolver (`resolveGeminiGroundingRedirects`). */
+  resolveRedirects?: (urls: readonly string[], signal?: AbortSignal) => Promise<ReadonlyMap<string, string>>;
 }>;
 
 function boundedModelId(value: unknown): value is string {
@@ -122,6 +126,9 @@ function safeProviderStatus(response: Readonly<Record<string, unknown>>): string
 export function createGeminiInteractionsSearchAdapter(
   options: GeminiInteractionsSearchAdapterOptions
 ): ProviderSearchAdapter {
+  const resolveRedirects = options.resolveRedirects ??
+    ((urls: readonly string[], signal?: AbortSignal) =>
+      resolveGeminiGroundingRedirects(urls, signal ? { signal } : {}));
   const adapter: ProviderSearchAdapter = {
     buildRequestPreview(request) {
       const body = buildGeminiInteractionsSearchRequest(request);
@@ -152,29 +159,35 @@ export function createGeminiInteractionsSearchAdapter(
           ...(typeof searchOptions.timeoutMs === "number"
             ? { timeoutMs: searchOptions.timeoutMs }
             : {})
-        }), usage: extractGeminiInteractionUsage
+        }), usage: extractGeminiSearchUsage
       });
+      let normalized: ReturnType<typeof normalizeGeminiInteractionsSearchResponse>;
       try {
-        const normalized = normalizeGeminiInteractionsSearchResponse(response, {
+        normalized = normalizeGeminiInteractionsSearchResponse(response, {
           groundingExpected: true,
           modelId: body.model
         });
-        return {
-          ...normalized,
-          requestPreview: adapter.buildRequestPreview(request),
-          sourceAttribution: "available" as const,
-          // Every grounding source is cited by the findings.
-          sources: citedSearchSources(normalized.sources)
-        };
       } catch (error) {
         const providerStatus = safeProviderStatus(response);
         throw new ProviderSearchExecutionError({
           artifacts: [],
           code: safeFailureCode(error),
           ...(providerStatus ? { providerStatus } : {}),
-          usage: extractGeminiInteractionUsage(response)
+          usage: extractGeminiSearchUsage(response)
         });
       }
+      // Google's redirect links become the pages they name; resolution is
+      // bounded and never fails the search (`geminiGroundingRedirect.ts`).
+      const resolved = await resolveRedirects(normalized.sources.map((source) => source.url), searchOptions.signal)
+        .catch((): ReadonlyMap<string, string> => new Map());
+      const result = withResolvedGeminiSearchSources(normalized, resolved);
+      return {
+        ...result,
+        requestPreview: adapter.buildRequestPreview(request),
+        sourceAttribution: "available" as const,
+        // Every grounding source is cited by the findings.
+        sources: citedSearchSources(result.sources)
+      };
     }
   };
   return adapter;
