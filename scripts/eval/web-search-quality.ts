@@ -174,7 +174,9 @@ export function outputDirectory(values: ReadonlyMap<string, string>, repository 
   return out;
 }
 
-function codexLbRoot(values: ReadonlyMap<string, string>, env: NodeJS.ProcessEnv): string | null {
+type Environment = Readonly<Record<string, string | undefined>>;
+
+function codexLbRoot(values: ReadonlyMap<string, string>, env: Environment): string | null {
   const raw = values.get("root") ?? env.CODEX_LB_ROOT;
   if (raw === undefined) return null;
   const root = raw.replace(/\/+$/u, "");
@@ -197,7 +199,7 @@ function questionsFile(values: ReadonlyMap<string, string>) {
 }
 
 /** The paid Codex LB model; a missing key or root refuses the command. */
-function codexLbModel(values: ReadonlyMap<string, string>, env: NodeJS.ProcessEnv): ResponsesModel {
+function codexLbModel(values: ReadonlyMap<string, string>, env: Environment): ResponsesModel {
   const root = codexLbRoot(values, env);
   const apiKey = env.CODEX_LB_API_KEY?.trim();
   if (!root) throw new Error("eval_argument_invalid:--root");
@@ -208,7 +210,7 @@ function codexLbModel(values: ReadonlyMap<string, string>, env: NodeJS.ProcessEn
 
 export type CliPorts = Readonly<{
   engines?: Readonly<Record<string, EngineDefinition>>;
-  env: NodeJS.ProcessEnv;
+  env: Environment;
   model?: ResponsesModel;
   now: () => number;
   print(line: string): void;
@@ -223,7 +225,7 @@ export function dryRunEngine(id: string): PreparedEngine {
       buildRequestPreview: () => ({ provider: "dry-run" }),
       search: (request) => Promise.resolve({ artifacts: [], costUsd: 0, finalProviderResponsePreview: {},
         findings: `[1] Dry run result for a ${request.query.length}-character query`, requestPreview: {}, sourceAttribution: "available",
-        sources: [{ citation: 1, title: "Dry run", url: "https://example.com/dry-run" }], usage: normalizeTokenUsage({}) })
+        sources: [{ citation: 1, rank: 1, title: "Dry run", url: "https://example.com/dry-run" }], usage: normalizeTokenUsage({}) })
     },
     config: { maxOutputTokens: 16, queryMaxCharacters: 1_000, reasoningPolicy: "provider_default", timeoutMs: 10_000 },
     displayName: "Dry run",

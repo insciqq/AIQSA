@@ -65,7 +65,7 @@ function fakeEngine(questions: readonly Question[], calls: { search: number }): 
       const fact = question && question.set !== "frames" ? `The answer is ${question.gold}.` : "Nothing relevant was found.";
       const findings = question?.id === LONG_ID ? `[1] ${"filler ".repeat(2_000)}\n${fact}\n${"filler ".repeat(4_000)}` : `[1] ${fact}`;
       return Promise.resolve({ artifacts: [], costUsd: 0.001, finalProviderResponsePreview: {}, findings, requestPreview: {},
-        sourceAttribution: "available", sources: [{ citation: 1, title: "Fake source", url: "https://example.com/fact" }],
+        sourceAttribution: "available", sources: [{ citation: 1, rank: 1, title: "Fake source", url: "https://example.com/fact" }],
         usage: normalizeTokenUsage({}) });
     }
   };
