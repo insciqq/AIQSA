@@ -1,14 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { catalogModelTokenPricing } from "../../domain/modelPrices";
 import { estimateCostMicros } from "../../domain/usage";
 import { validateSearchToolArguments } from "../search/query";
+import { createSearchPlanToolRouter, searchExecutionsFromToolResult } from "../search/toolExecutor";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import {
   buildGeminiInteractionsSearchRequest,
-  createGeminiInteractionsSearchAdapter
+  createGeminiInteractionsSearchAdapter,
+  type GeminiInteractionsSearchAdapterOptions
 } from "./geminiInteractionsSearch";
+import type { ProviderRuntimeBinding } from "./runtimeFactory";
 import {
   isProviderSearchExecutionError,
+  type NormalizedSearchPlanOption,
+  type ProviderRunRequest,
   type ProviderSearchPolicy,
   type ProviderSearchRequest
 } from "./types";
@@ -311,7 +316,8 @@ describe("Gemini Interactions query-only Search adapter", () => {
     }).search(request(), { signal: controller.signal });
 
     expect(resolveRedirects).toHaveBeenCalledWith(
-      [redirect("vedomosti"), redirect("finmarket"), redirect("rosbalt"), redirect("finmarket-2")], controller.signal);
+      [redirect("vedomosti"), redirect("finmarket"), redirect("rosbalt"), redirect("finmarket-2")],
+      { signal: controller.signal, totalTimeoutMs: 5_000 });
     expect(result.findings).toBe(text);
     expect(result.sources).toEqual([
       { citation: 1, rank: 1, snippet: first, title: "vedomosti.ru",
@@ -383,5 +389,92 @@ describe("Gemini Interactions query-only Search adapter", () => {
     expect(result.sources.map((source) => source.url)).toEqual([
       "https://example.test/offset-free", "https://example.test/valencia-weather"
     ]);
+  });
+});
+
+describe("Gemini redirect resolution within the search deadline", () => {
+  const redirectUrl = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZ-slow";
+  const redirectSteps = () => (response().steps as Record<string, unknown>[]).map((step) => step.type === "model_output"
+    ? { ...step, content: [{ annotations: [{ end_index: 8, start_index: 0, title: "example.com", type: "url_citation",
+      url: redirectUrl }], text: "Valencia is warm and sunny.", type: "text" }] }
+    : step);
+  /** Gemini answers after `delayMs`; every HEAD hangs until its signal ends. */
+  function slowEngine(delayMs: number) {
+    const resolveRedirects = vi.fn<NonNullable<GeminiInteractionsSearchAdapterOptions["resolveRedirects"]>>(
+      () => new Promise(() => undefined));
+    const adapter = createGeminiInteractionsSearchAdapter({
+      client: client(() => new Promise((resolve) => setTimeout(() => resolve(response({ steps: redirectSteps() })), delayMs))),
+      resolveRedirects
+    });
+    return { adapter, resolveRedirects };
+  }
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("returns a search that answered at 29.5 of 30 s as complete, with Gemini's links and no resolution", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(29_500);
+    const option: NormalizedSearchPlanOption = {
+      adapterKind: "provider_model_client",
+      config: { maxOutputTokens: 4_096, modelCapabilities: (request().searchPolicy as GeminiSearchPolicy).modelCapabilities,
+        queryMaxCharacters: 500, reasoningPolicy: "lowest_supported", timeoutMs: 30_000 },
+      credentialMode: "provider_model",
+      displayName: "Gemini Google Search",
+      executionModes: ["all_selected", "model_choice"],
+      modelId: "gemini-3.6-flash",
+      optionId: "gemini",
+      protocol: "gemini_google_search",
+      provider: "gemini",
+      providerModelId: "gemini-3.6-flash",
+      revisionId: "revision-gemini",
+      searchStrategyRowId: "integration-gemini"
+    };
+    const runtime: ProviderRuntimeBinding = {
+      adapter: { buildRequestPreview: () => ({}), async *stream() { throw new Error("answer_adapter_unused"); } },
+      responseTimeoutMs: 300_000,
+      searchAdapter: adapter
+    };
+    const router = createSearchPlanToolRouter({ plan: { mode: "model_choice", options: [option] }, runtimes: { gemini: runtime } })!;
+    const execution = router.execute({ arguments: { query: "weather in Valencia" }, id: "call-1", name: router.tools[0]!.name },
+      {} as ProviderRunRequest);
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = await execution;
+
+    expect(resolveRedirects).not.toHaveBeenCalled();
+    expect(result.status).toBe("complete");
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
+      sources: [expect.objectContaining({ snippet: "Valencia", url: redirectUrl })],
+      status: "complete"
+    })]);
+  });
+
+  it("gives slow redirects only what the deadline leaves, minus the margin, and keeps Gemini's links", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(27_000);
+    let settledAt: number | null = null;
+    const pending = adapter.search(request(), { timeoutMs: 30_000 }).then((value) => {
+      settledAt = performance.now();
+      return value;
+    });
+    const startedAt = performance.now();
+    await vi.advanceTimersByTimeAsync(27_000);
+    expect(resolveRedirects).toHaveBeenCalledWith([redirectUrl], { totalTimeoutMs: 2_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await pending;
+
+    expect(settledAt! - startedAt).toBe(29_000);
+    expect(result.sources).toEqual([{ citation: 1, rank: 1, snippet: "Valencia", title: "example.com", url: redirectUrl }]);
+  });
+
+  it("returns the completed search at once when Stop comes during resolution", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(1_000);
+    const stop = new AbortController();
+    const pending = adapter.search(request(), { signal: stop.signal, timeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(resolveRedirects).toHaveBeenCalledWith([redirectUrl], { signal: stop.signal, totalTimeoutMs: 5_000 });
+    stop.abort();
+    const result = await pending;
+    expect(result.sources.map((source) => source.url)).toEqual([redirectUrl]);
   });
 });
