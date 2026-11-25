@@ -16,9 +16,17 @@ export function imageModelConfiguration(upstreamModelId: string, image: ImageMod
   };
 }
 
-/** Reviewed candidates still require exact-key catalog and capability checks. */
+/** Reviewed candidates still require exact-key catalog and capability checks. OpenAI deprecated
+ * gpt-image-2 (shutdown 2027-02-10, https://developers.openai.com/api/docs/deprecations, checked
+ * 2026-11-25), so it stays offered after its successors until then. */
 export function initialImageModels(family: string): readonly { id: string; name: string; profile: ImageProviderProfile }[] {
-  if (family === "openai") return [{ id: "gpt-image-2", name: "GPT Image 2", profile: "openai" }];
+  if (family === "openai") return [
+    { id: "gpt-image-2.6-sunburst", name: "GPT Image 2.6 Sunburst", profile: "openai" },
+    { id: "gpt-image-2.6-flare", name: "GPT Image 2.6 Flare", profile: "openai" },
+    { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", profile: "openai" },
+    { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", profile: "openai" },
+    { id: "gpt-image-2", name: "GPT Image 2", profile: "openai" }
+  ];
   if (family === "gemini") return [
     { id: "gemini-nano-banana-2.1", name: "Gemini Nano Banana 2.1", profile: "gemini" },
     { id: "gemini-3.1-flash-image", name: "Gemini 3.1 Flash Image", profile: "gemini" },
@@ -32,6 +40,8 @@ export function initialImageModels(family: string): readonly { id: string; name:
     { id: "google/gemini-3.1-flash-lite-image", name: "Gemini 3.1 Flash Lite Image", profile: "openrouter" },
     { id: "google/gemini-3-pro-image", name: "Gemini 3 Pro Image", profile: "openrouter" },
     { id: "google/gemini-2.5-flash-image", name: "Gemini 2.5 Flash Image", profile: "openrouter" },
+    { id: "openai/gpt-image-2.6-sunburst", name: "GPT Image 2.6 Sunburst", profile: "openrouter" },
+    { id: "openai/gpt-image-2.6-flare", name: "GPT Image 2.6 Flare", profile: "openrouter" },
     { id: "openai/gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", profile: "openrouter" },
     { id: "openai/gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", profile: "openrouter" }
   ];

@@ -141,7 +141,8 @@ const geminiInteractionsParams = defaultGeminiInteractionsParams();
 const openRouterParams = defaultOpenRouterParams();
 
 // The API rejects reasoning effort `none` on these models
-// (https://developers.openai.com/api/docs/models, GPT-6.2 checked 2026-11-19).
+// (https://developers.openai.com/api/docs/models, GPT-6.2 checked 2026-11-19). GPT-6.1 Terra
+// accepts none through max (https://developers.openai.com/api/docs/models/gpt-6.1-terra, checked 2026-11-25).
 const openAIReasoningRequiredModels = new Set(["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"]);
 
 function openAIReasoningModel(modelId: string, displayName: string): ProviderModelTemplate {
@@ -497,6 +498,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openAIReasoningModel("gpt-6.2-sol", "GPT-6.2 Sol"),
   openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"),
   openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"),
+  openAIReasoningModel("gpt-6.1-terra", "GPT-6.1 Terra"),
   openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"),
   openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"),
   openAIReasoningModel("gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -660,6 +662,7 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
   openRouterModel(openAIReasoningModel("gpt-6-astra", "GPT-6 Astra"), "openai/gpt-6-astra"),
   openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol"), "openai/gpt-6.1-sol", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6.1-sol", "GPT-6.1 Sol Pro"), "openai/gpt-6.1-sol-pro", { temperature: false }),
+  openRouterModel(openAIReasoningModel("gpt-6.1-terra", "GPT-6.1 Terra"), "openai/gpt-6.1-terra", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol"), "openai/gpt-6-sol", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-sol", "GPT-6 Sol Pro"), "openai/gpt-6-sol-pro", { temperature: false }),
   openRouterModel(openAIReasoningModel("gpt-6-luna", "GPT-6 Luna"), "openai/gpt-6-luna", { temperature: false }),

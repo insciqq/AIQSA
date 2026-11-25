@@ -1,13 +1,15 @@
 // Release dates of code-owned model templates: OpenRouter's `created` date of the
 // same model (https://openrouter.ai/api/v1/models), checked 2026-10-15, for Gemini 4
 // Carbon, Hydrogen and Nano Banana 2.1 on 2026-11-13 and for GPT-6.2 Astra and Sol,
-// Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19. They only
-// order the administrator's model list; nothing else reads them. Templates without
-// a published date (embeddings, rerankers, Jev, image-only OpenAI models, fake)
-// stay absent and sort by when the row was added.
+// Claude Fable 5.2 and Gemini 4 Neon on 2026-11-19 and for GPT-6.1 Terra and the GPT
+// Image models (OpenRouter's image listing; 2.5 by its 20260908 snapshot) on 2026-11-25.
+// They only order the administrator's model list; nothing else reads them. Templates
+// without a published date (embeddings, rerankers, Jev, fake) stay absent and sort by
+// when the row was added.
 const openai: Record<string, string> = {
   "gpt-6.2-astra": "2026-11-17",
   "gpt-6.2-sol": "2026-11-17",
+  "gpt-6.1-terra": "2026-10-26",
   "gpt-6.1-sol": "2026-09-29",
   "gpt-6-sol": "2026-09-22",
   "gpt-6-luna": "2026-09-22",
@@ -15,7 +17,12 @@ const openai: Record<string, string> = {
   "gpt-5.6-sol": "2026-07-09",
   "gpt-5.6-terra": "2026-07-09",
   "gpt-5.6-luna": "2026-07-09",
-  "gpt-5.5": "2026-04-24"
+  "gpt-5.5": "2026-04-24",
+  "gpt-image-2.6-sunburst": "2026-11-04",
+  "gpt-image-2.6-flare": "2026-11-04",
+  "gpt-image-2.5-sunburst": "2026-09-08",
+  "gpt-image-2.5-flare": "2026-09-08",
+  "gpt-image-2": "2026-06-24"
 };
 const anthropic: Record<string, string> = {
   "claude-fable-5-2": "2026-11-09",
@@ -57,6 +64,7 @@ const openrouter: Record<string, string> = {
   "google/gemini-4-hydrogen": "2026-11-12",
   "google/gemini-4-carbon": "2026-11-10",
   "google/gemini-4-argon": "2026-10-13",
+  "openai/gpt-6.1-terra": "2026-10-26",
   "anthropic/claude-haiku-5.5": "2026-10-07",
   "openai/gpt-6.1-sol": "2026-09-29",
   "openai/gpt-6.1-sol-pro": "2026-09-29",
@@ -82,7 +90,11 @@ const openrouter: Record<string, string> = {
   "google/gemini-3.1-flash-image": "2026-06-18",
   "google/gemini-3.1-flash-lite-image": "2026-06-30",
   "google/gemini-3-pro-image": "2026-06-18",
-  "google/gemini-2.5-flash-image": "2025-10-07"
+  "google/gemini-2.5-flash-image": "2025-10-07",
+  "openai/gpt-image-2.6-sunburst": "2026-11-04",
+  "openai/gpt-image-2.6-flare": "2026-11-04",
+  "openai/gpt-image-2.5-sunburst": "2026-09-08",
+  "openai/gpt-image-2.5-flare": "2026-09-08"
 };
 
 const releaseDates: ReadonlyMap<string, string> = new Map(

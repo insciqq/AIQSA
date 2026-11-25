@@ -23,8 +23,13 @@ describe("image discovery", () => {
     ] }, "gemini").map(({ id }) => id)).toEqual(["gemini-nano-banana-2.1", "gemini-3.1-flash-image"]);
   });
   it("offers explicitly unverified gateway candidates only for an unambiguous codex-lb catalog", () => {
-    expect(imageModelsFromCatalog({ data: [{ id: "chat", owned_by: "codex-lb" }] }, "openai_compatible"))
-      .toContainEqual(expect.objectContaining({ id: "gpt-image-2", source: "preset", image: { profile: "codex_lb" } }));
+    const presets = imageModelsFromCatalog({ data: [{ id: "chat", owned_by: "codex-lb" }] }, "openai_compatible");
+    expect(presets.map(({ id }) => id)).toEqual(
+      ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"]);
+    for (const preset of presets) expect(preset).toMatchObject({ source: "preset", editing: true, image: { profile: "codex_lb" } });
+    // A model the gateway lists itself is kept once, from its listing.
+    expect(imageModelsFromCatalog({ data: [{ id: "gpt-image-2.6-flare", owned_by: "codex-lb" }] }, "openai_compatible")
+      .filter(({ id }) => id === "gpt-image-2.6-flare")).toEqual([expect.objectContaining({ source: "catalog", image: { profile: "codex_lb" } })]);
     expect(imageModelsFromCatalog({ data: [{ id: "chat", owned_by: "codex-lb" }, { id: "other", owned_by: "other" }] }, "openai_compatible")).toEqual([]);
   });
   it("does not call native Anthropic or DeepSeek image discovery", async () => {

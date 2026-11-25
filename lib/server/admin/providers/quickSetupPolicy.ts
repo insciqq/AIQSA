@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 13;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 14;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -181,6 +181,11 @@ const candidateDefinitions: Readonly<Record<
       templateKey: "openai:gpt-6.1-sol"
     }),
     Object.freeze({
+      candidateId: "p14-o11",
+      recommended: false,
+      templateKey: "openai:gpt-6.1-terra"
+    }),
+    Object.freeze({
       candidateId: "p9-o6",
       recommended: false,
       templateKey: "openai:gpt-6-sol"
@@ -255,6 +260,11 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p10-r15",
       recommended: false,
       templateKey: "openrouter:openai/gpt-6.1-sol-pro"
+    }),
+    Object.freeze({
+      candidateId: "p14-r24",
+      recommended: false,
+      templateKey: "openrouter:openai/gpt-6.1-terra"
     }),
     Object.freeze({
       candidateId: "p13-r23",

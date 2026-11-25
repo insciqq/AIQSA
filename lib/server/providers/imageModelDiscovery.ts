@@ -55,8 +55,10 @@ export function imageModelsFromCatalog(value: unknown, family: string): AdminIma
     }
   }
   // codex-lb's chat catalog omits the public Images API models. These are candidates,
-  // never image capability evidence; independent live probes must verify them.
-  if (gateway) for (const id of ["gpt-image-2", "gpt-image-1.5", "gpt-image-1", "gpt-image-1-mini"]) {
+  // never image capability evidence; independent live probes must verify them. They follow the
+  // native OpenAI seeds: gpt-image-1 is shut down, and 1.5 and 1-mini shut down on 2026-12-01
+  // (https://developers.openai.com/api/docs/deprecations, checked 2026-11-25).
+  if (gateway) for (const id of ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-2"]) {
     if (!models.some((model) => model.id === id)) models.push({ id, name: id, image: { profile: "codex_lb" }, editing: true, source: "preset" });
   }
   return [...new Map(models.map((model) => [model.id, model])).values()];

@@ -1,9 +1,9 @@
 /**
  * Opt-in, paid, bounded checks of the latest model refresh (Quick Setup policy
- * v13, November 2026) on a DISPOSABLE stand: Quick Setup turns on GPT-6.2 Sol
- * and Astra, Gemini 4 Neon and, through OpenRouter, Claude Fable 5.2 with the
- * current defaults, never the legacy models, and each new model answers through
- * its real adapter. Never a default lane: it
+ * v14, November 2026) on a DISPOSABLE stand: Quick Setup turns on GPT-6.2 Sol
+ * and Astra, GPT-6.1 Terra natively and through OpenRouter, the GPT Image 2.6
+ * models and Gemini 4 Neon with the current defaults, never the legacy models,
+ * and each new answer model answers through its real adapter. Never a default lane: it
  * runs only with AIQSA_FEATURES_PAID_E2E=DISPOSABLE; each case also needs its
  * key (OPENAI_API_KEY, CODEX_LB_API_KEY + CODEX_LB_BASE_URL, GEMINI_API_KEY,
  * OPENROUTER_API_KEY) and is skipped without it.
@@ -122,11 +122,12 @@ async function report(testInfo: TestInfo, name: string, summary: Record<string, 
 
 const OPENAI_LEGACY = ["gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const GEMINI_LEGACY = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview"];
-const OPENROUTER_NEW = ["openai/gpt-6.2-sol", "openai/gpt-6.2-astra", "anthropic/claude-fable-5.2", "google/gemini-4-neon"];
+const OPENROUTER_NEW = ["openai/gpt-6.1-terra"];
+const OPENAI_NEW_IMAGES = ["gpt-image-2.6-sunburst", "gpt-image-2.6-flare"];
 
 test.beforeEach(async ({ request }) => { await authenticateWithLocalToken(request); });
 
-test("OpenAI Quick Setup chooses GPT-6.2 Sol, turns on GPT-6.2 Astra and no legacy model, and both answer", async ({ request }, testInfo) => {
+test("OpenAI Quick Setup chooses GPT-6.2 Sol, turns on GPT-6.2 Astra, GPT-6.1 Terra and GPT Image 2.6 and no legacy model, and each answers", async ({ request }, testInfo) => {
   const secret = paidEnv("OPENAI_API_KEY");
   test.skip(!secret, "paid: OPENAI_API_KEY is not set");
   test.setTimeout(1_800_000);
@@ -135,16 +136,18 @@ test("OpenAI Quick Setup chooses GPT-6.2 Sol, turns on GPT-6.2 Astra and no lega
     const { candidateNames, connection, result } = await quickSetup(request, "openai", secret!);
     const models = upstreamIds(connection);
     Object.assign(summary, { outcome: result.outcome, chosen: result.model?.displayName, candidateNames, models,
-      sol62Check: checkStatus(connection, "gpt-6.2-sol"), astra62Check: checkStatus(connection, "gpt-6.2-astra") });
+      sol62Check: checkStatus(connection, "gpt-6.2-sol"), astra62Check: checkStatus(connection, "gpt-6.2-astra"),
+      terra61Check: checkStatus(connection, "gpt-6.1-terra"),
+      imageChecks: Object.fromEntries(OPENAI_NEW_IMAGES.map((id) => [id, checkStatus(connection, id)])) });
     expect(candidateNames).not.toContain("GPT-5.6 Terra");
+    expect(candidateNames).toContain("GPT-6.1 Terra");
     expect(result.model?.displayName).toBe("GPT-6.2 Sol");
-    expect(models).toEqual(expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra"]));
+    expect(models).toEqual(expect.arrayContaining(["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", ...OPENAI_NEW_IMAGES]));
     expect(models.filter((id) => OPENAI_LEGACY.includes(id))).toEqual([]);
-    expect(checkStatus(connection, "gpt-6.2-sol")).toBe("available");
-    expect(checkStatus(connection, "gpt-6.2-astra")).toBe("available");
+    for (const id of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", ...OPENAI_NEW_IMAGES]) expect(checkStatus(connection, id), id).toBe("available");
     // Each turn is independent, so one model's failure still shows the other's.
     const failures: unknown[] = [];
-    for (const [upstream, key] of [["gpt-6.2-sol", "sol62Turn"], ["gpt-6.2-astra", "astra62Turn"]] as const) {
+    for (const [upstream, key] of [["gpt-6.2-sol", "sol62Turn"], ["gpt-6.2-astra", "astra62Turn"], ["gpt-6.1-terra", "terra61Turn"]] as const) {
       await answerTurn(request, await answerModel(request, connection, upstream), summary, key).catch((error: unknown) => { failures.push(error); });
     }
     if (failures.length) throw failures[0];
@@ -153,12 +156,12 @@ test("OpenAI Quick Setup chooses GPT-6.2 Sol, turns on GPT-6.2 Astra and no lega
   }
 });
 
-test("codex-lb serves GPT-6.2 Sol and Astra through custom setup", async ({ request }, testInfo) => {
+test("codex-lb serves GPT-6.2 Sol and Astra and GPT-6.1 Terra through custom setup", async ({ request }, testInfo) => {
   test.skip(!paidEnv("CODEX_LB_API_KEY") || !paidEnv("CODEX_LB_BASE_URL"), "paid: CODEX_LB_API_KEY and CODEX_LB_BASE_URL are not set");
   test.setTimeout(1_200_000);
   const summary: Record<string, unknown> = {};
   try {
-    for (const upstream of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+    for (const upstream of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra"]) {
       const model = await setupCodexLbAnswerModel(request, { label: "Model refresh codex-lb", nativeSearch: false, preferredModel: upstream });
       summary[`${upstream}Model`] = model.upstreamModelId;
       expect(model.upstreamModelId).toBe(upstream);
@@ -235,8 +238,7 @@ test("OpenRouter Quick Setup chooses Claude Opus 5.5, checks the new models, dro
     expect(checks).toEqual(Object.fromEntries(OPENROUTER_NEW.map((id) => [id, "available"])));
     // Each turn is independent; Opus 5.5 predates this change and separates a new-template defect from a route one.
     const failures: unknown[] = [];
-    for (const [upstream, key] of [["anthropic/claude-fable-5.2", "fable52Turn"], ["openai/gpt-6.2-sol", "sol62Turn"],
-      ["openai/gpt-6.2-astra", "astra62Turn"], ["google/gemini-4-neon", "neonTurn"], ["anthropic/claude-opus-5.5", "opus55Turn"]] as const) {
+    for (const [upstream, key] of [["openai/gpt-6.1-terra", "terra61Turn"], ["anthropic/claude-opus-5.5", "opus55Turn"]] as const) {
       await answerTurn(request, await answerModel(request, connection, upstream), summary, key).catch((error: unknown) => { failures.push(error); });
     }
     if (failures.length) throw failures[0];
