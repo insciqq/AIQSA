@@ -169,6 +169,41 @@ export function extractGeminiInteractionUsage(response: GeminiInteractionRecord)
   return withGeminiWebSearchCount(extractGeminiInteractionsUsage(response.usage), response.steps);
 }
 
+/**
+ * The Google Search queries Gemini billed for one interaction, as it reports
+ * them (`usage.grounding_tool_count`, entries of type `google_search`); null
+ * when it reports none or an unreadable count, so the charge stays unknown.
+ */
+export function geminiBilledSearchQueryCount(usage: unknown): number | null {
+  const entries = isRecord(usage) ? usage.grounding_tool_count : undefined;
+  if (!Array.isArray(entries) || entries.length > MAX_SEARCH_CALL_COUNT) return null;
+  let total = 0;
+  let reported = false;
+  for (const entry of entries) {
+    if (!isRecord(entry) || entry.type !== "google_search") continue;
+    const count = nonNegativeInteger(entry.count);
+    if (count === null) return null;
+    total += count;
+    reported = true;
+  }
+  return reported && Number.isSafeInteger(total) ? total : null;
+}
+
+/**
+ * Usage of one Search engine interaction: its tokens and the queries Gemini
+ * billed, priced by the technical model's stored per-search price (the
+ * published $14 per 1,000 in `lib/domain/modelPrices.ts`). Without a reported
+ * count the usage is partial, so its cost stays unknown, never estimated from
+ * the queries its steps list.
+ */
+export function extractGeminiSearchUsage(response: GeminiInteractionRecord): ModelRunUsage {
+  const tokens = extractGeminiInteractionsUsage(response.usage);
+  const billed = geminiBilledSearchQueryCount(response.usage);
+  return billed === null
+    ? normalizeTokenUsage({ ...tokens, completeness: "partial" })
+    : normalizeTokenUsage({ ...tokens, webSearchCount: billed });
+}
+
 function interactionFailure(status: string): Error {
   return new Error(`gemini_interaction_${status}`);
 }
@@ -485,23 +520,68 @@ function citationFromAnnotation(value: unknown): GroundingDisplayEvent["data"]["
   return { endIndex, startIndex, ...source };
 }
 
-/** Every page the findings cite, placed or not, in their order. */
-function groundingSources(protectedSteps: readonly Record<string, unknown>[]): Readonly<{ title: string; url: string }>[] {
-  const sources: Readonly<{ title: string; url: string }>[] = [];
+type GroundingSource = { segments: string[]; title: string; url: string };
+
+/** Separates the answer segments one source supports in its excerpt. */
+const SEGMENT_SEPARATOR = " … ";
+
+/**
+ * The answer text one citation covers. Gemini's offsets count UTF-8 bytes of
+ * the text block they annotate (a recorded Russian answer, 2026-11-26), so
+ * they are read as bytes; offsets outside the block give no segment. One
+ * line, without the list marker that may open it.
+ */
+function citedSegment(text: Buffer, annotation: Record<string, unknown>): string | null {
+  const start = validCitationIndex(annotation.start_index);
+  const end = validCitationIndex(annotation.end_index);
+  if (start === null || end === null || end <= start || end > text.length) return null;
+  const segment = new TextDecoder("utf-8").decode(text.subarray(start, end))
+    .replace(/^�+|�+$/gu, "")
+    .replace(/[\u0000-\u001f\u007f\s]+/gu, " ")
+    .trim()
+    .replace(/^(?:[*+-]|\d{1,3}[.)])\s+/u, "");
+  return segment || null;
+}
+
+/** Every page the findings cite, placed or not, in their order, each with the
+ * answer segments its citations cover. */
+function groundingSources(protectedSteps: readonly Record<string, unknown>[]): GroundingSource[] {
+  const sources: GroundingSource[] = [];
+  const byUrl = new Map<string, GroundingSource>();
+  let citationCount = 0;
   for (const protectedStep of protectedSteps) {
     const step = geminiInteractionStepForWire(protectedStep);
     if (step.type !== "model_output" || !Array.isArray(step.content)) continue;
     for (const content of step.content) {
       if (!isRecord(content) || !Array.isArray(content.annotations)) continue;
+      const text = typeof content.text === "string" ? Buffer.from(content.text, "utf8") : Buffer.alloc(0);
       for (const annotation of content.annotations) {
-        const source = sourceFromAnnotation(annotation);
-        if (!source) continue;
-        if (sources.length >= MAX_CITATION_COUNT) throw new Error("gemini_interactions_grounding_invalid");
-        sources.push(source);
+        const cited = sourceFromAnnotation(annotation);
+        if (!cited || !isRecord(annotation)) continue;
+        citationCount += 1;
+        if (citationCount > MAX_CITATION_COUNT) throw new Error("gemini_interactions_grounding_invalid");
+        let source = byUrl.get(cited.url);
+        if (!source) {
+          source = { segments: [], title: cited.title, url: cited.url };
+          byUrl.set(cited.url, source);
+          sources.push(source);
+        }
+        if (!source.title && cited.title) source.title = cited.title;
+        const segment = citedSegment(text, annotation);
+        if (segment && !source.segments.includes(segment)) source.segments.push(segment);
       }
     }
   }
   return sources;
+}
+
+/** Search source candidates; one page's segments become its excerpt. */
+function groundingSourceCandidates(sources: readonly GroundingSource[]): Record<string, unknown>[] {
+  return sources.map((source) => ({
+    ...(source.segments.length ? { snippet: source.segments.join(SEGMENT_SEPARATOR) } : {}),
+    title: source.title,
+    url: source.url
+  }));
 }
 
 type GeminiGroundingRetention = Readonly<{
@@ -804,24 +884,8 @@ function geminiSearchOperationArtifacts(
   });
 }
 
-export function normalizeGeminiInteractionsSearchResponse(
-  response: GeminiInteractionRecord,
-  context: GeminiInteractionsResponseContext
-): GeminiInteractionsSearchResponse {
-  const normalized = normalizeInteraction(response, context, { suggestionsRequired: false });
-  if (normalized.status !== "completed") {
-    throw new Error("gemini_interactions_search_not_completed");
-  }
-  if (!normalized.grounding || normalized.grounding.data.runSearch.callCount < 1) {
-    throw new Error("gemini_interactions_search_call_missing");
-  }
-  // A source needs only its page; the text offsets place inline citations.
-  const sources = normalizeSearchSources(groundingSources(normalized.protectedSteps));
-  if (sources.length === 0) {
-    throw new Error("gemini_interactions_search_sources_missing");
-  }
-  const operationArtifacts = geminiSearchOperationArtifacts(normalized.protectedSteps);
-  const citationArtifacts: ModelRunSseEvent[] = sources.map((source) => ({
+function geminiSearchCitationArtifacts(sources: readonly SearchSource[]): ModelRunSseEvent[] {
+  return sources.map((source) => ({
     data: {
       artifactType: "citation",
       payload: {
@@ -833,8 +897,28 @@ export function normalizeGeminiInteractionsSearchResponse(
     },
     type: "artifact"
   }));
+}
+
+export function normalizeGeminiInteractionsSearchResponse(
+  response: GeminiInteractionRecord,
+  context: GeminiInteractionsResponseContext
+): GeminiInteractionsSearchResponse {
+  const interaction = normalizeInteraction(response, context, { suggestionsRequired: false });
+  // An engine's usage counts the queries Gemini reports it billed.
+  const normalized = { ...interaction, usage: extractGeminiSearchUsage(response) };
+  if (normalized.status !== "completed") {
+    throw new Error("gemini_interactions_search_not_completed");
+  }
+  if (!normalized.grounding || normalized.grounding.data.runSearch.callCount < 1) {
+    throw new Error("gemini_interactions_search_call_missing");
+  }
+  // A source needs only its page; the text offsets give its excerpt.
+  const sources = normalizeSearchSources(groundingSourceCandidates(groundingSources(normalized.protectedSteps)));
+  if (sources.length === 0) {
+    throw new Error("gemini_interactions_search_sources_missing");
+  }
   return {
-    artifacts: [...operationArtifacts, ...citationArtifacts],
+    artifacts: [...geminiSearchOperationArtifacts(normalized.protectedSteps), ...geminiSearchCitationArtifacts(sources)],
     finalProviderResponsePreview: {
       ...responsePreview(normalized),
       grounding: {
@@ -847,6 +931,51 @@ export function normalizeGeminiInteractionsSearchResponse(
     ...(normalized.id ? { providerResponseId: normalized.id } : {}),
     sources,
     usage: normalized.usage
+  };
+}
+
+/**
+ * The Search result with each grounding redirect replaced by the page address
+ * it resolved to (`resolveGeminiGroundingRedirects`). Redirects that name one
+ * page merge into one source, their excerpts joined; an unresolved redirect
+ * stays as cited.
+ */
+export function withResolvedGeminiSearchSources(
+  result: GeminiInteractionsSearchResponse,
+  resolved: ReadonlyMap<string, string>
+): GeminiInteractionsSearchResponse {
+  if (resolved.size === 0) return result;
+  const merged: { snippets: string[]; title: string; url: string }[] = [];
+  const byUrl = new Map<string, (typeof merged)[number]>();
+  for (const source of result.sources) {
+    const url = resolved.get(source.url) ?? source.url;
+    let entry = byUrl.get(url);
+    if (!entry) {
+      entry = { snippets: [], title: source.title, url };
+      byUrl.set(url, entry);
+      merged.push(entry);
+    }
+    if (source.snippet && !entry.snippets.includes(source.snippet)) entry.snippets.push(source.snippet);
+  }
+  const sources = normalizeSearchSources(merged.map((entry) => ({
+    ...(entry.snippets.length ? { snippet: entry.snippets.join(SEGMENT_SEPARATOR) } : {}),
+    title: entry.title,
+    url: entry.url
+  })));
+  // A resolved address that the source rules refuse would drop its source:
+  // keep the cited links instead.
+  if (sources.length !== merged.length) return result;
+  const preview = result.finalProviderResponsePreview;
+  return {
+    ...result,
+    artifacts: [
+      ...result.artifacts.filter((event) => !(event.type === "artifact" && event.data.artifactType === "citation")),
+      ...geminiSearchCitationArtifacts(sources)
+    ],
+    finalProviderResponsePreview: isRecord(preview.grounding)
+      ? { ...preview, grounding: { ...preview.grounding, citationCount: sources.length } }
+      : preview,
+    sources
   };
 }
 
