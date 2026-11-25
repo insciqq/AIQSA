@@ -129,6 +129,15 @@ export const AUTO_TOOL_NOT_LOADED_OUTPUT = (name: string, query: string) =>
   "then call the tool again.";
 
 /**
+ * A call of a tool that became available only while the response that called it ran (`find_tools` loaded it, or research's
+ * start passed), so it had no place in that response's order (`scheduleCalls`): refused like an unknown tool, as
+ * `find_tools` makes the tools it loads available on the next step.
+ */
+export const TOOL_ADDED_DURING_RESPONSE_OUTPUT = (name: string) =>
+  `Not run: ${name} became available only while this response's calls ran, after this call was made, so nothing was sent. ` +
+  "Call the tool again now.";
+
+/**
  * A call of a tool whose connection this answer lost (`EngineTool.links`): the same call fails the same way, so the model
  * reads its one next step instead of sending it again, as background sub-agents kept doing (production audit 2026-11-20).
  * Under Auto, `query` loads the tool from the chat's index once more.
@@ -309,22 +318,25 @@ export function createToolHooks(deps: ToolBatchDeps, state: ToolBatchState) {
   /**
    * The checks before a call is recorded and sent. Only what can be decided
    * without sending anything refuses here; the approval itself is consumed
-   * or requested in the call's recording transaction.
+   * or requested in the call's recording transaction. `unplaced`: the call's
+   * tool did not resolve as its batch started, so it is unknown to this
+   * response even if `find_tools` loaded it since.
    */
   function beforeToolCall(call: ModelToolCall, round: number, batch: readonly ModelToolCall[],
-    approved?: ApprovedToolCall): BeforeToolCall {
+    approved?: ApprovedToolCall, unplaced = false): BeforeToolCall {
     // An approved call whose tool the run could not load is refused visibly, never dropped or left to the model.
     if (approved?.unavailable && approved.callId === call.id) {
       return { kind: "refuse", output: APPROVED_TOOL_UNAVAILABLE_OUTPUT, toolName: call.name,
         result: jsonError(call, { error: APPROVED_TOOL_UNAVAILABLE, message: APPROVED_TOOL_UNAVAILABLE_OUTPUT }) };
     }
-    const tool = deps.registry.resolve(call.name);
+    const resolved = deps.registry.resolve(call.name);
+    const tool = unplaced ? undefined : resolved;
     if (!tool) {
       const toolName = unknownToolCallName(call.name);
       // An older tool the run replaced names its replacement, and an MCP tool of the chat's Auto index (one an earlier
       // turn used) how to load it; the record keeps the plain unknown form.
       const load = deps.registry.mcpLoadCall?.(call.name, call.id);
-      const output = deps.registry.replacement?.(call.name) ??
+      const output = resolved ? TOOL_ADDED_DURING_RESPONSE_OUTPUT(call.name) : deps.registry.replacement?.(call.name) ??
         (load ? AUTO_TOOL_NOT_LOADED_OUTPUT(call.name, String(load.arguments.query)) : UNKNOWN_TOOL_CALL_MESSAGE);
       return { correctable: true, kind: "refuse", output, toolName,
         result: unknownToolCallResult({ providerCallId: call.id, requested: requestedToolNameExcerpt(call.name), toolName }) };
@@ -510,15 +522,18 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   let timeExhausted = false;
   let correctable = 0;
   let executed = 0;
-  const declared = input.calls.filter((call) => deps.registry.resolve(call.name));
+  // Each call's tool as the batch starts, which fixes its place (`scheduleCalls`): a tool `find_tools` loads meanwhile had
+  // none, so its call is refused as unknown rather than sent past the order of its resource.
+  const placed = input.calls.map((call) => deps.registry.resolve(call.name));
+  const declared = placed.filter((tool) => tool !== undefined);
   if (declared.length > 0) deps.onLiveEvent(liveRunPhaseStatus({ count: declared.length, phase: "tools" }));
 
   // Each call that settles here (refused, held for approval, or run) logs one `tool_call` record once its outcome is
   // known and before its bookkeeping; a call whose run stopped before it was recorded logs none. Every exit goes through
   // `notRun` (nothing was sent) or `ran` (it was sent), which own that bookkeeping.
-  const runCall = async (call: ModelToolCall, ordinal: number): Promise<TranscriptToolResultItem> => {
-    const kind = engineToolCallKind(deps.registry.resolve(call.name)?.definition);
-    const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved);
+  const runCall = async (call: ModelToolCall, ordinal: number, unplaced: boolean): Promise<TranscriptToolResultItem> => {
+    const kind = engineToolCallKind(unplaced ? undefined : deps.registry.resolve(call.name)?.definition);
+    const before = hooks.beforeToolCall(call, input.round, input.calls, input.approved, unplaced);
     // The reserved report's first call that runs uses the reservation; one refused before running (malformed
     // arguments, a blocked repeat) keeps it, so a corrected call still gets its reserved round.
     if (before.kind === "run" && before.exempt) state.reservedCalled = true;
@@ -661,12 +676,13 @@ export async function runToolBatch(deps: ToolBatchDeps, state: ToolBatchState, i
   const results: TranscriptToolResultItem[] = new Array(input.calls.length);
   // Each call's place is fixed as the batch starts: a registry that stops resolving a tool meanwhile (research's scoping
   // limit) refuses that call when it starts, and must never move it to another pool or off its resource's queue.
-  const places = input.calls.map((call) => {
-    const tool = deps.registry.resolve(call.name);
+  const places = input.calls.map((call, index) => {
+    const tool = placed[index];
     return { delegated: tool?.delegated === true, resource: tool?.resource?.(call), serial: tool?.serial === true };
   });
   await scheduleCalls(places, async (index) => {
-    results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index));
+    results[index] = await runWithToolCallObservation(() => runCall(input.calls[index]!, (input.firstOrdinal ?? 0) + index,
+      placed[index] === undefined));
   });
   return { approvals, budgetExhausted, correctable, executed, results, ...(timeExhausted ? { timeExhausted: true as const } : {}) };
 }

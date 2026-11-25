@@ -256,6 +256,26 @@ describe("native tool registry", () => {
     expect(resource("update_plan")).toBeUndefined();
   });
 
+  it("orders System Vision and the Skill tools with the Workspace only in a run that has one", async () => {
+    const coordinator = { accepts: () => true, execute: vi.fn(), tools: vi.fn(async () => []) } as unknown as WorkspaceCoordinator;
+    const build = (workspace: ProviderRunRequest["workspace"]) => buildToolRegistry(input({
+      request: request({ skills: { available: [], mode: "auto", pinned: [], tools: "load_and_read", version: 2 },
+        visionAnalysis: {} as NonNullable<ProviderRunRequest["visionAnalysis"]>, ...(workspace ? { workspace } : {}) }),
+      services: { repository: {} as never, savedResults: { read: vi.fn(async () => null) }, skillTools: { execute: vi.fn() },
+        vision: { execute: vi.fn() }, ...(workspace ? { workspace: coordinator } : {}) } }));
+    const resources = (registry: Awaited<ReturnType<typeof build>>) => Object.fromEntries(["analyze_image", "load_skill", "read_skill_file"]
+      .map((name) => [name, registry.resolve(name)!.resource?.({ arguments: {}, id: "c1", name })]));
+    const withWorkspace = await build({ enabled: true } as ProviderRunRequest["workspace"]);
+    // `analyze_image` reads a Workspace file, `load_skill` installs its bundle there and `read_skill_file` may read it back.
+    expect(withWorkspace.resolve("analyze_image")!.definition.capability).toBe("workspace");
+    expect(resources(withWorkspace)).toEqual({ analyze_image: { key: WORKSPACE_RESOURCE_KEY, reads: true },
+      load_skill: { key: WORKSPACE_RESOURCE_KEY, reads: false }, read_skill_file: { key: WORKSPACE_RESOURCE_KEY, reads: true } });
+    // Without one, the conversation form and the Skill tools touch no Workspace and order with nothing.
+    const without = await build(undefined);
+    expect(without.resolve("analyze_image")!.definition.capability).toBe("vision");
+    expect(resources(without)).toEqual({ analyze_image: undefined, load_skill: undefined, read_skill_file: undefined });
+  });
+
   it("runs each agent's Workspace calls as that agent, and refuses a sub-agent's browser on an older image", async () => {
     const execute = vi.fn(async () => ({ callId: "c1", content: [], name: "workspace_shell", status: "complete" as const }));
     const coordinator = { accepts: () => true, execute,

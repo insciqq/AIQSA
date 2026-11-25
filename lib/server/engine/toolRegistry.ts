@@ -76,7 +76,7 @@ import {
   executeSelfServiceTool,
   type SelfServiceRunDeps
 } from "../tools/selfServiceTools";
-import { acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
+import { READ_SKILL_FILE_TOOL_NAME, acceptsSkillTool, skillToolsForRequest } from "../tools/skill";
 import { SAVE_SKILL_TOOL_NAME, executeSaveSkill, isSkillSaveCall, runSkillSaveCommitter, skillSaveToolsForRequest } from "../tools/skillSave";
 import type { ModelToolCall, RunTool, ToolExecutionResult } from "../tools/types";
 import { executeUpdatePlan, parsePlanUpdate, updatePlanTool } from "../tools/updatePlan";
@@ -143,8 +143,9 @@ export type EngineToolLinks = Readonly<{ mcpRunBindingId?: string; workspaceRunB
 export type ToolResource = Readonly<{ key: string; reads: boolean }>;
 
 /**
- * The run's one Workspace, whatever touches its files: the Workspace tools, `apply_patch`, checkpoint outputs, direct view
- * and the browser handoff. A run has one, so one key serves every call of its batches.
+ * The run's one Workspace, whatever touches its files: the Workspace tools, `apply_patch`, checkpoint outputs, direct view,
+ * the browser handoff, and in a run with a Workspace `analyze_image` and the Skill tools. A run has one, so one key serves
+ * every call of its batches.
  */
 export const WORKSPACE_RESOURCE_KEY = "workspace";
 
@@ -493,6 +494,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const service = input.services.skillTools;
     add({ activity: named(definition, undefined, (call) => skillToolActivityFacts(request, call.name, call.arguments)),
       definition, effects: "none", observationSource: "workspace",
+      // With a Workspace, `load_skill` installs the Skill's bundle there and `read_skill_file` may read it back from there.
+      ...(request.workspace ? { resource: workspaceResource(definition.name === READ_SKILL_FILE_TOOL_NAME) } : {}),
       execute: async (execution) => {
         const result = await service.execute(execution.call, context(execution));
         // A loaded Skill's bundle reaches the Workspace only if the run has one.
@@ -516,6 +519,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     if (definition.name !== ANALYZE_IMAGE_TOOL_NAME || !input.services.vision) continue;
     const service = input.services.vision;
     add({ activity: named(definition, "System Vision"), definition, effects: "none", observationSource: "workspace",
+      // Its Workspace form reads an image file there; the conversation form reads only the chat's own images.
+      ...(request.workspace ? { resource: workspaceResource(true) } : {}),
       execute: (execution) => service.execute(execution.call, context(execution), execution.signal) });
     images = { attached: () => undefined, note: IMAGE_ANALYZE_NOTE };
   }

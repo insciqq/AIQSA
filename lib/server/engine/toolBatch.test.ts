@@ -14,6 +14,7 @@ import {
   RUN_SCOPED_RESULT_NOTE,
   runToolBatch,
   SUBAGENT_TOOL_TIME_EXHAUSTED_OUTPUT,
+  TOOL_ADDED_DURING_RESPONSE_OUTPUT,
   TOOL_BATCH_LIMITS,
   TOOL_BINDING_UNAVAILABLE_OUTPUT,
   TOOL_CALL_LIMIT_OUTPUT,
@@ -753,6 +754,68 @@ describe("native tool batch", () => {
       expect(calls.started()).toEqual(["u"]);
       expect(outcome.approvals).toEqual(["approval-1"]);
       expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["c", "error"], ["u", "complete"]]);
+    });
+
+    it("refuses a call of a tool find_tools loaded in the same response, which never passes its server's order", async () => {
+      const calls = held();
+      const tools: Record<string, EngineTool> = {
+        mcp_a_get: tool("mcp_a_get", "none", calls.execute, on("mcp:a", true))
+      };
+      const write = tool("mcp_a_write", "external", calls.execute, on("mcp:a", false));
+      const findTools = tool("find_tools", "none", vi.fn(async ({ call: made }: { call: ModelToolCall }) => {
+        await calls.execute({ call: made });
+        tools.mcp_a_write = write;
+        return ok(made, "Loaded mcp_a_write.");
+      }));
+      const { rows, store } = fakeStore();
+      const batch = deps({}, store, { maxToolCalls: null });
+      const registry: ToolRegistry = { ...batch.registry, resolve: (name) => name === "find_tools" ? findTools : tools[name] };
+      const running = runToolBatch({ ...batch, registry }, { calls: 0 }, { round: 1, calls: [
+        callTo("find_tools", "find"), callTo("mcp_a_get", "r1"), callTo("mcp_a_get", "r2"), callTo("mcp_a_get", "r3"),
+        callTo("mcp_a_write", "w")
+      ] });
+      // The write waits for a place, and gets one once find_tools has loaded its tool, while the three reads still run.
+      await vi.waitFor(() => expect(calls.running()).toEqual(["find", "r1", "r2", "r3"]));
+      calls.release("find");
+      await vi.waitFor(() => expect(rows.size).toBe(5));
+      await flush();
+      expect(calls.started()).not.toContain("w");
+      for (const id of ["r1", "r2", "r3"]) calls.release(id);
+      const outcome = await running;
+      expect(outcome.results[4]).toMatchObject({ callId: "w", outcome: "error", output: TOOL_ADDED_DURING_RESPONSE_OUTPUT("mcp_a_write") });
+      expect(TOOL_ADDED_DURING_RESPONSE_OUTPUT("mcp_a_write")).toBe("Not run: mcp_a_write became available only while this " +
+        "response's calls ran, after this call was made, so nothing was sent. Call the tool again now.");
+      // Recorded as the plain unknown call it was for this response, a mistake the model corrects with its next call.
+      const refused = [...rows.values()].find((row) => row.providerCallId === "w")!;
+      expect(unknownToolCall({ ...refused, result: refused.result as never })).not.toBeNull();
+      expect(outcome).toMatchObject({ correctable: 1, executed: 4 });
+      // The next response's call has its place, behind the reads of its server.
+      const next = runToolBatch({ ...batch, registry }, { calls: 0 }, { round: 2, calls: [callTo("mcp_a_get", "r4"),
+        callTo("mcp_a_write", "w2")] });
+      await vi.waitFor(() => expect(calls.started()).toContain("r4"));
+      await flush();
+      expect(calls.started()).not.toContain("w2");
+      calls.release("r4");
+      calls.release("w2");
+      expect((await next).results.map((item) => [item.callId, item.outcome])).toEqual([["r4", "complete"], ["w2", "complete"]]);
+    });
+
+    it("refuses a call that starts beside find_tools, before its tool was loaded, with the ordinary unknown-tool refusal", async () => {
+      const calls = held();
+      const tools: Record<string, EngineTool> = {};
+      const findTools = tool("find_tools", "none", vi.fn(async ({ call: made }: { call: ModelToolCall }) => {
+        await calls.execute({ call: made });
+        tools.mcp_a_write = tool("mcp_a_write", "external", calls.execute, on("mcp:a", false));
+        return ok(made);
+      }));
+      const batch = deps({}, fakeStore().store, { maxToolCalls: null });
+      const registry: ToolRegistry = { ...batch.registry, resolve: (name) => name === "find_tools" ? findTools : tools[name] };
+      calls.release("find");
+      const outcome = await runToolBatch({ ...batch, registry }, { calls: 0 }, { round: 1, calls: [callTo("find_tools", "find"),
+        callTo("mcp_a_write", "w")] });
+      // Started beside find_tools, before its tool was loaded: the ordinary unknown-tool refusal.
+      expect(outcome.results.map((item) => [item.callId, item.output])).toEqual([["find", "done"], ["w", UNKNOWN_TOOL_CALL_MESSAGE]]);
+      expect(calls.started()).toEqual(["find"]);
     });
 
     it.each([
