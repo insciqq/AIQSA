@@ -345,9 +345,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await signIn(page);
   const capabilitiesTrigger = page.getByRole("button", { name: "Add" });
   const toolsTrigger = page.getByRole("button", { name: "Change MCP mode" });
-  await expect(toolsTrigger.locator('[data-signal="attention"]')).toBeVisible();
-  await expect(toolsTrigger).toHaveAttribute("data-tooltip", "MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
-  await expect(toolsTrigger).toHaveAccessibleDescription("MCP: Auto. 2 MCP servers need attention. Open MCP settings.");
+  // Mem0 needs a value and Notion a connection, but nobody turned them on, so
+  // neither raises a warning (operator decision 2026-11-25).
+  await expect(toolsTrigger.locator('[data-signal="attention"]')).toHaveCount(0);
+  await expect(toolsTrigger).toHaveAccessibleDescription("MCP: Auto");
   await page.setViewportSize({ height: 844, width: 390 });
   // A phone's composer rests as one line until engaged (operator decision 2026-10-29).
   await engageComposer(page);
@@ -356,11 +357,10 @@ test("keeps multi-MCP enablement, personal secrets, OAuth return, and composer c
   await expectNoHorizontalOverflow(page);
   await page.emulateMedia({ colorScheme: "dark" });
   await toolsTrigger.click();
-  const problems = page.getByRole("menu", { name: "MCP tools" });
-  await expect(problems.getByRole("status")).toContainText("Mem0 · Needs setup");
-  await expect(problems.getByRole("status")).toContainText("Notion · Needs authorization");
-  await expectWithinViewport(page, problems);
-  await expectTouchSafe(problems.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
+  const phoneTools = page.getByRole("menu", { name: "MCP tools" });
+  await expect(phoneTools.getByRole("status")).toHaveCount(0);
+  await expectWithinViewport(page, phoneTools);
+  await expectTouchSafe(phoneTools.getByRole("menuitem", { name: "Manage enabled MCP servers" }));
   await page.keyboard.press("Escape");
   await expect(toolsTrigger).toBeFocused();
   await page.emulateMedia({ colorScheme: "light" });
