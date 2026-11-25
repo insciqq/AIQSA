@@ -3,10 +3,12 @@ import { McpClientSessionError } from "../mcp/clientSession";
 import type { McpRunPlanSnapshot } from "../mcp/runPlan";
 import { mcpApprovalAdmission } from "../mcp/writeApproval";
 import type { ProviderRunRequest } from "../providers/types";
+import { WORKSPACE_MCP_TOOL_ALLOWLIST } from "../../domain/workspace";
 import type { WorkspaceCoordinator } from "../workspace/coordinator";
+import { namespacedWorkspaceToolName } from "../workspace/toolCatalog";
 import {
-  MANAGE_MEMORY_RUN_SCOPED_NOTE, buildToolRegistry, engineMcpBindings, engineSnapshotMcpBindings, type EngineMcpBinding,
-  type ToolRegistryInput
+  MANAGE_MEMORY_RUN_SCOPED_NOTE, WORKSPACE_RESOURCE_KEY, buildToolRegistry, engineMcpBindings, engineSnapshotMcpBindings, mcpResourceKey,
+  type EngineMcpBinding, type ToolRegistryInput
 } from "./toolRegistry";
 import { transcriptRecord } from "./toolBatch";
 import { READ_TOOL_RESULT_NAME } from "./toolResults";
@@ -213,6 +215,45 @@ describe("native tool registry", () => {
     expect(shell.effects).toBe("external");
     expect(shell.links?.({ arguments: {}, id: "c1", name: "workspace_shell" })).toEqual({ workspaceRunBindingId: "run" });
     expect(coordinator.execute).not.toHaveBeenCalled();
+  });
+
+  it("orders calls by the resource they touch: one Workspace with its reads, and one queue per MCP server", async () => {
+    const coordinator = { accepts: () => true, execute: vi.fn(),
+      tools: vi.fn(async () => WORKSPACE_MCP_TOOL_ALLOWLIST.map((name) => ({ capability: "workspace" as const, description: name,
+        inputSchema: { type: "object" }, name: namespacedWorkspaceToolName(name) }))) } as unknown as WorkspaceCoordinator;
+    const servers: McpRunPlanSnapshot = { ...snapshot,
+      servers: [...snapshot.servers, { fingerprint: "fp-2", revisionId: "rev-2", serverId: "wiki", serverName: "Wiki" }],
+      tools: [...snapshot.tools,
+        { annotations: { readOnlyHint: true }, definitionHash: "c".repeat(64), description: "Read a page", inputSchema: { type: "object" },
+          name: "read_page", namespacedName: "mcp_wiki_read_page", originalName: "read_page", serverId: "wiki", serverName: "Wiki" },
+        { annotations: { destructiveHint: true, readOnlyHint: true }, definitionHash: "d".repeat(64), description: "Purge a page",
+          inputSchema: { type: "object" }, name: "purge_page", namespacedName: "mcp_wiki_purge_page", originalName: "purge_page",
+          serverId: "wiki", serverName: "Wiki" }] };
+    const registry = await buildToolRegistry(input({ browserHandoff: { kind: "unattended" },
+      request: request({ mcp: servers, workspace: { enabled: true, outputDirectory: "/workspace/output/run" } as ProviderRunRequest["workspace"],
+        workspaceCheckpoints: true, workspaceImageView: true }),
+      services: { repository: {} as never, savedResults: { read: vi.fn(async () => null) }, workspace: coordinator,
+        workspaceImageCaptures: vi.fn(async () => { throw new Error("not_called"); }) } }));
+    const resource = (name: string) => registry.resolve(name)?.resource?.({ arguments: {}, id: "c1", name });
+    const reads = new Set(["sandbox_exec_poll", "sandbox_fs_exists", "sandbox_fs_list", "sandbox_fs_read", "sandbox_fs_stat"]);
+    for (const name of WORKSPACE_MCP_TOOL_ALLOWLIST) {
+      // Commands and exec sessions change the Workspace whatever they run; their effects stay external either way.
+      expect(resource(namespacedWorkspaceToolName(name)), name).toEqual({ key: WORKSPACE_RESOURCE_KEY, reads: reads.has(name) });
+      expect(registry.resolve(namespacedWorkspaceToolName(name))?.effects).toBe("external");
+    }
+    for (const name of ["apply_patch", "browser_handoff", "checkpoint_outputs"]) {
+      expect(resource(name), name).toEqual({ key: WORKSPACE_RESOURCE_KEY, reads: false });
+    }
+    expect(resource("view_workspace_image")).toEqual({ key: WORKSPACE_RESOURCE_KEY, reads: true });
+    // Each server its own queue; only a tool annotated read-only and not destructive reads it.
+    expect(resource("mcp_jira_get_issue")).toEqual({ key: mcpResourceKey("jira"), reads: true });
+    expect(resource("mcp_jira_create_issue")).toEqual({ key: mcpResourceKey("jira"), reads: false });
+    expect(resource("mcp_wiki_read_page")).toEqual({ key: mcpResourceKey("wiki"), reads: true });
+    expect(resource("mcp_wiki_purge_page")).toEqual({ key: mcpResourceKey("wiki"), reads: false });
+    expect(mcpResourceKey("jira")).not.toBe(mcpResourceKey("wiki"));
+    // Tools that touch none of them order with nothing.
+    expect(resource("read_tool_result")).toBeUndefined();
+    expect(resource("update_plan")).toBeUndefined();
   });
 
   it("runs each agent's Workspace calls as that agent, and refuses a sub-agent's browser on an older image", async () => {

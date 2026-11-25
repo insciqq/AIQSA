@@ -1,5 +1,6 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import type { ThreadWorkspaceActivityEntry, WorkspaceActivityKind } from "../../contracts/workspace";
+import type { WorkspaceMcpToolName } from "../../domain/workspace";
 import type { ArtifactService } from "../artifacts/service";
 import type { ConnectorTurn } from "../connectors/turn";
 import { imageNotSentFailure } from "../images/inputError";
@@ -133,6 +134,36 @@ export type EngineToolExecution = Readonly<{
 
 export type EngineToolLinks = Readonly<{ mcpRunBindingId?: string; workspaceRunBindingId?: string }>;
 
+/**
+ * The shared resource one call touches, and whether it only reads it (`EngineTool.resource`). The calls of one response on
+ * one key run in the response's order: a change starts once every call before it on the key settled, a read once every
+ * change before it settled, so reads between two changes run side by side (`runToolBatch`). Models expect "edit, then run
+ * the tests" in one response to run in that order (operator decision 2026-11-24).
+ */
+export type ToolResource = Readonly<{ key: string; reads: boolean }>;
+
+/**
+ * The run's one Workspace, whatever touches its files: the Workspace tools, `apply_patch`, checkpoint outputs, direct view
+ * and the browser handoff. A run has one, so one key serves every call of its batches.
+ */
+export const WORKSPACE_RESOURCE_KEY = "workspace";
+
+/**
+ * The Workspace tools that only read, by a fixed list: their effects stay `external`, which decides retries and unknown
+ * outcomes. `sandbox_exec_poll` reads an exec session's stored output from a cursor and changes no file or process (the
+ * pinned microsandbox-mcp marks it read-only). A command is always a change: commands are never parsed.
+ */
+const WORKSPACE_READ_TOOLS: ReadonlySet<WorkspaceMcpToolName> = new Set<WorkspaceMcpToolName>([
+  "sandbox_exec_poll", "sandbox_fs_exists", "sandbox_fs_list", "sandbox_fs_read", "sandbox_fs_stat"
+]);
+
+const workspaceResource = (reads: boolean) => (): ToolResource => ({ key: WORKSPACE_RESOURCE_KEY, reads });
+
+/** One MCP server's key: an unannotated server's independent calls would otherwise queue behind another server's. */
+export function mcpResourceKey(serverId: string): string {
+  return `mcp:${serverId}`;
+}
+
 export type EngineTool = Readonly<{
   activity(call: ModelToolCall): EngineToolActivity;
   /** The initiator's approval this call needs before it is sent. */
@@ -177,6 +208,12 @@ export type EngineTool = Readonly<{
    * earlier equivalent has an unknown outcome is sent again (MCP tools).
    */
   retryApproval?(call: ModelToolCall): McpApprovalRequest | undefined;
+  /**
+   * The shared resource this call touches (the run's Workspace, its computer, one MCP server) and whether it only reads
+   * it, which orders it among the calls of its response on that resource (`ToolResource`). Absent, or undefined for a call,
+   * the call orders with nothing. It is no effect: `effects` alone decides retries and unknown outcomes.
+   */
+  resource?(call: ModelToolCall): ToolResource | undefined;
   /**
    * The tool's calls of one batch run one at a time, in the response's order: each starts, and gets its record, once the
    * one before it settled, and one waiting for that takes no place among the batch's running calls. For a tool whose open
@@ -467,6 +504,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
   if (request.workspaceCheckpoints) {
     const definition = checkpointOutputsToolForRequest(request);
     add({ activity: named(definition, "Workspace"), definition, effects: "local", observationSource: "workspace",
+      resource: workspaceResource(false),
       execute: async (execution) => (await defaultWorkspaceCheckpoints()).execute(execution.call, context(execution), execution.signal) });
   }
 
@@ -489,7 +527,8 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       captures: input.services.workspaceImageCaptures ?? defaultWorkspaceImageCaptures,
       ...(prepareWorkspace ? { prepareWorkspace } : {}), request, runId: input.runId, userId: input.userId });
     add({ activity: named(viewWorkspaceImageTool, "Workspace"), definition: viewWorkspaceImageTool, effects: "none",
-      observationSource: "workspace", execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
+      observationSource: "workspace", resource: workspaceResource(true),
+      execute: (execution) => viewer.execute(execution.call, execution, execution.signal) });
     images = { attached: (item) => viewer.attached(item), note: IMAGE_VIEW_NOTE };
   }
 
@@ -698,9 +737,10 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
     const workspaceTools = await coordinator.tools({ runId: input.runId, userId: input.userId, workspace });
     for (const definition of workspaceTools) {
       if (!coordinator.accepts({ name: definition.name, workspace })) continue;
-      add({ activity: () => ({ origin: definition.capability, serverName: "Workspace",
-        toolName: workspaceToolNameFromNamespaced(definition.name) ?? definition.name }),
+      const original = workspaceToolNameFromNamespaced(definition.name);
+      add({ activity: () => ({ origin: definition.capability, serverName: "Workspace", toolName: original ?? definition.name }),
         definition, effects: "external", links: () => ({ workspaceRunBindingId: input.runId }), observationSource: "workspace",
+        resource: workspaceResource(original !== null && WORKSPACE_READ_TOOLS.has(original)),
         execute: (execution) => browserRefused && drivesBrowser(execution.call)
           ? Promise.resolve(oldImageBrowserRefusal(execution.call))
           : coordinator.execute({ ...(agent ? { agent } : {}), call: execution.call, modelRunToolCallId: execution.persistedToolCallId,
@@ -718,7 +758,7 @@ export async function buildToolRegistry(input: ToolRegistryInput): Promise<ToolR
       browserStep = handoffMode.kind === "interactive" ? "user" : "nobody";
       browser = !browserRefused;
       add({ activity: () => ({ origin: "workspace", serverName: "Workspace", toolName: BROWSER_HANDOFF_TOOL_NAME }),
-        definition: browserHandoffTool, effects: "external", observationSource: "workspace",
+        definition: browserHandoffTool, effects: "external", observationSource: "workspace", resource: workspaceResource(false),
         execute: (execution) => browserRefused ? Promise.resolve(oldImageBrowserRefusal(execution.call))
           : executeBrowserHandoff(execution.call, handoffMode, execution.signal) });
     }
@@ -777,6 +817,7 @@ function applyPatchEngineTool(input: ToolRegistryInput, coordinator: WorkspaceCo
     effects: applyPatchTool.effects,
     links: () => ({ workspaceRunBindingId: input.runId }),
     observationSource: "workspace",
+    resource: workspaceResource(false),
     execute: async (execution) => {
       const call: WorkspaceToolCaller = (name, args, signal) => coordinator.execute({
         ...(input.agent ? { agent: input.agent } : {}),
@@ -850,6 +891,11 @@ function addMcpTools(input: ToolRegistryInput, add: (tool: EngineTool) => void,
         return current && binding && binding.fingerprint === current.fingerprint ? { mcpRunBindingId: binding.mcpRunBindingId } : null;
       },
       observationSource: "mcp",
+      // One queue per server, its read-only tools reading it.
+      resource: () => {
+        const current = route();
+        return current ? { key: mcpResourceKey(current.serverId), reads: readOnly } : undefined;
+      },
       observationBinding: () => {
         const current = route();
         const binding = current ? input.mcpBindings.get(current.serverId) : undefined;

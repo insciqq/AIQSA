@@ -576,6 +576,210 @@ describe("native tool batch", () => {
     expect(outcome.results.at(-1)).toMatchObject({ callId: `agent-${TOOL_BATCH_LIMITS.delegatedConcurrency}`, outcome: "error" });
   });
 
+  describe("calls on a shared resource", () => {
+    /** Calls that each wait until the test releases them (before or after they started), and what started and ended. */
+    function held() {
+      const order: string[] = [];
+      const gates = new Map<string, Readonly<{ promise: Promise<void>; release: () => void }>>();
+      const gate = (id: string) => {
+        let entry = gates.get(id);
+        if (!entry) {
+          let release!: () => void;
+          const promise = new Promise<void>((resolve) => { release = resolve; });
+          entry = { promise, release };
+          gates.set(id, entry);
+        }
+        return entry;
+      };
+      const execute = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+        order.push(`start ${call.id}`);
+        await gate(call.id).promise;
+        order.push(`end ${call.id}`);
+        return ok(call);
+      });
+      const started = () => order.flatMap((entry) => entry.startsWith("start ") ? [entry.slice("start ".length)] : []);
+      const running = () => started().filter((id) => !order.includes(`end ${id}`));
+      return { execute, order, release: (id: string) => gate(id).release(), running, started };
+    }
+    /** Lets every call that can start or settle do so. */
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const on = (key: string, reads: boolean) => ({ resource: () => ({ key, reads }) });
+    const callTo = (name: string, id: string): ModelToolCall => ({ arguments: { id }, id, name });
+
+    it("starts a shell call after the Workspace change before it settled", async () => {
+      const calls = held();
+      const registry = { write: tool("write", "external", calls.execute, on("workspace", false)),
+        shell: tool("shell", "external", calls.execute, on("workspace", false)) };
+      const running = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 },
+        { round: 1, calls: [callTo("write", "w1"), callTo("shell", "s1")] });
+      await flush();
+      expect(calls.started()).toEqual(["w1"]);
+      calls.release("s1");
+      calls.release("w1");
+      const outcome = await running;
+      expect(calls.order).toEqual(["start w1", "end w1", "start s1", "end s1"]);
+      expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["w1", "complete"], ["s1", "complete"]]);
+    });
+
+    it("runs Workspace reads side by side, and in read, change, read each waits for the one before it", async () => {
+      const reads = held();
+      const registry = { read: tool("read", "none", reads.execute, on("workspace", true)) };
+      const together = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 },
+        { round: 1, calls: [callTo("read", "r1"), callTo("read", "r2"), callTo("read", "r3")] });
+      await vi.waitFor(() => expect(reads.running()).toEqual(["r1", "r2", "r3"]));
+      for (const id of ["r1", "r2", "r3"]) reads.release(id);
+      await together;
+
+      const mixed = held();
+      const mixedRegistry = { read: tool("read", "none", mixed.execute, on("workspace", true)),
+        write: tool("write", "external", mixed.execute, on("workspace", false)) };
+      const running = runToolBatch(deps(mixedRegistry, fakeStore().store, { maxToolCalls: null }), { calls: 0 },
+        { round: 1, calls: [callTo("read", "a"), callTo("write", "b"), callTo("read", "c")] });
+      await flush();
+      expect(mixed.started()).toEqual(["a"]);
+      mixed.release("a");
+      await vi.waitFor(() => expect(mixed.started()).toEqual(["a", "b"]));
+      await flush();
+      expect(mixed.running()).toEqual(["b"]);
+      mixed.release("b");
+      await vi.waitFor(() => expect(mixed.started()).toEqual(["a", "b", "c"]));
+      mixed.release("c");
+      await running;
+      expect(mixed.order).toEqual(["start a", "end a", "start b", "end b", "start c", "end c"]);
+    });
+
+    it("runs two changes of one MCP server in order, a call of another server and a read of the first beside them", async () => {
+      const calls = held();
+      const registry = {
+        mcp_a_get: tool("mcp_a_get", "none", calls.execute, on("mcp:a", true)),
+        mcp_a_create: tool("mcp_a_create", "external", calls.execute, on("mcp:a", false)),
+        mcp_a_update: tool("mcp_a_update", "external", calls.execute, on("mcp:a", false)),
+        mcp_b_create: tool("mcp_b_create", "external", calls.execute, on("mcp:b", false))
+      };
+      const running = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 }, { round: 1, calls: [
+        callTo("mcp_a_get", "get"), callTo("mcp_a_create", "create"), callTo("mcp_b_create", "other"), callTo("mcp_a_update", "update")
+      ] });
+      // The read of server A and server B's call start at once; A's first change waits only for the read before it.
+      await flush();
+      expect(calls.started()).toEqual(["get", "other"]);
+      calls.release("get");
+      await vi.waitFor(() => expect(calls.running()).toEqual(["other", "create"]));
+      await flush();
+      expect(calls.started()).not.toContain("update");
+      calls.release("create");
+      await vi.waitFor(() => expect(calls.running()).toEqual(["other", "update"]));
+      calls.release("update");
+      calls.release("other");
+      const outcome = await running;
+      expect(calls.order.filter((entry) => !entry.endsWith("other") && !entry.endsWith("get")))
+        .toEqual(["start create", "end create", "start update", "end update"]);
+      expect(outcome.results.map((item) => item.callId)).toEqual(["get", "create", "other", "update"]);
+    });
+
+    it("runs a computer write before the command after it, and a computer read beside calls of other resources", async () => {
+      const calls = held();
+      const registry = {
+        computer_read: tool("computer_read", "none", calls.execute, on("computer", true)),
+        computer_write: tool("computer_write", "external", calls.execute, on("computer", false)),
+        computer_shell: tool("computer_shell", "external", calls.execute, on("computer", false)),
+        shell: tool("shell", "external", calls.execute, on("workspace", false)),
+        lookup: tool("lookup", "none", calls.execute)
+      };
+      const running = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 }, { round: 1, calls: [
+        callTo("computer_read", "read"), callTo("shell", "workspace"), callTo("lookup", "plain"), callTo("computer_write", "write"),
+        callTo("computer_shell", "command")
+      ] });
+      await flush();
+      expect(calls.started()).toEqual(["read", "workspace", "plain"]);
+      calls.release("read");
+      await vi.waitFor(() => expect(calls.started()).toContain("write"));
+      await flush();
+      expect(calls.started()).not.toContain("command");
+      calls.release("write");
+      await vi.waitFor(() => expect(calls.started()).toContain("command"));
+      for (const id of ["workspace", "plain", "command"]) calls.release(id);
+      await running;
+      expect(calls.order.indexOf("start command")).toBeGreaterThan(calls.order.indexOf("end write"));
+    });
+
+    it("gives the reads behind a change every place once it settled", async () => {
+      const calls = held();
+      const registry = { read: tool("read", "none", calls.execute, on("workspace", true)),
+        write: tool("write", "external", calls.execute, on("workspace", false)) };
+      const reads = Array.from({ length: TOOL_BATCH_LIMITS.concurrency }, (_, index) => callTo("read", `r${index}`));
+      const running = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 },
+        { round: 1, calls: [callTo("write", "w"), ...reads, callTo("read", "late")] });
+      await flush();
+      expect(calls.started()).toEqual(["w"]);
+      calls.release("w");
+      // Every place runs a read at once: the places the waiting reads did not take were kept for them.
+      await vi.waitFor(() => expect(calls.running()).toEqual(reads.map((item) => item.id)));
+      await flush();
+      expect(calls.started()).not.toContain("late");
+      calls.release("r0");
+      await vi.waitFor(() => expect(calls.started()).toContain("late"));
+      for (const id of [...reads.slice(1).map((item) => item.id), "late"]) calls.release(id);
+      const outcome = await running;
+      expect(outcome.results.map((item) => [item.callId, item.outcome]))
+        .toEqual(["w", ...reads.map((item) => item.id), "late"].map((id) => [id, "complete"]));
+    });
+
+    it("lets a call refused before it was sent release its resource for the calls behind it", async () => {
+      const calls = held();
+      const registry = { write: tool("write", "external", calls.execute, on("workspace", false)),
+        shell: tool("shell", "external", calls.execute, on("workspace", false)),
+        unbound: tool("unbound", "external", calls.execute, { ...on("workspace", false), links: () => null }) };
+      const running = runToolBatch(deps(registry, fakeStore().store, { maxToolCalls: null }), { calls: 0 }, { round: 1, calls: [
+        callTo("write", "w"), { arguments: invalidProviderToolArguments(), id: "bad", name: "write" }, callTo("unbound", "gone"), callTo("shell", "s")
+      ] });
+      await flush();
+      expect(calls.started()).toEqual(["w"]);
+      calls.release("w");
+      // Both refusals settle without being sent, and the command behind them starts.
+      await vi.waitFor(() => expect(calls.started()).toEqual(["w", "s"]));
+      calls.release("s");
+      const outcome = await running;
+      expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["w", "complete"], ["bad", "error"], ["gone", "error"],
+        ["s", "complete"]]);
+    });
+
+    it("lets a call waiting for approval release its resource, and never sends it", async () => {
+      const calls = held();
+      const registry = { create: tool("create", "external", calls.execute, { ...on("mcp:a", false), approval: () => approval }),
+        update: tool("update", "external", calls.execute, on("mcp:a", false)) };
+      calls.release("u");
+      const outcome = await runToolBatch(deps(registry, fakeStore({ gated: true }).store, { maxToolCalls: null }), { calls: 0 },
+        { round: 1, calls: [callTo("create", "c"), callTo("update", "u")] });
+      expect(calls.started()).toEqual(["u"]);
+      expect(outcome.approvals).toEqual(["approval-1"]);
+      expect(outcome.results.map((item) => [item.callId, item.outcome])).toEqual([["c", "error"], ["u", "complete"]]);
+    });
+
+    it.each([
+      ["throws on the stop", true],
+      ["settles after the stop", false]
+    ] as const)("ends the batch without sending the calls waiting behind a change that %s", async (_name, throws) => {
+      const stop = new AbortController();
+      const calls = held();
+      const write = vi.fn(async ({ call }: { call: ModelToolCall }) => {
+        stop.abort();
+        if (throws) throw new DOMException("aborted", "AbortError");
+        return ok(call);
+      });
+      const registry = { write: tool("write", "external", write, on("workspace", false)),
+        read: tool("read", "none", calls.execute, on("workspace", true)),
+        shell: tool("shell", "external", calls.execute, on("workspace", false)) };
+      const { store } = fakeStore();
+      await expect(runToolBatch(deps(registry, store, { maxToolCalls: null, signal: stop.signal }), { calls: 0 }, { round: 1, calls: [
+        callTo("write", "w"), callTo("read", "r1"), callTo("read", "r2"), callTo("shell", "s")
+      ] })).rejects.toBeDefined();
+      await flush();
+      expect(write).toHaveBeenCalledOnce();
+      expect(calls.execute).not.toHaveBeenCalled();
+      expect(vi.mocked(store.begin).mock.calls.map(([input]) => input.providerCallId)).toEqual(["w"]);
+    });
+  });
+
   it("starts no queued call after the tool time ran out, lets running calls settle and still runs the reserved report", async () => {
     let timeLeft = true;
     let started = 0;
