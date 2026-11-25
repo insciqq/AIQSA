@@ -42,7 +42,7 @@ export const OPENAI_RESPONSES_SEARCH_MAX_OUTPUT_TOKENS = Number.MAX_SAFE_INTEGER
  * (`lowestSupportedOpenAIResponsesSearchEffort`).
  */
 /** How much page context the hosted `web_search` tool gathers per search; null sends the provider's default. */
-export const OPENAI_SEARCH_CONTEXT_SIZE: "low" | "medium" | "high" | null = "low";
+export const OPENAI_SEARCH_CONTEXT_SIZE: OpenAIWebSearchContextSize | null = "low";
 /** The most entries, one per source, the technical model is asked to write. */
 export const OPENAI_SEARCH_MAX_ENTRIES = 10;
 /**
@@ -84,8 +84,10 @@ export type OpenAIResponsesSearchRequestBody = Readonly<{
   tools: readonly [OpenAIResponsesWebSearchTool];
 }>;
 
+type OpenAIWebSearchContextSize = "low" | "medium" | "high";
+
 type OpenAIResponsesWebSearchTool = Readonly<{
-  search_context_size?: NonNullable<typeof OPENAI_SEARCH_CONTEXT_SIZE>;
+  search_context_size?: OpenAIWebSearchContextSize;
   type: "web_search";
 }>;
 
