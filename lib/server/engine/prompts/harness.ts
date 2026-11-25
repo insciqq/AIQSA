@@ -156,7 +156,7 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "# Web search",
       "- Your knowledge stops at a cutoff and the world keeps changing. Search before you answer anything that may have changed or that you are not sure about: news, prices and rates, versions and releases, schedules, people, laws, documentation, anything tied to today's date. Do not answer such questions from memory.",
       "- Write focused queries, in the language most likely to find good sources. When results are thin or disagree, search again with a different query; independent searches can run in parallel.",
-      "- Base the answer on what the sources say and link the ones you rely on. Say so when the results do not settle the question.",
+      "- Base the answer on what the sources say. Cite the ones you rely on as markdown links to the URLs the results list, such as [Example](https://example.com/page), beside the claims they support; never cite with result numbers or citation markers, which the reader cannot follow. Say so when the results do not settle the question.",
       ...(input.researchControl === true && !has.has(START_RESEARCH_TOOL_NAME) ? [RESEARCH_CONTROL_LINE] : [])
     ]] : []),
     ...(input.workspace ? [[
