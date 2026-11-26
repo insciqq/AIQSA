@@ -1104,10 +1104,13 @@ export function ComposerV2({
   const searchActive = searchEnabled && searchBlockedReason === null;
   const searchDescription = `Search: ${searchEnabled ? searchBlockedReason ? `On · ${searchBlockedReason.toLocaleLowerCase()}` : "On" : "Off"}${
     assistantRowDescription(searchProvenance)}`;
-  // A user without Search sees no chip, unless an Assistant's row names Search.
+  // No chip where nothing could search: a user without Search, or an installation with no engine set up and a model
+  // that does not search inside its own answer, unless an Assistant's row names Search. An engine that is chosen but
+  // cannot search now keeps the chip with its reason.
+  const searchNothingToOffer = catalogSearch?.reason === "search_not_granted" ||
+    (catalogSearch?.reason === "search_engine_not_configured" && !currentModel?.webSearch);
   const searchChipVisible = Boolean(config) && (
-    searchEnabled || catalogSearch?.reason !== "search_not_granted" ||
-    (searchProvenance !== null && searchProvenance.kind !== "own")
+    !searchNothingToOffer || (searchProvenance !== null && searchProvenance.kind !== "own")
   );
   // Ordinary chats turn Search off only in Chat defaults; an Assistant chat's adjustable row turns it off here.
   const searchSwitchLocked = searchFixed || activeRun || !onSearchEnabledChange ||

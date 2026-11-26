@@ -768,8 +768,30 @@ describe("Composer v2", () => {
         searchStrategies: []
       }
     };
-    render(<ComposerV2 {...props({ config: notGranted, searchEnabled: false })} />);
+    const { rerender } = render(<ComposerV2 {...props({ config: notGranted, searchEnabled: false })} />);
     expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    rerender(<ComposerV2 {...props({ config: notGranted })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+  });
+
+  it("hides Search while no engine is set up, except for a model that searches inside its own answer", () => {
+    const notConfigured = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) =>
+          model.webSearch === "engine" ? { ...model, searchStrategyIds: [], webSearch: null } : model),
+        search: { engine: null, reason: "search_engine_not_configured" as const },
+        searchStrategies: []
+      }
+    };
+    const { rerender } = render(<ComposerV2 {...props({ config: notConfigured, selectedModelId: "gpt-5.2-mini" })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    rerender(<ComposerV2 {...props({ config: notConfigured, searchEnabled: false, selectedModelId: "gpt-5.2-mini" })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    // GPT searching inside its own answer needs no engine.
+    rerender(<ComposerV2 {...props({ config: notConfigured })} />);
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("Search: On");
   });
 
   it("closes Search with Escape after a change disables the focused control", async () => {
