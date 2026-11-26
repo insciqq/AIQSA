@@ -82,7 +82,7 @@ async function prepareFakeBlankChat(page: Page) {
   await expect(page.getByTestId("conversation-empty")).toBeVisible();
   await selectModel(page, providerTemplateIds.fakeConnection, "Fake QSA", "Fake QSA");
   // Installations without configured Search omit its chip entirely.
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
   await expect(page.getByTestId("header-model-trigger")).toContainText("Fake QSA");
 }
 

@@ -227,7 +227,7 @@ test("Search controls and answer sources at every size", async ({ page, browser,
   // The composer's Search chip, open.
   await shots(page, testInfo, "02-search-chip", async (current) => {
     await current.goto(`/c/${shownChatId}`, { timeout: 600_000 });
-    await current.getByRole("button", { name: /^Choose web search/u }).click();
+    await current.getByRole("button", { name: "Web search", exact: true }).click();
     await expect(current.getByRole("dialog", { name: "Web search" })).toBeVisible();
   });
 
@@ -237,21 +237,19 @@ test("Search controls and answer sources at every size", async ({ page, browser,
     await runAccountMenuAction(current, "Chat defaults");
     const settings = current.getByTestId("library-v2");
     await expect(settings).toBeVisible({ timeout: 120_000 });
-    const summary = settings.getByLabel("Web search default");
-    await summary.click();
-    await settings.getByRole("button", { name: "Turn off web search" }).click();
+    await settings.getByRole("switch", { name: "Web search default" }).click();
     await expect(current.getByRole("dialog", { name: "Turn off web search" })).toBeVisible();
   });
   await page.getByRole("dialog", { name: "Turn off web search" }).getByRole("button", { name: "Keep search on" }).click();
 
-  // Administrator Search: sources and the recommendation.
+  // Administrator Search: the engine, its backup, in-answer search and the sources.
   await shots(page, testInfo, "04-admin-search", async (current) => {
     await current.goto("/admin?section=search", { timeout: 600_000 });
-    await expect(current.getByTestId("admin-search-plan")).toBeVisible({ timeout: 120_000 });
+    await expect(current.getByTestId("admin-search-engine")).toBeVisible({ timeout: 120_000 });
   });
 
   await touchShot(browser, baseURL!, testInfo, "05-search-chip", `/c/${shownChatId}`, async (phone) => {
-    await phone.getByRole("button", { name: /^Choose web search/u }).click();
+    await phone.getByRole("button", { name: "Web search", exact: true }).click();
     await expect(phone.getByRole("dialog", { name: "Web search" })).toBeVisible();
   });
   await page.request.patch("/api/me/settings", { data: { defaultSearchPlan:

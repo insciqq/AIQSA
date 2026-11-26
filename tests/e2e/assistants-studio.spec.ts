@@ -403,7 +403,7 @@ test("editor has two columns at 1440 and one column with Setup after the starter
   });
 });
 
-test("policy toggles ask for a concrete value before Create and save exactly what they show · A-25", async ({ browser }) => {
+test("policy toggles ask for a concrete value before Create and save exactly what they show · A-25", async ({ browser }, testInfo) => {
   test.setTimeout(180_000);
   await withFixtures(async ({ people }) => {
     const owner = await people.user("Policy owner");
@@ -451,6 +451,17 @@ test("policy toggles ask for a concrete value before Create and save exactly wha
     await controlsRow.getByRole("button", { exact: true, name: "Fixed" }).click();
     await expect(controlsRow.getByRole("button", { exact: true, name: "Adjustable" })).toHaveAttribute("aria-pressed", "false");
     await expect(controlsRow).not.toContainText("Set at least one parameter");
+    // Web search is Inherit, Off or On with no source list (search-v2, 2026-11-26); On can be fixed.
+    const searchRow = editor.getByTestId("assistant-setup-row-search");
+    await searchRow.getByRole("button", { exact: true, name: "Web search" }).click();
+    await expect(searchRow.getByRole("radio")).toHaveCount(3);
+    await expect(searchRow.getByRole("checkbox")).toHaveCount(0);
+    await expect(searchRow).not.toContainText("Let the model choose");
+    await searchRow.getByRole("radio", { name: /^On/u }).check();
+    await searchRow.getByRole("button", { exact: true, name: "Adjustable" }).click();
+    await expect(searchRow.getByRole("button", { exact: true, name: "Fixed" })).toHaveAttribute("aria-pressed", "true");
+    await expect(searchRow.getByRole("button", { exact: true, name: "Web search" })).toHaveAccessibleDescription("On");
+    await page.screenshot({ path: testInfo.outputPath("assistant-editor-search-row.png") });
 
     const creation = assistantCreation(page);
     await editor.getByTestId("assistant-editor-save").click();
@@ -462,7 +473,7 @@ test("policy toggles ask for a concrete value before Create and save exactly wha
     expect(rows.model).toEqual({ policy: "fixed", value: { mode: "model", modelId } });
     expect(rows.tools).toEqual({ policy: "fixed", value: { mode: "off" } });
     expect(rows.controls.policy).toBe("adjustable");
-    expect(rows.search).toEqual({ policy: "adjustable", value: { mode: "inherit" } });
+    expect(rows.search).toEqual({ policy: "fixed", value: { mode: "all_selected", optionIds: ["web-search"] } });
     expect(rows.skills).toEqual({ policy: "adjustable", value: { links: [], mode: "auto" } });
   });
 });

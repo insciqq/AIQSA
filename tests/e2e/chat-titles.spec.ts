@@ -112,7 +112,7 @@ test("independent background titles release the composer, survive navigation and
       await startNewChat(page);
       await selectModel(page, setup!.connectionId, answer.displayName);
       // Installations without configured Search omit its chip entirely.
-      if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+      if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     };
     await start();
     await sendAndExpect(page, "Title fixture first", "Title fixture answer.");

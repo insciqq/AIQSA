@@ -59,7 +59,7 @@ async function chooseChat(page: Page, title: string): Promise<void> {
 
 async function prepareFakeSend(page: Page): Promise<void> {
   await selectFakeModel(page);
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
 }
 
 function admission(page: Page) {

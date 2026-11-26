@@ -92,7 +92,7 @@ test("a quiet answer streaming while the tab is hidden stays attached on return"
     await startNewChat(page);
     await selectModel(page, setup.connectionId, model.displayName);
     // Installations without configured Search omit its chip entirely.
-    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+    if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     let sends = 0;
     page.on("request", (request) => {
       if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;

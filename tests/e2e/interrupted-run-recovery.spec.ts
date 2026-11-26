@@ -325,7 +325,7 @@ async function startPlainFakeChat(page: Page): Promise<void> {
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
 }
 
 /**
@@ -398,7 +398,7 @@ test("a disconnected accepted answer can be stopped through the real cancellatio
   await page.getByRole("complementary", { name: "Chat navigation" }).getByRole("link", { name: "New chat", exact: true }).click();
   await selectFakeModel(page);
   await expect(page.getByTestId("header-model-trigger")).toHaveText("Fake QSA");
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
   await page.getByRole("textbox", { name: "Message" }).fill("Keep this answer running. " + "synthetic ".repeat(1000));
   await page.getByRole("button", { name: "Send message" }).click();
   const strip = page.getByTestId("run-connection-lost");

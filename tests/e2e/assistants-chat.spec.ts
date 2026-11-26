@@ -531,7 +531,7 @@ test("fixed Search, MCP and Skills keep their chips with one dot, and each menu 
 
     const chips = {
       mcp: { chip: page.getByRole("button", { name: "Change MCP mode" }), description: mcpChipDescription(`MCP: Off · ${fixedBy}`) },
-      search: { chip: page.getByRole("button", { name: /^Choose web search/u }), description: `Search: Off · ${fixedBy}` },
+      search: { chip: page.getByRole("button", { name: "Web search", exact: true }), description: `Search: Off · ${fixedBy}` },
       skills: { chip: page.getByRole("button", { name: "Change Skills mode" }), description: `Skills: Auto · ${fixedBy}` }
     };
     for (const [row, { chip, description }] of Object.entries(chips)) {
@@ -565,7 +565,7 @@ test("fixed Search, MCP and Skills keep their chips with one dot, and each menu 
     const searchDialog = page.getByRole("dialog", { name: "Web search" });
     await chips.search.chip.click();
     await expect(searchDialog.getByTestId("assistant-row-provenance")).toHaveText(fixedBy);
-    for (const source of await searchDialog.getByRole("checkbox").all()) await expect(source).toBeDisabled();
+    await expect(searchDialog.getByRole("switch", { name: "Search the web" })).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(searchDialog).toHaveCount(0);
 
@@ -790,7 +790,7 @@ test("turning Search off in a chat with adjustable Search sends the next answer 
     const sends = recordSends(page);
     const fromAssistant = new RegExp(`^Search: .+ · From ${escapeRegExp(assistant.name)}$`, "u");
     await pickInHeader(page, assistant);
-    const searchChip = page.getByRole("button", { name: /^Choose web search/u });
+    const searchChip = page.getByRole("button", { name: "Web search", exact: true });
     await expect(searchChip).toHaveAttribute("data-provenance", "assistant");
     await expect(searchChip).toHaveAccessibleDescription(fromAssistant);
 
@@ -813,8 +813,9 @@ test("turning Search off in a chat with adjustable Search sends the next answer 
 
     const update = chatUpdate(page, chatId);
     await searchChip.click();
-    // An adjustable Assistant row may still be emptied in its own chat.
-    await searchDialog.getByRole("checkbox", { checked: true }).uncheck();
+    // An adjustable Assistant row may still be turned off in its own chat: one switch, no source list.
+    await expect(searchDialog.getByRole("checkbox")).toHaveCount(0);
+    await searchDialog.getByRole("switch", { name: "Search the web" }).click();
     await page.keyboard.press("Escape");
     await expect(searchDialog).toHaveCount(0);
     expect((await update).status()).toBe(200);
@@ -837,7 +838,8 @@ test("turning Search off in a chat with adjustable Search sends the next answer 
     for (const key of ["prompt", "searchPreferencePlan", "searchPreferenceSource"]) {
       expect(body, key).not.toHaveProperty(key);
     }
-    if ("searchPlan" in body) expect((body.searchPlan as { optionIds: string[] }).optionIds).toEqual([]);
+    expect(body, "the changed row goes out as the switch").toMatchObject({ searchEnabled: false });
+    expect(body).not.toHaveProperty("searchPlan");
     await expectIdentityChips(page, [assistant.name, null]);
 
     await searchChip.click();
@@ -1340,7 +1342,7 @@ test("at 390×844 the strip takes one row without page scroll, the picker is a b
     for (const name of ["Change MCP mode", "Change Skills mode"]) {
       await expect(chipRow.getByRole("button", { name })).toBeVisible();
     }
-    await expect(chipRow.getByRole("button", { name: /^Choose web search/u })).toBeVisible();
+    await expect(chipRow.getByRole("button", { name: "Web search", exact: true })).toBeVisible();
     const boxes = await chips.evaluateAll((elements) => elements
       .map((element) => element.getBoundingClientRect())
       .filter((rect) => rect.width > 0)

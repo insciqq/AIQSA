@@ -49,6 +49,7 @@ export type MatrixModel = {
   providerFamily: string;
   searchStrategyIds: string[];
   upstreamModelId: string;
+  webSearch: "engine" | "in_answer" | null;
 };
 
 function matrixModel(input: {
@@ -123,7 +124,8 @@ function matrixModel(input: {
     provider: input.provider,
     providerFamily: input.provider,
     searchStrategyIds: ["search-disabled", "perplexity-tool-search"],
-    upstreamModelId: input.modelId
+    upstreamModelId: input.modelId,
+    webSearch: "engine"
   };
 }
 
@@ -137,6 +139,7 @@ export const matrixCatalog = {
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
+    searchEnabled: false,
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",
     showCitations: true,
@@ -217,6 +220,8 @@ export const matrixCatalog = {
       name: "OpenRouter"
     }
   ],
+  // Users switch Search on or off; the installation's engine searches (search-v2, 2026-11-26).
+  search: { engine: { displayName: "Perplexity tool" }, reason: null },
   searchStrategies: [
     {
       description: "No Search tool",

@@ -21,7 +21,7 @@ async function send(page: Page, trouble: string): Promise<string> {
   await disableMemoryRecall(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible({ timeout: 30_000 });
   await selectFakeModel(page);
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
   const id = randomUUID().slice(0, 8);
   const text = `[AIQSA_PROVIDER_WAIT_E2E:${id}:${trouble}] hello`;
   await page.getByRole("textbox", { name: "Message" }).fill(text);

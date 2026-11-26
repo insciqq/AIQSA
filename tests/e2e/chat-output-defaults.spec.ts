@@ -87,7 +87,7 @@ test("ordinary output defaults reach requests and survive reload, override and r
     await startNewChat(page);
     await selectModel(page, setup.connectionId, unknown.displayName);
     // Installations without configured Search omit its chip entirely.
-    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+    if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     let controls = await openRunSetup(page);
     await expect(controls.getByLabel("Max output tokens")).toHaveValue("65536");
     await expect(controls.getByLabel("Max output tokens")).not.toHaveAttribute("max", /.+/);

@@ -112,7 +112,7 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     await page.goto("/");
     await startNewChat(page);
     await selectModel(page, connectionId, model.displayName!);
-    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+    if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     await send(page, "Observability fixture before the key is revoked");
     await expect(lastAnswer(page)).toContainText(ANSWER);
 
@@ -191,7 +191,7 @@ test("a provider that starts rejecting its key surfaces in the answer, Needs att
     await page.goto("/");
     await startNewChat(page);
     await selectModel(page, connectionId, model.displayName!);
-    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+    if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     mode = 503;
     await send(page, "Observability fixture during an outage");
     await expect(lastAnswer(page)).toContainText("returned a server error (HTTP 503)");

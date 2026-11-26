@@ -31,8 +31,8 @@ export async function turnComposerToolsOff(page: Page): Promise<void> {
     await page.getByRole("menu", { name: "Skills" }).getByRole("menuitemradio", { name: /^Off/u }).click();
   }
   await expect(skills).toHaveAttribute("data-skills-mode", "off");
-  const search = page.getByRole("button", { name: /^Choose web search/u });
-  if (await search.isVisible() && await search.getAttribute("data-quiet") === null) await chooseSearchStrategy(page, "Off");
+  const search = page.getByRole("button", { name: "Web search", exact: true });
+  if (await search.isVisible() && await search.getAttribute("data-search-state") !== "off") await chooseSearchStrategy(page, "Off");
 }
 
 /** Reads the account's chat defaults (model included) and Memory switches; the returned function restores them. */

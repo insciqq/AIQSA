@@ -44,7 +44,7 @@ export async function configureWorkspaceOnlyTools(page: Page): Promise<void> {
   await page.getByRole("menu", { name: "MCP tools", exact: true }).getByRole("menuitemradio", { name: /^Off/u }).click();
   await page.getByRole("button", { name: "Change Skills mode", exact: true }).click();
   await page.getByRole("menu", { name: "Skills", exact: true }).getByRole("menuitemradio", { name: /^Off/u }).click();
-  if (await page.getByRole("button", { name: /^Choose web search/u }).count()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).count()) await chooseSearchStrategy(page, "Off");
 }
 
 /** Published answer text releases the composer before output transfer finishes.

@@ -70,24 +70,28 @@ export async function reasoningOptionValues(page: Page): Promise<string[]> {
 }
 
 /**
- * Makes `label` the only web search source, or turns Search off. The chip
- * saves the account's Search default for every chat, and Search is turned off
- * only in Chat defaults after its confirmation (operator decision 2026-10-24).
+ * Turns Search on, or off. Search is one switch for every chat with no choice
+ * of source (operator decisions 2026-11-26): the composer's switch turns it
+ * on, and it is turned off only in Chat defaults after its confirmation
+ * (operator decision 2026-10-24). Any label other than "Off" means on; the
+ * engine is the installation's.
  */
 export async function chooseSearchStrategy(page: Page, label: string): Promise<void> {
   if (/^off$/iu.test(label)) {
     await turnSearchOffInChatDefaults(page);
     return;
   }
+  await turnSearchOnInComposer(page);
+}
+
+/** Opens the composer's Web search layer and turns Search on when it is off. */
+export async function turnSearchOnInComposer(page: Page): Promise<void> {
   await engageComposer(page);
-  await page.getByRole("button", { name: /^Choose web search/u }).click();
+  await page.getByRole("button", { name: "Web search", exact: true }).click();
   const search = page.getByRole("dialog", { name: "Web search" });
-  const pattern = new RegExp(label, "iu");
-  await search.getByRole("checkbox", { name: pattern }).check();
-  // The wanted source stays on, so every other one can now be unchecked.
-  for (const other of await search.getByRole("checkbox", { checked: true }).all()) {
-    if (!pattern.test(await other.evaluate((element) => element.closest("label")?.textContent ?? ""))) await other.uncheck();
-  }
+  const control = search.getByRole("switch", { name: "Search the web" });
+  if (await control.getAttribute("aria-checked") !== "true") await control.click();
+  await expect(control).toHaveAttribute("aria-checked", "true");
   await page.keyboard.press("Escape");
   await expect(search).toHaveCount(0);
 }
@@ -95,12 +99,11 @@ export async function chooseSearchStrategy(page: Page, label: string): Promise<v
 export async function turnSearchOffInChatDefaults(page: Page): Promise<void> {
   await runAccountMenuAction(page, "Chat defaults");
   const settings = page.getByTestId("library-v2");
-  const summary = settings.getByLabel("Web search default");
-  if (!/(^|· )Off$/u.test((await summary.innerText()).trim())) {
-    await summary.click();
-    await settings.getByRole("button", { name: "Turn off web search" }).click();
+  const control = settings.getByRole("switch", { name: "Web search default" });
+  if (await control.getAttribute("aria-checked") === "true") {
+    await control.click();
     await page.getByRole("dialog", { name: "Turn off web search" }).getByRole("button", { name: "Confirm turn off" }).click();
-    await expect(summary).toHaveText(/(^|· )Off$/u);
+    await expect(control).toHaveAttribute("aria-checked", "false");
   }
   await settings.getByRole("button", { name: "Back to chat" }).click();
   await expect(settings).toHaveCount(0);
@@ -130,9 +133,9 @@ export async function expectRunSummary(
   }
   if (expected.search !== undefined) {
     if (/off/iu.test(expected.search)) {
-      await expect(page.getByRole("button", { name: /^Choose web search/u })).toHaveAccessibleDescription("Search: Off");
+      await expect(page.getByRole("button", { name: "Web search", exact: true })).toHaveAccessibleDescription("Search: Off");
     } else {
-      await expect(page.getByRole("button", { name: /^Choose web search/u })).not.toHaveAccessibleDescription("Search: Off");
+      await expect(page.getByRole("button", { name: "Web search", exact: true })).not.toHaveAccessibleDescription("Search: Off");
     }
   }
 }

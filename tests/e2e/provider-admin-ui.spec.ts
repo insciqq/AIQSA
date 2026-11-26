@@ -1001,7 +1001,7 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
     }]);
   await selectModel(page, installedFixture.connectionId, "GPT-5.6 Sol", "OpenAI");
   // The fixture offers no concrete search source, so the composer hides the Search chip.
-  await expect(page.getByRole("button", { name: /^Choose web search/u })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Web search", exact: true })).toHaveCount(0);
   await expect(page.getByTestId("header-model-trigger")).toContainText("GPT-5.6 Sol");
   const composer = page.getByRole("textbox", { name: "Message" });
   await expect(composer).toBeEnabled();
@@ -1992,7 +1992,11 @@ test("administrator saves a versioned Search recommendation that grants no acces
       system: false
     }],
     policy: {
+      backupOptionId: null,
       defaultPlan: { mode: "all_selected", optionIds: [] },
+      engineOptionId: null,
+      inAnswerSearch: true,
+      resolved: { automatic: true, backupOptionId: null, engineOptionId: "company-search-12345678", reason: null },
       updatedAt: now,
       version: 4
     },
@@ -2014,7 +2018,11 @@ test("administrator saves a versioned Search recommendation that grants no acces
       search = {
         ...search,
         policy: {
-          defaultPlan: submitted.defaultPlan as AdminSearchCatalog["policy"]["defaultPlan"],
+          backupOptionId: null,
+          defaultPlan: { mode: "all_selected", optionIds: ["company-search-12345678"] },
+          engineOptionId: submitted.engineOptionId as string | null,
+          inAnswerSearch: submitted.inAnswerSearch as boolean,
+          resolved: { automatic: false, backupOptionId: null, engineOptionId: "company-search-12345678", reason: null },
           updatedAt: now,
           version: 5
         }
@@ -2028,26 +2036,28 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await page.goto("/admin?section=search");
   const section = page.getByTestId("admin-search-section");
   const vocabulary = /native|provider-neutral|\broute\b|revision|adapter|technical|credential mode|physical|\bdraft\b|probe|evidence/iu;
-  const policy = section.getByRole("region", { name: "Recommended Search plan" });
-  await expect(policy).toContainText("This recommendation never grants access.");
+  const policy = section.getByRole("region", { name: "Engine" });
+  await expect(policy.getByTestId("admin-search-engine-resolved")).toHaveText("Automatic: searching with Company Search.");
   const sourceList = section.getByRole("list", { name: "Search sources" });
   const row = sourceList.getByTestId("search-source-row-search-source-1");
   await expect(row.getByTestId("search-source-status")).toHaveText("Working");
   await expect(section.getByRole("tab")).toHaveCount(0);
   await expect(section).not.toContainText(vocabulary);
-  await policy.getByRole("button", { name: "Company Search" }).click();
-  await policy.getByRole("button", { name: "Save default" }).click();
+  await policy.getByLabel(/^Search engine/u).selectOption("company-search-12345678");
+  await policy.getByRole("switch", { name: "GPT searches inside its own answer" }).click();
+  await policy.getByRole("button", { name: "Save" }).click();
 
-  await expect(page.getByTestId("admin-feedback")).toContainText("Organization Search default saved.");
+  await expect(page.getByTestId("admin-feedback")).toContainText("Search engine saved.");
   expect(submitted).toEqual({
-    defaultPlan: {
-      mode: "all_selected",
-      optionIds: ["company-search-12345678"]
-    },
-    expectedVersion: 4
+    backupOptionId: null,
+    engineOptionId: "company-search-12345678",
+    expectedVersion: 4,
+    inAnswerSearch: false
   });
-  // The saved plan has no change left, so its footer shows no actions.
-  await expect(policy.getByRole("button", { name: "Save default" })).toHaveCount(0);
+  // The saved choice has no change left, so its footer shows no actions.
+  await expect(policy.getByRole("button", { name: "Save" })).toHaveCount(0);
+  await expect(policy.getByTestId("admin-search-engine-resolved")).toHaveText("Searching with Company Search.");
+  await expect(row.getByTestId("search-source-role")).toHaveText("Engine");
 
   await row.click();
   await expect(page).toHaveURL(/resource=search-source-1/u);
@@ -2080,9 +2090,9 @@ test("administrator saves a versioned Search recommendation that grants no acces
   await sourcePage.getByRole("button", { name: "Configure" }).click();
   const sheet = page.getByRole("dialog", { name: "Configure source" });
   await expect(sheet.getByRole("button", { name: "Save" })).toBeDisabled();
-  await expect(sheet.getByLabel(/^Search model/)).not.toBeVisible();
+  await expect(sheet.getByLabel(/^Search model/)).toBeVisible();
+  await expect(sheet.getByLabel(/^Search model/)).toHaveValue("web_search:search-model-1");
   await sheet.getByText("Advanced Search execution").click();
-  await expect(sheet.getByLabel(/^Search model/)).toHaveValue("search-model-1");
   const outputAllowance = sheet.getByRole("spinbutton", {
     name: /^Maximum Search output, tokens/
   });
