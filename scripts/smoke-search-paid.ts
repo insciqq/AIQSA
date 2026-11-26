@@ -59,7 +59,7 @@
  *   (`requireBrowserScenarioStand`) requires the app on 127.0.0.1:<port> (AIQSA_APP_BASE_URL) and PostgreSQL on
  *   127.0.0.1:<port>, the forwards of the stand's ports to this host
  * - CODEX_LB_ROOT (https, without /v1, for example https://codex-lb.psaux.info) and CODEX_LB_API_KEY
- * - AIQSA_SEARCH_GPT_MODEL (default gpt-6.2-sol), AIQSA_SEARCH_DEEPSEEK_MODEL (default deepseek-v4-flash)
+ * - AIQSA_SEARCH_GPT_MODEL (default gpt-6.2-sol), AIQSA_SEARCH_DEEPSEEK_MODEL (default deepseek-flash, the model DeepSeek Quick Setup adds)
  * - DEEPSEEK_API_KEY (C and D, unless the stand already has a DeepSeek connection)
  * - OPENROUTER_API_KEY with AIQSA_SEARCH_OPENROUTER_SETUP=approved; GEMINI_API_KEY with AIQSA_SEARCH_GEMINI_SETUP=approved
  * - AIQSA_SEARCH_SELECT, AIQSA_SEARCH_C_ENGINES, AIQSA_SEARCH_LABEL, AIQSA_SEARCH_KEEP_CHATS=1
@@ -450,7 +450,7 @@ async function main() {
   const engines = stable(() => selectedEngineSteps(process.env.AIQSA_SEARCH_C_ENGINES));
   const apiRoot = stable(() => codexLbApiRoot(process.env.CODEX_LB_ROOT));
   const gptModel = stable(() => modelIdSetting(process.env.AIQSA_SEARCH_GPT_MODEL, "gpt-6.2-sol", "gpt_model_invalid"));
-  const deepseekModel = stable(() => modelIdSetting(process.env.AIQSA_SEARCH_DEEPSEEK_MODEL, "deepseek-v4-flash", "deepseek_model_invalid"));
+  const deepseekModel = stable(() => modelIdSetting(process.env.AIQSA_SEARCH_DEEPSEEK_MODEL, "deepseek-flash", "deepseek_model_invalid"));
   const label = process.env.AIQSA_SEARCH_LABEL?.trim() || "unlabelled";
   if (!/^[A-Za-z0-9._/-]{1,80}$/u.test(label)) fail("label_invalid");
   const secret = process.env.CODEX_LB_API_KEY?.trim() || fail("codex_lb_key_required");
