@@ -1406,7 +1406,7 @@ describe("run preparation", () => {
     "describes Search only after its admitted Workspace coexistence route (%s)", async adapterKind => {
       const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
       const h = createHarness();
-      const load = vi.fn(async () => client);
+      const load = vi.fn(async (_input: unknown) => client);
       const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps,
         workspace: contractWorkspace(), providerAdmission: { load }
       }, sendInput(successBody({ workspace: { enabled: true }, modelId: hosted.selection.providerModelId,
@@ -3133,7 +3133,7 @@ describe("run preparation", () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
-    const admissionLoad = vi.fn(async () => client);
+    const admissionLoad = vi.fn(async (_input: unknown) => client);
     const attachment = runAttachment({
       extractedText: "Private MCP coexistence evidence",
       id: "document-mcp-search",
@@ -3198,7 +3198,7 @@ describe("run preparation", () => {
     "anthropic_messages" as const
   ])("routes singleton $0 Search alongside the built-in session tool", async (adapterKind) => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-    const admissionLoad = vi.fn(async () => client);
+    const admissionLoad = vi.fn(async (_input: unknown) => client);
     const harness = createHarness();
     const result = await prepareRun(
       {
@@ -3554,7 +3554,7 @@ describe("run preparation", () => {
     expect(admissionLoad).toHaveBeenCalledTimes(1);
     expect(admissionLoad.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ searchPlan: SEARCH_OFF_PLAN }));
     expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty("searchPreferencePlan");
-    expect(prepared.defaults?.searchPreferencePlan).toBeUndefined();
+    expect(prepared.defaults).not.toHaveProperty("searchPreferencePlan");
     expect(prepared.defaults?.controlDefaults).not.toHaveProperty("searchStrategyId");
   });
 
