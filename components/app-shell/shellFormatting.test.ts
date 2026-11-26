@@ -295,7 +295,8 @@ describe("shell labels", () => {
       temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
     },
     provider: "openai",
-    searchStrategyIds: ["search-disabled", "openai-native-web-search"]
+    searchStrategyIds: ["web-search"],
+    webSearch: "in_answer"
   };
 
   it("presents persisted placeholder titles with current sentence casing", () => {
@@ -322,6 +323,15 @@ describe("shell labels", () => {
       "Web search",
       "Streaming"
     ]);
+  });
+
+  it("calls a model searching when admission will let it search, whatever its hosted search capability", () => {
+    const viaEngine: CatalogModel = { ...model, capabilities: { ...model.capabilities, nativeWebSearch: false }, webSearch: "engine" };
+    expect(modelCapabilityLabels(viaEngine)).toContain("Web search");
+    expect(modelCapabilityLabel(viaEngine)).toContain("search");
+    const cannot: CatalogModel = { ...model, searchStrategyIds: [], webSearch: null };
+    expect(modelCapabilityLabels(cannot)).not.toContain("Web search");
+    expect(modelCapabilityLabel(cannot)).not.toContain("search");
   });
 
   it("builds deterministic export base names from the title slug and ISO date", () => {

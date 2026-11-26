@@ -410,8 +410,8 @@ const modelCapabilityDefinitions = [
   {
     alias: "search",
     label: "Web search",
-    supported: (model: CatalogModel) =>
-      model.capabilities.nativeWebSearch
+    // How admission will search for it, in its own answer or with the installation's engine (search-v2, 2026-11-26).
+    supported: (model: CatalogModel) => Boolean(model.webSearch)
   },
   {
     alias: "stream",

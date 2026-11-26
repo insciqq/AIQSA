@@ -1319,6 +1319,30 @@ describe("Composer v2", () => {
     expect(screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ })).toBeVisible();
   });
 
+  it("lists a model as searching when it searches with the engine, and not when it cannot search", () => {
+    const { rerender } = render(<ComposerV2 {...props({ initialLayer: "model" })} />);
+    // GPT-5.2 mini has no hosted search of its own; the installation's engine searches for it.
+    const glyphTitles = (option: HTMLElement) => [...option.querySelectorAll("svg title")].map((title) => title.textContent);
+    expect(glyphTitles(screen.getByRole("option", { name: /^GPT-5\.2 mini/ }))).toContain("Web search");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "web search" } });
+    expect(screen.getByRole("option", { name: /^GPT-5\.2 mini/ })).toBeVisible();
+
+    const unsearchable = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) => ({
+          ...model, capabilities: { ...model.capabilities, nativeWebSearch: true }, searchStrategyIds: [], webSearch: null
+        }))
+      }
+    };
+    rerender(<ComposerV2 {...props({ config: unsearchable, initialLayer: "model" })} />);
+    expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveValue("web search");
+    expect(screen.queryByRole("option", { name: /^GPT-5\.2 mini/ })).toBeNull();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "" } });
+    expect(glyphTitles(screen.getByRole("option", { name: /^GPT-5\.2 mini/ }))).not.toContain("Web search");
+  });
+
   it("shows model capabilities as glyphs and keeps the Parameters footer", () => {
     const onOpenModelParameters = vi.fn();
     render(<ComposerV2 {...props({
