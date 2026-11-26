@@ -7,6 +7,7 @@ import { createAssistantFixture, fakeModelId, type AssistantFixture, type E2EAss
 import { captureState, type CaptureSize } from "./support/capture";
 import { expectNoHorizontalOverflow, expectWithinViewport } from "./support/layoutAssertions";
 import { createPeopleFixture, type E2EUser, type PeopleFixture } from "./support/people";
+import { createCatalogOnlySearchSource } from "./support/syntheticCatalog";
 
 /**
  * Settings › Assistants v2 in the real application (PRD A-23 to A-30 and
@@ -24,19 +25,29 @@ const DESKTOP = { viewport: { height: 900, width: 1440 } } as const;
 const ROW_LABELS = ["Model", "Reasoning & parameters", "Web search", "Tools", "Skills"] as const;
 const POLICY_NAME = /^(Fixed|Adjustable)$/u;
 
-type Fixtures = Readonly<{ assistants: AssistantFixture; people: PeopleFixture }>;
+type Fixtures = Readonly<{
+  assistants: AssistantFixture;
+  /** Removes something the scenario created after the people and Assistants are gone. */
+  defer(cleanup: () => Promise<void>): void;
+  people: PeopleFixture;
+}>;
 
 /** Runs a scenario with fresh fixtures and always removes what they created. */
 async function withFixtures(run: (fixtures: Fixtures) => Promise<void>): Promise<void> {
   const people = createPeopleFixture(prisma);
   const assistants = createAssistantFixture(prisma, { suffix: people.suffix });
+  const deferred: (() => Promise<void>)[] = [];
   try {
-    await run({ assistants, people });
+    await run({ assistants, defer: (cleanup) => deferred.push(cleanup), people });
   } finally {
     try {
       await assistants.cleanup();
     } finally {
-      await people.cleanup();
+      try {
+        await people.cleanup();
+      } finally {
+        for (const cleanup of deferred.reverse()) await cleanup();
+      }
     }
   }
 }
@@ -405,7 +416,10 @@ test("editor has two columns at 1440 and one column with Setup after the starter
 
 test("policy toggles ask for a concrete value before Create and save exactly what they show · A-25", async ({ browser }, testInfo) => {
   test.setTimeout(180_000);
-  await withFixtures(async ({ people }) => {
+  await withFixtures(async ({ defer, people }) => {
+    // Web search On saves only while the owner's catalog can search: an engine set up (search-v2, 2026-11-26).
+    const source = await createCatalogOnlySearchSource(prisma, "a25");
+    defer(source.cleanup);
     const owner = await people.user("Policy owner");
     const page = await signIn(people, browser, owner);
     const modelId = await fakeModelId(prisma);

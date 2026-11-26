@@ -1265,7 +1265,10 @@ test("chat list rows of bound chats show the 16 px avatar and rows without a usa
 
 test("at 390×844 the strip takes one row without page scroll, the picker is a bottom sheet that keeps focus, and the composer chips wrap whole · A-22", async ({ browser }, testInfo) => {
   test.setTimeout(300_000);
-  await withFixtures(async ({ assistants, people }) => {
+  await withFixtures(async ({ assistants, defer, people }) => {
+    // The composer offers Search only while an engine is set up (search-v2, 2026-11-26).
+    const source = await createCatalogOnlySearchSource(prisma, "a22");
+    defer(source.cleanup);
     const user = await chatUser(people, "Phone user");
     const page = await signIn(people, browser, user, PHONE);
     const pinned: E2EAssistant[] = [];

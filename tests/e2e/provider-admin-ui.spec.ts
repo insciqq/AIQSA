@@ -1020,8 +1020,10 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   expect(messageRequests[0]).toMatchObject({
     modelId: installedFixture.modelId,
     provider: installedFixture.connectionId,
-    searchPlan: { mode: "all_selected", optionIds: [] }
+    // A send carries the user's Search switch, on by default, whatever the installation can search with now.
+    searchEnabled: true
   });
+  expect(messageRequests[0]).not.toHaveProperty("searchPlan");
   expect(messageRequests[0]?.content).toEqual({
     blocks: [{ text: question, type: "text" }]
   });
