@@ -7,8 +7,7 @@ import {
   type AssistantRowValues
 } from "../../contracts/assistants";
 import type { CatalogWireModel } from "../../contracts/catalog";
-import type { SearchPlanMode } from "../../contracts/search";
-import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
+import { searchPlanEnabled, WEB_SEARCH_OPTION_ID } from "../../contracts/search";
 import {
   buildMcpRunPlan,
   isMcpRunPlanRecordStartable,
@@ -49,53 +48,20 @@ export type AssistantRowCatalogFailures = {
   tools?: true;
 };
 
+/**
+ * Search on is usable while the viewer may search and, for the Assistant's own model, while that model can search,
+ * inside its own answer or with the installation's engine (operator decisions 2026-11-26). Which engine runs is the
+ * installation's and in-answer search works beside MCP tools, so neither sources nor MCP decide it; with an inherited
+ * or unavailable model, admission decides for the model actually used.
+ */
 function searchFails(
-  search: Readonly<{ mode: SearchPlanMode; optionIds: readonly string[] }>,
+  search: Readonly<{ optionIds: readonly string[] }>,
   model: CatalogWireModel | undefined,
-  view: AssistantCatalogView,
-  withMcp: boolean
+  view: AssistantCatalogView
 ): boolean {
-  if (search.optionIds.some((optionId) => !view.entitledSearchOptionIds.has(optionId))) return true;
-  // Compatibility belongs to the Assistant's model; with an inherited or
-  // unavailable model, admission checks it against the model actually used.
-  if (!model) return false;
-  const searchOptions = search.optionIds.map((optionId) => {
-    const compatibility = model.searchOptionCompatibility?.[optionId];
-    if (!compatibility || !model.searchStrategyIds.includes(optionId)) return null;
-    return {
-      executionModes: compatibility.executionModes,
-      kind: "web_search" as const,
-      strategyId: optionId
-    };
-  });
-  if (
-    searchOptions.some((option) => option === null) ||
-    !isSearchCombinationCompatible(
-      [...search.optionIds],
-      searchOptions.filter((option) => option !== null),
-      search.mode
-    )
-  ) {
-    return true;
-  }
-
-  if (search.optionIds.length > 1) {
-    const optionsWithoutClientRoute = search.optionIds.filter(
-      (optionId) =>
-        model.searchOptionCompatibility?.[optionId]?.clientToolCompatible !== true
-    ).length;
-    const maximumHostedRoutes = search.mode === "model_choice" ? 1 : 0;
-    if (optionsWithoutClientRoute > maximumHostedRoutes) return true;
-  }
-
-  // Run admission forces Search onto a client route whenever MCP tools are
-  // selected. The ordinary catalog exposes only this route-existence bit, not
-  // the technical route/model identity. Requiring it for every selected
-  // source also proves a complete all-client assignment for multi-source
-  // plans; the mode check above proves that assignment supports the mode.
-  return withMcp && search.optionIds.some((optionId) =>
-    model.searchOptionCompatibility?.[optionId]?.clientToolCompatible !== true
-  );
+  if (!searchPlanEnabled(search)) return false;
+  if (!view.entitledSearchOptionIds.has(WEB_SEARCH_OPTION_ID)) return true;
+  return model !== undefined && !model.searchStrategyIds.includes(WEB_SEARCH_OPTION_ID);
 }
 
 function toolsFail(
@@ -145,7 +111,7 @@ export function assistantRowCatalogFailures(
   const serverIds = values.tools.mode === "exact" ? values.tools.serverIds : [];
   if (
     values.search.mode !== "inherit" && values.search.mode !== "off" &&
-    searchFails(values.search, model, view, serverIds.length > 0)
+    searchFails(values.search, model, view)
   ) {
     failures.search = true;
   }

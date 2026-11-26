@@ -81,7 +81,8 @@ function unusedAnswerAdapter(): ProviderAdapter {
   };
 }
 
-/** A client engine: one source in an `all_selected` plan, as a chat with this one source selected sends it. */
+/** A client engine: the installation's engine of a single-engine plan, as admission binds it for a model that does not
+ * search inside its own answer, behind the product's one `web_search` tool. */
 export function clientEngine(input: Readonly<{
   adapter: ProviderSearchAdapter;
   config: Readonly<Record<string, unknown>>;
@@ -102,10 +103,11 @@ export function clientEngine(input: Readonly<{
     provider: input.provider,
     providerModelId: input.modelId,
     revisionId: "eval",
-    searchStrategyRowId: "eval"
+    searchStrategyRowId: "eval",
+    use: "engine"
   };
   const runtime: ProviderRuntimeBinding = { adapter: unusedAnswerAdapter(), responseTimeoutMs: RESPONSE_TIMEOUT_MS, searchAdapter: input.adapter };
-  const router = createSearchPlanToolRouter({ plan: { mode: "all_selected", options: [option] }, runtimes: { [option.optionId]: runtime } });
+  const router = createSearchPlanToolRouter({ plan: { mode: "engine", options: [option] }, runtimes: { [option.optionId]: runtime } });
   if (!router) throw new Error("eval_engine_router_missing");
   return { kind: "client", router };
 }

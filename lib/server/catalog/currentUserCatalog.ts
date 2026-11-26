@@ -8,15 +8,25 @@ import { catalogConnectionLabels } from "../../contracts/providerConnectionLabel
 import type { ProviderModelCatalogEntry, SearchStrategyCatalogEntry } from "../../domain/catalog";
 import {
   buildCatalogModel,
-  reconcileSearchPlanSelection,
-  toCatalogSearchStrategy
+  toCatalogSearchStrategy,
+  webSearchCatalogEntry,
+  type CatalogSearchAvailability
 } from "../../domain/catalogMatrix";
 import {
   canAccessModel,
   canAccessSearchStrategy,
   type ResolvedEntitlements
 } from "../auth/entitlements";
-import { automaticSearchOptionId, decodeSearchPlan, hostedSearchProtocolUsable, type SearchPlan } from "../../domain/search";
+import {
+  decodeSearchPlan,
+  hostedSearchProtocolUsable,
+  resolveSearchEngine,
+  SEARCH_DISABLED_STRATEGY_ID,
+  searchPlanEnabled,
+  searchSettingPlan,
+  type SearchPlan,
+  type SearchUnavailableReason
+} from "../../domain/search";
 import {
   decodeChatDefaultMcpMode,
   INSTALLATION_CHAT_DEFAULTS,
@@ -65,16 +75,35 @@ export function catalogDefaultAssistant(
     : { assistantId: null, assistantUnavailable: Boolean(settings.defaultAssistantId) };
 }
 
+/**
+ * The installation's Search for one user, as the loader resolved it (`lib/server/search/engineResolution.ts`): the
+ * engine with whether the user's credentials reach its technical model, and why the user cannot search with it.
+ */
+export type CatalogSearchData = CatalogSearchAvailability & Readonly<{
+  engine: Readonly<{ displayName: string; protocol: string; usable: boolean }> | null;
+  reason: SearchUnavailableReason | null;
+}>;
+
 export type CatalogData = {
   entitlements: ResolvedEntitlements;
   modelPolicy?: { defaultProviderModelId: string | null; reasoningEffort?: string | null } | null;
   models: ProviderModelCatalogEntry[];
-  searchPolicy?: { defaultPlan: unknown } | null;
+  /** The resolved Search; a reader that left it out derives it from `searchStrategies` (`catalogSearchData`). */
+  search?: CatalogSearchData;
+  searchPolicy?: Readonly<{
+    backupOptionId?: string | null;
+    defaultPlan?: unknown;
+    engineOptionId?: string | null;
+    inAnswerSearch?: boolean;
+  }> | null;
+  /** The sources the user's grants and credentials reach, as earlier releases exposed them. */
   searchStrategies: SearchStrategyCatalogEntry[];
   settings: CatalogSettingsRecord;
 };
 
 export type ResolvedSearchPreference = {
+  /** The user's Search switch: on unless they turned it off. */
+  enabled: boolean;
   organizationPlan: SearchPlan;
   preferredPlan: SearchPlan;
   source: "organization" | "personal";
@@ -82,7 +111,7 @@ export type ResolvedSearchPreference = {
 
 export type CatalogSelectionData = Pick<
   CatalogData,
-  "entitlements" | "modelPolicy" | "models" | "searchStrategies" | "settings"
+  "entitlements" | "modelPolicy" | "models" | "search" | "searchPolicy" | "searchStrategies" | "settings"
 >;
 
 export type ModelDefaultSelection = {
@@ -92,7 +121,9 @@ export type ModelDefaultSelection = {
 
 export type CurrentUserCatalogSelection = {
   defaultModel: CatalogWireModel | null;
+  /** The one virtual Search source (`webSearchCatalogEntry`) while some model of the user can search, else none. */
   entitledStrategies: SearchStrategyCatalogEntry[];
+  search: CatalogSearchData;
   hasPersonalModelDefault: boolean;
   modelPreferenceSource: "none" | "organization" | "personal";
   models: CatalogWireModel[];
@@ -113,15 +144,57 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Whether the user may search at all: Full access or a grant of any Search source (`hasSearchEntitlement`). */
+export function searchEntitled(entitlements: ResolvedEntitlements): boolean {
+  return entitlements.fullAccess === true ||
+    [...entitlements.searchStrategies].some((strategyId) => strategyId !== SEARCH_DISABLED_STRATEGY_ID);
+}
+
+/**
+ * The user's Search: the loader's resolution, or, for a reader that only listed the sources the user's grants and
+ * credentials reach, the same resolution over those sources, each counted ready and reachable.
+ */
+export function catalogSearchData(input: Pick<CatalogData, "entitlements" | "search" | "searchPolicy" | "searchStrategies">): CatalogSearchData {
+  if (input.search) return input.search;
+  const sources = input.searchStrategies.filter((strategy) => strategy.kind !== "none" &&
+    canAccessSearchStrategy(input.entitlements, strategy.strategyId));
+  const entitled = searchEntitled(input.entitlements) || sources.length > 0;
+  const candidates = sources.flatMap((strategy) => {
+    const client = strategy.routes.find((route) => route.adapterKind === "provider_model_client");
+    if (!client) return [];
+    const engine = isRecord(client.config.openRouterWebSearch) && typeof client.config.openRouterWebSearch.engine === "string"
+      ? client.config.openRouterWebSearch.engine
+      : null;
+    return [{ displayName: strategy.displayName, openRouterEngine: engine, optionId: strategy.strategyId,
+      protocol: client.protocol, ready: true }];
+  });
+  const resolution = resolveSearchEngine({
+    backupOptionId: input.searchPolicy?.backupOptionId ?? null,
+    candidates,
+    engineOptionId: input.searchPolicy?.engineOptionId ?? null
+  });
+  return {
+    engine: resolution.engine
+      ? { displayName: resolution.engine.displayName, protocol: resolution.engine.protocol, usable: true }
+      : null,
+    entitled,
+    inAnswerConnectionIds: input.searchPolicy?.inAnswerSearch === false ? [] : [...new Set(sources.flatMap((strategy) =>
+      strategy.kind === "web_search" && strategy.sourceConnectionId && strategy.routes.some((route) =>
+        route.adapterKind === "answer_provider_hosted" && hostedSearchProtocolUsable(route.protocol))
+        ? [strategy.sourceConnectionId] : []))],
+    reason: !entitled ? "search_not_granted" : resolution.reason
+  };
+}
+
 export function resolveCurrentUserCatalogSelection(
   input: CatalogSelectionData
 ): CurrentUserCatalogSelection {
-  const entitledStrategies = input.searchStrategies.filter((strategy) =>
-    canAccessSearchStrategy(input.entitlements, strategy.strategyId)
-  );
+  const search = catalogSearchData(input);
   const models = input.models
     .filter((model) => canAccessModel(input.entitlements, model.provider, model.modelId))
-    .map((model) => buildCatalogModel(model, entitledStrategies));
+    .map((model) => buildCatalogModel(model, search));
+  // Earlier clients and the run-row rules read Search as sources: the one virtual source while some model can search.
+  const entitledStrategies = models.some((model) => model.webSearch) ? [webSearchCatalogEntry()] : [];
   const personalModelId = input.settings.defaultProviderModelId;
   const personalModel = personalModelId
     ? models.find((model) => model.modelId === personalModelId) ?? null
@@ -152,46 +225,28 @@ export function resolveCurrentUserCatalogSelection(
         : "none",
     models,
     organizationModelDefault: selection(organizationModel),
-    personalModelDefault: selection(personalModel)
+    personalModelDefault: selection(personalModel),
+    search
   };
 }
 
+/**
+ * The user's Search switch (operator decisions 2026-11-26: users only switch Search on or off). Search is on for
+ * everyone (2026-10-24) until the user turns it off in Chat defaults, stored as a plan without sources; a stored plan
+ * that names sources, the personal choice of an earlier release, or one that no longer reads, keeps it on. The
+ * organization's side is always on: the installation's engine is the administrator's, never a user's choice.
+ */
 export function resolveSearchPreference(input: Readonly<{
-  organizationPlan: unknown;
   settings: Pick<CatalogSettingsRecord, "defaultSearchPlan">;
-  strategies: SearchStrategyCatalogEntry[];
 }>): ResolvedSearchPreference {
-  const decodedOrganization = decodeSearchPlan(input.organizationPlan);
-  const organizationOptionIds = decodedOrganization.ok ? decodedOrganization.plan.optionIds : [];
-  // Search is on for everyone (operator decision 2026-10-24): an organization
-  // default without a source is automatic, never Off. A chosen source that is
-  // unavailable is never replaced.
-  const automatic = organizationOptionIds.length === 0
-    ? automaticSearchOptionId(input.strategies.flatMap((strategy) => strategy.kind === "none"
-      ? []
-      : [{
-          protocols: strategy.routes.flatMap((route) => route.adapterKind === "provider_model_client" ||
-            hostedSearchProtocolUsable(route.protocol) ? [route.protocol] : []),
-          strategyId: strategy.strategyId
-        }]))
-    : null;
-  const organizationPlan = reconcileSearchPlanSelection(
-    automatic ? [automatic] : organizationOptionIds,
-    decodedOrganization.ok ? decodedOrganization.plan.mode : "all_selected",
-    input.strategies
-  );
-  const personal = input.settings.defaultSearchPlan !== null;
-  const decodedPreferred = personal
-    ? decodeSearchPlan(input.settings.defaultSearchPlan)
-    : { ok: true as const, plan: organizationPlan };
+  const stored = input.settings.defaultSearchPlan ?? null;
+  const decoded = stored === null ? null : decodeSearchPlan(stored);
+  const enabled = !decoded?.ok || searchPlanEnabled(decoded.plan);
   return {
-    organizationPlan,
-    preferredPlan: reconcileSearchPlanSelection(
-      decodedPreferred.ok ? decodedPreferred.plan.optionIds : [],
-      decodedPreferred.ok ? decodedPreferred.plan.mode : "all_selected",
-      input.strategies
-    ),
-    source: personal ? "personal" : "organization"
+    enabled,
+    organizationPlan: searchSettingPlan(true),
+    preferredPlan: searchSettingPlan(enabled),
+    source: stored === null ? "organization" : "personal"
   };
 }
 
@@ -256,14 +311,11 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     modelPreferenceSource,
     models,
     organizationModelDefault,
-    personalModelDefault
+    personalModelDefault,
+    search
   } = selection;
   const providers = currentUserCatalogProviders(input.models, models);
-  const searchPreference = resolveSearchPreference({
-    organizationPlan: input.searchPolicy?.defaultPlan,
-    settings: input.settings,
-    strategies: entitledStrategies
-  });
+  const searchPreference = resolveSearchPreference({ settings: input.settings });
   return {
     defaults: {
       answerSoundEnabled: input.settings.answerSoundEnabled ?? DEFAULT_ANSWER_SOUND.answerSoundEnabled,
@@ -278,6 +330,7 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
       provider: defaultModel?.provider ?? "",
       organizationSearchPlan: searchPreference.organizationPlan,
       searchPlan: searchPreference.preferredPlan,
+      searchEnabled: searchPreference.enabled,
       searchPreferenceSource: searchPreference.source,
       ...resolveChatDefaults(input.settings),
       ...catalogDefaultAssistant(input.settings),
@@ -287,6 +340,11 @@ export function buildCurrentUserCatalog(input: CatalogData): CurrentUserCatalogW
     },
     models,
     providers,
+    search: {
+      // The engine's name only while it serves this user; the reason otherwise, never a substitute.
+      engine: search.engine?.usable && search.reason === null ? { displayName: search.engine.displayName } : null,
+      reason: search.reason
+    },
     searchStrategies: entitledStrategies.map(toCatalogSearchStrategy)
   };
 }

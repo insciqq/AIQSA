@@ -7,7 +7,7 @@ import {
   type ChatAssistantOverridesPatch
 } from "../../contracts/chats";
 import type { SearchStrategyCatalogEntry } from "../../domain/catalog";
-import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
+import { WEB_SEARCH_OPTION_ID } from "../../domain/search";
 import { assistantRunControlIssue } from "../assistants/runControlMaterialization";
 import { assistantRowsFromStoredColumns } from "../assistants/storedContent";
 import {
@@ -107,12 +107,11 @@ export function chatAssistantOverridesIssue(input: Readonly<{
   const model = input.patch.model;
   if (model && !modelById.has(model.modelId)) return "assistant_overrides_invalid";
 
+  // Search on needs only that the requester can search (the decoder reads any plan with sources as on); which engine
+  // runs is the installation's.
   const search = input.patch.search;
-  if (search && search.mode !== "off" && (
-    search.optionIds.some((optionId) =>
-      !catalog.searchStrategies.some((strategy) => strategy.strategyId === optionId)) ||
-    !isSearchCombinationCompatible(search.optionIds, catalog.searchStrategies, search.mode)
-  )) {
+  if (search && search.mode !== "off" &&
+    !catalog.searchStrategies.some((strategy) => strategy.strategyId === WEB_SEARCH_OPTION_ID)) {
     return "assistant_overrides_invalid";
   }
 

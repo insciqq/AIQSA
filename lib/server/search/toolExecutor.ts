@@ -48,7 +48,10 @@ export {
 } from "./toolResult";
 export type { SearchExecutionEvidence } from "./toolResult";
 
-const allSelectedToolName = "search_selected_engines";
+/** The one Search tool (operator decisions 2026-11-26): one query to the installation's engine, its backup only when
+ * that call failed. Plans accepted before it named `search_selected_engines` and `search_engine_1..3`; their calls stay
+ * in history under those names. */
+export const WEB_SEARCH_TOOL_NAME = "web_search";
 
 // Older accepted runs may contain snapshots created before these controls
 // existed. Missing fields in those snapshots retain their historical values;
@@ -194,10 +197,6 @@ function boundedInteger(value: unknown, minimum: number, maximum: number, fallba
     : fallback;
 }
 
-function toolName(ordinal: number): string {
-  return `search_engine_${ordinal + 1}`;
-}
-
 /** What the model is told about Search, after how it reaches the web. GPT models wrote ChatGPT citation markers
  * (`lib/domain/answerTextMarkers.ts` removes them) in about a third of the answers built on client results until
  * asked for markdown links (prototype eval, 2026-11-25). */
@@ -213,15 +212,9 @@ function queryLimitSentence(queryMaxCharacters: number): string {
   return `Each query is at most ${queryMaxCharacters} characters.`;
 }
 
-function allSelectedDescription(queryMaxCharacters: number): string {
-  return `Search the web through the user's selected search sources. ${SEARCH_GUIDANCE} ${queryLimitSentence(queryMaxCharacters)}`;
-}
-
-function toolDescription(option: NormalizedSearchPlanOption, queryMaxCharacters: number): string {
-  const displayName = option.displayName?.trim().slice(0, 160);
-  return `${displayName
-    ? `Search the web through the user-selected source ${JSON.stringify(displayName)}.`
-    : "Search the web through one user-selected source."} ${SEARCH_GUIDANCE} ${queryLimitSentence(queryMaxCharacters)}`;
+/** The same words whatever the engine, so the tool list stays byte-identical when the administrator changes it. */
+function webSearchDescription(queryMaxCharacters: number): string {
+  return `Search the web. ${SEARCH_GUIDANCE} ${queryLimitSentence(queryMaxCharacters)}`;
 }
 
 function searchDisplayName(option: NormalizedSearchPlanOption): string {
@@ -257,22 +250,38 @@ export function searchOptionTimeoutMs(option: NormalizedSearchPlanOption): numbe
 }
 
 /**
- * The search tools a plan offers: each tool's name and description and the client sources its calls go to, all of
- * them at once in `all_selected` mode, otherwise one each. Sources the answer model searches in its own call have none.
+ * The client engine and backup a request searches with through `web_search`. None while the request's answer model
+ * searches inside its own answer (a hosted option): one way to search, never two tools named alike. A plan accepted
+ * before the single engine runs its first client source as the engine and its second as the backup.
+ */
+export function webSearchEngines(plan: NormalizedSearchPlan): Readonly<{
+  backup: NormalizedSearchPlanOption | null;
+  engine: NormalizedSearchPlanOption;
+}> | null {
+  if (plan.options.some((option) => option.adapterKind === "answer_provider_hosted")) return null;
+  const client = plan.options.filter((option) => option.adapterKind === "provider_model_client");
+  const engine = plan.mode === "engine" ? client.find((option) => option.use === "engine") : client[0];
+  if (!engine) return null;
+  const backup = plan.mode === "engine" ? client.find((option) => option.use === "backup") : client[1];
+  return { backup: backup && backup.optionId !== engine.optionId ? backup : null, engine };
+}
+
+/**
+ * The search tool a plan offers, at most one: its name, its description with the engine's query limit, and the client
+ * sources a call may reach, the engine first and its backup second. `turnDeadline.ts` bounds a call by both.
  */
 export function searchToolRoutes(plan: NormalizedSearchPlan): readonly Readonly<{
   description: string; name: string; options: readonly NormalizedSearchPlanOption[]; queryMaxCharacters: number;
 }>[] {
-  const options = plan.options.filter((option) => option.adapterKind === "provider_model_client");
-  if (options.length === 0) return [];
-  if (plan.mode === "all_selected") {
-    const queryMaxCharacters = Math.min(...options.map(searchQueryMaxCharacters));
-    return [{ description: allSelectedDescription(queryMaxCharacters), name: allSelectedToolName, options, queryMaxCharacters }];
-  }
-  return options.map((option, ordinal) => {
-    const queryMaxCharacters = searchQueryMaxCharacters(option);
-    return { description: toolDescription(option, queryMaxCharacters), name: toolName(ordinal), options: [option], queryMaxCharacters };
-  });
+  const engines = webSearchEngines(plan);
+  if (!engines) return [];
+  const queryMaxCharacters = searchQueryMaxCharacters(engines.engine);
+  return [{
+    description: webSearchDescription(queryMaxCharacters),
+    name: WEB_SEARCH_TOOL_NAME,
+    options: engines.backup ? [engines.engine, engines.backup] : [engines.engine],
+    queryMaxCharacters
+  }];
 }
 
 /** A source's admitted query limit, frozen with the run's Search plan; a snapshot without a valid one keeps the historical limit. */
@@ -860,17 +869,17 @@ export function createSearchPlanToolRouter(input: Readonly<{
       }
       if (options?.signal?.aborted) {
         logEvent("nested_abort", { layer: "search", stage: "before_start", abort_source: "unknown" });
+        // Only the engine was due; its backup runs only after the engine's call failed.
+        const engine = route.options[0]!;
+        const code = !input.runtimes[engine.optionId] || !engine.modelId
+          ? "search_runtime_not_available" : parentAbortCode(options.signal);
+        logEvent("tool_execution", {
+          tool_kind: "search", stage: "result", engine_index: 1,
+          outcome: code === "search_cancelled" ? "cancelled" : "failed", code
+        });
         const result = fitDurableSearchToolResult({
           call,
-          executions: route.options.map((option, index) => {
-            const code = !input.runtimes[option.optionId] || !option.modelId
-              ? "search_runtime_not_available" : parentAbortCode(options.signal);
-            logEvent("tool_execution", {
-              tool_kind: "search", stage: "result", engine_index: index + 1,
-              outcome: code === "search_cancelled" ? "cancelled" : "failed", code
-            });
-            return failedSearchExecution({ call, failure: { code }, option });
-          }),
+          executions: [failedSearchExecution({ call, failure: { code }, option: engine })],
           name: call.name
         });
         throw new SearchToolCancelledError(result, options.signal.reason);
@@ -896,15 +905,33 @@ export function createSearchPlanToolRouter(input: Readonly<{
       logEvent("tool_execution", { tool_kind: "search", stage: "admission", outcome: "completed" });
       stage = "execution";
       const query = validation.query;
-      const executions = await Promise.all(route.options.map((option, index) => executeOne({
-        call,
-        engineIndex: index + 1,
-        option,
-        query,
-        ...(input.retry ? { retry: input.retry } : {}),
-        runtime: input.runtimes[option.optionId],
-        ...(options?.signal ? { signal: options.signal } : {})
-      })));
+      const engineCall = (option: NormalizedSearchPlanOption, engineIndex: number, engineQuery: ValidatedSearchQuery) =>
+        executeOne({
+          call,
+          engineIndex,
+          option,
+          query: engineQuery,
+          ...(input.retry ? { retry: input.retry } : {}),
+          runtime: input.runtimes[option.optionId],
+          ...(options?.signal ? { signal: options.signal } : {})
+        });
+      const executions = [await engineCall(route.options[0]!, 1, query)];
+      const backup = route.options[1];
+      // The backup answers only a failed call, never an empty result or a Stop; the engine's failure stays in the
+      // result beside it, so the step shows both.
+      if (backup && executions[0]!.status === "error" && !options?.signal?.aborted) {
+        const backupLimit = searchQueryMaxCharacters(backup);
+        const backupValidation = validateSearchToolArguments(call.arguments, backupLimit);
+        if (backupValidation.ok) {
+          executions.push(await engineCall(backup, 2, backupValidation.query));
+        } else {
+          logEvent("tool_execution", {
+            tool_kind: "search", stage: "admission", engine_index: 2, outcome: "failed", code: backupValidation.code,
+            reason: "policy"
+          });
+          executions.push(failedSearchExecution({ call, failure: { code: backupValidation.code }, option: backup }));
+        }
+      }
       stage = "result";
       logEvent("tool_execution", { tool_kind: "search", stage: "result", outcome: "started" });
       let resultDegraded = false;

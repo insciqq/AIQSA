@@ -201,6 +201,8 @@ export async function withNativeSystemPrompt(input: NativeSystemPromptInput): Pr
     ...(input.subagents ? { subagents: input.subagents } : {}),
     tools,
     webSearch: request.searchPlan.options.length > 0,
+    ...(request.searchPlan.options.length === 0 && request.searchPlan.unavailable
+      ? { webSearchUnavailable: request.searchPlan.unavailable } : {}),
     workspace: request.workspace?.enabled === true
   });
   // The Workspace's record only tells a sub-agent without it what to leave out (`subagentRequest`): its text stays in the system.

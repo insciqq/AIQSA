@@ -36,11 +36,14 @@ export function projectSearchEngineActivity(input: Readonly<{
   const mode = record(input.normalizedRequest) && record(input.normalizedRequest.searchPlan)
     ? input.normalizedRequest.searchPlan.mode : null;
   for (const call of input.toolCalls) {
-    const selected = call.toolName === "search_selected_engines" && mode === "all_selected"
-      ? counts
-      : /^search_engine_[1-3]$/u.test(call.toolName)
-        ? [counts[Number(call.toolName.slice(-1)) - 1]].filter((row): row is typeof counts[number] => Boolean(row))
-        : [];
+    // `web_search` asks the engine, listed first; its backup counts by its own SearchRun rows.
+    const selected = call.toolName === "web_search"
+      ? counts.slice(0, 1)
+      : call.toolName === "search_selected_engines" && mode === "all_selected"
+        ? counts
+        : /^search_engine_[1-3]$/u.test(call.toolName)
+          ? [counts[Number(call.toolName.slice(-1)) - 1]].filter((row): row is typeof counts[number] => Boolean(row))
+          : [];
     for (const row of selected) {
       row.requested += 1;
       if (call.state === "complete" || call.state === "error" || call.state === "cancelled") row.settled += 1;

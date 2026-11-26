@@ -59,7 +59,7 @@ import {
 import {
   canonicalizeMaxOutputTokenParams
 } from "../../domain/providerParams";
-import { decodeSearchPlan } from "../../domain/search";
+import { decodeSearchPlan, searchPlanEnabled, searchSettingPlan, type SearchPlan } from "../../domain/search";
 import {
   ProviderAdmissionError,
   type ProviderAdmissionPlan
@@ -271,10 +271,8 @@ export type RunPreparationDeps = Readonly<{
       providerConnectionId: string;
       providerModelId: string;
       requiresClientToolCoexistence?: boolean;
-      requiresClientSearchRoutes?: boolean;
+      /** Search on when it names any source (`loadProviderAdmissionPlan`). */
       searchPlan: import("../../domain/search").SearchPlan;
-      searchPreferencePlan?: import("../../domain/search").SearchPlan | null;
-      searchPreferenceSource?: "organization" | "personal";
       userId: string;
     }): Promise<ProviderAdmissionPlan>;
   }>;
@@ -887,6 +885,23 @@ function clamp(value: number, min: number, max = Number.MAX_SAFE_INTEGER): numbe
   return Math.min(max, Math.max(min, value));
 }
 
+/**
+ * A send's Search, on or off: `searchEnabled`, else an earlier client's `searchPlan`, on when it names any source. One
+ * of them is required, so a send never searches, or stays silent, by default.
+ */
+export function decodeRunSearchRequest(
+  body: Readonly<Record<string, unknown>> | null
+): Readonly<{ ok: true; plan: SearchPlan }> | Readonly<{ code: string; ok: false }> {
+  if (body && Object.hasOwn(body, "searchEnabled")) {
+    return typeof body.searchEnabled === "boolean"
+      ? { ok: true, plan: searchSettingPlan(body.searchEnabled) }
+      : { code: "search_plan_invalid", ok: false };
+  }
+  if (body?.searchPlan === undefined) return { code: "search_plan_invalid", ok: false };
+  const decoded = decodeSearchPlan(body.searchPlan);
+  return decoded.ok ? { ok: true, plan: searchSettingPlan(searchPlanEnabled(decoded.plan)) } : decoded;
+}
+
 function runControlDefaultsFromBody(
   body: Readonly<Record<string, unknown>> | null,
   controls: ReturnType<typeof parameterControlsForModel>
@@ -1202,36 +1217,18 @@ export async function prepareRun(
   // or carried into another, whatever the request or the stored chat says.
   if (connector && !connector.memory && resolvedChatMode.mode !== "EXCLUDED") return failure(DISCORD_RUN_REFUSALS.chatMemory, 409);
 
-  const decodedSearchPlan = assistantRun
-    ? null
-    : decodeSearchPlan(body?.searchPlan);
-  if (!assistantRun && body?.searchPlan === undefined) {
-    return failure("search_plan_invalid", 400);
-  }
-  if (decodedSearchPlan && !decodedSearchPlan.ok) {
-    return failure(decodedSearchPlan.code, 400);
+  // Search is the user's on or off (operator decisions 2026-11-26), never a source: `searchEnabled`, or the plan an
+  // earlier client sends, on when it names any source. Which engine runs is admission's; an earlier client's
+  // personal preference fields carry nothing and are not read.
+  const decodedSearch = assistantRun ? null : decodeRunSearchRequest(body);
+  if (decodedSearch && !decodedSearch.ok) {
+    return failure(decodedSearch.code, 400);
   }
   let requestedSearchPlan = chatAssistant
     ? searchPlanFromRow(chatAssistant.resolution.rows.search.value)
-    : decodedSearchPlan && decodedSearchPlan.ok
-      ? decodedSearchPlan.plan
-      : { mode: "all_selected" as const, optionIds: [] as string[] };
-  let requestedSearchPreference: {
-    plan: import("../../domain/search").SearchPlan | null;
-    source: "organization" | "personal";
-  } | null = null;
-  if (!assistantRun && body &&
-    ("searchPreferencePlan" in body || "searchPreferenceSource" in body)) {
-    if (body.searchPreferenceSource === "organization") {
-      requestedSearchPreference = { plan: null, source: "organization" };
-    } else if (body.searchPreferenceSource === "personal") {
-      const decodedPreference = decodeSearchPlan(body.searchPreferencePlan);
-      if (!decodedPreference.ok) return failure(decodedPreference.code, 400);
-      requestedSearchPreference = { plan: decodedPreference.plan, source: "personal" };
-    } else {
-      return failure("search_preference_invalid", 400);
-    }
-  }
+    : decodedSearch && decodedSearch.ok
+      ? decodedSearch.plan
+      : searchSettingPlan(false);
   const selectedProvider = chatAssistant
     ? chatAssistant.modelProvider
     : typeof body?.provider === "string"
@@ -1261,12 +1258,6 @@ export async function prepareRun(
       // Chat models always call tools, so hosted Search must coexist with them.
       requiresClientToolCoexistence: true,
       searchPlan: requestedSearchPlan,
-      ...(requestedSearchPreference
-        ? {
-            searchPreferencePlan: requestedSearchPreference.plan,
-            searchPreferenceSource: requestedSearchPreference.source
-          }
-        : {}),
       userId: input.userId
     });
   } catch (error) {
@@ -1279,16 +1270,8 @@ export async function prepareRun(
     throw error;
   }
   modelConfiguration = admissionPlan.answer.modelConfiguration;
-  let acceptedSearchPlan = admissionPlan.requestedSearchPlan;
+  const acceptedSearchPlan = admissionPlan.requestedSearchPlan;
   requestedSearchPlan = acceptedSearchPlan;
-  if (requestedSearchPreference) {
-    requestedSearchPreference = {
-      plan: admissionPlan.requestedSearchPreferencePlan !== undefined
-        ? admissionPlan.requestedSearchPreferencePlan
-        : requestedSearchPreference.plan,
-      source: requestedSearchPreference.source
-    };
-  }
 
   const promptContent =
     input.source.kind === "send"
@@ -2029,8 +2012,11 @@ export async function prepareRun(
     reasoningEffort: acceptedReasoning.reasoningEffort,
     ...(subagentModels ? { subagentModels } : {}),
     ...(subagentDefault ? { subagentDefault } : {}),
+    // What admission bound, each option with its use; the answer model's in-answer search keeps its request free of
+    // `web_search`, while its sub-agents and researchers search with the engine (`subagentRequest`).
     searchPlan: {
-      mode: requestedSearchPlan.mode,
+      mode: "engine",
+      ...(admissionPlan.searchUnavailable ? { unavailable: admissionPlan.searchUnavailable } : {}),
       options: admissionPlan.searches.map((candidate) => ({
         adapterKind: candidate.configuration.adapterKind,
         config: candidate.configuration.config,
@@ -2043,7 +2029,8 @@ export async function prepareRun(
         provider: candidate.configuration.provider,
         providerModelId: candidate.configuration.providerModelId,
         revisionId: candidate.revisionId,
-        searchStrategyRowId: candidate.integrationId
+        searchStrategyRowId: candidate.integrationId,
+        use: candidate.use
       }))
     },
     toolBudgets: {
@@ -2135,9 +2122,6 @@ export async function prepareRun(
         modelId: selectedModelId,
         provider: selectedProvider,
         searchPlan: acceptedSearchPlan,
-        ...(requestedSearchPreference
-          ? { searchPreferencePlan: requestedSearchPreference.plan }
-          : {}),
         userId: input.userId
       };
 

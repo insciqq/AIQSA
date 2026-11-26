@@ -9,7 +9,6 @@ import {
   type AdminSearchProviderModelOption,
   type AdminSearchTestEvidence
 } from "../../../contracts/adminSearch";
-import { isSearchCombinationCompatible } from "../../../domain/catalogMatrix";
 import {
   ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID,
   ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID,
@@ -43,6 +42,12 @@ import {
   searchValidationFingerprint,
   type SearchProbeBinding
 } from "../../search/probeBinding";
+import {
+  decodeInstallationSearchPolicy,
+  INSTALLATION_SEARCH_POLICY_ID,
+  resolveInstallationSearch,
+  type SearchOptionRouteRow
+} from "../../search/engineResolution";
 
 export type AdminSearchTester = Readonly<{
   currentBinding(input: Readonly<{
@@ -511,11 +516,18 @@ export function createAdminSearchService(input: Readonly<{
   const now = input.now ?? (() => new Date());
 
   async function policy() {
-    const row = await input.prisma.searchPolicy.findUnique({ where: { id: "installation" } });
+    const row = await input.prisma.searchPolicy.findUnique({ where: { id: INSTALLATION_SEARCH_POLICY_ID } });
     if (!row) throw new Error("installation_search_policy_missing");
-    const decoded = decodeSearchPlan(row.defaultPlan);
+    const engine = decodeInstallationSearchPolicy(row);
     return {
-      defaultPlan: decoded.ok ? decoded.plan : { mode: "all_selected" as const, optionIds: [] },
+      backupOptionId: engine.backupOptionId,
+      // Earlier clients read the engine and backup as a plan.
+      defaultPlan: {
+        mode: "all_selected" as const,
+        optionIds: [engine.engineOptionId, engine.backupOptionId].filter((id): id is string => id !== null)
+      },
+      engineOptionId: engine.engineOptionId,
+      inAnswerSearch: engine.inAnswerSearch,
       updatedAt: row.updatedAt.toISOString(),
       version: row.version
     };
@@ -758,13 +770,36 @@ export function createAdminSearchService(input: Readonly<{
         toolCalling: configuration.capabilities.toolCalling === true
       }];
     });
+    // The engine users search with now, resolved as admission resolves it (`resolveInstallationSearch`) over the
+    // rows read here; the query reads whole rows, so each carries what the resolution reads.
+    const installation = resolveInstallationSearch({
+      options: (options as unknown as SearchOptionRouteRow[])
+        .map((option) => ({ ...option, createdAt: option.createdAt ?? new Date(0) })),
+      policy: {
+        backupOptionId: searchPolicy.backupOptionId,
+        engineOptionId: searchPolicy.engineOptionId,
+        inAnswerSearch: searchPolicy.inAnswerSearch
+      },
+      technicalModelReady: ({ connectionId, protocol, providerModelId }) => {
+        const model = runtimeModels.find((candidate) => candidate.id === providerModelId);
+        return Boolean(model?.enabled && model.connectionId === connectionId && technicalSearchModelSupports(protocol, model));
+      }
+    });
     return {
       integrations: (options as SearchOptionRow[]).flatMap((option) => {
         if (option.kind === "none") return [];
         const integration = serializeIntegration(option, runtimeModels);
         return integration ? [integration] : [];
       }),
-      policy: searchPolicy,
+      policy: {
+        ...searchPolicy,
+        resolved: {
+          automatic: installation.resolution.automatic,
+          backupOptionId: installation.resolution.backup?.optionId ?? null,
+          engineOptionId: installation.resolution.engine?.optionId ?? null,
+          reason: installation.resolution.reason
+        }
+      },
       providerModels: [
         ...runtimeModels.flatMap((model) => {
           const searchKind = clientSearchKind(model.adapterKind);
@@ -814,42 +849,65 @@ export function createAdminSearchService(input: Readonly<{
     };
   }
 
+  /**
+   * Sets the installation's Search (operator decisions 2026-11-26): the engine (null lets the default order pick it),
+   * the backup and the in-answer switch; a field left out keeps its value. An earlier client's `defaultPlan` names
+   * the engine first and the backup second. An engine or backup must be a live source whose client route can search
+   * now, since every model and mode searches through it; a hosted-only source cannot be either.
+   */
   async function updatePolicy(args: Readonly<{
-    defaultPlan: unknown;
+    backupOptionId?: unknown;
+    defaultPlan?: unknown;
+    engineOptionId?: unknown;
     expectedVersion: number;
+    inAnswerSearch?: unknown;
     userId: string;
   }>): Promise<void> {
-    const decoded = decodeSearchPlan(args.defaultPlan);
-    if (!decoded.ok) throw new AdminSearchServiceError("search_default_unavailable");
     const catalog = await list({ userId: args.userId });
-    const selectable = catalog.integrations
-      .filter((integration) => integration.enabled && !integration.archivedAt && integration.ready)
-      .map((integration) => ({
-        executionModes: integration.executionModes,
-        kind: integration.kind === "perplexity_search"
-          ? "perplexity_tool_search" as const
-          : integration.kind === "deepseek_search_api"
-            ? "web_search" as const
-            : integration.kind,
-        strategyId: integration.strategyId
-      }));
-    const plan: SearchPlan = decoded.plan;
-    if (plan.optionIds.some((optionId) =>
-      !selectable.some((integration) => integration.strategyId === optionId)) ||
-      // A single source has no fan-out, so its hosted-only route qualifies in either mode.
-      (plan.mode === "all_selected" && plan.optionIds.length > 1 && plan.optionIds.some((optionId) =>
-        !selectable.find((integration) => integration.strategyId === optionId)
-          ?.executionModes.includes("all_selected"))) ||
-      !isSearchCombinationCompatible(plan.optionIds, selectable, plan.mode)) {
+    let engineOptionId = catalog.policy.engineOptionId ?? null;
+    let backupOptionId = catalog.policy.backupOptionId ?? null;
+    let inAnswerSearch = catalog.policy.inAnswerSearch ?? true;
+    const optionId = (value: unknown): string | null => {
+      if (value === null) return null;
+      if (typeof value !== "string" || !value.trim() || value.length > 160) {
+        throw new AdminSearchServiceError("search_default_unavailable");
+      }
+      return value;
+    };
+    if (args.defaultPlan !== undefined) {
+      const decoded = decodeSearchPlan(args.defaultPlan);
+      if (!decoded.ok) throw new AdminSearchServiceError("search_default_unavailable");
+      engineOptionId = decoded.plan.optionIds[0] ?? null;
+      backupOptionId = decoded.plan.optionIds[1] ?? null;
+    }
+    if (args.engineOptionId !== undefined) engineOptionId = optionId(args.engineOptionId);
+    if (args.backupOptionId !== undefined) backupOptionId = optionId(args.backupOptionId);
+    if (args.inAnswerSearch !== undefined) {
+      if (typeof args.inAnswerSearch !== "boolean") throw new AdminSearchServiceError("search_default_unavailable");
+      inAnswerSearch = args.inAnswerSearch;
+    }
+    const engineReady = (id: string) => catalog.integrations.some((integration) =>
+      integration.strategyId === id && integration.enabled && !integration.archivedAt &&
+      integration.executionModes.includes("all_selected"));
+    if ((engineOptionId !== null && !engineReady(engineOptionId)) ||
+      (backupOptionId !== null && (!engineReady(backupOptionId) || backupOptionId === engineOptionId))) {
       throw new AdminSearchServiceError("search_default_unavailable");
     }
+    const plan: SearchPlan = {
+      mode: "all_selected",
+      optionIds: [engineOptionId, backupOptionId].filter((id): id is string => id !== null)
+    };
     const updated = await input.prisma.searchPolicy.updateMany({
       data: {
+        backupOptionId,
+        // Kept in step for the previous release, which reads only the plan.
         defaultPlan: json(plan),
+        engineOptionId,
+        inAnswerSearch,
         updatedByUserId: args.userId,
         version: { increment: 1 }
       },
-      where: { id: "installation", version: args.expectedVersion }
+      where: { id: INSTALLATION_SEARCH_POLICY_ID, version: args.expectedVersion }
     });
     if (updated.count !== 1) throw new AdminSearchServiceError("search_policy_stale");
   }

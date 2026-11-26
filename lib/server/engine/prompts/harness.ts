@@ -1,6 +1,7 @@
 import { renderLocalPromptTemplate } from "@/lib/domain/promptTemplates";
 import { PROPOSE_RESEARCH_PLAN_TOOL_NAME, START_RESEARCH_TOOL_NAME, SUBMIT_RESEARCH_DRAFT_TOOL_NAME } from "@/lib/contracts/research";
 import { CONTINUE_TURN_TEXT } from "@/lib/contracts/runs";
+import type { SearchUnavailableReason } from "@/lib/contracts/search";
 import { CALL_SUBAGENT_TOOL_NAME } from "@/lib/contracts/subagents";
 import { WORKSPACE_NO_REPLAY_SAFETY } from "@/lib/server/workspace/promptContract";
 import { subagentsPromptSection, type SubagentPromptFacts } from "./subagents";
@@ -26,8 +27,16 @@ export const HARNESS_TOOL_NAMES = Object.freeze({
   updatePlan: "update_plan"
 });
 
-/** The Search tools: one for every selected source, or one per source. */
-export const HARNESS_SEARCH_TOOL = /^(?:search_selected_engines|search_engine_[1-3])$/u;
+/** The Search tool, `web_search`, and the names runs admitted before the single engine gave it (one for every selected
+ * source, or one per source), whose calls stay in history. */
+export const HARNESS_SEARCH_TOOL = /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u;
+
+/** Why the run has no web search although Search was on, in the words the model may pass on. */
+const SEARCH_UNAVAILABLE_LINES: Readonly<Record<SearchUnavailableReason, string>> = Object.freeze({
+  search_engine_not_configured: "this installation has no web search engine set up",
+  search_engine_unavailable: "the installation's web search engine cannot be used right now",
+  search_not_granted: "the administrator has not given this account web search"
+});
 
 export type HarnessPromptInput = Readonly<{
   /** Names of the tools offered on this request. */
@@ -36,6 +45,8 @@ export type HarnessPromptInput = Readonly<{
   workspace: boolean;
   /** The run admitted web Search, also a provider's hosted one with no tool of its own. */
   webSearch?: boolean;
+  /** Search was on but this request has none, and why (`NormalizedSearchPlan.unavailable`); the answer says so. */
+  webSearchUnavailable?: SearchUnavailableReason;
   /**
    * The user can start Deep research from the `+` menu of this chat's message box, and this request has no research tools: one constant
    * line says so, the way forward for a request in words alone (operator decision 2026-11-05).
@@ -158,6 +169,9 @@ export function harnessPromptSection(input: HarnessPromptInput): string {
       "- Write focused queries, in the language most likely to find good sources. When results are thin or disagree, search again with a different query; independent searches can run in parallel.",
       "- Base the answer on what the sources say. Cite the ones you rely on as markdown links to the URLs the results list, such as [Example](https://example.com/page), beside the claims they support; never cite with result numbers or citation markers, which the reader cannot follow. Say so when the results do not settle the question.",
       ...(input.researchControl === true && !has.has(START_RESEARCH_TOOL_NAME) ? [RESEARCH_CONTROL_LINE] : [])
+    ]] : input.webSearchUnavailable ? [[
+      "# Web search",
+      `- Web search is unavailable here: ${SEARCH_UNAVAILABLE_LINES[input.webSearchUnavailable]}. When an answer would need current information from the web, say that you could not search and why.`
     ]] : []),
     ...(input.workspace ? [[
       "# Workspace",

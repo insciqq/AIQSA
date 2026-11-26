@@ -356,8 +356,19 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
       ...(kept.length > 0 ? { turnGuidance: kept } : {})
     },
     provider: route.request.provider,
-    reasoningEffort: route.request.reasoningEffort
+    reasoningEffort: route.request.reasoningEffort,
+    searchPlan: subagentSearchPlan(request.searchPlan)
   };
+}
+
+/**
+ * A sub-agent's or researcher's Search (operator decisions 2026-11-26): the run's client engine and backup behind
+ * `web_search`, whatever its model, never the parent's in-answer search, which belongs to the parent's model and
+ * connection. A plan admitted before the single engine stays as it was frozen.
+ */
+export function subagentSearchPlan(plan: ProviderRunRequest["searchPlan"]): ProviderRunRequest["searchPlan"] {
+  if (plan.mode !== "engine") return plan;
+  return { ...plan, options: plan.options.filter((option) => option.use !== "in_answer") };
 }
 
 /** The report's first line, when it states the outcome as the role section asks. */

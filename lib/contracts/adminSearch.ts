@@ -147,10 +147,34 @@ export type AdminSearchCatalog = {
   providerModels: AdminSearchProviderModelOption[];
 };
 
+/**
+ * The installation's Search (operator decisions 2026-11-26): one engine for every model and mode, the
+ * administrator's choice or, with none, the first ready source in `SEARCH_ENGINE_DEFAULT_ORDER`; an optional backup
+ * called only when a call to the engine failed; and whether OpenAI-protocol answer models search inside their own
+ * answer. The new fields are absent only on older wires.
+ */
 export type AdminSearchPolicy = {
+  /** The administrator's backup source (`strategyId`), or none. */
+  backupOptionId?: string | null;
+  /** Earlier clients' view: the chosen engine and backup, in that order; empty while the order picks the engine. */
   defaultPlan: SearchPlan;
+  /** The administrator's engine (`strategyId`); null lets the default order pick it. */
+  engineOptionId?: string | null;
+  /** GPT on an OpenAI-protocol connection with verified hosted search searches inside its own answer. */
+  inAnswerSearch?: boolean;
+  /** What the installation searches with now, and why not when it cannot. */
+  resolved?: AdminSearchResolvedEngine;
   updatedAt: string;
   version: number;
+};
+
+export type AdminSearchResolvedEngine = {
+  /** The default order picked the engine. */
+  automatic: boolean;
+  backupOptionId: string | null;
+  engineOptionId: string | null;
+  /** `search_engine_unavailable`: the chosen engine cannot search, and nothing replaces it. */
+  reason: "search_engine_not_configured" | "search_engine_unavailable" | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -280,9 +304,17 @@ function policy(value: unknown): value is AdminSearchPolicy {
     return false;
   }
   const plan = value.defaultPlan;
+  const resolved = value.resolved;
   return (plan.mode === "all_selected" || plan.mode === "model_choice") &&
     Array.isArray(plan.optionIds) && plan.optionIds.length <= 3 &&
-    plan.optionIds.every(string) && new Set(plan.optionIds).size === plan.optionIds.length;
+    plan.optionIds.every(string) && new Set(plan.optionIds).size === plan.optionIds.length &&
+    (value.engineOptionId === undefined || nullableString(value.engineOptionId)) &&
+    (value.backupOptionId === undefined || nullableString(value.backupOptionId)) &&
+    (value.inAnswerSearch === undefined || typeof value.inAnswerSearch === "boolean") &&
+    (resolved === undefined || (isRecord(resolved) && typeof resolved.automatic === "boolean" &&
+      nullableString(resolved.engineOptionId) && nullableString(resolved.backupOptionId) &&
+      (resolved.reason === null || resolved.reason === "search_engine_not_configured" ||
+        resolved.reason === "search_engine_unavailable")));
 }
 
 export function decodeAdminSearchCatalog(value: unknown): AdminSearchCatalog | null {

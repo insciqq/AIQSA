@@ -103,8 +103,9 @@ export function toolCallBounds(request: Pick<NormalizedRunRequest,
   for (const server of request.mcpDiscovery?.catalog.servers ?? []) {
     for (const tool of server.tools) if (!mcp.has(tool.namespacedName)) mcp.set(tool.namespacedName, own(server.runtimeTimeouts?.callTimeoutMs));
   }
+  // A call asks the engine and, only after it failed, the backup, so it may take both their timeouts.
   const search = new Map(searchToolRoutes(request.searchPlan).map((route) =>
-    [route.name, own(Math.max(...route.options.map(searchOptionTimeoutMs)))]));
+    [route.name, own(route.options.reduce((sum, option) => sum + searchOptionTimeoutMs(option), 0))]));
   const workspace = request.workspace ? own(request.workspace.syncToolTimeoutSeconds * 1_000) : floor;
   const vision = request.visionAnalysis?.available ? own(visionAnalysisTimeoutMs(request.visionAnalysis)) : floor;
   const image = request.imagePlan ? own(imageGenerationWaitMs(request.imagePlan)) : floor;

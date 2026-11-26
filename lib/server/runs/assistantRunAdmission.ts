@@ -6,7 +6,7 @@ import {
 } from "../../contracts/chats";
 import { decodeMcpRunSelection } from "../../contracts/mcp";
 import { invalidRunParamsError, reasoningModeNotAvailableError } from "../../domain/runParams";
-import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
+import { decodeSearchPlan, SEARCH_ON_PLAN, searchPlanEnabled, type SearchPlan } from "../../domain/search";
 import {
   storedOverridesInEffect,
   type AssistantRowContext,
@@ -126,11 +126,17 @@ export function decodeAssistantRowRequest(
     if (!controls) invalid.controls = rejected(invalidRunParamsError, 400);
     requested.controls = controls ?? {};
   }
-  if (has("searchPlan")) {
+  // Search is on or off (operator decisions 2026-11-26): `searchEnabled`, or a plan that names any source.
+  if (has("searchEnabled")) {
+    if (typeof value.searchEnabled !== "boolean") invalid.search = rejected("search_plan_invalid", 400);
+    requested.search = value.searchEnabled === true
+      ? { mode: SEARCH_ON_PLAN.mode, optionIds: [...SEARCH_ON_PLAN.optionIds] }
+      : { mode: "off" };
+  } else if (has("searchPlan")) {
     const decoded = decodeSearchPlan(value.searchPlan);
     if (!decoded.ok) invalid.search = rejected(decoded.code, 400);
-    requested.search = decoded.ok && decoded.plan.optionIds.length > 0
-      ? { mode: decoded.plan.mode, optionIds: [...decoded.plan.optionIds] }
+    requested.search = decoded.ok && searchPlanEnabled(decoded.plan)
+      ? { mode: SEARCH_ON_PLAN.mode, optionIds: [...SEARCH_ON_PLAN.optionIds] }
       : { mode: "off" };
   }
   if (has("mcp")) {

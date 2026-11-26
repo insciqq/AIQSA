@@ -508,14 +508,7 @@ export async function insertAcceptedProviderRunBindings(
       ...(input.plan.requiresClientToolCoexistence
         ? { requiresClientToolCoexistence: true }
         : {}),
-      ...(input.plan.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: input.plan.requestedSearchPlan,
-      ...(input.plan.requestedSearchPreferenceSource
-        ? {
-            searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
-            searchPreferenceSource: input.plan.requestedSearchPreferenceSource
-          }
-        : {}),
       userId: input.userId
     });
   } catch (error) {

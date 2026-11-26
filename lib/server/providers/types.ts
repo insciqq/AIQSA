@@ -7,8 +7,10 @@ import type { SearchSource } from "../search/evidence";
 import type {
   SearchAdapterKind,
   SearchCredentialMode,
+  SearchOptionUse,
   SearchPlanMode,
   SearchProtocol,
+  SearchUnavailableReason,
   ValidatedSearchQuery
 } from "../../domain/search";
 import type { ArtifactResourcePolicy } from "../artifacts/resourcePolicy";
@@ -26,11 +28,21 @@ export type NormalizedSearchPlanOption = Readonly<{
   providerModelId: string | null;
   revisionId: string;
   searchStrategyRowId: string;
+  /** How a single-engine plan uses this option; absent in plans frozen before it (`engine` mode below). */
+  use?: SearchOptionUse;
 }>;
 
+/**
+ * A run's frozen Search. `engine` (operator decisions 2026-11-26) holds what admission bound: OpenAI's hosted search
+ * for an answer model that searches inside its own answer, and the installation's client engine with its optional
+ * backup, which every other request of the run (a sub-agent, a researcher) searches with. `unavailable` names why
+ * Search was on but no engine could be bound. The other modes are plans accepted before the single engine; their
+ * client options still run behind the one `web_search` tool, the first as engine and the second as backup.
+ */
 export type NormalizedSearchPlan = Readonly<{
-  mode: SearchPlanMode;
+  mode: SearchPlanMode | "engine";
   options: readonly NormalizedSearchPlanOption[];
+  unavailable?: SearchUnavailableReason;
 }>;
 
 export type ProviderModelCapabilities = {
