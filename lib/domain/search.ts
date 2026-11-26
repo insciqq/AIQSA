@@ -1,7 +1,15 @@
+import type { SearchPlanMode } from "../contracts/search";
 import { safeExternalHref } from "./links";
 
-export const MAX_SEARCH_PLAN_OPTIONS = 3;
-export const SEARCH_DISABLED_STRATEGY_ID = "search-disabled";
+/** Plans are decoded in one place, the client-safe contract, and read here as they are there. */
+export {
+  decodeSearchPlan,
+  MAX_SEARCH_PLAN_OPTIONS,
+  SEARCH_DISABLED_STRATEGY_ID,
+  type SearchPlan,
+  type SearchPlanDecodeResult,
+  type SearchPlanMode
+} from "../contracts/search";
 export const ANTHROPIC_PROVIDER_SEARCH_INTEGRATION_ID = "system-anthropic-web-search-client";
 export const ANTHROPIC_PROVIDER_SEARCH_STRATEGY_ID = "anthropic-web-search-client";
 export const OPENAI_PROVIDER_SEARCH_INTEGRATION_ID = "system-openai-provider-web-search";
@@ -9,8 +17,7 @@ export const OPENAI_PROVIDER_SEARCH_STRATEGY_ID = "openai-provider-web-search";
 export const GEMINI_PROVIDER_SEARCH_INTEGRATION_ID = "system-gemini-google-search-client";
 export const GEMINI_PROVIDER_SEARCH_STRATEGY_ID = "gemini-google-search-client";
 
-export const searchPlanModes = ["all_selected", "model_choice"] as const;
-export type SearchPlanMode = (typeof searchPlanModes)[number];
+export const searchPlanModes = ["all_selected", "model_choice"] as const satisfies readonly SearchPlanMode[];
 
 /**
  * How an admitted run's Search option is used (operator decisions 2026-11-26): `in_answer` is OpenAI's hosted
@@ -37,86 +44,13 @@ export const searchProtocols = [
 ] as const;
 export type SearchProtocol = (typeof searchProtocols)[number];
 
-export type SearchPlan = Readonly<{
-  mode: SearchPlanMode;
-  optionIds: readonly string[];
-}>;
-
 declare const validatedSearchQueryBrand: unique symbol;
 export type ValidatedSearchQuery = string & {
   readonly [validatedSearchQueryBrand]: true;
 };
 
-export type SearchPlanDecodeResult =
-  | Readonly<{ ok: true; plan: SearchPlan }>
-  | Readonly<{
-      code:
-        | "search_plan_duplicate_option"
-        | "search_plan_invalid"
-        | "search_plan_too_many_options";
-      ok: false;
-    }>;
-
-export type NormalizedSearchSource = Readonly<{
-  date?: string;
-  engines: readonly Readonly<{ optionId: string; rank: number }>[];
-  snippet?: string;
-  title: string;
-  url: string;
-}>;
-
-export type SearchEngineEvidence = Readonly<{
-  invocationId: string;
-  optionId: string;
-  sources: readonly Readonly<{
-    date?: string;
-    rank: number;
-    snippet?: string;
-    title: string;
-    url: string;
-  }>[];
-}>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 export function isSearchPlanMode(value: unknown): value is SearchPlanMode {
   return value === "all_selected" || value === "model_choice";
-}
-
-export function decodeSearchPlan(value: unknown): SearchPlanDecodeResult {
-  if (!isRecord(value) || !Array.isArray(value.optionIds) || !isSearchPlanMode(value.mode)) {
-    return { code: "search_plan_invalid", ok: false };
-  }
-  if (value.optionIds.length > MAX_SEARCH_PLAN_OPTIONS) {
-    return { code: "search_plan_too_many_options", ok: false };
-  }
-
-  const optionIds: string[] = [];
-  for (const optionId of value.optionIds) {
-    if (
-      typeof optionId !== "string" ||
-      !optionId.trim() ||
-      optionId.length > 160 ||
-      optionId === SEARCH_DISABLED_STRATEGY_ID ||
-      /[\u0000-\u001f\u007f]/u.test(optionId)
-    ) {
-      return { code: "search_plan_invalid", ok: false };
-    }
-    optionIds.push(optionId.trim());
-  }
-  if (new Set(optionIds).size !== optionIds.length) {
-    return { code: "search_plan_duplicate_option", ok: false };
-  }
-
-  return {
-    ok: true,
-    plan: {
-      mode: value.mode,
-      optionIds
-    }
-  };
 }
 
 export {
@@ -232,6 +166,26 @@ export function hostedSearchProtocolUsable(protocol: string): boolean {
   return protocol === "openai_responses_web_search";
 }
 
+export type NormalizedSearchSource = Readonly<{
+  date?: string;
+  engines: readonly Readonly<{ optionId: string; rank: number }>[];
+  snippet?: string;
+  title: string;
+  url: string;
+}>;
+
+export type SearchEngineEvidence = Readonly<{
+  invocationId: string;
+  optionId: string;
+  sources: readonly Readonly<{
+    date?: string;
+    rank: number;
+    snippet?: string;
+    title: string;
+    url: string;
+  }>[];
+}>;
+
 function normalizedUrl(value: string): string | null {
   const safe = safeExternalHref(value);
   if (!safe) return null;
@@ -253,6 +207,8 @@ function boundedText(value: string | undefined, maxLength: number): string | und
 /**
  * Merge fan-out evidence without inventing a global relevance score. Plan
  * order is authoritative; each engine's local rank is the secondary order.
+ * Only stored version 2 search results render through it
+ * (`lib/server/search/toolResult.ts`); nothing new is merged.
  */
 export function mergeSearchEvidence(
   planOptionIds: readonly string[],
