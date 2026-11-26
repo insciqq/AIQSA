@@ -9,7 +9,7 @@ import {
   criteriaOverlap, decodeResearchGrade, decodeStructuredResearchAnswer, emptyEval, evaluateResearch, redactResearchSecrets, researchEvalOptions,
   researchEffortConfiguration, researchEvaluationSummary, researchPlanWindow, researchPool, researchProxySetup, researchQuestionTimeout, researchComparisonDetails, researchRepeatability, researchRoleUsage, researchStoreFacts, researchUsageByModel, shortlistOverlap,
   type ResearchGrade, type ResearchTranscriptRow, type ResearchUsageRow, type StructuredResearchAnswer,
-  RESEARCH_PRODUCTION_SEARCH, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets, researchAttributionCounts, researchCitationAttribution,
+  RESEARCH_PERPLEXITY_SEARCH_MODELS, RESEARCH_PRODUCTION_SEARCH, parseResearchAdminProxy, readPrivateFile, researchAdminProxySecrets, researchAttributionCounts, researchCitationAttribution,
   researchCitedUrls, researchProxyCheckStatus, researchQuestionText, researchSearchSourceStatus
 } from "./research-eval-support";
 import { parseTestProxy, researchDraftFindings, researchMetrics, researchProcessFacts, researchServerNotes } from "./subagent-scenarios-support";
@@ -542,6 +542,15 @@ describe("acceptance options", () => {
     expect(researchSearchSourceStatus({ ...source, configuration: { ...source.configuration, protocol: "deepseek_search_api", providerModelId: "other" },
       draftTestEvidence: { ...source.draftTestEvidence, protocol: "deepseek_search_api" } }, { protocol: "deepseek_search_api" })).toBe("ok");
     expect(RESEARCH_PRODUCTION_SEARCH.map((entry) => entry.protocol)).toEqual(["openai_responses_web_search", "openrouter_web_search", "deepseek_search_api"]);
+    // OpenRouter's web search counts only with Perplexity as its engine (Perplexity Sonar is retired, 2026-11-26).
+    const web = { ...source, configuration: { adapterKind: "provider_model_client", openRouterWebSearch: { engine: "perplexity", mode: null },
+      protocol: "openrouter_web_search", providerModelId: "flash-1017" },
+    draftTestEvidence: { ...source.draftTestEvidence, protocol: "openrouter_web_search" } };
+    const perplexity = { openRouterEngine: "perplexity", protocol: "openrouter_web_search", providerModelId: "flash-1017" };
+    expect(researchSearchSourceStatus(web, perplexity)).toBe("ok");
+    expect(researchSearchSourceStatus({ ...web, configuration: { ...web.configuration, openRouterWebSearch: { engine: "parallel", mode: "fast" } } },
+      perplexity)).toBe("configuration_mismatch");
+    expect(RESEARCH_PERPLEXITY_SEARCH_MODELS).toContain("deepseek/deepseek-v4.1-flash-1017");
   });
 
   it("attributes the cited records' links to the Search sources that returned them, in fetch_url's form", () => {
