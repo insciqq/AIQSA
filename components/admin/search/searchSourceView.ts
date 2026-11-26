@@ -7,15 +7,16 @@ import {
   type AdminSearchCatalog,
   type AdminSearchDraft,
   type AdminSearchIntegration,
+  type AdminSearchPolicy,
   type AdminSearchProviderModelOption
 } from "@/lib/contracts/adminSearch";
-import { isSearchCombinationCompatible } from "@/lib/domain/catalogMatrix";
-import { automaticSearchOptionId, type SearchPlanMode } from "@/lib/domain/search";
+import { SEARCH_ENGINE_DEFAULT_ORDER } from "@/lib/domain/search";
 
 /**
  * Presentation rules for the Search page (PRD 5.6): one status word per
- * source, the chat models it reaches, and the plain-language result of its
- * last check. Everything derives from the admin catalog.
+ * source, its part in the installation's Search (engine or backup), and the
+ * plain-language result of its last check. Everything derives from the admin
+ * catalog.
  */
 
 export type SearchStatusTone = "critical" | "neutral" | "ok" | "warn";
@@ -38,24 +39,20 @@ export function searchSourceStatus(source: AdminSearchIntegration): SearchSource
   return { kind: "working", label: "Working", tone: "ok" };
 }
 
-/** Which chat models can use this source, as one short phrase for the list. */
-export function searchModelsReach(source: AdminSearchIntegration): string {
-  if (!source.ready) return "No Search model yet";
-  if (source.kind !== "web_search" || source.broaderModelSetup === "ready") return "All chat models";
-  return "This provider's models";
-}
-
-/** The longer explanation of the reach for the source page. */
-export function searchModelsReachDetail(source: AdminSearchIntegration): string | null {
+/** Why a source cannot be the engine yet, pointing at the action that exists for it; null when it can. */
+export function searchEngineSetupDetail(source: AdminSearchIntegration): string | null {
+  if (source.archivedAt || !source.enabled) return null;
   if (!source.ready) {
-    if (source.configurable) return "Choose an enabled Search model in Configure so chats can use this source.";
+    if (source.configurable) return "Choose an enabled Search model in Configure so it can search.";
     // A built-in without its own route yet: provider setup adds it with the key.
     return source.kind === "perplexity_search" || source.kind === "deepseek_search_api"
       ? "Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models."
       : "Adding a key on its provider page sets it up.";
   }
-  if (source.kind !== "perplexity_search" && source.broaderModelSetup === "setup_required") {
-    return "Only this provider's own chat models can use it now. Choose a working Search model in Configure to open it to every chat model.";
+  if (!searchEngineEligible(source)) {
+    return source.configurable
+      ? "Only GPT answers on this connection can search with it now. Choose a working Search model in Configure so it can be the engine."
+      : "Only GPT answers on this connection can search with it now.";
   }
   return null;
 }
@@ -110,54 +107,62 @@ export function durationLabel(milliseconds: number): string {
   return seconds >= 60 && seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} sec`;
 }
 
-/* Recommended Search plan */
+/* The installation's engine */
 
-export type SearchPlanOption = Readonly<{
-  executionModes: SearchPlanMode[];
-  kind: "gemini_google_search" | "perplexity_tool_search" | "web_search";
-  strategyId: string;
-}>;
-
-export function planKind(source: AdminSearchIntegration): SearchPlanOption["kind"] {
-  if (source.kind === "deepseek_search_api") return "web_search";
-  return source.kind === "perplexity_search" ? "perplexity_tool_search" : source.kind;
+/** Sources the engine or the backup may be (the server's rule): live, turned on, and able to search for every
+ * model, which a source can only through its own Search model. */
+export function searchEngineEligible(source: AdminSearchIntegration): boolean {
+  return source.enabled && !source.archivedAt && source.executionModes.includes("all_selected");
 }
 
-/** Sources a plan may name: enabled, working, not archived. */
-export function selectablePlanSources(catalog: AdminSearchCatalog): AdminSearchIntegration[] {
-  return catalog.integrations.filter((source) =>
-    source.enabled && source.ready && !source.archivedAt);
+export function searchEngineCandidates(catalog: AdminSearchCatalog): AdminSearchIntegration[] {
+  return catalog.integrations.filter(searchEngineEligible);
 }
 
-function sourceProtocol(source: AdminSearchIntegration): string {
-  if (source.kind === "deepseek_search_api") return "deepseek_search_api";
-  if (source.kind === "perplexity_search") return "openrouter_perplexity_chat";
-  if (source.kind === "gemini_google_search") return "gemini_google_search";
-  // A web source ready without a configured client route is OpenAI's hosted one.
-  return source.configuration?.protocol ?? "openai_responses_web_search";
+export type SearchEngineRole = "backup" | "engine" | null;
+
+/** The source's part in the installation's Search: the engine (chosen, or picked by the default order) or the
+ * backup the administrator chose. */
+export function searchEngineRole(source: AdminSearchIntegration, policy: AdminSearchPolicy): SearchEngineRole {
+  if (source.strategyId === (policy.engineOptionId ?? policy.resolved?.engineOptionId ?? null)) return "engine";
+  if (policy.backupOptionId && source.strategyId === policy.backupOptionId) return "backup";
+  return null;
 }
 
-/** The source users search with while the recommendation names none: Search
- * is on for everyone (operator decision 2026-10-24), the server resolves the
- * same priority per user. */
-export function automaticPlanSource(catalog: AdminSearchCatalog): AdminSearchIntegration | null {
-  const selectable = selectablePlanSources(catalog);
-  const optionId = automaticSearchOptionId(selectable.map((source) => ({
-    protocols: [sourceProtocol(source)],
-    strategyId: source.strategyId
-  })));
-  return selectable.find((source) => source.strategyId === optionId) ?? null;
+/** The role in words; null for a source that is neither, which GPT answers may still use inside their own answer. */
+export function searchEngineRoleLabel(role: SearchEngineRole, policy: AdminSearchPolicy): string | null {
+  if (role === "engine") return policy.engineOptionId ? "Engine" : "Engine (automatic)";
+  return role === "backup" ? "Backup" : null;
 }
 
-export function planCompatible(
-  optionIds: readonly string[],
-  options: readonly SearchPlanOption[],
-  mode: SearchPlanMode
-): boolean {
-  return (mode !== "all_selected" || optionIds.every((optionId) =>
-    options.find((option) => option.strategyId === optionId)
-      ?.executionModes.includes("all_selected"))) &&
-    isSearchCombinationCompatible(optionIds, options, mode);
+const DEFAULT_ORDER_LABELS: Readonly<Record<string, string>> = {
+  anthropic_web_search: "Anthropic web search",
+  deepseek_search_api: "DeepSeek Search API",
+  gemini_google_search: "Gemini Google Search",
+  openai_responses_web_search: "OpenAI web search",
+  openrouter_web_search: "OpenRouter"
+};
+
+/** `SEARCH_ENGINE_DEFAULT_ORDER` in words, for the Automatic choice. */
+export function searchDefaultOrderText(): string {
+  return SEARCH_ENGINE_DEFAULT_ORDER.map((entry) => {
+    const label = DEFAULT_ORDER_LABELS[entry.protocol] ?? entry.protocol;
+    return entry.openRouterEngine ? `${label} with ${openRouterEngineLabel(entry.openRouterEngine)}` : label;
+  }).join(", ");
+}
+
+const OPENROUTER_ENGINE_LABELS: Readonly<Record<string, string>> = {
+  exa: "Exa",
+  parallel: "Parallel",
+  perplexity: "Perplexity"
+};
+
+export function openRouterEngineLabel(engine: string): string {
+  return OPENROUTER_ENGINE_LABELS[engine] ?? engine;
+}
+
+export function openRouterModeLabel(mode: string): string {
+  return mode.charAt(0).toLocaleUpperCase() + mode.slice(1);
 }
 
 /* Source form */
@@ -199,8 +204,8 @@ export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
   if (form.draft.adapterKind !== "provider_model_client") {
     return { maxOutputTokens: null, valid: true };
   }
-  // The raw results API has no model reply to limit, so the field is hidden.
-  const maxOutputTokens = form.draft.protocol === "deepseek_search_api" ? undefined : boundedInputInteger(
+  // Results-only engines have no model reply to limit, so the field is hidden.
+  const maxOutputTokens = searchProtocolResultsOnly(form.draft.protocol) ? undefined : boundedInputInteger(
     form.executionInputs.maxOutputTokens,
     adminSearchExecutionLimits.maxOutputTokens
   );
@@ -208,6 +213,12 @@ export function searchExecutionValidation(form: SearchSourceForm): Readonly<{
     maxOutputTokens: form.executionInputs.maxOutputTokens.trim() && maxOutputTokens === null ? "Enter a whole number of at least 16, or leave blank for Auto." : null,
     valid: !form.executionInputs.maxOutputTokens.trim() || maxOutputTokens !== null
   };
+}
+
+/** Engines that return results rather than a model's reply: the DeepSeek Search API and OpenRouter's web search,
+ * whose Search model only runs the search. The reply limit does not apply to them. */
+export function searchProtocolResultsOnly(protocol: AdminSearchDraft["protocol"]): boolean {
+  return protocol === "deepseek_search_api" || protocol === "openrouter_web_search";
 }
 
 export function searchFormsEqual(left: SearchSourceForm, right: SearchSourceForm): boolean {
@@ -231,8 +242,8 @@ export function draftForModel(
   return {
     adapterKind: "provider_model_client",
     credentialMode: "provider_model",
-    // The raw results API generates no reply; its hidden limit stays Auto.
-    maxOutputTokens: searchApi
+    // A results-only engine generates no reply; its hidden limit stays Auto.
+    maxOutputTokens: searchApi || webSearch
       ? adminSearchExecutionDefaults.maxOutputTokens
       : current?.maxOutputTokens ?? adminSearchExecutionDefaults.maxOutputTokens,
     // OpenRouter's web search keeps its engine when its technical model changes.
@@ -286,24 +297,51 @@ export function searchFormFrom(source: AdminSearchIntegration): SearchSourceForm
   };
 }
 
-/** Models a manual source can be built on: enabled Perplexity models, and
- * DeepSeek models carrying their connection's key for the DeepSeek Search
- * API, whose connection has no live, configured source of that kind yet. A
- * built-in source that provider setup skipped, such as one switched off
- * before its key was added, is completed here and keeps its identity. */
+/** The stored kind of a source built on a model of this Search kind: OpenRouter's web search is a `web_search`
+ * source of its OpenRouter connection. */
+function sourceKindFor(searchKind: AdminSearchProviderModelOption["searchKind"]): AdminSearchIntegration["kind"] {
+  if (searchKind === "deepseek_search_api" || searchKind === "perplexity_search") return searchKind;
+  return searchKind === "gemini_google_search" ? "gemini_google_search" : "web_search";
+}
+
+/** Models a manual source can be built on: enabled Perplexity models,
+ * OpenRouter models for OpenRouter's web search, and DeepSeek models carrying
+ * their connection's key for the DeepSeek Search API, whose connection has no
+ * live, configured source of that kind yet. A built-in source that provider
+ * setup skipped, such as one switched off before its key was added, is
+ * completed here and keeps its identity. */
 export function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
   return catalog.providerModels.filter((model) =>
     model.enabled &&
-    (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api") &&
+    (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api" ||
+      model.searchKind === "openrouter_web_search") &&
     !catalog.integrations.some((source) =>
-      source.archivedAt === null && source.configurable && source.kind === model.searchKind &&
+      source.archivedAt === null && source.configurable && source.kind === sourceKindFor(model.searchKind) &&
       source.sourceConnectionId === model.connectionId));
+}
+
+/** A model can be listed once per Search kind (its own Search, the DeepSeek Search API, OpenRouter's web search), so
+ * a choice is keyed by both. */
+export function searchModelOptionKey(model: Pick<AdminSearchProviderModelOption, "id" | "searchKind">): string {
+  return `${model.searchKind}:${model.id}`;
+}
+
+/** The choice a configuration names among `options`: its model under the configuration's own protocol. */
+export function selectedSearchModel(
+  draft: Pick<AdminSearchDraft, "protocol" | "providerModelId">,
+  options: readonly AdminSearchProviderModelOption[]
+): AdminSearchProviderModelOption | undefined {
+  const candidates = options.filter((model) => model.id === draft.providerModelId);
+  return candidates.find((model) => draftForModel(model).protocol === draft.protocol) ?? candidates[0];
 }
 
 /** The model choice as the Search model field lists it. */
 export function searchModelOptionLabel(model: AdminSearchProviderModelOption): string {
-  return model.searchKind === "deepseek_search_api"
-    ? `${model.connectionDisplayName} Search API · key via ${model.displayName}`
+  if (model.searchKind === "deepseek_search_api") {
+    return `${model.connectionDisplayName} Search API · key via ${model.displayName}`;
+  }
+  return model.searchKind === "openrouter_web_search"
+    ? `${model.connectionDisplayName} web search · ${model.displayName}`
     : `${model.connectionDisplayName} · ${model.displayName}`;
 }
 
@@ -330,6 +368,15 @@ export function sourceIdentityFor(model: AdminSearchProviderModelOption): Readon
         ? `Web results with source links from the ${sourceName} Search API.`
         : DEFAULT_SEARCH_DESCRIPTION,
       displayName: sourceName ? `${sourceName} Search API` : ""
+    };
+  }
+  if (model.searchKind === "openrouter_web_search") {
+    // As provider setup names it (`bootstrapService.ts`).
+    return {
+      description: sourceName
+        ? `Web results with source links through ${sourceName} web search.`
+        : DEFAULT_SEARCH_DESCRIPTION,
+      displayName: sourceName ? `${sourceName} Web Search` : ""
     };
   }
   return {

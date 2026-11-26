@@ -68,9 +68,12 @@ export function createAdminSearchIntegration(input: Readonly<{
   return request("/api/admin/search", json({ ...input, check: true }, "POST"), fetcher);
 }
 
+/** Sets the installation's engine (null: the default order picks it), its backup and the in-answer switch. */
 export function updateAdminSearchPolicy(input: Readonly<{
-  defaultPlan: AdminSearchCatalog["policy"]["defaultPlan"];
+  backupOptionId: string | null;
+  engineOptionId: string | null;
   expectedVersion: number;
+  inAnswerSearch: boolean;
 }>, fetcher?: Fetcher): Promise<AdminSearchApiResult> {
   return request("/api/admin/search", json(input, "PATCH"), fetcher);
 }
@@ -112,12 +115,12 @@ export function adminSearchErrorMessage(code: string): string {
     search_catalog_malformed: "The Search catalog response was invalid.",
     search_configuration_invalid: "Review the Search configuration and its limits.",
     search_configuration_unavailable: "This Search source has no editable configuration.",
-    search_default_unavailable: "Choose only enabled, working Search sources that can work together.",
+    search_default_unavailable: "Choose an engine and a backup among sources that are turned on and working.",
     search_draft_stale: "This source changed elsewhere. Reload and apply your edit again.",
     search_integration_material_identity_changed: "The Search connection cannot change after this source is in use. Add a new source instead.",
     search_provider_model_not_available: "Choose an enabled provider model that supports Search for this source.",
     search_source_not_ready: "This Search source cannot be enabled until its provider connection, Search-capable model, and saved configuration are ready.",
-    search_policy_stale: "The organization Search default changed elsewhere. Reload and apply your edit again.",
+    search_policy_stale: "The Search engine settings changed elsewhere. Reload and apply your edit again.",
     search_system_integration_forbidden: "This built-in Search source cannot be archived.",
     search_test_auth_rejected: "The provider rejected this connection's key, so nothing was changed. Replace the key on the provider's page, then try again.",
     search_test_failed: "The check found no working source, so nothing was changed. Check the model and its key, then try again.",

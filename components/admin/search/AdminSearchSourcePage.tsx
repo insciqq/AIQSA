@@ -4,15 +4,18 @@ import { cardClass, sectionHeadingClass } from "@/components/admin/roles/rolesCo
 import { SearchSourceTile } from "@/components/admin/search/searchPrimitives";
 import {
   durationLabel,
+  openRouterEngineLabel,
+  openRouterModeLabel,
   searchCheckSummary,
+  searchEngineRole,
+  searchEngineRoleLabel,
+  searchEngineSetupDetail,
   searchHeaderStatus,
-  searchModelLabel,
-  searchModelsReach,
-  searchModelsReachDetail
+  searchModelLabel
 } from "@/components/admin/search/searchSourceView";
 import type { AdminSearchController } from "@/components/admin/search/useAdminSearchController";
 import { UiV2Button } from "@/components/ui-v2";
-import type { AdminSearchIntegration } from "@/lib/contracts/adminSearch";
+import type { AdminSearchIntegration, AdminSearchPolicy } from "@/lib/contracts/adminSearch";
 
 const termClass = "text-xs font-medium text-ink-muted sm:pt-0.5";
 const detailClass = "min-w-0 break-words text-sm text-ink [overflow-wrap:anywhere]";
@@ -25,16 +28,20 @@ const detailClass = "min-w-0 break-words text-sm text-ink [overflow-wrap:anywher
 export function AdminSearchSourcePage({
   controller,
   onOpenConfigure,
+  policy,
   source
 }: Readonly<{
   controller: AdminSearchController;
   onOpenConfigure(): void;
+  policy: AdminSearchPolicy | null;
   source: AdminSearchIntegration;
 }>) {
   const busy = controller.state.busy;
   const check = searchCheckSummary(source);
-  const reachDetail = searchModelsReachDetail(source);
+  const setupDetail = searchEngineSetupDetail(source);
+  const role = policy ? searchEngineRoleLabel(searchEngineRole(source, policy), policy) : null;
   const archived = source.archivedAt !== null;
+  const webSearch = source.configuration?.openRouterWebSearch ?? null;
 
   return (
     <div className="flex max-w-[1120px] flex-col gap-7 px-4 py-6 sm:px-6 lg:px-8" data-testid="search-source-page">
@@ -91,13 +98,22 @@ export function AdminSearchSourcePage({
       <section aria-labelledby="search-source-details-heading" className="grid gap-2.5">
         <h3 className={sectionHeadingClass} id="search-source-details-heading">Details</h3>
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-[10rem_minmax(0,1fr)]">
-          <dt className={termClass}>Chat models</dt>
-          <dd className={detailClass}>
-            {searchModelsReach(source)}
-            {reachDetail ? <span className="mt-0.5 block text-xs leading-5 text-ink-muted">{reachDetail}</span> : null}
+          <dt className={termClass}>Use</dt>
+          <dd className={detailClass} data-testid="search-source-page-role">
+            {role ?? "Neither the engine nor the backup"}
+            {setupDetail ? <span className="mt-0.5 block text-xs leading-5 text-ink-muted">{setupDetail}</span> : null}
           </dd>
           <dt className={termClass}>Search model</dt>
           <dd className={detailClass}>{searchModelLabel(source)}</dd>
+          {webSearch ? (
+            <>
+              <dt className={termClass}>OpenRouter engine</dt>
+              <dd className={detailClass}>
+                {openRouterEngineLabel(webSearch.engine)}
+                {webSearch.mode ? `, ${openRouterModeLabel(webSearch.mode)}` : ""}
+              </dd>
+            </>
+          ) : null}
           <dt className={termClass}>Time limit</dt>
           <dd className={detailClass}>
             {source.configuration ? durationLabel(source.configuration.timeoutMs) : "Set by the provider"}
