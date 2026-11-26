@@ -2,7 +2,7 @@ import { capabilityFailureAttempt, retryCapabilityAttempt } from "./capabilityPr
 import { isRetryableProviderNetworkError } from "../../providers/providerRetry";
 import { testImageCapabilities } from "./imageCapabilityProbe";
 import { normalizeAnthropicMessagesParams } from "../../../domain/providerParams";
-import { shouldProbeHostedSearch } from "./hostedSearchCapability";
+import { HOSTED_SEARCH_PROOF_MAX_SOURCES, shouldProbeHostedSearch } from "./hostedSearchCapability";
 import { validateSearchToolArguments } from "../../search/query";
 import type { SystemModelVerificationRole } from "../../../contracts/adminSystemModelPolicy";
 import type {
@@ -923,8 +923,10 @@ async function testHostedSearch(input: AdminProviderDraftTesterInput, options: T
       strategyId: "openai-responses-web-search"
     }, { signal: input.signal });
     recordProviderUsage(input, result.usage);
+    // A search may list any number of sources (no application limit); the proof only records that it found some, in
+    // the bound its decoder and the previous release read (`decodeHostedSearchVerificationEvidence`).
     return { verified: result.sources.length > 0, proof: {
-      adapterKind: "openai_responses_compatible", normalizedSourceCount: result.sources.length,
+      adapterKind: "openai_responses_compatible", normalizedSourceCount: Math.min(result.sources.length, HOSTED_SEARCH_PROOF_MAX_SOURCES),
       probeVersion: 1, upstreamModelId: model.upstreamModelId, verified: true
     } };
   } catch (error) {

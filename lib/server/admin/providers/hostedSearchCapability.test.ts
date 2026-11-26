@@ -26,11 +26,14 @@ function input(): { -readonly [Key in keyof AdminProviderDraftTesterInput]: Admi
   };
 }
 
-function searchResponse(options: { operation?: boolean; sources?: boolean; status?: string } = {}) {
+function searchResponse(options: { operation?: boolean; sourceCount?: number; sources?: boolean; status?: string } = {}) {
+  const listed = options.sourceCount === undefined
+    ? [{ url: "https://openai.com", title: "OpenAI" }]
+    : Array.from({ length: options.sourceCount }, (_, index) => ({ url: `https://example.com/page-${index + 1}`, title: `Page ${index + 1}` }));
   return Response.json({ id: "synthetic-response", status: options.status ?? "completed",
     output: [
       ...(options.operation === false ? [] : [{ type: "web_search_call", id: "search", status: "completed", action: {
-        type: "search", sources: options.sources === false ? [] : [{ url: "https://openai.com", title: "OpenAI" }]
+        type: "search", sources: options.sources === false ? [] : listed
       } }]),
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "The official OpenAI home page." }] }
     ], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } });
@@ -60,6 +63,16 @@ describe("detected codex-lb Hosted Search capability", () => {
     expect(result.evidence.capabilitySetup?.checks.hostedSearch).toBe("verified");
     expect(initiallyVerifiedModelConfiguration(value.model, result.evidence).capabilities.nativeSearch).toBe(true);
     expect(capabilitySetupIncomplete(result.evidence)).toBe(false);
+  });
+
+  it("verifies a search that lists more sources than its proof records", async () => {
+    // A live codex-lb probe browsed more than twenty pages, and the whole model check failed as invalid evidence.
+    const fetchFn = vi.fn<typeof fetch>(async () => searchResponse({ sourceCount: 27 }));
+    const result = await createAdminProviderDraftTester({ createFetch: () => fetchFn, retrySleep: async () => {} }).test(input());
+    expect(result.evidence.hostedSearch).toEqual({ adapterKind: "openai_responses_compatible", normalizedSourceCount: 20,
+      probeVersion: 1, upstreamModelId: "synthetic-model", verified: true });
+    expect(decodeHostedSearchVerificationEvidence(result.evidence.hostedSearch)).not.toBeNull();
+    expect(result.evidence.capabilitySetup?.checks.hostedSearch).toBe("verified");
   });
 
   it.each([undefined, false])("does not infer Search from an isolation override or gateway-like name (detected=%s)", async (detected) => {
