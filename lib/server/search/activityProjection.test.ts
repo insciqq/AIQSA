@@ -11,6 +11,25 @@ const plan = {
 };
 
 describe("projectSearchEngineActivity", () => {
+  it("counts a web_search call against the engine, and the backup only by what it settled", () => {
+    const engine = { mode: "engine", options: [
+      { adapterKind: "answer_provider_hosted", displayName: "OpenAI", optionId: "openai", use: "in_answer" },
+      { adapterKind: "provider_model_client", displayName: "DeepSeek", optionId: "deepseek", use: "engine" },
+      { adapterKind: "provider_model_client", displayName: "Perplexity", optionId: "perplexity", use: "backup" }
+    ] };
+    const activity = projectSearchEngineActivity({ normalizedRequest: { searchPlan: engine },
+      toolCalls: [{ state: "complete", toolName: "web_search" }, { state: "complete", toolName: "web_search" }],
+      searchRuns: [
+        { invocationId: "call-1:deepseek", status: "complete", strategyId: "deepseek" },
+        { invocationId: "call-2:deepseek", status: "error", strategyId: "deepseek" },
+        { invocationId: "call-2:perplexity", status: "complete", strategyId: "perplexity" }
+      ] });
+    expect(activity).toEqual([
+      { engine: 1, name: "DeepSeek", requested: 2, settled: 2, complete: 1, error: 1, skipped: 0 },
+      { engine: 2, name: "Perplexity", requested: 1, settled: 1, complete: 1, error: 0, skipped: 0 }
+    ]);
+  });
+
   it("counts each engine in one all-selected call, then independent repeated outcomes", () => {
     const activity = projectSearchEngineActivity({ normalizedRequest: { searchPlan: plan },
       toolCalls: [

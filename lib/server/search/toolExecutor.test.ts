@@ -212,13 +212,13 @@ function captureToolEvents() {
 describe("Search execution diagnostics", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-  it("keeps each fan-out abort under its call context and records only the first accepted source", async () => {
+  it("keeps each abort under its call context, a Stop never reaches the backup and a timed-out engine's backup is asked", async () => {
     vi.useFakeTimers();
     const records = captureToolEvents();
-    const selected = [option("PRIVATE_ENGINE_ONE", { config: { timeoutMs: 5 } }),
-      option("PRIVATE_ENGINE_TWO", { config: { timeoutMs: 10 } })];
+    const selected = [option("PRIVATE_ENGINE_ONE", { config: { timeoutMs: 5 }, use: "engine" }),
+      option("PRIVATE_ENGINE_TWO", { config: { timeoutMs: 10 }, use: "backup" })];
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: selected },
+      plan: { mode: "engine", options: selected },
       runtimes: { PRIVATE_ENGINE_ONE: hangingRuntime(), PRIVATE_ENGINE_TWO: hangingRuntime() }
     })!;
     const first = new AbortController();
@@ -231,16 +231,16 @@ describe("Search execution diagnostics", () => {
     const secondCall = runWithContext({ trace_id: "2".repeat(32), run_id: "run-two",
       tool_call_id: "stored-call-two", execution_index: 2 }, () => execute(second.signal));
     runWithContext({ trace_id: "3".repeat(32) }, () => first.abort(new Error("PRIVATE_STOP_REASON")));
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(20);
     await Promise.all([firstCall, secondCall]);
     second.abort();
     const aborts = records().filter(record => record.event === "nested_abort");
-    expect(aborts).toHaveLength(4);
+    expect(aborts).toHaveLength(3);
+    expect(aborts).toContainEqual(expect.objectContaining({
+      abort_source: "parent_signal", engine_index: 1, run_id: "run-one",
+      trace_id: "1".repeat(32), tool_call_id: "stored-call-one", execution_index: 1
+    }));
     for (const engine_index of [1, 2]) {
-      expect(aborts).toContainEqual(expect.objectContaining({
-        abort_source: "parent_signal", engine_index, run_id: "run-one",
-        trace_id: "1".repeat(32), tool_call_id: "stored-call-one", execution_index: 1
-      }));
       expect(aborts).toContainEqual(expect.objectContaining({
         abort_source: "search_deadline", engine_index, run_id: "run-two", timeout_ms: engine_index * 5,
         trace_id: "2".repeat(32), tool_call_id: "stored-call-two", execution_index: 2
@@ -288,27 +288,33 @@ describe("Search execution diagnostics", () => {
       reason: "max_output_tokens", usage: { inputTokens: 2 }
     }), { statusCode: 503 });
     const retiredRequest = vi.fn();
+    // A plan frozen before the single engine: its first client source is the engine, its second the backup.
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [option("failed"), option("deepseek", {
-        // DeepSeek's hosted Search, retired 2026-10-24, in a plan frozen before then.
-        protocol: "deepseek_responses_web_search" as NormalizedSearchPlanOption["protocol"], provider: "deepseek"
-      }), option("working")] },
-      runtimes: { failed: runtime({ fail: failure }), deepseek: runtime({ onRequest: retiredRequest }),
-        working: runtime({ findings: "PRIVATE_FINDINGS_CANARY" }) }
+      plan: { mode: "all_selected", options: [option("failed"), option("working")] },
+      runtimes: { failed: runtime({ fail: failure }), working: runtime({ findings: "PRIVATE_FINDINGS_CANARY" }) }
     })!;
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
     expect(result.status).toBe("complete");
-    expect(retiredRequest).not.toHaveBeenCalled();
     expect(searchExecutionsFromToolResult(result).map(({ failure: failed, optionId, status }) =>
       ({ code: failed?.code, optionId, status }))).toEqual([
       { code: "openai_response_incomplete", optionId: "failed", status: "error" },
-      { code: "search_protocol_not_supported", optionId: "deepseek", status: "error" },
       { code: undefined, optionId: "working", status: "complete" }
     ]);
+    // DeepSeek's hosted Search, retired 2026-10-24, in a plan frozen before then, sends nothing.
+    const retired = createSearchPlanToolRouter({
+      plan: { mode: "all_selected", options: [option("deepseek", {
+        protocol: "deepseek_responses_web_search" as NormalizedSearchPlanOption["protocol"], provider: "deepseek"
+      })] },
+      runtimes: { deepseek: runtime({ onRequest: retiredRequest }) }
+    })!;
+    const refused = await retired.execute(call(retired.tools[0]!.name), answerRequest());
+    expect(refused.status).toBe("error");
+    expect(retiredRequest).not.toHaveBeenCalled();
+    expect(searchExecutionsFromToolResult(refused)[0]?.failure?.code).toBe("search_protocol_not_supported");
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
       stage: "execution", engine_index: 1, outcome: "failed", code: "openai_response_incomplete", httpStatus: 503 }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
-      stage: "execution", engine_index: 2, outcome: "failed", code: "search_protocol_not_supported" }));
+      stage: "execution", engine_index: 1, outcome: "failed", code: "search_protocol_not_supported" }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution", stage: "result", outcome: "degraded" }));
     expect(JSON.stringify(records())).not.toContain("PRIVATE_FINDINGS_CANARY");
     expect(records().some(record => record.event === "run_execution")).toBe(false);
@@ -325,36 +331,52 @@ describe("Search plan tool router", () => {
     expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toMatchObject(result);
   });
 
-  it("uses a stable tool name and friendly source label without exposing its connection id", () => {
+  it("offers one web_search tool whose words name no engine, source or connection", () => {
     const connectionId = "3ebc98b4-a35d-4c4a-a819-3471f6dcd2ca";
     const selected = option(`custom-web-search:${connectionId}`, {
-      displayName: "Company Gateway Search"
+      displayName: "Company Gateway Search", use: "engine"
     });
     const router = createSearchPlanToolRouter({
-      plan: { mode: "model_choice", options: [selected] },
+      plan: { mode: "engine", options: [selected] },
       runtimes: {}
     })!;
 
     expect(router.tools).toEqual([
       expect.objectContaining({
-        description: "Search the web through the user-selected source \"Company Gateway Search\". " + SEARCH_GUIDANCE_TEXT +
-          " Each query is at most 100 characters.",
-        name: "search_engine_1"
+        capability: "web_search",
+        description: "Search the web. " + SEARCH_GUIDANCE_TEXT + " Each query is at most 100 characters.",
+        name: "web_search"
       })
     ]);
     expect(JSON.stringify(router.tools)).not.toContain(connectionId);
+    expect(JSON.stringify(router.tools)).not.toContain("Company Gateway Search");
   });
 
-  it("tells the model when and how to search through every selected source", () => {
+  it("states the engine's query limit, whatever its backup's", () => {
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [option("one"), option("two")] },
+      plan: { mode: "engine", options: [
+        option("one", { use: "engine" }),
+        option("two", { config: { ...option("two").config, queryMaxCharacters: 50 }, use: "backup" })
+      ] },
       runtimes: {}
     })!;
     expect(router.tools).toEqual([expect.objectContaining({
-      description: "Search the web through the user's selected search sources. " + SEARCH_GUIDANCE_TEXT +
-        " Each query is at most 100 characters.",
-      name: "search_selected_engines"
+      description: "Search the web. " + SEARCH_GUIDANCE_TEXT + " Each query is at most 100 characters.",
+      inputSchema: expect.objectContaining({ properties: { query: expect.objectContaining({ maxLength: 100 }) } }),
+      name: "web_search"
     })]);
+    expect(router.optionIdsForTool("web_search")).toEqual(["one", "two"]);
+  });
+
+  it("offers no tool while the answer model searches inside its own answer, and none for a plan without an engine", () => {
+    const hosted = option("hosted", { adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", use: "in_answer" });
+    expect(createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [hosted, option("client", { use: "engine" })] }, runtimes: {}
+    })).toBeNull();
+    expect(createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [option("backup-only", { use: "backup" })], unavailable: "search_engine_unavailable" },
+      runtimes: {}
+    })).toBeNull();
   });
 
   it("rejects undeclared noncanonical tool names", async () => {
@@ -371,58 +393,57 @@ describe("Search plan tool router", () => {
     )).rejects.toThrow("search_tool_not_selected");
   });
 
-  it("fans one query out concurrently, shares query-only context, and lists each engine's sources beside its findings", async () => {
+  it("asks only the engine while it answers, with query-only context, and never its backup on an empty result", async () => {
     const requests: ProviderSearchRequest[] = [];
     const runOptions: Array<ProviderSearchOptions | undefined> = [];
-    const first = option("first");
-    const second = option("second");
+    const backupRequest = vi.fn();
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [first, second] },
+      plan: { mode: "engine", options: [option("first", { use: "engine" }), option("second", { use: "backup" })] },
       runtimes: {
         first: runtime({
           onOptions: (options) => runOptions.push(options),
           onRequest: (request) => requests.push(request),
           sourceUrl: "https://example.com/shared#one"
         }),
-        second: runtime({ onRequest: (request) => requests.push(request), sourceUrl: "https://example.com/shared#two" })
+        second: runtime({ onRequest: backupRequest })
       }
     })!;
 
     const result = await router.execute(call(router.tools[0]!.name), answerRequest());
 
     expect(result.status).toBe("complete");
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(1);
+    expect(backupRequest).not.toHaveBeenCalled();
     expect(runOptions[0]).toMatchObject({ timeoutMs: 5_000 });
-    for (const request of requests) {
-      expect(request.query).toBe("bounded query");
-      expect(request.searchPolicy).toMatchObject({
-        maxOutputTokens: 4_096,
-        reasoningPolicy: "lowest_supported"
-      });
-      expect(JSON.stringify(request)).toContain("bounded query");
-      expect(JSON.stringify(request)).not.toContain("private transcript");
-      expect(JSON.stringify(request)).not.toContain("private attachment text");
-      expect(JSON.stringify(request)).not.toContain("private system prompt");
-    }
-    const executions = searchExecutionsFromToolResult(result);
-    // Each engine's findings are followed by that engine's own sources.
-    expect((result.content[0] as { text: string }).text).toBe([
-      'Search source "first":\nFinding from model-first',
-      'Sources for "first":\n[1] Source model-first — example.com\nhttps://example.com/shared#one',
-      'Search source "second":\nFinding from model-second',
-      'Sources for "second":\n[1] Source model-second — example.com\nhttps://example.com/shared#two'
-    ].join("\n\n"));
-    expect(executions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ findings: "Finding from model-first" }),
-      expect.objectContaining({ findings: "Finding from model-second" })
-    ]));
-    expect(executions.map((execution) => execution.optionId)).toEqual([
-      "first",
-      "second"
-    ]);
+    expect(requests[0]!.query).toBe("bounded query");
+    expect(requests[0]!.searchPolicy).toMatchObject({ maxOutputTokens: 4_096, reasoningPolicy: "lowest_supported" });
+    const serialized = JSON.stringify(requests[0]);
+    expect(serialized).not.toContain("private transcript");
+    expect(serialized).not.toContain("private attachment text");
+    expect(serialized).not.toContain("private system prompt");
+    expect((result.content[0] as { text: string }).text).toContain("Finding from model-first");
+    expect((result.content[0] as { text: string }).text).not.toContain("model-second");
+    expect(searchExecutionsFromToolResult(result).map((execution) => execution.optionId)).toEqual(["first"]);
+
+    // A results engine that found nothing answered: its backup is not asked.
+    const noResults = createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [
+        option("api", { modelId: "deepseek-search-api", protocol: "deepseek_search_api", provider: "deepseek", use: "engine" }),
+        option("second", { use: "backup" })
+      ] },
+      runtimes: {
+        api: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search: async () => ({
+          artifacts: [], findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, requestPreview: {}, sources: [],
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+        }) } },
+        second: runtime({ onRequest: backupRequest })
+      }
+    })!;
+    expect((await noResults.execute(call("web_search"), answerRequest())).status).toBe("complete");
+    expect(backupRequest).not.toHaveBeenCalled();
   });
 
-  it("fans the same query through Gemini and OpenAI with protocol-specific policies", async () => {
+  it("sends the backup the same query under its own protocol's policy after the engine's call failed", async () => {
     const requests: ProviderSearchRequest[] = [];
     const gemini = option("google", {
       modelId: "gemini-3.6-flash",
@@ -435,9 +456,9 @@ describe("Search plan tool router", () => {
       providerModelId: "openai-technical-deployment"
     });
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [gemini, openai] },
+      plan: { mode: "engine", options: [{ ...gemini, use: "engine" }, { ...openai, use: "backup" }] },
       runtimes: {
-        google: runtime({ onRequest: (request) => requests.push(request) }),
+        google: runtime({ fail: "gemini_upstream_failed", onRequest: (request) => requests.push(request) }),
         openai: runtime({ onRequest: (request) => requests.push(request) })
       }
     })!;
@@ -448,6 +469,10 @@ describe("Search plan tool router", () => {
     );
 
     expect(result.status).toBe("complete");
+    // The engine's failure stays in the result beside the backup's results.
+    expect(searchExecutionsFromToolResult(result).map(({ optionId, status }) => [optionId, status])).toEqual([
+      ["google", "error"], ["openai", "complete"]
+    ]);
     expect(requests).toHaveLength(2);
     expect(requests.map((request) => request.query)).toEqual([
       "weather in Valencia",
@@ -473,7 +498,7 @@ describe("Search plan tool router", () => {
     expect(serialized).not.toContain("private system prompt");
   });
 
-  it("keeps all cited and browsed sources past the former limits and numbers each engine's sources as its findings do", async () => {
+  it("keeps all cited and browsed sources past the former limits and numbers an engine's sources as its findings do", async () => {
     const answerAdapter = runtime().adapter;
     const openai = option("openai");
     const perplexity = option("perplexity", {
@@ -488,8 +513,8 @@ describe("Search plan tool router", () => {
     const cited = Array.from({ length: 3 }, (_, index) => ({
       title: `Cited ${index}`, type: "url_citation", url: `https://example.com/cited/${index}`
     }));
-    const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [openai, perplexity] },
+    const engineRouter = (engine: NormalizedSearchPlanOption) => createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [{ ...engine, use: "engine" }] },
       runtimes: {
         openai: { adapter: answerAdapter, responseTimeoutMs: 300_000, searchAdapter: createOpenAIResponsesSearchAdapter({
           client: {
@@ -523,8 +548,10 @@ describe("Search plan tool router", () => {
       }
     })!;
 
-    const result = await router.execute(call(router.tools[0]!.name), answerRequest());
-    const [openaiExecution, perplexityExecution] = searchExecutionsFromToolResult(result);
+    const result = await engineRouter(openai).execute(call("web_search"), answerRequest());
+    const perplexityResult = await engineRouter(perplexity).execute(call("web_search"), answerRequest());
+    const [openaiExecution] = searchExecutionsFromToolResult(result);
+    const [perplexityExecution] = searchExecutionsFromToolResult(perplexityResult);
 
     expect(result.rawPreview?.searchResultVersion).toBe(SEARCH_TOOL_RESULT_VERSION);
     // OpenAI keeps every cited page first, then every distinct browsed page.
@@ -536,21 +563,23 @@ describe("Search plan tool router", () => {
     // Perplexity keeps all fifty sources with the provider's numbers.
     expect(perplexityExecution?.sources).toHaveLength(50);
     expect(perplexityExecution?.sources.at(-1)).toMatchObject({ citation: 50, url: "https://example.com/perplexity/50" });
-    // The model reads each engine's sources beside its findings, numbered as its findings number them.
+    // The model reads the engine's sources beside its findings, numbered as its findings number them.
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain([
       'Search source "openai":\nOpenAI findings.',
       `Sources for "openai":\n${[...cited, ...browsed].map((source, index) =>
         `[${index + 1}] ${source.title} — example.com\n${source.url}`).join("\n\n")}`
     ].join("\n\n"));
-    expect(text.endsWith([
+    expect((perplexityResult.content[0] as { text: string }).text.endsWith([
       'Search source "perplexity":\nFact [1]; later fact [50].',
       `Sources for "perplexity":\n${Array.from({ length: 50 }, (_, index) =>
         `[${index + 1}] Source ${index + 1} — example.com\nhttps://example.com/perplexity/${index + 1}`).join("\n\n")}`
     ].join("\n\n"))).toBe(true);
-    // The durable result still fits and replays the same text.
-    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
-    expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
+    // The durable results still fit and replay the same text.
+    for (const durable of [result, perplexityResult]) {
+      const snapshot = snapshotToolExecutionResult(durable, toolLoopPersistenceLimits.resultBytes);
+      expect(snapshot && parsePersistedToolExecutionResult({ id: durable.callId, name: durable.name }, snapshot)).toEqual(durable);
+    }
   });
 
   it("deduplicates browsed pages OpenAI cites with its attribution parameter", async () => {
@@ -726,20 +755,22 @@ describe("Search plan tool router", () => {
     expect(searchExecutionsFromToolResult(result)).toEqual([]);
   });
 
-  it("returns successful evidence with a per-engine warning on partial failure", async () => {
+  it("shows the engine's failure as a warning beside its backup's results", async () => {
     const first = option("private-source-id-1", {
       displayName: "First Search",
-      modelId: "search-model-a"
+      modelId: "search-model-a",
+      use: "engine"
     });
     const second = option("private-source-id-2", {
       displayName: "Second Search",
-      modelId: "search-model-b"
+      modelId: "search-model-b",
+      use: "backup"
     });
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [first, second] },
+      plan: { mode: "engine", options: [first, second] },
       runtimes: {
-        "private-source-id-1": runtime(),
-        "private-source-id-2": runtime({ fail: "engine_unavailable" })
+        "private-source-id-1": runtime({ fail: "engine_unavailable" }),
+        "private-source-id-2": runtime()
       }
     })!;
 
@@ -747,19 +778,36 @@ describe("Search plan tool router", () => {
 
     expect(result.status).toBe("complete");
     expect(result.content[0]).toMatchObject({
-      text: expect.stringContaining('"Second Search": engine_unavailable')
+      text: expect.stringContaining('"First Search": engine_unavailable')
     });
     expect(result.content[0]).toMatchObject({
-      text: expect.stringContaining('Search source "First Search"')
+      text: expect.stringContaining('Search source "Second Search"')
     });
     expect(JSON.stringify(result.content)).not.toContain("private-source-id-");
     expect(searchExecutionsFromToolResult(result)).toEqual([
-      expect.objectContaining({ optionId: "private-source-id-1", status: "complete" }),
       expect.objectContaining({
         failure: { code: "engine_unavailable" },
-        optionId: "private-source-id-2",
+        optionId: "private-source-id-1",
         status: "error"
-      })
+      }),
+      expect.objectContaining({ optionId: "private-source-id-2", status: "complete" })
+    ]);
+  });
+
+  it("refuses the backup a query longer than its own limit, sending it nothing", async () => {
+    const backupRequest = vi.fn();
+    const router = createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [
+        option("engine", { use: "engine" }),
+        option("short", { config: { ...option("short").config, queryMaxCharacters: 32 }, use: "backup" })
+      ] },
+      runtimes: { engine: runtime({ fail: "engine_unavailable" }), short: runtime({ onRequest: backupRequest }) }
+    })!;
+    const result = await router.execute(call("web_search", "q".repeat(60)), answerRequest());
+    expect(result.status).toBe("error");
+    expect(backupRequest).not.toHaveBeenCalled();
+    expect(searchExecutionsFromToolResult(result).map(({ failure, optionId }) => [optionId, failure?.code])).toEqual([
+      ["engine", "engine_unavailable"], ["short", "search_query_too_long"]
     ]);
   });
 
@@ -838,15 +886,14 @@ describe("Search plan tool router", () => {
       .not.toBeNull();
   });
 
-  it("compacts larger two-engine findings and rehydrates the same continuation", async () => {
+  it("compacts large findings beside the engine's failure and rehydrates the same continuation", async () => {
     const first = option("durable-first");
     const second = option("durable-second");
-    const firstFindings = `FIRST_CANONICAL_${"a".repeat(64_000)}`;
-    const secondFindings = `SECOND_CANONICAL_${"b".repeat(64_000)}`;
+    const secondFindings = `SECOND_CANONICAL_${"b".repeat(128_000)}`;
     const router = createSearchPlanToolRouter({
       plan: { mode: "all_selected", options: [first, second] },
       runtimes: {
-        "durable-first": runtime({ findings: firstFindings }),
+        "durable-first": runtime({ fail: "first_failed" }),
         "durable-second": runtime({ findings: secondFindings })
       }
     });
@@ -858,7 +905,7 @@ describe("Search plan tool router", () => {
     const serialized = JSON.stringify(snapshot);
 
     expect(result.status).toBe("complete");
-    expect(serialized.split(firstFindings)).toHaveLength(2);
+    expect(searchExecutionsFromToolResult(result)).toHaveLength(2);
     expect(serialized.split(secondFindings)).toHaveLength(2);
     expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(
       toolLoopPersistenceLimits.resultBytes
@@ -867,8 +914,8 @@ describe("Search plan tool router", () => {
       .toEqual(result);
   });
 
-  it("turns maximum fan-out overflow into attributable settled Search errors", async () => {
-    const options = ["large-first", "large-second", "large-third"].map((id) => option(id));
+  it("turns an overflowing result into an attributable settled Search error that keeps its usage", async () => {
+    const options = ["large-first", "large-second"].map((id) => option(id));
     const sources = (prefix: string): SearchSource[] => Array.from({ length: 20 }, (_, index) => ({
       rank: index + 1,
       snippet: "s".repeat(2_000),
@@ -895,11 +942,13 @@ describe("Search plan tool router", () => {
       plan: { mode: "all_selected", options },
       runtimes: Object.fromEntries(options.map((selected, index) => [
         selected.optionId,
-        runtime({
-          artifacts: operationArtifacts(String(index)),
-          findings: String(index).repeat(128 * 1_024),
-          sources: sources(String(index))
-        })
+        index === 0
+          ? runtime({ fail: "first_failed" })
+          : runtime({
+              artifacts: operationArtifacts(String(index)),
+              findings: String(index).repeat(MAX_SEARCH_FINDINGS_BYTES),
+              sources: sources(String(index))
+            })
       ]))
     });
     if (!router) throw new Error("expected Search router");
@@ -909,11 +958,9 @@ describe("Search plan tool router", () => {
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
 
     expect(snapshot).not.toBeNull();
-    expect(executions).toHaveLength(3);
-    expect(executions.some((execution) => execution.status === "complete")).toBe(true);
-    expect(executions.filter((execution) => execution.failure?.code === "search_result_too_large"))
-      .not.toHaveLength(0);
-    expect(executions.every((execution) => execution.usage.totalTokens === 5)).toBe(true);
+    expect(executions).toHaveLength(2);
+    expect(executions.map((execution) => execution.failure?.code)).toEqual(["first_failed", "search_result_too_large"]);
+    expect(executions[1]?.usage.totalTokens).toBe(5);
     expect(JSON.stringify(executions)).not.toMatch(/providerOperations|bounded query/u);
   });
 
@@ -923,32 +970,32 @@ describe("Search plan tool router", () => {
     const midFindings = `${"m".repeat(160 * 1_024)} rare-mid-tail`;
     const maxFindings = `${"x".repeat(MAX_SEARCH_FINDINGS_BYTES - " rare-max-tail".length)} rare-max-tail`;
     expect(Buffer.byteLength(maxFindings, "utf8")).toBe(MAX_SEARCH_FINDINGS_BYTES);
-    const router = () => createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options },
+    const router = (engine: "max" | "mid") => createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [{ ...options.find((candidate) => candidate.optionId === engine)!, use: "engine" }] },
       runtimes: {
         mid: runtime({ findings: midFindings }),
         max: runtime({ findings: maxFindings })
       }
     })!;
 
-    // A retained original carries every engine's complete findings.
-    const retained = await router().execute(call("search_selected_engines"), answerRequest(), { retainOriginal: true });
-    expect(searchExecutionsFromToolResult(retained).map((execution) => execution.findings)).toEqual([midFindings, maxFindings]);
+    // A retained original carries the engine's complete findings.
+    const retained = await router("max").execute(call("web_search"), answerRequest(), { retainOriginal: true });
+    expect(searchExecutionsFromToolResult(retained).map((execution) => execution.findings)).toEqual([maxFindings]);
     expect(retained.content[0]?.type === "text" ? retained.content[0].text : "").toContain("rare-max-tail");
 
-    // Off keeps what fits its persisted result: the 1 MiB engine is refused by
-    // an explicit code with its usage, the other engine stays whole.
-    const off = await router().execute(call("search_selected_engines"), answerRequest());
-    const executions = searchExecutionsFromToolResult(off);
-    expect(executions).toEqual([
-      expect.objectContaining({ findings: midFindings, status: "complete" }),
+    // Off keeps what fits its persisted result: findings above the former bound stay whole, and the 1 MiB
+    // engine's result is refused by an explicit code with its usage.
+    const mid = await router("mid").execute(call("web_search"), answerRequest());
+    expect(searchExecutionsFromToolResult(mid)).toEqual([expect.objectContaining({ findings: midFindings, status: "complete" })]);
+    expect((mid.content[0]?.type === "text" ? mid.content[0].text : "")).toContain("rare-mid-tail");
+    const off = await router("max").execute(call("web_search"), answerRequest());
+    expect(searchExecutionsFromToolResult(off)).toEqual([
       expect.objectContaining({ failure: { code: "search_result_too_large" }, sources: [], status: "error",
         usage: expect.objectContaining({ totalTokens: 5 }) })
     ]);
-    expect(off.status).toBe("complete");
-    expect(off.usage).toMatchObject({ totalTokens: 10 });
+    expect(off.status).toBe("error");
+    expect(off.usage).toMatchObject({ totalTokens: 5 });
     const text = off.content[0]?.type === "text" ? off.content[0].text : "";
-    expect(text).toContain("rare-mid-tail");
     expect(text).toContain('Search warnings: "max": search_result_too_large');
     expect(snapshotToolExecutionResult(off, toolLoopPersistenceLimits.resultBytes)).not.toBeNull();
   });
@@ -1081,7 +1128,7 @@ describe("Search plan tool router", () => {
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining("Search warnings") });
   });
 
-  it("exposes separate deterministic tools in model-choice mode and invokes only the chosen engine", async () => {
+  it("runs a model-choice plan frozen before the single engine behind one web_search, its first source first", async () => {
     const firstRequest = vi.fn();
     const secondRequest = vi.fn();
     const first = option("first");
@@ -1094,10 +1141,11 @@ describe("Search plan tool router", () => {
       }
     })!;
 
-    expect(router.tools.map((tool) => tool.name)).toEqual(["search_engine_1", "search_engine_2"]);
-    await router.execute(call(router.tools[1]!.name), answerRequest());
-    expect(firstRequest).not.toHaveBeenCalled();
-    expect(secondRequest).toHaveBeenCalledOnce();
+    expect(router.tools.map((tool) => tool.name)).toEqual(["web_search"]);
+    expect(router.accepts("search_engine_2")).toBe(false);
+    await router.execute(call("web_search"), answerRequest());
+    expect(firstRequest).toHaveBeenCalledOnce();
+    expect(secondRequest).not.toHaveBeenCalled();
   });
 
   it.each(["all_selected", "model_choice"] as const)(
@@ -1134,11 +1182,12 @@ describe("Search plan tool router", () => {
             id: `call-${index}-${tool.name}`
           }, answerRequest());
           expect(result.status).toBe("complete");
-          expect(searchExecutionsFromToolResult(result)).toHaveLength(mode === "all_selected" ? 2 : 1);
+          expect(searchExecutionsFromToolResult(result)).toHaveLength(1);
         }
       }
+      // The second source is the backup, asked only after a failed call.
       expect(onFirstRequest).toHaveBeenCalledTimes(35);
-      expect(onSecondRequest).toHaveBeenCalledTimes(35);
+      expect(onSecondRequest).not.toHaveBeenCalled();
       expect(onFirstRequest.mock.calls[34]?.[0].query).toHaveLength(4_000);
     }
   );
@@ -1411,7 +1460,7 @@ describe("Search plan tool router", () => {
     ]);
   });
 
-  it("collects pre-cancelled engines without dispatch", async () => {
+  it("collects a pre-cancelled engine without dispatch, and never its backup", async () => {
     const controller = new AbortController();
     const reason = new Error("run_cancelled");
     controller.abort(reason);
@@ -1432,8 +1481,7 @@ describe("Search plan tool router", () => {
     expect(error.cause).toBe(reason);
     expect(error.result.status).toBe("error");
     expect(searchExecutionsFromToolResult(error.result)).toEqual([
-      expect.objectContaining({ optionId: "selected", failure: { code: "search_cancelled" } }),
-      expect.objectContaining({ optionId: "unavailable", failure: { code: "search_runtime_not_available" } })
+      expect.objectContaining({ optionId: "selected", failure: { code: "search_cancelled" } })
     ]);
     expect(error.result.usage).toMatchObject({
       inputTokens: null, outputTokens: null, totalTokens: null, completeness: "unavailable"
@@ -1444,7 +1492,7 @@ describe("Search plan tool router", () => {
     expect(onRequest).toHaveBeenCalledOnce();
   });
 
-  it("preserves completed and partial engine usage when fan-out is cancelled", async () => {
+  it("preserves the engine's partial usage when Stop interrupts it, and never asks the backup", async () => {
     const controller = new AbortController();
     const onUndispatchedRequest = vi.fn();
     const interrupted: ProviderRuntimeBinding = {
@@ -1460,9 +1508,9 @@ describe("Search plan tool router", () => {
       }
     };
     const router = createSearchPlanToolRouter({
-      plan: { mode: "all_selected", options: [option("complete"), option("partial"), option("undispatched")] },
+      plan: { mode: "engine", options: [option("partial", { use: "engine" }), option("undispatched", { use: "backup" })] },
       runtimes: {
-        complete: runtime(), partial: interrupted,
+        partial: interrupted,
         undispatched: runtime({ onRequest: onUndispatchedRequest })
       }
     })!;
@@ -1473,18 +1521,12 @@ describe("Search plan tool router", () => {
     if (!(error instanceof SearchToolCancelledError)) throw new Error("expected_cancellation");
     expect(onUndispatchedRequest).not.toHaveBeenCalled();
     expect(searchExecutionsFromToolResult(error.result)).toEqual([
-      expect.objectContaining({ optionId: "complete", status: "complete" }),
-      expect.objectContaining({ optionId: "partial", status: "error", failure: { code: "search_cancelled" } }),
-      expect.objectContaining({ optionId: "undispatched", status: "error", failure: { code: "search_cancelled" } })
+      expect.objectContaining({ optionId: "partial", status: "error", failure: { code: "search_cancelled" } })
     ]);
     expect(searchExecutionsFromToolResult(error.result).map(({ usage }) => usage)).toMatchObject([
-      { inputTokens: 2, outputTokens: 3, totalTokens: 5, completeness: "complete" },
-      { inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" },
-      { inputTokens: null, outputTokens: null, totalTokens: null, completeness: "unavailable" }
+      { inputTokens: 7, outputTokens: null, totalTokens: null, completeness: "partial" }
     ]);
-    expect(error.result.usage).toMatchObject({
-      inputTokens: 9, outputTokens: 3, totalTokens: 5, completeness: "partial"
-    });
+    expect(error.result.usage).toMatchObject({ inputTokens: 7, completeness: "partial" });
   });
 });
 
@@ -1667,7 +1709,7 @@ describe("Search engine retries", () => {
       .mockResolvedValueOnce(Response.json({ error: { type: "server_error" } }, { status: 503 }))
       .mockResolvedValue(completed());
     const { router, sleep } = nativeRouter(fetchFn);
-    const result = await router.execute(call("search_selected_engines"), {});
+    const result = await router.execute(call("web_search"), {});
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledOnce();
     expect(result.status).toBe("complete");
@@ -1680,7 +1722,7 @@ describe("Search engine retries", () => {
     const fetchFn = vi.fn<typeof fetch>()
       .mockResolvedValue(Response.json({ error: { type: "invalid_api_key" } }, { status: 401 }));
     const { router, sleep } = nativeRouter(fetchFn);
-    const result = await router.execute(call("search_selected_engines"), {});
+    const result = await router.execute(call("web_search"), {});
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
     expect(result.status).toBe("error");
@@ -1692,7 +1734,7 @@ describe("Search engine retries", () => {
         { headers: { "retry-after": "2" }, status: 429 }))
       .mockResolvedValue(completed());
     const { router, sleep } = nativeRouter(fetchFn);
-    const result = await router.execute(call("search_selected_engines"), {});
+    const result = await router.execute(call("web_search"), {});
     expect(result.status).toBe("complete");
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(sleep.mock.calls[0]![0]).toBeGreaterThanOrEqual(2_000);
@@ -1703,7 +1745,7 @@ describe("Search engine retries", () => {
     const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "rate_limit_exceeded" } },
       { headers: { "retry-after": "4" }, status: 429 }));
     const { router, sleep } = nativeRouter(fetchFn);
-    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect((await router.execute(call("web_search"), {})).status).toBe("error");
     expect(fetchFn).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -1712,7 +1754,7 @@ describe("Search engine retries", () => {
     const failing = () => vi.fn<typeof fetch>().mockImplementation(async () =>
       Response.json({ error: { type: "server_error" } }, { status: 502 }));
     const bounded = failing();
-    const result = await nativeRouter(bounded).router.execute(call("search_selected_engines"), {});
+    const result = await nativeRouter(bounded).router.execute(call("web_search"), {});
     expect(bounded).toHaveBeenCalledTimes(3);
     expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({ status: "error" })]);
 
@@ -1720,7 +1762,7 @@ describe("Search engine retries", () => {
     const late = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: { type: "rate_limit_exceeded" } },
       { headers: { "retry-after": "60" }, status: 429 }));
     const { router, sleep } = nativeRouter(late);
-    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect((await router.execute(call("web_search"), {})).status).toBe("error");
     expect(late).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -1733,12 +1775,12 @@ describe("Search engine retries", () => {
       signal.throwIfAborted();
     });
     const { router } = nativeRouter(fetchFn, sleep);
-    await expect(router.execute(call("search_selected_engines"), {}, { signal: controller.signal }))
+    await expect(router.execute(call("web_search"), {}, { signal: controller.signal }))
       .rejects.toBeInstanceOf(SearchToolCancelledError);
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 
-  it("re-sends only the failed engine of a fan-out and accounts every attempt's reported usage", async () => {
+  it("re-sends a transiently failed engine itself before any backup, accounting every attempt's reported usage", async () => {
     let flakyCalls = 0;
     const steadySearch = vi.fn();
     const flaky: ProviderRuntimeBinding = { ...runtime(), searchAdapter: {
@@ -1760,13 +1802,13 @@ describe("Search engine retries", () => {
       retry: { random: () => 0, sleep: async () => undefined },
       runtimes: { flaky, steady }
     })!;
-    const result = await router.execute(call("search_selected_engines"), {});
+    const result = await router.execute(call("web_search"), {});
     expect(flakyCalls).toBe(2);
-    expect(steadySearch).toHaveBeenCalledOnce();
+    // The retry answered, so the backup is never asked.
+    expect(steadySearch).not.toHaveBeenCalled();
     expect(searchExecutionsFromToolResult(result)).toEqual([
       expect.objectContaining({ costUsd: 0.002, optionId: "flaky", status: "complete",
-        usage: expect.objectContaining({ inputTokens: 20, outputTokens: 2, totalTokens: 22 }) }),
-      expect.objectContaining({ optionId: "steady", status: "complete" })
+        usage: expect.objectContaining({ inputTokens: 20, outputTokens: 2, totalTokens: 22 }) })
     ]);
   });
 
@@ -1777,7 +1819,7 @@ describe("Search engine retries", () => {
       retry: { sleep: async () => undefined },
       runtimes: { api: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search } } }
     })!;
-    expect((await router.execute(call("search_selected_engines"), {})).status).toBe("error");
+    expect((await router.execute(call("web_search"), {})).status).toBe("error");
     expect(search).toHaveBeenCalledOnce();
   });
 
@@ -1791,7 +1833,7 @@ describe("Search engine retries", () => {
       retry: { sleep: async () => undefined },
       runtimes: { one: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search } } }
     })!;
-    const result = await router.execute(call("search_selected_engines"), {});
+    const result = await router.execute(call("web_search"), {});
     expect(search).toHaveBeenCalledOnce();
     expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
       failure: { code: "openai_search_sources_invalid" }, usage: expect.objectContaining({ inputTokens: 1 })
@@ -1823,7 +1865,7 @@ describe("Search failures the model can act on", () => {
   ])("names %s of a model-backed engine by its own code, as the DeepSeek Search API does", async (_label, status, headers, code) => {
     const fetchFn = vi.fn<typeof fetch>().mockImplementation(async () =>
       Response.json({ error: { message: "PRIVATE provider text" } }, { headers, status }));
-    const result = await openAiRouter(fetchFn).execute(call("search_engine_1"), answerRequest());
+    const result = await openAiRouter(fetchFn).execute(call("web_search"), answerRequest());
     expect(result.status).toBe("error");
     expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({ failure: { code }, status: "error" })]);
     expect((result.content[0] as { text: string }).text).toBe(`Search warnings: "one": ${code}`);
@@ -1836,7 +1878,7 @@ describe("Search failures the model can act on", () => {
       plan: { mode: "model_choice", options: [option("one")] }, runtimes: { one: runtime({ onRequest }) }
     })!;
     expect(router.tools[0]!.description.endsWith(" Each query is at most 100 characters.")).toBe(true);
-    const result = await router.execute(call("search_engine_1", "x".repeat(101)), answerRequest());
+    const result = await router.execute(call("web_search", "x".repeat(101)), answerRequest());
     expect(result.status).toBe("error");
     expect((result.content[0] as { text: string }).text).toBe(
       "Search failed: search_query_too_long. A query may have at most 100 characters; search again with a shorter query.");
@@ -1851,7 +1893,7 @@ describe("Search failures the model can act on", () => {
       plan: { mode: "all_selected", options: [broken, option("steady")] },
       runtimes: { broken: runtime(), steady: runtime({ onRequest: steady }) }
     })!;
-    const result = await router.execute(call("search_selected_engines"), answerRequest());
+    const result = await router.execute(call("web_search"), answerRequest());
     expect(steady).toHaveBeenCalledOnce();
     expect(result.status).toBe("complete");
     expect(searchExecutionsFromToolResult(result)).toEqual([

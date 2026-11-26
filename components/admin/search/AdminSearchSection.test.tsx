@@ -255,8 +255,9 @@ describe("AdminSearchSection", () => {
     expect(within(rows[2]!).getByRole("link")).toHaveClass("opacity-65");
     expect(within(rows[0]!).getByRole("link")).toHaveAttribute("href", "/admin?section=search&resource=source-perplexity");
     expect(screen.getByRole("region", { name: "Recommended Search plan" })).toHaveTextContent("never grants access");
-    // No source chosen means the best working one, never Off.
-    expect(screen.getByTestId("admin-search-plan-automatic")).toHaveTextContent("Automatic: Perplexity Search");
+    // No source chosen means the first working one in the default engine order, never Off; Perplexity Sonar may be
+    // chosen but is never a default (search-v2, 2026-11-26).
+    expect(screen.getByTestId("admin-search-plan-automatic")).toHaveTextContent("Automatic: no working source yet");
     expect(screen.queryByText("Let the model choose")).not.toBeInTheDocument();
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Search");
     await waitFor(() => expect(screen.getByRole("button", { name: "Add source" })).toBeEnabled());

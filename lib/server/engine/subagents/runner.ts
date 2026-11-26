@@ -367,7 +367,8 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
  * connection. A plan admitted before the single engine stays as it was frozen.
  */
 export function subagentSearchPlan(plan: ProviderRunRequest["searchPlan"]): ProviderRunRequest["searchPlan"] {
-  if (plan.mode !== "engine") return plan;
+  // A request a test or an earlier snapshot built without a plan stays without one.
+  if (plan?.mode !== "engine") return plan;
   return { ...plan, options: plan.options.filter((option) => option.use !== "in_answer") };
 }
 

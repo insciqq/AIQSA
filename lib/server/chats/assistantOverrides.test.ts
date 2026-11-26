@@ -50,7 +50,7 @@ function strategy(strategyId: string): SearchStrategyCatalogEntry {
 const catalog: ChatAssistantOverrideCatalog = {
   defaultModelId: "user-default",
   models: [model("assistant-model", true), model("chat-model", false), model("user-default", true)],
-  searchStrategies: [strategy("web-a"), strategy("web-b")]
+  searchStrategies: [strategy("web-search")]
 };
 
 function rows(
@@ -124,8 +124,10 @@ describe("chat Assistant overrides", () => {
     expect(issue({ model: { mode: "model", modelId: "chat-model" } })).toBeNull();
     expect(issue({ model: { mode: "model", modelId: "not-entitled" } })).toBe("assistant_overrides_invalid");
     expect(issue({ search: { mode: "off" } })).toBeNull();
-    expect(issue({ search: { mode: "model_choice", optionIds: ["web-a", "web-b"] } })).toBeNull();
-    expect(issue({ search: { mode: "all_selected", optionIds: ["web-unknown"] } })).toBe("assistant_overrides_invalid");
+    // Search on needs only a requester who can search; the sources a patch names are not the engine.
+    expect(issue({ search: { mode: "all_selected", optionIds: ["web-search"] } })).toBeNull();
+    expect(issue({ search: { mode: "all_selected", optionIds: ["web-search"] } },
+      { catalog: { defaultModelId: null, models: [], searchStrategies: [] } })).toBe("assistant_overrides_invalid");
     // Without a readable catalog nothing that depends on it is accepted.
     expect(issue({ model: { mode: "model", modelId: "chat-model" } }, { catalog: null }))
       .toBe("assistant_overrides_invalid");

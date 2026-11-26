@@ -490,7 +490,7 @@ describe("scheduled task runner", () => {
     expect(h.sent[0]!.body).toMatchObject({
       content: { blocks: [{ text: "Summarize the synthetic fixture", type: "text" }] }, expectedActiveLeafId: null,
       mcp: { mode: "off" }, modelId: "model-a", personalDraft: { folderId: null, memoryMode: "EXCLUDED" }, provider: "connection-a",
-      searchPlan: { mode: "all_selected", optionIds: [] }, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
+      searchEnabled: false, skills: { mode: "off" }, timeZone: "Europe/Moscow", workspace: { enabled: false }
     });
     // The first run of a task has no earlier result to see; its chat is created with the month's title and the task as origin.
     // It is told it already is the automation, with the schedule in words, and that nothing came before.

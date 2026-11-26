@@ -51,7 +51,8 @@ describe("personal Assistant row defaults", () => {
     expect(defaults.modelId).toBe("gpt-5.5");
     expect(defaults.controlsForModel("gpt-5.5")).toEqual({ maxOutputTokens: 1000, temperature: 0.5 });
     expect(defaults.tools).toEqual({ mode: "load_all" });
-    expect(defaults.search).toEqual({ mode: "off" });
+    // Search is on for everyone until the user turns it off.
+    expect(defaults.search).toEqual({ mode: "all_selected", optionIds: ["web-search"] });
   });
 
   it("reads undecodable saved values and unusable models as none", () => {

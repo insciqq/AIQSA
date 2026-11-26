@@ -68,7 +68,10 @@ describe("stored Assistant rows", () => {
               });
               const rows = assistantRowsFromStoredColumns(columns);
               expect(rows).not.toBeNull();
-              expect(storedColumnsFromAssistantRows(rows!)).toEqual(columns);
+              // A stored plan that names sources reads, and is written back, as Search on.
+              expect(storedColumnsFromAssistantRows(rows!)).toEqual(searchPlan.mode === "off"
+                ? columns
+                : { ...columns, searchPlan: { mode: "all_selected", optionIds: ["web-search"] } });
               checked += 1;
             }
           }

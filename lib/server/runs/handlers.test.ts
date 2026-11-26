@@ -162,12 +162,6 @@ function currentAdmissionPlan(
     },
     fingerprint: "f".repeat(64),
     requestedSearchPlan: input.searchPlan,
-    ...(input.searchPreferenceSource
-      ? {
-          requestedSearchPreferencePlan: input.searchPreferencePlan,
-          requestedSearchPreferenceSource: input.searchPreferenceSource
-        }
-      : {}),
     searches: [],
     selection: {
       providerConnectionId: input.providerConnectionId,

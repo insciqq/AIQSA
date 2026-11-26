@@ -534,21 +534,31 @@ describe("scheduled task admission on the agent engine", () => {
 describe("scheduled task search plan", () => {
   const capabilities = { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
     openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true } as const;
-  const options = ["alpha", "beta"].map((strategyId) => ({
-    displayName: strategyId, executionModes: ["all_selected" as const, "model_choice" as const], kind: "web_search" as const, strategyId
-  }));
-  const catalog = (preferred: string[]): ScheduledTaskRunCatalog => ({
-    models: [{ capabilities, modelId: "m", provider: "p", searchStrategyIds: ["beta", "alpha"] }],
+  const options = [{
+    displayName: "Web search", executionModes: ["all_selected" as const, "model_choice" as const], kind: "web_search" as const,
+    strategyId: "web-search"
+  }];
+  const catalog = (preferred: string[], searchStrategyIds = ["web-search"]): ScheduledTaskRunCatalog => ({
+    models: [{ capabilities, modelId: "m", provider: "p", searchStrategyIds }],
     searchPlan: { mode: "all_selected", optionIds: preferred }, searchStrategies: options
   });
 
-  it("is off when the task has Search off and otherwise follows the owner's preference within the model", () => {
+  it("is off when the task has Search off and otherwise on while the owner keeps it on and the model can search", () => {
+    const on = { mode: "all_selected", optionIds: ["web-search"] };
     const model = catalog([]).models[0]!;
-    expect(scheduledTaskSearchPlan({ catalog: catalog(["alpha"]), model, searchEnabled: false })).toEqual({ mode: "all_selected", optionIds: [] });
-    expect(scheduledTaskSearchPlan({ catalog: catalog(["alpha"]), model, searchEnabled: true })).toEqual({ mode: "all_selected", optionIds: ["alpha"] });
-    // No usable owner source: none is chosen for them, so the occurrence pauses.
-    expect(scheduledTaskSearchPlan({ catalog: catalog(["gamma"]), model, searchEnabled: true })).toBeNull();
+    expect(scheduledTaskSearchPlan({ catalog: catalog(["web-search"]), model, searchEnabled: false })).toEqual({ mode: "all_selected", optionIds: [] });
+    expect(scheduledTaskSearchPlan({ catalog: catalog(["web-search"]), model, searchEnabled: true })).toEqual(on);
+    // The owner turned Search off, or the task's model cannot search: the occurrence pauses visibly.
     expect(scheduledTaskSearchPlan({ catalog: catalog([]), model, searchEnabled: true })).toBeNull();
-    expect(scheduledTaskSearchPlan({ catalog: { ...catalog([]), searchStrategies: [] }, model, searchEnabled: true })).toBeNull();
+    const cannot = catalog(["web-search"], []);
+    expect(scheduledTaskSearchPlan({ catalog: cannot, model: cannot.models[0]!, searchEnabled: true })).toBeNull();
+  });
+
+  it("sends Search on or off, never the sources", () => {
+    const body = scheduledTaskSendBody({ admissionId: "a", modelId: "m", pinnedSkillIds: [], prompt: "p", provider: "p",
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] }, target: { chatId: "c", kind: "new" }, timeZone: "UTC",
+      toolCalling: true, toolsEnabled: false, workspaceEnabled: false });
+    expect(body).toMatchObject({ searchEnabled: true });
+    expect(body).not.toHaveProperty("searchPlan");
   });
 });

@@ -125,7 +125,23 @@ describe("system prompt", () => {
     expect(prompt({ tools: [] })).not.toContain("# Web search");
     expect(prompt({ tools: ["search_selected_engines"] })).toContain("Search before you answer anything that may have changed");
     expect(prompt({ tools: ["search_engine_2"] })).toContain("# Web search");
+    expect(prompt({ tools: ["web_search"] })).toContain("Search before you answer anything that may have changed");
     expect(prompt({ tools: [], webSearch: true })).toContain("# Web search");
+  });
+
+  it("says why Search is unavailable when it was on but no engine could be bound", () => {
+    const prompt = (input: Readonly<{ tools: readonly string[]; webSearch?: boolean;
+      webSearchUnavailable?: "search_engine_not_configured" | "search_engine_unavailable" | "search_not_granted" }>) =>
+      systemPromptFor({ modelId: "x", provider: "openai" }, { environment, workspace: false, ...input }).stable;
+    const unavailable = prompt({ tools: [], webSearchUnavailable: "search_engine_unavailable" });
+    expect(unavailable).toContain("# Web search");
+    expect(unavailable).toContain("Web search is unavailable here: the installation's web search engine cannot be used right now.");
+    expect(unavailable).not.toContain("Search before you answer");
+    expect(prompt({ tools: [], webSearchUnavailable: "search_not_granted" }))
+      .toContain("the administrator has not given this account web search");
+    // Searching in its own answer, the model has Search: the reason is for its sub-agents only.
+    expect(prompt({ tools: [], webSearch: true, webSearchUnavailable: "search_engine_unavailable" }))
+      .not.toContain("Web search is unavailable");
   });
 
   // Operator decision 2026-11-22: past-chat search replaces `memory_search` and its reader contract's guidance.

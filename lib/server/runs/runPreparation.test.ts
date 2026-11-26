@@ -42,6 +42,7 @@ import { syntheticImagePlan } from "@/tests/support/imagePlan";
 import type { AcceptedImageGenerationPlan, ImageModelResolution, ImageModelScope } from "../providerRuntime/imageModelRole";
 import { personalMcpFixture } from "@/tests/support/personalMcp";
 import { MCP_RUN_PLAN_LIMITS } from "../../contracts/mcp";
+import { SEARCH_OFF_PLAN, SEARCH_ON_PLAN } from "../../contracts/search";
 import { conversationMessagesFromPathRows } from "./prismaRepository";
 import type { AcceptedVisionAnalysisPlan } from "../providerRuntime/visionAnalysis";
 import { DEFAULT_TOOL_RUN_BUDGETS, toolRunBudgetsForRequest } from "./toolBudgets";
@@ -348,7 +349,8 @@ function providerNeutralOpenAISearchPlan(
       optionId,
       ordinal: 0,
       revisionId: customSource ? "revision-custom-search" : "revision-openai-search",
-      role: technicalRole
+      role: technicalRole,
+      use: "engine"
     }],
     selection: { providerConnectionId, providerModelId },
     userId: "user-1"
@@ -394,7 +396,8 @@ function nativeSearchCoexistencePlans(
       integrationId: `integration-${provider}-hosted`,
       optionId,
       ordinal: 0,
-      revisionId: `revision-${provider}-hosted`
+      revisionId: `revision-${provider}-hosted`,
+      use: "in_answer"
     }]
   };
   const client: ProviderAdmissionPlan = {
@@ -429,7 +432,8 @@ function nativeSearchCoexistencePlans(
       optionId,
       ordinal: 0,
       revisionId: `revision-${provider}-client`,
-      role: base.answer
+      role: base.answer,
+      use: "engine"
     }]
   };
 
@@ -675,12 +679,6 @@ function createHarness(options: HarnessOptions = {}) {
           },
           fingerprint: "f".repeat(64),
           requestedSearchPlan: input.searchPlan,
-          ...(input.searchPreferenceSource
-            ? {
-                requestedSearchPreferencePlan: input.searchPreferencePlan,
-                requestedSearchPreferenceSource: input.searchPreferenceSource
-              }
-            : {}),
           searches: [],
           selection: {
             providerConnectionId: input.providerConnectionId,
@@ -3106,7 +3104,8 @@ describe("run preparation", () => {
         integrationId: "integration-hosted",
         optionId,
         ordinal: 0,
-        revisionId: "revision-hosted"
+        revisionId: "revision-hosted",
+        use: "in_answer"
       }]
     };
     const harness = createHarness();
@@ -3127,8 +3126,8 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-      mode: "model_choice",
-      options: [expect.objectContaining({ optionId })]
+      mode: "engine",
+      options: [expect.objectContaining({ optionId, use: "in_answer" })]
     });
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch") ?? []).toEqual([]);
   });
@@ -3179,21 +3178,22 @@ describe("run preparation", () => {
     expect(admissionLoad).toHaveBeenCalledTimes(1);
     expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
       requiresClientToolCoexistence: true,
-      searchPlan: { mode: "model_choice", optionIds: [optionId] }
+      searchPlan: SEARCH_ON_PLAN
     });
     expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-      mode: "model_choice",
+      mode: "engine",
       options: [expect.objectContaining({
         adapterKind: "provider_model_client",
         optionId,
         protocol: "gemini_google_search",
         provider: "gemini",
-        providerModelId: hosted.selection.providerModelId
+        providerModelId: hosted.selection.providerModelId,
+        use: "engine"
       })]
     });
     expect(JSON.stringify(prepared.providerRequestPreview)).not.toContain('"type":"google_search"');
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-      "search_engine_1",
+      "web_search",
       "mcp_team_lookup_1"
     ]);
     expect(harness.attachmentLoads).toEqual([{
@@ -3232,10 +3232,10 @@ describe("run preparation", () => {
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );
-    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url", "search_engine_1"]);
+    expect(prepared.providerRequest.tools?.map((tool) => tool.name)).toEqual(["get_session_status", "fetch_url", "web_search"]);
   });
 
-  it("routes a provider-admitted multi-engine plan", async () => {
+  it("routes the engine and its backup behind the one web_search tool", async () => {
     const base = compatibleAdmissionPlan("openai_responses_compatible");
     const optionIds = ["perplexity-tool-search", "company-search"];
     const searches: NonNullable<ProviderAdmissionPlan["searches"]> = optionIds.map(
@@ -3269,7 +3269,8 @@ describe("run preparation", () => {
         optionId,
         ordinal,
         revisionId: `revision-${ordinal + 1}`,
-        role: base.answer
+        role: base.answer,
+        use: ordinal === 0 ? "engine" : "backup"
       })
     );
     const plan: ProviderAdmissionPlan = {
@@ -3295,7 +3296,11 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-      "search_selected_engines"
+      "web_search"
+    ]);
+    expect(prepared.normalizedRequest.searchPlan.options.map((option) => [option.optionId, option.use])).toEqual([
+      ["perplexity-tool-search", "engine"],
+      ["company-search", "backup"]
     ]);
   });
 
@@ -3326,7 +3331,7 @@ describe("run preparation", () => {
       const prepared = materializePreparedRunData(result.prepared);
       expect(result.toolBridge?.provider).toBe(provider);
       expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-        mode: "model_choice",
+        mode: "engine",
         options: [expect.objectContaining({
           adapterKind: "provider_model_client",
           optionId: "openai-native-web-search",
@@ -3336,14 +3341,13 @@ describe("run preparation", () => {
         })]
       });
       expect(prepared.defaults?.searchPlan).toEqual(plan.requestedSearchPlan);
-      expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
-        searchPlan: plan.requestedSearchPlan
-      }));
+      // The plan a client sends names sources; admission hears only that Search is on.
+      expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({ searchPlan: SEARCH_ON_PLAN }));
       expect(prepared.providerRequest.tools?.filter((tool) => tool.capability !== "session" && tool.capability !== "web_fetch").map((tool) => tool.name)).toEqual([
-        "search_engine_1"
+        "web_search"
       ]);
       expect(JSON.stringify(prepared.providerRequestPreview))
-        .toContain("search_engine_1");
+        .toContain("web_search");
     }
   );
 
@@ -3371,7 +3375,7 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
     expect(prepared.normalizedRequest.searchPlan).toEqual({
-      mode: "model_choice",
+      mode: "engine",
       options: [expect.objectContaining({
         optionId,
         provider: "openai_compatible",
@@ -3417,7 +3421,8 @@ describe("run preparation", () => {
         optionId,
         ordinal: 0,
         revisionId: "revision-perplexity",
-        role: base.answer
+        role: base.answer,
+        use: "engine"
       }]
     };
     const attachment = runAttachment({
@@ -3461,7 +3466,7 @@ describe("run preparation", () => {
       })
     ]);
     expect(prepared.normalizedRequest.searchPlan).toMatchObject({
-      mode: "all_selected",
+      mode: "engine",
       options: [expect.objectContaining({
         adapterKind: "provider_model_client",
         optionId
@@ -3497,7 +3502,8 @@ describe("run preparation", () => {
         integrationId: "integration-hosted",
         optionId,
         ordinal: 0,
-        revisionId: "revision-hosted"
+        revisionId: "revision-hosted",
+        use: "in_answer"
       }]
     };
     const harness = createHarness({
@@ -3538,13 +3544,9 @@ describe("run preparation", () => {
     ]);
   });
 
-  it("keeps a full personal Search preference separate from the effective run plan", async () => {
+  it("reads Search off from an earlier client's plan and leaves its personal preference fields unread", async () => {
     const plan = compatibleAdmissionPlan("openai_responses_compatible");
     const admissionLoad = vi.fn(async () => plan);
-    const preferencePlan = {
-      mode: "model_choice" as const,
-      optionIds: ["company-search", "secondary-search"]
-    };
     const result = await prepareRun(
       {
         ...createHarness().deps,
@@ -3555,7 +3557,7 @@ describe("run preparation", () => {
         modelId: plan.selection.providerModelId,
         provider: plan.selection.providerConnectionId,
         searchPlan: { mode: "all_selected", optionIds: [] },
-        searchPreferencePlan: preferencePlan,
+        searchPreferencePlan: { mode: "model_choice", optionIds: ["company-search", "secondary-search"] },
         searchPreferenceSource: "personal"
       }))
     );
@@ -3563,43 +3565,33 @@ describe("run preparation", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.code);
     const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
-      searchPlan: { mode: "all_selected", optionIds: [] },
-      searchPreferencePlan: preferencePlan,
-      searchPreferenceSource: "personal"
-    }));
-    expect(prepared.defaults).not.toBeNull();
-    expect(prepared.defaults?.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
-    expect(prepared.defaults?.searchPreferencePlan).toEqual(preferencePlan);
+    expect(admissionLoad).toHaveBeenCalledTimes(1);
+    expect(admissionLoad.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ searchPlan: SEARCH_OFF_PLAN }));
+    expect(admissionLoad.mock.calls[0]?.[0]).not.toHaveProperty("searchPreferencePlan");
+    expect(prepared.defaults?.searchPreferencePlan).toBeUndefined();
     expect(prepared.defaults?.controlDefaults).not.toHaveProperty("searchStrategyId");
   });
 
-  it("records organization inheritance as null without copying the current recommendation", async () => {
+  it("takes Search on or off from searchEnabled, whatever plan beside it names, and refuses a non-boolean", async () => {
     const plan = compatibleAdmissionPlan("openai_responses_compatible");
     const admissionLoad = vi.fn(async () => plan);
-    const result = await prepareRun(
-      {
-        ...createHarness().deps,
-        allowFakeProvider: false,
-        providerAdmission: { load: admissionLoad }
-      },
-      sendInput(successBody({
-        modelId: plan.selection.providerModelId,
-        provider: plan.selection.providerConnectionId,
-        searchPlan: { mode: "all_selected", optionIds: [] },
-        searchPreferencePlan: { mode: "all_selected", optionIds: ["current-default"] },
-        searchPreferenceSource: "organization"
-      }))
-    );
+    const deps = { ...createHarness().deps, allowFakeProvider: false, providerAdmission: { load: admissionLoad } };
+    const on = await prepareRun(deps, sendInput(successBody({
+      modelId: plan.selection.providerModelId,
+      provider: plan.selection.providerConnectionId,
+      searchEnabled: true,
+      searchPlan: { mode: "all_selected", optionIds: [] }
+    })));
+    expect(on.ok).toBe(true);
+    expect(admissionLoad.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ searchPlan: SEARCH_ON_PLAN }));
 
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.code);
-    const prepared = materializePreparedRunData(result.prepared);
-    expect(admissionLoad).toHaveBeenCalledWith(expect.objectContaining({
-      searchPreferencePlan: null,
-      searchPreferenceSource: "organization"
-    }));
-    expect(prepared.defaults?.searchPreferencePlan).toBeNull();
+    const invalid = await prepareRun(deps, sendInput(successBody({
+      modelId: plan.selection.providerModelId,
+      provider: plan.selection.providerConnectionId,
+      searchEnabled: "yes"
+    })));
+    expect(invalid).toMatchObject({ code: "search_plan_invalid", ok: false, status: 400 });
+    expect(admissionLoad).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an initial MCP request when its exact provider tool schema exceeds context", async () => {

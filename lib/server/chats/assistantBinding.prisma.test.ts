@@ -268,9 +268,9 @@ describe("chat Assistant binding", () => {
         assistantOverrides: { search: { mode: "off" } }
       });
 
+      // Search names no source any more (a plan with sources is on), so only the model can be outside the catalog.
       const invalid: ChatAssistantOverridesPatch[] = [
-        { model: { mode: "model", modelId: "not-in-catalog" } },
-        { search: { mode: "all_selected", optionIds: ["unknown-search"] } }
+        { model: { mode: "model", modelId: "not-in-catalog" } }
       ];
       for (const assistantOverrides of invalid) {
         await expect(code({ assistantOverrides, chatId, userId })).resolves.toBe("assistant_overrides_invalid");

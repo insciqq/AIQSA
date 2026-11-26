@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { decodeCatalogResponse, type CatalogResponse } from "../../contracts/catalog";
-import { defaultProviderModels, defaultSearchStrategies } from "../../domain/catalog";
+import { defaultProviderModels, defaultSearchStrategies, type SearchStrategyCatalogEntry } from "../../domain/catalog";
 import { getAuthConfig } from "../auth/config";
 import { createTestAuth } from "@/tests/support/auth";
 import { buildCurrentUserCatalog, createCatalogHandler } from "./handlers";
@@ -125,6 +125,7 @@ describe("catalog handler", () => {
       "defaults",
       "models",
       "providers",
+      "search",
       "searchStrategies",
       "attachmentLimits"
     ]);
@@ -148,6 +149,7 @@ describe("catalog handler", () => {
       "provider",
       "organizationSearchPlan",
       "searchPlan",
+      "searchEnabled",
       "searchPreferenceSource",
       "mcpMode",
       "skillsMode",
@@ -169,29 +171,27 @@ describe("catalog handler", () => {
       "providerFamily",
       "searchOptionCompatibility",
       "searchStrategyIds",
-      "upstreamModelId"
+      "upstreamModelId",
+      "webSearch"
     ]);
     expect(body.catalog.models[0].capabilities.text).toBe(true);
-    expect(body.catalog.searchStrategies[0]).toEqual({
-      description: "Question directly to Answer with no search tool.",
-      displayName: "No Search",
-      kind: "none",
-      strategyId: "search-disabled"
-    });
+    // Users switch Search on or off: one virtual source while a model can search, whichever engine runs.
+    expect(body.catalog.searchStrategies).toEqual([{
+      description: "Searches the web with the engine your administrator set up.",
+      displayName: "Web search",
+      kind: "web_search",
+      strategyId: "web-search"
+    }]);
     expect(catalog?.models.map((model) => model.modelId)).toEqual(["gpt-5.5"]);
-    expect(catalog?.searchStrategies.map((strategy) => strategy.strategyId)).toEqual([
-      "search-disabled",
-      "openai-native-web-search"
-    ]);
-    expect(catalog?.models[0].searchStrategyIds).toEqual([
-      "search-disabled",
-      "openai-native-web-search"
-    ]);
-    expect(
-      catalog?.models[0].searchOptionCompatibility?.["openai-native-web-search"]
-    ).toEqual({
-      clientToolCompatible: false,
-      executionModes: ["model_choice"]
+    // GPT searches inside its own answer; no engine reaches other models (Sonar is never a default).
+    expect(catalog?.models[0]).toMatchObject({
+      searchOptionCompatibility: { "web-search": { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] } },
+      searchStrategyIds: ["web-search"],
+      webSearch: "in_answer"
+    });
+    expect(catalog?.search).toEqual({ engine: null, reason: "search_engine_not_configured" });
+    expect(catalog?.defaults).toMatchObject({
+      searchEnabled: true, searchPlan: { mode: "all_selected", optionIds: ["web-search"] }
     });
   });
 
@@ -267,7 +267,7 @@ describe("catalog handler", () => {
     });
 
     expect(catalog.models).toHaveLength(defaultProviderModels.length);
-    expect(catalog.searchStrategies).toHaveLength(defaultSearchStrategies.length);
+    expect(catalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["web-search"]);
     expect(catalog.providers.map((provider) => provider.id)).toEqual(
       [...new Set(defaultProviderModels.map((model) => model.provider))]
     );
@@ -308,12 +308,15 @@ describe("catalog handler", () => {
     const catalog = decodeCatalogResponse(await response.json());
 
     expect(catalog).not.toBeNull();
-    expect(catalog?.defaults.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    // The user's own choice of sources reads as Search on.
+    expect(catalog?.defaults.searchPlan).toEqual({ mode: "all_selected", optionIds: ["web-search"] });
     expect(catalog?.models.map((model) => model.modelId)).toEqual([
       "google/gemini-3.5-flash",
       "~google/gemini-pro-latest"
     ]);
-    expect(catalog?.models[0].searchStrategyIds).toContain("perplexity-tool-search");
+    // Perplexity Sonar may be chosen but is never the default engine, so these models cannot search, visibly.
+    expect(catalog?.models[0]).toMatchObject({ searchStrategyIds: [], webSearch: null });
+    expect(catalog?.search).toEqual({ engine: null, reason: "search_engine_not_configured" });
     expect(catalog?.models[0]).toMatchObject({
       capabilities: {
         background: false
@@ -359,7 +362,9 @@ describe("catalog handler", () => {
       organizationModelDefault: null,
       personalModelDefault: null,
       provider: "",
-      searchPlan: { mode: "all_selected", optionIds: [] }
+      // Search stays on: the user's switch is never filtered by what the catalog offers.
+      searchEnabled: true,
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] }
     });
   });
 
@@ -431,10 +436,11 @@ describe("catalog handler", () => {
 
     expect(catalog.models).toEqual([]);
     expect(catalog.providers).toEqual([]);
-    expect(catalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["search-disabled"]);
+    expect(catalog.searchStrategies).toEqual([]);
+    expect(catalog.search).toEqual({ engine: null, reason: "search_not_granted" });
   });
 
-  it("resolves inherited, personal Off, and entitlement-filtered Search preferences without model clamping", () => {
+  it("reads Search on from no personal plan or one naming sources, and keeps a personal Off", () => {
     const base = {
       entitlements: {
         fullAccess: true as const,
@@ -443,12 +449,6 @@ describe("catalog handler", () => {
         searchStrategies: new Set<string>()
       },
       models: defaultProviderModels,
-      searchPolicy: {
-        defaultPlan: {
-          mode: "model_choice",
-          optionIds: ["openai-native-web-search", "perplexity-tool-search"]
-        }
-      },
       searchStrategies: defaultSearchStrategies,
       settings: {
         defaultControlValues: {},
@@ -458,91 +458,51 @@ describe("catalog handler", () => {
         showReasoningBlocks: false,
       }
     };
-    const inherited = buildCurrentUserCatalog(base);
-    expect(inherited.defaults).toMatchObject({
-      searchPlan: {
-        mode: "model_choice",
-        optionIds: ["openai-native-web-search", "perplexity-tool-search"]
-      },
-      searchPreferenceSource: "organization"
+    const on = { mode: "all_selected", optionIds: ["web-search"] };
+    expect(buildCurrentUserCatalog(base).defaults).toMatchObject({
+      organizationSearchPlan: on, searchEnabled: true, searchPlan: on, searchPreferenceSource: "organization"
     });
-    expect(inherited.models.find((model) => model.modelId === "fake-qsa")?.searchStrategyIds)
-      .toEqual(["search-disabled", "perplexity-tool-search"]);
-
-    const personalOff = buildCurrentUserCatalog({
-      ...base,
-      settings: {
-        ...base.settings,
-        defaultSearchPlan: { mode: "all_selected", optionIds: [] }
-      }
-    });
-    expect(personalOff.defaults).toMatchObject({
+    // An earlier release's personal choice of sources is Search on, whichever sources it named.
+    expect(buildCurrentUserCatalog({ ...base, settings: { ...base.settings,
+      defaultSearchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search", "perplexity-tool-search"] } } }).defaults)
+      .toMatchObject({ searchEnabled: true, searchPlan: on, searchPreferenceSource: "personal" });
+    expect(buildCurrentUserCatalog({ ...base, settings: { ...base.settings,
+      defaultSearchPlan: { mode: "all_selected", optionIds: [] } } }).defaults).toMatchObject({
+      organizationSearchPlan: on,
+      searchEnabled: false,
       searchPlan: { mode: "all_selected", optionIds: [] },
       searchPreferenceSource: "personal"
     });
-
-    const restricted = buildCurrentUserCatalog({
-      ...base,
-      entitlements: {
-        modelKeys: new Set(["openai:gpt-5.5"]),
-        providerKeys: new Set<string>(),
-        searchStrategies: new Set(["openai-native-web-search"])
-      },
-      settings: {
-        ...base.settings,
-        defaultProviderModelId: "gpt-5.5"
-      }
-    });
-    expect(restricted.defaults.searchPlan).toEqual({
-      mode: "model_choice",
-      optionIds: ["openai-native-web-search"]
-    });
-    expect(restricted.searchStrategies.map((strategy) => strategy.strategyId))
-      .not.toContain("perplexity-tool-search");
   });
 
-  it("turns an organization default without a source into the first usable source, never Off", () => {
-    const base = {
-      entitlements: {
-        fullAccess: true as const,
-        modelKeys: new Set<string>(),
-        providerKeys: new Set<string>(),
-        searchStrategies: new Set<string>()
-      },
-      models: defaultProviderModels,
-      searchPolicy: { defaultPlan: { mode: "all_selected", optionIds: [] } },
-      searchStrategies: defaultSearchStrategies,
-      settings: {
-        defaultControlValues: {},
-        defaultProviderModelId: "fake-qsa",
-        defaultSearchPlan: null,
-        showCitations: true,
-        showReasoningBlocks: false
-      }
+  it("names the installation's engine while it serves the user, and the reason otherwise", () => {
+    const deepSeek: SearchStrategyCatalogEntry = {
+      description: "Raw results.", displayName: "DeepSeek Search API", kind: "web_search",
+      routes: [{ adapterKind: "provider_model_client", config: {}, credentialMode: "provider_model",
+        executionModes: ["all_selected", "model_choice"], kind: "provider_model_web_search", physicalStrategyId: "deepseek-api",
+        protocol: "deepseek_search_api", providerModelId: "deepseek-flash", revisionId: "revision-deepseek",
+        searchStrategyRowId: "deepseek-api" }],
+      sourceConnectionId: "deepseek", strategyId: "deepseek-search-api"
     };
-    // Perplexity's client route outranks OpenAI's hosted one; hosted Anthropic
-    // and Google Search cannot run beside chat tools and never qualify.
-    expect(buildCurrentUserCatalog(base).defaults).toMatchObject({
-      organizationSearchPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] },
-      searchPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] },
-      searchPreferenceSource: "organization"
-    });
-    const withoutPerplexity = buildCurrentUserCatalog({ ...base, entitlements: {
-      modelKeys: new Set<string>(), providerKeys: new Set<string>(),
-      searchStrategies: new Set(["anthropic-web-search", "openai-native-web-search"])
-    } });
-    expect(withoutPerplexity.defaults.searchPlan.optionIds).toEqual(["openai-native-web-search"]);
-    // A personal Off stays Off.
-    expect(buildCurrentUserCatalog({ ...base, settings: { ...base.settings,
-      defaultSearchPlan: { mode: "all_selected", optionIds: [] } } }).defaults.searchPlan.optionIds).toEqual([]);
-    // A chosen organization source the user cannot use is never replaced.
-    expect(buildCurrentUserCatalog({ ...base,
-      entitlements: {
-        modelKeys: new Set<string>(), providerKeys: new Set<string>(),
-        searchStrategies: new Set(["openai-native-web-search"])
-      },
-      searchPolicy: { defaultPlan: { mode: "all_selected", optionIds: ["perplexity-tool-search"] } }
-    }).defaults.searchPlan.optionIds).toEqual([]);
+    const base = {
+      entitlements: { fullAccess: true as const, modelKeys: new Set<string>(), providerKeys: new Set<string>(),
+        searchStrategies: new Set<string>() },
+      models: defaultProviderModels,
+      searchStrategies: [...defaultSearchStrategies, deepSeek],
+      settings: { defaultControlValues: {}, defaultProviderModelId: "fake-qsa", defaultSearchPlan: null,
+        showCitations: true, showReasoningBlocks: false }
+    };
+    const catalog = buildCurrentUserCatalog(base);
+    expect(catalog.search).toEqual({ engine: { displayName: "DeepSeek Search API" }, reason: null });
+    // Every tool-calling model searches with the engine; GPT on its OpenAI connection searches in its own answer.
+    expect(catalog.models.find((model) => model.modelId === "claude-opus-4-8")?.webSearch).toBe("engine");
+    expect(catalog.models.find((model) => model.modelId === "gpt-5.5")?.webSearch).toBe("in_answer");
+    // The switch off gives GPT the engine too.
+    expect(buildCurrentUserCatalog({ ...base, searchPolicy: { inAnswerSearch: false } })
+      .models.find((model) => model.modelId === "gpt-5.5")?.webSearch).toBe("engine");
+    // A chosen engine that cannot search is named, never replaced.
+    expect(buildCurrentUserCatalog({ ...base, searchPolicy: { engineOptionId: "removed-source" } }).search)
+      .toEqual({ engine: null, reason: "search_engine_unavailable" });
   });
 
   it("rejects anonymous catalog requests", async () => {

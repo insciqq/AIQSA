@@ -515,11 +515,11 @@ export function decodeAssistantSearchValue(
   if (hiddenCount === null || !plan.ok) return null;
   const total = plan.plan.optionIds.length + hiddenCount;
   if (total < 1 || total > MAX_SEARCH_PLAN_OPTIONS) return null;
-  // Search is on or off (operator decisions 2026-11-26): a value that names sources, stored before the single engine
-  // or sent by an earlier client, is on. A projection that hides every source keeps saying only that.
-  return plan.plan.optionIds.length > 0
+  // Search is on or off (operator decisions 2026-11-26): a stored or written value that names sources, from before
+  // the single engine or an earlier client, is on. A projection is the server's, made from values read this way.
+  return mode === "draft"
     ? { mode: SEARCH_ON_PLAN.mode, optionIds: [...SEARCH_ON_PLAN.optionIds] }
-    : withHiddenCount({ mode: plan.plan.mode, optionIds: [] }, hiddenCount);
+    : withHiddenCount({ mode: plan.plan.mode, optionIds: [...plan.plan.optionIds] }, hiddenCount);
 }
 
 export function decodeAssistantToolsValue(

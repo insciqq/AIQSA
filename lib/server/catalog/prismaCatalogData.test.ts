@@ -1243,28 +1243,41 @@ describe("prisma catalog data loader", () => {
     ]);
 
     const catalog = buildCurrentUserCatalog(data!);
+    // A personal choice of sources is Search on; Perplexity Sonar is never a default engine, so nobody here can
+    // search until the administrator chooses it, and the catalog says why.
     expect(catalog.defaults).toMatchObject({
       modelId: "deployment-answer",
       provider: "connection-answer",
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: ["perplexity-tool-search"]
-      }
+      searchEnabled: true,
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] }
     });
-    expect(catalog.searchStrategies).toEqual([
-      {
-        description: "Search the web",
-        displayName: "Search",
-        kind: "none",
-        strategyId: "search-disabled"
-      },
-      {
-        description: "Search the web",
-        displayName: "Perplexity Search",
-        kind: "perplexity_tool_search",
-        strategyId: "perplexity-tool-search"
-      }
-    ]);
+    expect(data?.search).toMatchObject({ engine: null, entitled: true, reason: "search_engine_not_configured" });
+    expect(catalog.searchStrategies).toEqual([]);
+    expect(catalog.search).toEqual({ engine: null, reason: "search_engine_not_configured" });
+
+    const chosen = await createPrismaCatalogDataLoader({
+      env: {},
+      loadEntitlements: async () => entitlements({
+        models: [["connection-answer", "deployment-answer"]],
+        searches: ["an-earlier-source"]
+      }),
+      prisma: {
+        ...prisma,
+        searchPolicy: { findUnique: vi.fn(async () => ({
+          backupOptionId: null, engineOptionId: "perplexity-tool-search", inAnswerSearch: true
+        })) }
+      } as never
+    })("user-1");
+    // Chosen, it serves every model of the user, whichever source their grant named.
+    expect(chosen?.search).toMatchObject({
+      engine: { displayName: "Perplexity Search", protocol: "openrouter_perplexity_chat", usable: true },
+      entitled: true,
+      reason: null
+    });
+    const chosenCatalog = buildCurrentUserCatalog(chosen!);
+    expect(chosenCatalog.search).toEqual({ engine: { displayName: "Perplexity Search" }, reason: null });
+    expect(chosenCatalog.models[0]).toMatchObject({ searchStrategyIds: ["web-search"], webSearch: "engine" });
+    expect(chosenCatalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["web-search"]);
     expect(catalog.providers).toEqual([{
       family: "openai",
       id: "connection-answer",

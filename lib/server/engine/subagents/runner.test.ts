@@ -28,6 +28,7 @@ import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { runToolBatch, TURN_TOOL_CALL_LIMIT_OUTPUT } from "../toolBatch";
 import { TOOLS_CLOSED_INSTRUCTIONS } from "../loop";
 import { MODEL_CALL_RESEARCH_RETRY } from "../modelCall";
+import { createSearchPlanToolRouter } from "../../search/toolExecutor";
 import { createSavedToolResultReader, executeReadToolResult, saveToolResultText, toolResultOutputText } from "../toolResults";
 import { SUBAGENT_CHILD_ROLE_SECTION, SUBAGENT_ROLE_SECTION, SUBAGENT_STARTER_ROLE_SECTION, subagentRoleSection } from "../prompts";
 import type { ToolCallBeginResult, ToolCallRow, ToolCallStore } from "../toolCallStore";
@@ -732,6 +733,29 @@ describe("sub-agent runner", () => {
     expect(sub.prompt).not.toHaveProperty("memoryNote");
     expect(sub.prompt).not.toHaveProperty("personalInstructions");
     expect(JSON.stringify(sub)).not.toContain("PRIVATE-NOTE");
+  });
+
+  it("gives a sub-agent on another model the engine's web_search where its parent searched inside its own answer", () => {
+    const option = (optionId: string, use: "backup" | "engine" | "in_answer") => ({
+      adapterKind: use === "in_answer" ? "answer_provider_hosted" as const : "provider_model_client" as const,
+      config: { queryMaxCharacters: 200, timeoutMs: 5_000 }, credentialMode: use === "in_answer" ? "answer_provider" as const : "provider_model" as const,
+      displayName: optionId, executionModes: ["all_selected" as const], modelId: use === "in_answer" ? null : `${optionId}-model`, optionId,
+      protocol: "openai_responses_web_search" as const, provider: "openai", providerModelId: use === "in_answer" ? null : `${optionId}-technical`,
+      revisionId: `revision-${optionId}-${use}`, searchStrategyRowId: `route-${optionId}-${use}`, use
+    });
+    const searchPlan: ProviderRunRequest["searchPlan"] = {
+      mode: "engine", options: [option("openai", "in_answer"), option("openai", "engine"), option("deepseek", "backup")]
+    };
+    const route = { adapter: {} as ProviderAdapter, request: { modelCapabilities: request.modelCapabilities, modelId: "claude", params: {},
+      provider: "anthropic-connection", reasoningEffort: null }, snapshot, timeoutMs: 1 };
+    // The parent offers no web_search: it searches inside its own answer.
+    expect(createSearchPlanToolRouter({ plan: searchPlan, runtimes: {} })).toBeNull();
+    const sub = subagentRequest({ ...request, searchPlan }, route);
+    expect(sub.searchPlan.options.map((entry) => [entry.optionId, entry.use])).toEqual([["openai", "engine"], ["deepseek", "backup"]]);
+    expect(createSearchPlanToolRouter({ plan: sub.searchPlan, runtimes: {} })?.tools.map((tool) => tool.name)).toEqual(["web_search"]);
+    // A plan frozen before the single engine reaches its sub-agents as it was.
+    const legacy: ProviderRunRequest["searchPlan"] = { mode: "model_choice", options: [{ ...option("openai", "in_answer"), use: undefined }] };
+    expect(subagentRequest({ ...request, searchPlan: legacy }, route).searchPlan).toBe(legacy);
   });
 
   describe("image tools follow the sub-agent's own route", () => {

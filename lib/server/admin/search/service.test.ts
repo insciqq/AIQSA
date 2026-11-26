@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { decodeAdminSearchCatalog, type AdminSearchDraft } from "../../../contracts/adminSearch";
 import { ProviderSearchExecutionError } from "../../providers/types";
-import { searchDraftHash } from "../../search/configuration";
+import { searchDraftHash, searchStrategyKind } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
 import { createAdminSearchService, type AdminSearchTester } from "./service";
 
@@ -135,11 +135,14 @@ function child(
     activatedAt: NOW,
     adapterKind: configuration.adapterKind,
     archivedAt: null,
+    // Whole rows, as the service reads them.
+    credentialMode: configuration.credentialMode,
     draft: configuration,
     draftTestEvidence: null,
     draftVersion: 1,
     enabled: true,
     id: "strategy-1",
+    kind: searchStrategyKind(configuration.protocol, configuration.adapterKind),
     providerModelId: configuration.providerModelId,
     revisions: [{ revisionNumber: 1 }],
     strategyId: "physical-search-1",
@@ -1433,7 +1436,7 @@ describe("admin Search service", () => {
     expect(sourceUpdate).not.toHaveBeenCalled();
   });
 
-  it("validates logical policy kinds and permits normalized Google multi-source plans", async () => {
+  it("sets the engine, its backup and the in-answer switch, and refuses a hosted-only source as either", async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
     // Google Search reaches chats only through its client route.
     const geminiDraft: AdminSearchDraft = {
@@ -1471,41 +1474,72 @@ describe("admin Search service", () => {
     });
 
     await service.updatePolicy({
-      defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
+      engineOptionId: "openai-search",
       expectedVersion: 3,
       userId: "admin-1"
     });
-    expect(updateMany).toHaveBeenCalledWith({
+    expect(updateMany).toHaveBeenLastCalledWith({
       data: {
+        backupOptionId: null,
+        // The previous release reads only the plan, kept in step.
         defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
+        engineOptionId: "openai-search",
+        inAnswerSearch: true,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
       where: { id: "installation", version: 3 }
     });
 
-    findMany.mockResolvedValueOnce([option([child({
-      ...draft,
-      adapterKind: "answer_provider_hosted",
-      credentialMode: "answer_provider",
-      providerModelId: null
-    })])]);
-    // A single source has no fan-out: its hosted-only route qualifies.
-    await service.updatePolicy({
-      defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
-      expectedVersion: 3,
-      userId: "admin-1"
-    });
-
+    // An earlier client's plan names the engine first and the backup second.
     findMany.mockResolvedValueOnce([openAi, google]);
     await service.updatePolicy({
-      defaultPlan: {
-        mode: "model_choice",
-        optionIds: ["openai-search", "gemini-google-search"]
-      },
+      defaultPlan: { mode: "model_choice", optionIds: ["gemini-google-search", "openai-search"] },
       expectedVersion: 3,
       userId: "admin-1"
     });
+    expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      backupOptionId: "openai-search", engineOptionId: "gemini-google-search"
+    }) }));
+
+    findMany.mockResolvedValueOnce([openAi, google]);
+    await service.updatePolicy({ backupOptionId: null, engineOptionId: null, expectedVersion: 3, inAnswerSearch: false, userId: "admin-1" });
+    expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      backupOptionId: null, defaultPlan: { mode: "all_selected", optionIds: [] }, engineOptionId: null, inAnswerSearch: false
+    }) }));
+
+    // Every model and mode searches through the engine's client route, so a hosted-only source is neither.
+    const hostedOnly = [option([child({ ...draft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider",
+      providerModelId: null })])];
+    findMany.mockResolvedValueOnce(hostedOnly);
+    await expect(service.updatePolicy({ engineOptionId: "openai-search", expectedVersion: 3, userId: "admin-1" }))
+      .rejects.toMatchObject({ code: "search_default_unavailable" });
+    findMany.mockResolvedValueOnce([openAi]);
+    await expect(service.updatePolicy({ backupOptionId: "openai-search", engineOptionId: "openai-search", expectedVersion: 3,
+      userId: "admin-1" })).rejects.toMatchObject({ code: "search_default_unavailable" });
+    findMany.mockResolvedValueOnce([openAi]);
+    await expect(service.updatePolicy({ expectedVersion: 3, inAnswerSearch: "yes", userId: "admin-1" }))
+      .rejects.toMatchObject({ code: "search_default_unavailable" });
+  });
+
+  it("names the engine users search with now, and why none when it cannot search", async () => {
+    const openAi = option([child(draft)]);
+    const list = async (row: Record<string, unknown>, options = [openAi]) => createAdminSearchService({
+      prisma: {
+        providerModel: { findMany: vi.fn(async () => [providerModel()]) },
+        searchOption: { findMany: vi.fn(async () => options) },
+        searchPolicy: { findUnique: vi.fn(async () => ({ ...policyRow(3), ...row })) }
+      } as unknown as PrismaClient,
+      tester: { currentBinding: vi.fn(async () => PROBE_BINDING), test: vi.fn() }
+    }).list();
+    expect((await list({})).policy).toMatchObject({
+      backupOptionId: null, defaultPlan: { mode: "all_selected", optionIds: [] }, engineOptionId: null, inAnswerSearch: true,
+      resolved: { automatic: true, backupOptionId: null, engineOptionId: "openai-search", reason: null }
+    });
+    expect((await list({ engineOptionId: "removed-source" })).policy.resolved)
+      .toEqual({ automatic: false, backupOptionId: null, engineOptionId: null, reason: "search_engine_unavailable" });
+    expect((await list({}, [])).policy.resolved)
+      .toEqual({ automatic: true, backupOptionId: null, engineOptionId: null, reason: "search_engine_not_configured" });
   });
 });
 

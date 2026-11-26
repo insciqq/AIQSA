@@ -458,9 +458,10 @@ describe("assistant detail handler", () => {
           content: contentRow({
             mcpServerIds: ["granted-server", "hidden-server"],
             providerModelId: "hidden-model",
+            // Stored plans read as Search on (`decodeAssistantSearchValue`), the one virtual source.
             searchPlan: {
               mode: "all_selected",
-              optionIds: ["openai-native-web-search", "hidden-search"]
+              optionIds: ["web-search"]
             },
             skillSummaries: [
               { id: "skill-review", name: "Careful reviewer", instructionApproxTokens: 42 },
@@ -486,7 +487,7 @@ describe("assistant detail handler", () => {
     expect(content.mcpServerIds).toEqual(["granted-server"]);
     expect(content.searchPlan).toEqual({
       mode: "all_selected",
-      optionIds: ["openai-native-web-search"]
+      optionIds: ["web-search"]
     });
     expect(content.skillIds).toEqual(["skill-review", "skill-finish"]);
     expect(body.assistant.skills).toEqual([
@@ -1099,7 +1100,7 @@ describe("Assistants v2 wire emission", () => {
       answerRules: "Answer in bullet points.",
       mcpServerIds: ["granted-server", "hidden-server"],
       providerModelId: "hidden-model",
-      searchPlan: { mode: "all_selected", optionIds: ["openai-native-web-search", "hidden-search"] },
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] },
       skillIds: ["skill-visible", "hidden-skill"],
       skillSummaries: [{ id: "skill-visible", name: "Visible" }]
     });
@@ -1114,7 +1115,7 @@ describe("Assistants v2 wire emission", () => {
     expect(consumer.assistant.content.rows).toEqual({
       controls: { policy: "fixed", value: { reasoningEffort: "high" } },
       model: { policy: "fixed", value: { mode: "model", modelId: null } },
-      search: { policy: "fixed", value: { hiddenCount: 1, mode: "all_selected", optionIds: ["openai-native-web-search"] } },
+      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web-search"] } },
       skills: { policy: "fixed", value: { hiddenCount: 1, links: [{ delivery: "always", skillId: "skill-visible" }], mode: "auto" } },
       tools: { policy: "fixed", value: { hiddenCount: 1, mode: "exact", serverIds: ["granted-server"] } }
     });
@@ -1172,8 +1173,7 @@ describe("Assistants v2 wire emission", () => {
     const hiddenModel = await post({ ...defaultRows, model: { policy: "adjustable", value: { mode: "model", modelId: "hidden-model" } } });
     expect(hiddenModel.status).toBe(400);
     expect(await hiddenModel.json()).toEqual({ error: "assistant_model_not_available" });
-    const hiddenSearch = await post({ ...defaultRows, search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["hidden-search"] } } });
-    expect(await hiddenSearch.json()).toEqual({ error: "assistant_search_option_not_available" });
+    // Search on names no source the owner could lack: which engine runs is the installation's.
     const hiddenTools = await post({ ...defaultRows, tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["hidden-server"] } } });
     expect(await hiddenTools.json()).toEqual({ error: "assistant_tools_not_available" });
     const fixedInherit = await post({ ...defaultRows, tools: { policy: "fixed", value: { mode: "inherit" } } });
@@ -1209,10 +1209,10 @@ describe("Assistants v2 wire emission", () => {
     expect(fixedOwner.availability).toEqual({ dependencies: [{ kind: "model", name: "Orion" }], ok: false, reason: "model_access" });
   });
 
-  it("keeps unusable adjustable Search and tools out of availability; Skills and archive always count", async () => {
+  it("keeps unusable adjustable tools out of availability, Search on available to a viewer who can search; Skills and archive always count", async () => {
     const rows: AssistantRows = {
       ...defaultRows,
-      search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["hidden-search"] } },
+      search: { policy: "adjustable", value: { mode: "all_selected", optionIds: ["web-search"] } },
       tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["hidden-server"] } }
     };
     const adjustable = accessEntry({
@@ -1231,8 +1231,9 @@ describe("Assistants v2 wire emission", () => {
     }))(new Request("http://test/api/me/assistants"))).json();
     expect(body.assistants[0]).toMatchObject({
       availability: { ok: true },
-      rowAvailability: { search: { reason: "search_access" }, tools: { reason: "tools_access" } }
+      rowAvailability: { tools: { reason: "tools_access" } }
     });
+    expect(body.assistants[0].rowAvailability).not.toHaveProperty("search");
     expect(body.assistants[1].availability).toEqual({ ok: false, reason: "skills_access" });
     expect(body.assistants[2].availability).toEqual({ ok: false, reason: "archived" });
     expect(JSON.stringify(body)).not.toMatch(/hidden-(search|server|skill)/u);

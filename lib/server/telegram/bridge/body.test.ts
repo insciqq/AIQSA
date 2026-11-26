@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildTelegramSendBody, resolveTelegramModel, telegramRunControls, telegramSearchPlan, type TelegramSendSettings
+  buildTelegramSendBody, resolveTelegramModel, telegramRunControls, telegramSearchEnabled, type TelegramSendSettings
 } from "./body";
 import { fakeCatalog, fakeCatalogModel, SEARCH_OPTION } from "@/tests/support/telegramChatBridge";
 
@@ -24,7 +24,7 @@ describe("Telegram send body", () => {
       params: { maxOutputTokens: 1_024, reasoning: { effort: "none" }, temperature: 0.7 },
       personalDraft: { folderId: null, memoryMode: "NORMAL" },
       provider: "connection-fake",
-      searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] },
+      searchEnabled: true,
       skills: { mode: "off" },
       workspace: { enabled: true }
     });
@@ -57,23 +57,28 @@ describe("Telegram send body", () => {
       target: { assistantId: null, kind: "new" }, workspaceOffered: true
     });
     expect(body).not.toHaveProperty("params");
-    expect(body).toMatchObject({ modelId: odd.modelId, searchPlan: { optionIds: [SEARCH_OPTION.strategyId] } });
+    expect(body).toMatchObject({ modelId: odd.modelId, searchEnabled: true });
   });
 
-  it("sends the user's default sources the model supports, and none with Search off or a default turned off", () => {
-    const catalog = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [] } } });
-    const model = catalog.models[0]!;
-    expect(telegramSearchPlan(catalog, model, false)).toEqual({ mode: "all_selected", optionIds: [] });
-    // A default turned off in Chat defaults is never replaced by the model's first source.
-    expect(telegramSearchPlan(catalog, model, true)).toEqual({ mode: "all_selected", optionIds: [] });
-    const chosen = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] } } });
-    expect(telegramSearchPlan(chosen, chosen.models[0]!, true)).toEqual({ mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] });
-    expect(telegramSearchPlan(catalog, fakeCatalogModel({ searchStrategyIds: [] }), true)).toEqual({ mode: "all_selected", optionIds: [] });
+  it("sends Search on while the link and the user's Chat defaults keep it on, whatever the model", () => {
+    const turnedOff = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [] } } });
+    const on = fakeCatalog({ defaults: { searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] } } });
+    expect(telegramSearchEnabled(on, false)).toBe(false);
+    // A default turned off in Chat defaults stays off.
+    expect(telegramSearchEnabled(turnedOff, true)).toBe(false);
+    expect(telegramSearchEnabled(on, true)).toBe(true);
+    // A model the catalog lists without Search still asks for it: the server names why it cannot search.
+    const modelWithout = fakeCatalogModel({ searchStrategyIds: [] });
+    expect(buildTelegramSendBody({
+      admissionId: "tg-1-82", catalog: on, content: TEXT, model: modelWithout, settings: SETTINGS,
+      target: { assistantId: null, kind: "new" }, workspaceOffered: true
+    })).toMatchObject({ searchEnabled: true });
     const off = buildTelegramSendBody({
-      admissionId: "tg-1-80", catalog, content: TEXT, model, settings: { ...SETTINGS, searchEnabled: false }, target: { assistantId: null, kind: "new" },
-      workspaceOffered: true
+      admissionId: "tg-1-80", catalog: on, content: TEXT, model: on.models[0]!, settings: { ...SETTINGS, searchEnabled: false },
+      target: { assistantId: null, kind: "new" }, workspaceOffered: true
     });
-    expect(off.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    expect(off.searchEnabled).toBe(false);
+    expect(off).not.toHaveProperty("searchPlan");
   });
 
   it("asks for the Workspace as the web composer does: always, except where it is not offered or the model calls no tools", () => {

@@ -218,8 +218,8 @@ export function buildCatalogModel(
   const webSearch = catalogModelWebSearch(model, search);
   // Earlier clients read Search as sources: a model that can search lists the one virtual source that means on.
   const searchStrategyIds = webSearch ? [WEB_SEARCH_OPTION_ID] : [];
-  const searchOptionCompatibility = webSearch
-    ? { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] as SearchPlanMode[] } }
+  const searchOptionCompatibility: NonNullable<CatalogModel["searchOptionCompatibility"]> = webSearch
+    ? { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] } }
     : {};
   const openRouterPerplexitySearch = webSearch === "engine" && search.engine?.protocol === "openrouter_perplexity_chat";
   const controls = model.parameterControls;

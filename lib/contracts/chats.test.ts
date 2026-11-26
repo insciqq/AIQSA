@@ -1211,8 +1211,9 @@ describe("chat Assistant overrides", () => {
     for (const knowledge of [{ mode: "all_my_knowledge" }, { mode: "inherit" }, null]) {
       expect(decodeStoredChatAssistantOverrides({ ...overrides, knowledge })).toBeNull();
     }
-    expect(decodeStoredChatAssistantOverrides({ search: { mode: "all_selected", optionIds: ["web"] } }))
-      .toEqual({ kind: "overrides", overrides: { search: { mode: "all_selected", optionIds: ["web"] } } });
+    // Users switch Search on or off: a stored override that names sources reads as on.
+    expect(decodeStoredChatAssistantOverrides({ search: { mode: "model_choice", optionIds: ["web", "other"] } }))
+      .toEqual({ kind: "overrides", overrides: { search: { mode: "all_selected", optionIds: ["web-search"] } } });
     expect(decodeStoredChatAssistantOverrides(JSON.parse(JSON.stringify(CHAT_ASSISTANT_DELETED_MARKER))))
       .toEqual({ kind: "deleted" });
     for (const invalid of [
