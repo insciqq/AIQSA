@@ -139,7 +139,7 @@ export const matrixCatalog = {
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
-    searchEnabled: false,
+    searchEnabled: false as boolean,
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",
     showCitations: true,
