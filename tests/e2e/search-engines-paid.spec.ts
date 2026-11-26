@@ -1,10 +1,10 @@
 /**
  * Opt-in, paid, bounded check of web Search through the product on a
  * DISPOSABLE stand: every working engine answers a Russian question for a
- * Codex LB answer model with sources, several engines answer one call
- * together, the model searches a time-sensitive question on its own, and the
- * Search controls and sources are captured at desktop, tablet and phone
- * sizes. Never a default lane: it runs only with
+ * Codex LB answer model with sources as the installation's engine, the
+ * engine answers while a backup waits, the model searches a time-sensitive
+ * question on its own, and the Search controls and sources are captured at
+ * desktop, tablet and phone sizes. Never a default lane: it runs only with
  * AIQSA_FEATURES_PAID_E2E=DISPOSABLE plus CODEX_LB_API_KEY and
  * CODEX_LB_BASE_URL; each engine needs its own key (DEEPSEEK_API_KEY,
  * OPENROUTER_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY) and is left out
@@ -13,7 +13,7 @@
  * Paid calls: Codex LB custom setup once; Quick Setup and its model checks
  * once per keyed provider (plus the Search source's one probe search); then
  * one answer turn per engine (one or two Codex LB requests and one engine
- * search each), one fan-out turn over two engines and one unprompted turn.
+ * search each), one turn with an engine and its backup and one unprompted turn.
  *
  * Oracles are the persisted runs, tool calls, Search rows and usage rows;
  * prompts, answers, sources and keys are never printed. The attached summary
@@ -22,8 +22,9 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { PrismaClient, type ModelRun } from "@prisma/client";
-import { expect, test, type Browser, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Browser, type Page, type TestInfo } from "@playwright/test";
 import type { AdminSearchIntegration } from "../../lib/contracts/adminSearch";
+import { WEB_SEARCH_OPTION_ID } from "../../lib/contracts/search";
 import { authenticateWithLocalToken } from "./support/localAuth";
 import { runAccountMenuAction } from "./shell/page";
 import { expectNoHorizontalOverflow } from "./support/layoutAssertions";
@@ -72,6 +73,33 @@ const ASKED_TO_SEARCH = "Найди в интернете, какая сейча
   "Ответь одним коротким предложением и дай ссылку на источник.";
 const NOT_ASKED = "Какой официальный курс доллара США установил ЦБ РФ на сегодня?";
 
+type SearchEnginePolicy = Readonly<{ backupOptionId: string | null; engineOptionId: string | null; inAnswerSearch: boolean }>;
+
+/** The installation's Search engine as Admin › Search shows it, with the version a change must name. */
+async function searchEnginePolicy(request: APIRequestContext): Promise<SearchEnginePolicy & Readonly<{ version: number }>> {
+  const response = await request.get("/api/admin/search");
+  expect(response.ok(), `Admin › Search loads (${response.status()})`).toBe(true);
+  const { backupOptionId, engineOptionId, inAnswerSearch, version } = (await response.json()).search.policy;
+  return { backupOptionId, engineOptionId, inAnswerSearch, version };
+}
+
+/**
+ * Chooses the installation's engine as Admin › Search does (one engine for every model, search-v2) and returns the
+ * policy it replaced, for the caller to put back in `finally`.
+ */
+async function chooseSearchEngine(request: APIRequestContext, policy: SearchEnginePolicy): Promise<SearchEnginePolicy> {
+  const { version, ...previous } = await searchEnginePolicy(request);
+  const response = await request.patch("/api/admin/search", { data: { ...policy, expectedVersion: version } });
+  expect(response.ok(), `the Search engine is saved (${response.status()})`).toBe(true);
+  return previous;
+}
+
+/** The answer model searches with the installation's engine through `web_search`. */
+async function waitForEngineSearch(request: APIRequestContext, answer: PaidAnswerModel): Promise<void> {
+  await waitForCatalogModel(request, answer.connectionId, (candidate) => candidate.modelId === answer.modelId &&
+    candidate.webSearch === "engine");
+}
+
 let model: PaidAnswerModel | null = null;
 const sources = new Map<string, AdminSearchIntegration>();
 const chats: string[] = [];
@@ -88,7 +116,7 @@ async function searchEvidence(run: ModelRun) {
     where: { modelRunId: run.id } });
   return {
     calls: calls.map((call) => `${call.toolName}:${call.state}`),
-    searchCalls: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length,
+    searchCalls: calls.filter((call) => call.toolName === "web_search").length,
     // A long result is saved for read_tool_result; only states and codes are printed.
     observations: observations.map((row) => `${row.sourceKind}:${row.state}:${row.storageMode ?? "-"}:${row.failureCode ?? "-"}`),
     unsavedResults: calls.flatMap((call) => /could not be saved \(([a-z_]+)\)/u.exec(JSON.stringify(call.result ?? ""))?.[1] ?? []),
@@ -147,17 +175,25 @@ test("engines are set up and every keyed engine answers with sources", async ({ 
     const connectionId = await quickSetupConnection(request, engine.provider, secret, engine.prefer, { reuse: false });
     const source = await connectionSearchSource(request, connectionId, engine.kind);
     sources.set(engine.name, source);
-    await waitForCatalogModel(request, model.connectionId, (candidate) => candidate.modelId === model!.modelId &&
-      candidate.searchStrategyIds.includes(source.strategyId));
+    // The source searches as the installation's engine; the answer model never searches inside its own answer here.
+    const previous = await chooseSearchEngine(request, { backupOptionId: null, engineOptionId: source.strategyId, inAnswerSearch: false });
+    let run: ModelRun;
     const chatId = await newExcludedChat(request, `Search ${engine.name} ${randomUUID().slice(0, 8)}`);
     chats.push(chatId);
-    const run = await completedPaidTurn(request, prisma, { chatId, model, searchOptionIds: [source.strategyId], text: ASKED_TO_SEARCH });
+    try {
+      await waitForEngineSearch(request, model);
+      run = await completedPaidTurn(request, prisma, { chatId, model, searchOptionIds: [WEB_SEARCH_OPTION_ID], text: ASKED_TO_SEARCH });
+    } finally {
+      await chooseSearchEngine(request, previous);
+    }
     const evidence = await searchEvidence(run);
     summary[engine.name] = { ...evidence, answerHasLink: await answerHasLink(run), readiness: source.readiness, status: run.status };
     if (engine.name === "deepseek-search-api" || !shownChatId) shownChatId = chatId;
     expect.soft(evidence.searchCalls, `${engine.name}: the model searched`).toBeGreaterThanOrEqual(1);
-    expect.soft(evidence.searchRuns.some((row) => row.status === "complete" && row.sources > 0),
-      `${engine.name}: a Search call completed with sources`).toBe(true);
+    expect.soft(evidence.searchRuns.some((row) => row.status === "complete" && row.sources > 0 &&
+      row.strategyId === source.strategyId), `${engine.name}: the engine's Search call completed with sources`).toBe(true);
+    expect.soft(evidence.searchRuns.every((row) => row.strategyId === source.strategyId),
+      `${engine.name}: no other source searched`).toBe(true);
     expect.soft(evidence.webSearchUsageRows, `${engine.name}: the search was accounted`).toBeGreaterThanOrEqual(1);
   }
   await testInfo.attach("search-engines-summary.json", { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
@@ -165,7 +201,7 @@ test("engines are set up and every keyed engine answers with sources", async ({ 
   expect(sources.size, "at least one engine was keyed").toBeGreaterThanOrEqual(1);
 });
 
-test("two engines answer one search together, and the model searches a time-sensitive question unasked", async ({ request }, testInfo) => {
+test("the engine answers while a backup waits, and the model searches a time-sensitive question unasked", async ({ request }, testInfo) => {
   test.setTimeout(30 * 60_000);
   test.skip(!model || sources.size === 0, "no answer model or engine");
   await authenticateWithLocalToken(request);
@@ -173,19 +209,39 @@ test("two engines answer one search together, and the model searches a time-sens
   const pair = [sources.get("deepseek-search-api"), sources.get("perplexity") ?? sources.get("openai") ?? sources.get("google")]
     .filter((source): source is AdminSearchIntegration => Boolean(source));
   if (pair.length === 2) {
-    const chatId = await newExcludedChat(request, `Search fan-out ${randomUUID().slice(0, 8)}`);
+    // One engine searches (multi-source search is cancelled, 2026-11-26); the backup runs only when its call failed.
+    const [engine, backup] = pair as [AdminSearchIntegration, AdminSearchIntegration];
+    const previous = await chooseSearchEngine(request, { backupOptionId: backup.strategyId, engineOptionId: engine.strategyId,
+      inAnswerSearch: false });
+    const chatId = await newExcludedChat(request, `Search backup ${randomUUID().slice(0, 8)}`);
     chats.push(chatId);
-    const run = await completedPaidTurn(request, prisma, { chatId, model: model!, searchMode: "all_selected",
-      searchOptionIds: pair.map((source) => source.strategyId), text: ASKED_TO_SEARCH });
+    let run: ModelRun;
+    try {
+      await waitForEngineSearch(request, model!);
+      run = await completedPaidTurn(request, prisma, { chatId, model: model!, searchOptionIds: [WEB_SEARCH_OPTION_ID],
+        text: ASKED_TO_SEARCH });
+    } finally {
+      await chooseSearchEngine(request, previous);
+    }
     const evidence = await searchEvidence(run);
-    summary.fanOut = evidence;
-    expect.soft(new Set(evidence.searchRuns.filter((row) => row.status === "complete" && row.sources > 0)
-      .map((row) => row.strategyId)).size, "both engines answered").toBe(2);
+    summary.backup = evidence;
+    expect.soft(evidence.searchRuns.some((row) => row.status === "complete" && row.sources > 0 &&
+      row.strategyId === engine.strategyId), "the engine answered").toBe(true);
+    expect.soft(evidence.searchRuns.filter((row) => row.strategyId === backup.strategyId).length,
+      "the backup searched only after a failed engine call")
+      .toBeLessThanOrEqual(evidence.searchRuns.filter((row) => row.strategyId === engine.strategyId && row.status !== "complete").length);
   }
   const first = [...sources.values()][0]!;
+  const previous = await chooseSearchEngine(request, { backupOptionId: null, engineOptionId: first.strategyId, inAnswerSearch: false });
   const chatId = await newExcludedChat(request, `Search unasked ${randomUUID().slice(0, 8)}`);
   chats.push(chatId);
-  const run = await completedPaidTurn(request, prisma, { chatId, model: model!, searchOptionIds: [first.strategyId], text: NOT_ASKED });
+  let run: ModelRun;
+  try {
+    await waitForEngineSearch(request, model!);
+    run = await completedPaidTurn(request, prisma, { chatId, model: model!, searchOptionIds: [WEB_SEARCH_OPTION_ID], text: NOT_ASKED });
+  } finally {
+    await chooseSearchEngine(request, previous);
+  }
   const evidence = await searchEvidence(run);
   summary.unasked = { ...evidence, answerHasLink: await answerHasLink(run) };
   await testInfo.attach("search-fanout-summary.json", { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
@@ -203,16 +259,12 @@ test("Search controls and answer sources at every size", async ({ page, browser,
   const catalogDefaults = async () => (await (await page.request.get("/api/me/catalog")).json()).catalog.defaults;
   const initial = await catalogDefaults();
   // The seeded account starts with Search off (prisma/seed.ts); show the
-  // controls as everyone has them now, with two sources on for every chat.
-  const shown = [sources.get("deepseek-search-api"), sources.get("perplexity")]
-    .filter((source): source is AdminSearchIntegration => Boolean(source)).map((source) => source.strategyId);
-  const on = await page.request.patch("/api/me/settings", { data: { defaultSearchPlan: { mode: "all_selected",
-    optionIds: shown.length ? shown : [[...sources.values()][0]!.strategyId] } } });
+  // controls as everyone has them now: Search on, which engine runs being the installation's.
+  const on = await page.request.patch("/api/me/settings", { data: { searchEnabled: true } });
   expect(on.ok(), "Search turned on for every chat").toBe(true);
   const defaults = await catalogDefaults();
-  process.stdout.write(`search_ui_defaults ${JSON.stringify({ initialOptionCount: initial.searchPlan.optionIds.length,
-    initialSource: initial.searchPreferenceSource, optionCount: defaults.searchPlan.optionIds.length,
-    source: defaults.searchPreferenceSource })}\n`);
+  process.stdout.write(`search_ui_defaults ${JSON.stringify({ initialEnabled: initial.searchEnabled,
+    initialSource: initial.searchPreferenceSource, enabled: defaults.searchEnabled, source: defaults.searchPreferenceSource })}\n`);
 
   // An answer with its sources.
   await shots(page, testInfo, "01-answer-sources", async (current) => {
@@ -252,7 +304,6 @@ test("Search controls and answer sources at every size", async ({ page, browser,
     await phone.getByRole("button", { name: "Web search", exact: true }).click();
     await expect(phone.getByRole("dialog", { name: "Web search" })).toBeVisible();
   });
-  await page.request.patch("/api/me/settings", { data: { defaultSearchPlan:
-    initial.searchPreferenceSource === "personal" ? initial.searchPlan : null } });
+  await page.request.patch("/api/me/settings", { data: { searchEnabled: initial.searchEnabled !== false } });
   for (const chatId of chats) await deletePaidChat(page.request, chatId);
 });
