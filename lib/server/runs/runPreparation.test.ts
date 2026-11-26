@@ -3546,7 +3546,7 @@ describe("run preparation", () => {
 
   it("reads Search off from an earlier client's plan and leaves its personal preference fields unread", async () => {
     const plan = compatibleAdmissionPlan("openai_responses_compatible");
-    const admissionLoad = vi.fn(async () => plan);
+    const admissionLoad = vi.fn(async (_input: unknown) => plan);
     const result = await prepareRun(
       {
         ...createHarness().deps,
@@ -3574,7 +3574,7 @@ describe("run preparation", () => {
 
   it("takes Search on or off from searchEnabled, whatever plan beside it names, and refuses a non-boolean", async () => {
     const plan = compatibleAdmissionPlan("openai_responses_compatible");
-    const admissionLoad = vi.fn(async () => plan);
+    const admissionLoad = vi.fn(async (_input: unknown) => plan);
     const deps = { ...createHarness().deps, allowFakeProvider: false, providerAdmission: { load: admissionLoad } };
     const on = await prepareRun(deps, sendInput(successBody({
       modelId: plan.selection.providerModelId,

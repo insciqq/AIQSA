@@ -433,7 +433,8 @@ describe("Search plan tool router", () => {
       ] },
       runtimes: {
         api: { ...runtime(), searchAdapter: { buildRequestPreview: () => ({}), search: async () => ({
-          artifacts: [], findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true, requestPreview: {}, sources: [],
+          artifacts: [], finalProviderResponsePreview: {}, findings: SEARCH_NO_RESULTS_FINDINGS, noResults: true as const,
+          requestPreview: {}, sources: [],
           usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
         }) } },
         second: runtime({ onRequest: backupRequest })
