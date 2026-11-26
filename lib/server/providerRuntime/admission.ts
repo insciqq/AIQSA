@@ -798,20 +798,13 @@ function inAnswerSearchUsable(answer: ProviderAdmissionRole): boolean {
 function clientRouteCompatible(
   option: LoadedSearchOption,
   route: ResolvedSearchRoute,
-  answer: ProviderAdmissionRole,
-  answerModelId: string
+  answer: ProviderAdmissionRole
 ): boolean {
-  if (
-    route.draft.adapterKind !== "provider_model_client" ||
-    !route.draft.providerModelId ||
-    !option.sourceConnectionId ||
-    !answer.modelConfiguration.capabilities.toolCalling
-  ) {
-    return false;
-  }
-  // Results reach any tool-calling answer model; a technical model only runs the search. Perplexity Sonar, a chat
-  // model, never searches for itself.
-  return route.draft.protocol !== "openrouter_perplexity_chat" || route.draft.providerModelId !== answerModelId;
+  // Results reach any tool-calling answer model; a technical model only runs the search.
+  return route.draft.adapterKind === "provider_model_client" &&
+    Boolean(route.draft.providerModelId) &&
+    Boolean(option.sourceConnectionId) &&
+    answer.modelConfiguration.capabilities.toolCalling === true;
 }
 
 async function loadClientRouteRole(
@@ -879,7 +872,7 @@ function searchConfiguration(
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,
             // An OpenRouter technical model brings its routing and data collection.
-            ...(route.draft.protocol === "openrouter_perplexity_chat" || route.draft.protocol === "openrouter_web_search"
+            ...(route.draft.protocol === "openrouter_web_search"
               ? { modelDefaultParams: role.modelConfiguration.defaultParams }
               : {})
           }
@@ -978,7 +971,7 @@ export async function loadProviderAdmissionPlan(
     }
     const bind = async (candidate: SearchEngineOption, use: "backup" | "engine"): Promise<boolean> => {
       const route = candidate.route;
-      if (!route || !clientRouteCompatible(candidate.option, route, answer, input.providerModelId)) return false;
+      if (!route || !clientRouteCompatible(candidate.option, route, answer)) return false;
       let role: ProviderAdmissionRole | null;
       try {
         role = await loadClientRouteRole(db, {

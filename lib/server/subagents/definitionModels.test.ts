@@ -7,7 +7,7 @@ import { findSubagentModel, subagentModelOptions, subagentModelRefusal } from ".
 function model(modelId: string, patch: Readonly<{ displayName?: string; efforts?: string[]; provider?: string; toolCalling?: boolean }> = {}): CatalogWireModel {
   const efforts = patch.efforts ?? [];
   return {
-    capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false,
+    capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
       reasoning: efforts.length > 0, streaming: true, text: true, toolCalling: patch.toolCalling ?? true },
     contextWindow: null, defaultParams: {}, displayName: patch.displayName ?? modelId, modelId,
     parameterControls: {

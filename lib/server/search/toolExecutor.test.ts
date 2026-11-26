@@ -25,7 +25,6 @@ import { WorkspaceRuntimeError } from "../workspace/runtime";
 import { observeProviderOperation } from "../providers/providerObservability";
 import { createOpenAIResponsesSearchAdapter } from "../providers/openaiResponsesSearch";
 import { createFetchOpenAIResponsesClient } from "../providers/openaiResponsesTransport";
-import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
 import { createDeepSeekSearchApiAdapter, createFetchDeepSeekSearchApiClient } from "../providers/deepSeekSearchApi";
 import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_TOOL_RESULT_VERSION, searchUsageAttribution } from "./toolResult";
 import { SEARCH_NO_RESULTS_FINDINGS } from "./evidence";
@@ -140,9 +139,7 @@ function runtime(input: Readonly<{
     responseTimeoutMs: input.responseTimeoutMs ?? 300_000,
     searchAdapter: {
       buildRequestPreview: (request) => ({
-        maxOutputTokens: request.searchPolicy.strategyId === "perplexity-tool-search"
-          ? request.searchPolicy.controls.maxOutputTokens.defaultValue
-          : "maxOutputTokens" in request.searchPolicy ? request.searchPolicy.maxOutputTokens : undefined,
+        maxOutputTokens: "maxOutputTokens" in request.searchPolicy ? request.searchPolicy.maxOutputTokens : undefined,
         queryCharacters: request.query.length
       }),
       async search(request, options) {
@@ -313,6 +310,29 @@ describe("Search execution diagnostics", () => {
     expect(refused.status).toBe("error");
     expect(retiredRequest).not.toHaveBeenCalled();
     expect(searchExecutionsFromToolResult(refused)[0]?.failure?.code).toBe("search_protocol_not_supported");
+    // Perplexity Sonar, retired 2026-11-26, as the engine of a run accepted before then: its call fails visibly with
+    // the same code and sends nothing, and the frozen backup answers.
+    const sonarRequest = vi.fn();
+    const sonar = createSearchPlanToolRouter({
+      plan: { mode: "engine", options: [
+        option("sonar", {
+          modelId: "perplexity/sonar-pro-search",
+          protocol: "openrouter_perplexity_chat" as NormalizedSearchPlanOption["protocol"],
+          provider: "openrouter",
+          use: "engine"
+        }),
+        option("backup", { use: "backup" })
+      ] },
+      runtimes: { backup: runtime({ findings: "Backup findings." }), sonar: runtime({ onRequest: sonarRequest }) }
+    })!;
+    const answered = await sonar.execute(call(sonar.tools[0]!.name), answerRequest());
+    expect(answered.status).toBe("complete");
+    expect(sonarRequest).not.toHaveBeenCalled();
+    expect(searchExecutionsFromToolResult(answered).map(({ failure: failed, optionId, status }) =>
+      ({ code: failed?.code, optionId, status }))).toEqual([
+      { code: "search_protocol_not_supported", optionId: "sonar", status: "error" },
+      { code: undefined, optionId: "backup", status: "complete" }
+    ]);
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
       stage: "execution", engine_index: 1, outcome: "failed", code: "openai_response_incomplete", httpStatus: 503 }));
     expect(records()).toContainEqual(expect.objectContaining({ event: "tool_execution",
@@ -521,12 +541,6 @@ describe("Search plan tool router", () => {
   it("keeps all cited and browsed sources past the former limits and numbers an engine's sources as its findings do", async () => {
     const answerAdapter = runtime().adapter;
     const openai = option("openai");
-    const perplexity = option("perplexity", {
-      config: { ...option("perplexity").config, modelDefaultParams: { provider: { order: ["perplexity"] }, temperature: 0 } },
-      modelId: "perplexity/sonar-pro-search",
-      protocol: "openrouter_perplexity_chat",
-      provider: "openrouter"
-    });
     const browsed = Array.from({ length: 30 }, (_, index) => ({
       title: `Browsed ${index}`, url: `https://example.com/browsed/${index}`
     }));
@@ -554,24 +568,12 @@ describe("Search plan tool router", () => {
             retrieve: async () => ({})
           },
           provider: "openai"
-        }) },
-        perplexity: { adapter: answerAdapter, responseTimeoutMs: 300_000, searchAdapter: createOpenRouterPerplexitySearchAdapter({
-          client: {
-            createChatCompletion: async () => ({
-              choices: [{ finish_reason: "stop", message: { content: "Fact [1]; later fact [50].", role: "assistant" } }],
-              citations: Array.from({ length: 50 }, (_, index) => `https://example.com/perplexity/${index + 1}`),
-              id: "or-cited", model: "perplexity/sonar-pro-search", object: "chat.completion",
-              usage: { completion_tokens: 5, prompt_tokens: 11 }
-            })
-          }
         }) }
       }
     })!;
 
     const result = await engineRouter(openai).execute(call("web_search"), answerRequest());
-    const perplexityResult = await engineRouter(perplexity).execute(call("web_search"), answerRequest());
     const [openaiExecution] = searchExecutionsFromToolResult(result);
-    const [perplexityExecution] = searchExecutionsFromToolResult(perplexityResult);
 
     expect(result.rawPreview?.searchResultVersion).toBe(SEARCH_TOOL_RESULT_VERSION);
     // OpenAI keeps every cited page first, then every distinct browsed page.
@@ -580,9 +582,6 @@ describe("Search plan tool router", () => {
       ...browsed.map((source) => source.url)
     ]);
     expect(openaiExecution?.sources.map((source) => source.citation)).toEqual([1, 2, 3, ...Array(30).fill(undefined)]);
-    // Perplexity keeps all fifty sources with the provider's numbers.
-    expect(perplexityExecution?.sources).toHaveLength(50);
-    expect(perplexityExecution?.sources.at(-1)).toMatchObject({ citation: 50, url: "https://example.com/perplexity/50" });
     // The model reads the engine's sources beside its findings, numbered as its findings number them.
     const text = (result.content[0] as { text: string }).text;
     expect(text).toContain([
@@ -590,16 +589,9 @@ describe("Search plan tool router", () => {
       `Sources for "openai":\n${[...cited, ...browsed].map((source, index) =>
         `[${index + 1}] ${source.title} — example.com\n${source.url}`).join("\n\n")}`
     ].join("\n\n"));
-    expect((perplexityResult.content[0] as { text: string }).text.endsWith([
-      'Search source "perplexity":\nFact [1]; later fact [50].',
-      `Sources for "perplexity":\n${Array.from({ length: 50 }, (_, index) =>
-        `[${index + 1}] Source ${index + 1} — example.com\nhttps://example.com/perplexity/${index + 1}`).join("\n\n")}`
-    ].join("\n\n"))).toBe(true);
-    // The durable results still fit and replay the same text.
-    for (const durable of [result, perplexityResult]) {
-      const snapshot = snapshotToolExecutionResult(durable, toolLoopPersistenceLimits.resultBytes);
-      expect(snapshot && parsePersistedToolExecutionResult({ id: durable.callId, name: durable.name }, snapshot)).toEqual(durable);
-    }
+    // The durable result still fits and replays the same text.
+    const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
+    expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toEqual(result);
   });
 
   it("deduplicates browsed pages OpenAI cites with its attribution parameter", async () => {

@@ -315,7 +315,8 @@ export async function ensureSearchSource(api: Api, input: SearchSourceInput): Pr
 }
 
 /**
- * The OpenRouter connection Perplexity searches on: one the stand already has, live, with a default key and the exact model on
+ * The OpenRouter connection OpenRouter's web search with Perplexity runs on: one the stand already has, live, with a default key and
+ * the exact technical model on
  * OpenRouter's own adapter. The harness never adds one: an OpenRouter connection's first key, through Quick Setup or through the
  * manual Add provider and key routes alike, adds and checks every built-in OpenRouter model (`activateCredentialSecret` and
  * `providerSetupModels` in `lib/server/admin/providers/`), which the operator does not allow. Without one: `perplexity_connection_missing`.
@@ -337,12 +338,14 @@ export type ClientSearchSource = Readonly<{ id: string; providerModelId: string;
  * enabled model carries the source, as the DeepSeek Search API borrows its connection's key and never calls the model.
  */
 export async function ensureClientSearchSource(api: Api, input: Readonly<{ connectionId: string; displayName: string;
-  kind: "deepseek_search_api" | "perplexity_search" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
+  kind: "deepseek_search_api" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
   const connection = await checksIdle(api, input.connectionId);
   const model = input.upstreamModelId === null ? connection.models.find((entry) => entry.enabled) ?? null
     : connection.models.find((entry) => entry.enabled && (entry.activeConfig ?? entry.draftConfig).upstreamModelId === input.upstreamModelId) ?? null;
   if (!model) return fail(`search_model_missing_${input.kind}`);
-  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null, protocol: input.protocol,
+  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null,
+    // OpenRouter's web search names its engine: Perplexity, the template's default.
+    ...(input.protocol === "openrouter_web_search" ? { openRouterWebSearch: { engine: "perplexity", mode: null } } : {}), protocol: input.protocol,
     providerModelId: model.id, queryMaxCharacters: input.protocol === "deepseek_search_api" ? 128 : 1_000, reasoningPolicy: "lowest_supported", timeoutMs: 120_000 };
   const description = "Web search available in chat.";
   const live = async () => (await searchIntegrations(api)).find((entry) => entry.sourceConnectionId === input.connectionId &&

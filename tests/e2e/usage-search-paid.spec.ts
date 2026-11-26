@@ -76,8 +76,9 @@ test("OpenRouter Perplexity Search leaves a web_search row with a known reported
   const summary: Record<string, unknown> = {};
 
   const connectionId = await openRouterConnection(request, secret!);
-  const source = await connectionSearchSource(request, connectionId, "perplexity_search",
-    { preferModel: /sonar|perplexity/iu, protocol: "openrouter_perplexity_chat" });
+  // OpenRouter's web search with Perplexity (Perplexity Sonar is retired, 2026-11-26).
+  const source = await connectionSearchSource(request, connectionId, "web_search",
+    { preferModel: /flash|luna/iu, protocol: "openrouter_web_search" });
   summary.sourceEnabled = source.enabled;
   const answer = preferredOpenRouterAnswer(await waitForCatalogModels(request, connectionId,
     (candidate) => candidate.capabilities.toolCalling === true && candidate.searchStrategyIds.includes(source.strategyId)));

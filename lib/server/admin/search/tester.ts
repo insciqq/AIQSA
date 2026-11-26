@@ -1,10 +1,7 @@
 import { admitModelGenerationBudget, modelOutputAllowance } from "../../providers/modelOutputAllowance";
 import type { ProviderAdapterKind } from "../../providers/providerConfiguration";
 import type { PrismaClient } from "@prisma/client";
-import {
-  adminSearchExecutionLimits,
-  type AdminSearchDraft
-} from "../../../contracts/adminSearch";
+import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import {
   DEEPSEEK_SEARCH_API_MODEL_ID,
@@ -46,27 +43,6 @@ export function adminSearchProviderPolicy(input: Readonly<{
     adapterKind: input.adapterKind ?? "fake", capabilities: input.capabilities, defaultParams: { ...input.defaultParams },
     upstreamModelId: input.modelId
   } }, { query: connectivityQuery }, input.draft.maxOutputTokens);
-  if (input.draft.protocol === "openrouter_perplexity_chat") {
-    if (input.provider !== "openrouter") throw new Error("search_protocol_not_supported");
-    return {
-      controls: {
-        maxOutputTokens: {
-          defaultValue: maxOutputTokens,
-          maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
-        },
-        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
-      },
-      defaultParams: {
-        ...input.defaultParams,
-        maxOutputTokens: maxOutputTokens,
-        stream: false,
-        temperature: 0
-      },
-      modelId: input.modelId,
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    };
-  }
   if (input.draft.protocol === "openrouter_web_search") {
     if (input.provider !== "openrouter" || !input.draft.openRouterWebSearch) throw new Error("search_protocol_not_supported");
     return {

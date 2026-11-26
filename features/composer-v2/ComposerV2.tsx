@@ -432,7 +432,7 @@ function modelCapabilityLabels(model: CatalogModel): string[] {
   if (model.capabilities.reasoning) labels.push("Reasoning");
   if (model.capabilities.documentInputMode !== "none") labels.push("PDF and documents");
   if (model.capabilities.imageInput) labels.push("Images");
-  if (model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch) {
+  if (model.capabilities.nativeWebSearch) {
     labels.push("Web search");
   }
   if (model.capabilities.toolCalling) labels.push("Tools");
@@ -2016,7 +2016,7 @@ function modelCapabilityGlyphs(model: CatalogModel): ModelCapabilityGlyph[] {
   if (model.capabilities.reasoning) glyphs.push({ icon: "memory", label: "Reasoning" });
   if (model.capabilities.documentInputMode !== "none") glyphs.push({ icon: "file", label: "PDF and documents" });
   if (model.capabilities.imageInput) glyphs.push({ icon: "image", label: "Images" });
-  if (model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch) {
+  if (model.capabilities.nativeWebSearch) {
     glyphs.push({ icon: "globe", label: "Web search" });
   }
   if (model.capabilities.toolCalling) glyphs.push({ icon: "tool", label: "Tools" });

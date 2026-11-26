@@ -17,7 +17,6 @@ function model(input: Partial<CatalogModel> & Pick<CatalogModel, "modelId" | "pr
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: false,
       streaming: false,
       toolCalling: false

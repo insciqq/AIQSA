@@ -84,7 +84,7 @@ describe("usePowerAppShellViewModel", () => {
   it("counts decoded verified PDF pages rather than binary size without requiring extraction metadata", () => {
     const catalog: Catalog = { ...emptyCatalog, models: [{
       capabilities: { background: false, documentInputMode: "native_pdf", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        reasoning: false, streaming: true, toolCalling: true },
       contextWindow: 1_050_000, defaultParams: {}, displayName: "PDF model", modelId: "gpt-5.5", provider: "openai",
       parameterControls: defaultParameterControls(), searchStrategyIds: []
     }] };
@@ -119,7 +119,7 @@ describe("usePowerAppShellViewModel", () => {
     };
     const catalog: Catalog = { ...emptyCatalog, models: [{
       capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        reasoning: false, streaming: true, toolCalling: true },
       contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
       parameterControls: defaultParameterControls(), searchStrategyIds: []
     }] };
@@ -145,7 +145,7 @@ describe("usePowerAppShellViewModel", () => {
     const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
       catalog: { ...emptyCatalog, models: [{
         capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+          reasoning: false, streaming: true, toolCalling: true },
         contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
         parameterControls: defaultParameterControls(), searchStrategyIds: []
       }] },
@@ -229,7 +229,7 @@ describe("usePowerAppShellViewModel", () => {
     const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
       catalog: { ...emptyCatalog, models: [{
         capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+          reasoning: false, streaming: true, toolCalling: true },
         contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
         parameterControls: defaultParameterControls(), searchStrategyIds: []
       }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer",
@@ -286,7 +286,7 @@ describe("usePowerAppShellViewModel", () => {
     const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
       catalog: { ...emptyCatalog, models: [{
         capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+          reasoning: false, streaming: true, toolCalling: true },
         contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
         parameterControls: defaultParameterControls(), searchStrategyIds: []
       }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer",
@@ -320,7 +320,7 @@ describe("usePowerAppShellViewModel", () => {
     const input: Partial<Parameters<typeof usePowerAppShellViewModel>[0]> = {
       catalog: { ...emptyCatalog, models: [{
         capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-          openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+          reasoning: false, streaming: true, toolCalling: true },
         contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
         parameterControls: defaultParameterControls(), searchStrategyIds: []
       }] }, maxOutputTokens: "1024", renderActiveLeafId: "answer", activeChatStreaming: true,
@@ -392,7 +392,7 @@ describe("usePowerAppShellViewModel", () => {
     };
     const model = {
       capabilities: { background: false, documentInputMode: "none" as const, imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        reasoning: false, streaming: true, toolCalling: true },
       contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
       parameterControls: defaultParameterControls(), searchStrategyIds: []
     };
@@ -433,7 +433,7 @@ describe("usePowerAppShellViewModel", () => {
     };
     const catalog: Catalog = { ...emptyCatalog, models: [{
       capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true },
+        reasoning: false, streaming: true, toolCalling: true },
       contextWindow: 10000, defaultParams: {}, displayName: "Model", modelId: "gpt-5.5", provider: "openai",
       parameterControls: defaultParameterControls(), searchStrategyIds: []
     }] };

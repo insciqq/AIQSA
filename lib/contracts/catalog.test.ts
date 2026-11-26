@@ -32,7 +32,6 @@ function validResponse(): CatalogResponse {
             documentInputMode: "none",
             imageInput: false,
             nativeWebSearch: false,
-            openRouterPerplexitySearch: false,
             reasoning: true,
             streaming: true,
             text: true,

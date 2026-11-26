@@ -50,7 +50,7 @@ export function scheduledTaskFixture(overrides: Partial<ScheduledTask> = {}): Sc
 export function scheduledTaskCatalogFixture(): Catalog {
   const capabilities = {
     background: false, documentInputMode: "none" as const, imageInput: false, nativeWebSearch: false,
-    openRouterPerplexitySearch: false, reasoning: false, streaming: true, toolCalling: true
+    reasoning: false, streaming: true, toolCalling: true
   };
   return {
     defaults: {

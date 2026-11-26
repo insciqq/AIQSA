@@ -21,7 +21,6 @@ function catalogModel(modelId: string, provider: string): CatalogModel {
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: true,
-      openRouterPerplexitySearch: false,
       reasoning: true,
       streaming: true,
       toolCalling: true

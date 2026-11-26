@@ -205,7 +205,6 @@ const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["k
   ["deepseek_search_api", "web_search"],
   ["gemini_google_search", "gemini_google_search"],
   ["none", "none"],
-  ["perplexity_search", "perplexity_tool_search"],
   ["web_search", "web_search"]
 ]);
 
@@ -524,14 +523,7 @@ function routeBelongsToOption(
     return route.adapterKind === "provider_model_client" &&
       route.protocol === "deepseek_search_api";
   }
-  if (storedKind === "gemini_google_search") {
-    return route.protocol === "gemini_google_search";
-  }
-  if (storedKind === "perplexity_search") {
-    return route.adapterKind === "provider_model_client" &&
-      route.protocol === "openrouter_perplexity_chat";
-  }
-  return false;
+  return storedKind === "gemini_google_search" && route.protocol === "gemini_google_search";
 }
 
 export function searchStrategyToCatalogRoute(

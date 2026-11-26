@@ -110,8 +110,7 @@ export function supportedSearchOption(option: SearchOptionRouteRow): boolean {
   return (
     option.kind === "web_search" ||
     option.kind === "deepseek_search_api" ||
-    option.kind === "gemini_google_search" ||
-    option.kind === "perplexity_search"
+    option.kind === "gemini_google_search"
   ) && typeof option.sourceConnectionId === "string" && option.sourceConnectionId.length > 0;
 }
 
@@ -159,13 +158,9 @@ export function routeBelongsToOption(option: SearchOptionRouteRow, route: Resolv
   if (option.kind === "gemini_google_search") {
     return route.draft.protocol === "gemini_google_search";
   }
-  if (option.kind === "deepseek_search_api") {
-    return route.draft.adapterKind === "provider_model_client" &&
-      route.draft.protocol === "deepseek_search_api";
-  }
-  return option.kind === "perplexity_search" &&
+  return option.kind === "deepseek_search_api" &&
     route.draft.adapterKind === "provider_model_client" &&
-    route.draft.protocol === "openrouter_perplexity_chat";
+    route.draft.protocol === "deepseek_search_api";
 }
 
 /** A source's routes of its own kind, one per adapter kind; null when two compete. */

@@ -102,7 +102,6 @@ export function normalizeSearchDraft(value: unknown): AdminSearchDraft {
     (!hosted && credentialMode !== "provider_model") ||
     (hosted && normalized.providerModelId !== null) ||
     (!hosted && normalized.providerModelId === null) ||
-    (protocol === "openrouter_perplexity_chat" && hosted) ||
     (protocol === "openrouter_web_search" && hosted) ||
     (protocol === "deepseek_search_api" &&
       (hosted || normalized.queryMaxCharacters > DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS))
@@ -142,7 +141,6 @@ export function searchStrategyKind(
       : "provider_model_web_search";
   }
   if (protocol === "gemini_google_search") return "gemini_google_search";
-  if (protocol === "openrouter_perplexity_chat") return "perplexity_tool_search";
   if (protocol === "deepseek_search_api" || protocol === "openrouter_web_search") return "provider_model_web_search";
   return adapterKind === "answer_provider_hosted"
     ? "openai_native_web_search"
@@ -153,7 +151,7 @@ export function compatibleTechnicalAdapter(protocol: SearchProtocol, adapterKind
   if (protocol === "anthropic_web_search") {
     return adapterKind === "anthropic_messages";
   }
-  if (protocol === "openrouter_perplexity_chat" || protocol === "openrouter_web_search") {
+  if (protocol === "openrouter_web_search") {
     return adapterKind === "openrouter_chat_completions";
   }
   if (protocol === "openai_responses_web_search") {
@@ -197,19 +195,13 @@ export function builtInSearchDraft(input: Readonly<{
     };
   }
   return {
-    adapterKind: input.kind === "perplexity_tool_search"
-      ? "provider_model_client"
-      : "answer_provider_hosted",
-    credentialMode: input.kind === "perplexity_tool_search"
-      ? "provider_model"
-      : "answer_provider",
+    adapterKind: "answer_provider_hosted",
+    credentialMode: "answer_provider",
     maxOutputTokens: adminSearchExecutionDefaults.maxOutputTokens,
     protocol: input.kind === "anthropic_native_web_search"
       ? "anthropic_web_search"
       : input.kind === "gemini_google_search"
         ? "gemini_google_search"
-      : input.kind === "perplexity_tool_search"
-        ? "openrouter_perplexity_chat"
         : "openai_responses_web_search",
     providerModelId: input.providerModelId ?? null,
     queryMaxCharacters: adminSearchExecutionDefaults.queryMaxCharacters,

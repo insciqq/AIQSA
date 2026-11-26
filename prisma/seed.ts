@@ -449,11 +449,6 @@ async function main() {
       modelTemplateKey: "anthropic:claude-opus-4-8"
     },
     {
-      id: "00000000-0000-4000-8000-000000000404",
-      groupId: ids.group,
-      modelTemplateKey: "openrouter:perplexity/sonar-pro-search"
-    },
-    {
       id: "00000000-0000-4000-8000-000000000407",
       groupId: ids.group,
       modelTemplateKey: "openrouter:anthropic/claude-opus-4.8"
@@ -472,11 +467,6 @@ async function main() {
       id: "00000000-0000-4000-8000-000000000405",
       groupId: ids.group,
       searchStrategy: "openai-native-web-search"
-    },
-    {
-      id: "00000000-0000-4000-8000-000000000411",
-      groupId: ids.group,
-      searchStrategy: "perplexity-tool-search"
     }
   ];
 

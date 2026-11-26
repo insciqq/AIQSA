@@ -181,19 +181,16 @@ function providerModelConfiguration(value: unknown) {
 }
 
 function logicalKind(value: unknown): AdminSearchKind | null {
-  return value === "deepseek_search_api" || value === "gemini_google_search" ||
-    value === "perplexity_search" || value === "web_search"
+  return value === "deepseek_search_api" || value === "gemini_google_search" || value === "web_search"
     ? value
     : null;
 }
 
-/** The stored kind of a draft's source. OpenRouter's web search is a
- * `web_search` source of its OpenRouter connection, beside that connection's
- * Perplexity Sonar source (`perplexity_search`). */
+/** The stored kind of a draft's source. OpenRouter's web search is the
+ * `web_search` source of its OpenRouter connection. */
 function draftKind(draft: AdminSearchDraft): AdminSearchKind {
   if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
-  if (draft.protocol === "openrouter_perplexity_chat") return "perplexity_search";
   return "web_search";
 }
 
@@ -204,8 +201,7 @@ function clientSearchKind(adapterKind: string): AdminSearchProviderModelOption["
   if (adapterKind === "openai_responses_native" || adapterKind === "openai_responses_compatible") {
     return "web_search";
   }
-  if (adapterKind === "gemini_interactions_native") return "gemini_google_search";
-  return adapterKind === "openrouter_chat_completions" ? "perplexity_search" : null;
+  return adapterKind === "gemini_interactions_native" ? "gemini_google_search" : null;
 }
 
 function draftClientSearchKind(
@@ -214,8 +210,7 @@ function draftClientSearchKind(
   if (draft.protocol === "anthropic_web_search") return "anthropic_web_search";
   if (draft.protocol === "deepseek_search_api") return "deepseek_search_api";
   if (draft.protocol === "gemini_google_search") return "gemini_google_search";
-  if (draft.protocol === "openrouter_web_search") return "openrouter_web_search";
-  return draft.protocol === "openrouter_perplexity_chat" ? "perplexity_search" : "web_search";
+  return draft.protocol === "openrouter_web_search" ? "openrouter_web_search" : "web_search";
 }
 
 function materialIdentity(draft: AdminSearchDraft): string {

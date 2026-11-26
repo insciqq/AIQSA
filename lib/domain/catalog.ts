@@ -63,7 +63,7 @@ export type SearchStrategyRouteCatalogEntry = {
   config: Record<string, unknown>;
   credentialMode: "answer_provider" | "provider_model";
   executionModes: readonly SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "openai_native_web_search" | "provider_model_web_search";
   physicalStrategyId: string;
   protocol: SearchProtocol;
   providerModelId?: string;
@@ -77,7 +77,7 @@ export type SearchStrategyRouteCatalogEntry = {
 export type SearchStrategyCatalogEntry = {
   description: string;
   displayName: string;
-  kind: "gemini_google_search" | "none" | "perplexity_tool_search" | "web_search";
+  kind: "gemini_google_search" | "none" | "web_search";
   routes: SearchStrategyRouteCatalogEntry[];
   sourceConnectionId?: string;
   strategyId: string;
@@ -816,55 +816,6 @@ const defaultProviderModelTemplates: ProviderModelTemplate[] = [
         supported: true
       }
     })
-  },
-  {
-    provider: "openrouter",
-    modelId: "perplexity/sonar-pro-search",
-    answerSelectable: false,
-    displayName: "Perplexity Sonar Pro Search",
-    contextWindow: 200000,
-    capabilities: {
-      backgroundStreaming: false,
-      nativeBackground: false,
-      nativePdfInput: false,
-      nativeSearch: true,
-      parallelToolCalls: true,
-      pdf: false,
-      reasoning: false,
-      streaming: true,
-      toolCalling: true,
-      vision: false
-    },
-    defaultParams: {
-      ...openRouterParams,
-      maxTokens: 8192,
-      provider: {
-        ...openRouterParams.provider,
-        order: ["perplexity"]
-      },
-      // Hide reasoning text without disabling the provider's reasoning default.
-      reasoning: {
-        exclude: true
-      },
-      temperature: neutralTemperature
-    },
-    parameterControls: controls({
-      maxOutputTokens: {
-        defaultValue: 8192,
-        maxValue: 8192
-      },
-      reasoningEffort: noReasoningControls,
-      stream: {
-        defaultValue: true,
-        supported: true
-      },
-      temperature: {
-        defaultValue: neutralTemperature,
-        maxValue: 2,
-        minValue: 0,
-        supported: true
-      }
-    })
   }
 ];
 
@@ -1163,35 +1114,5 @@ export const defaultSearchStrategies: SearchStrategyCatalogEntry[] = [
     }],
     sourceConnectionId: "gemini",
     strategyId: "gemini-google-search"
-  },
-  {
-    description: "Web evidence from Perplexity through OpenRouter.",
-    displayName: "Perplexity",
-    kind: "perplexity_tool_search",
-    routes: [{
-      adapterKind: "provider_model_client",
-      config: {
-        executor: { modelId: "perplexity/sonar-pro-search", provider: "openrouter" },
-        params: { maxOutputTokens: 1024, temperature: 0 },
-        routeProvider: {
-          allowFallbacks: true,
-          dataCollection: "deny",
-          order: ["perplexity"],
-          requireParameters: false,
-          sort: "throughput",
-          zdr: false
-        }
-      },
-      credentialMode: "provider_model",
-      executionModes: ["all_selected", "model_choice"],
-      kind: "perplexity_tool_search",
-      physicalStrategyId: "perplexity-tool-search",
-      protocol: "openrouter_perplexity_chat",
-      providerModelId: "perplexity/sonar-pro-search",
-      revisionId: "template:perplexity-tool-search:v1",
-      searchStrategyRowId: "perplexity-tool-search"
-    }],
-    sourceConnectionId: "openrouter",
-    strategyId: "perplexity-tool-search"
   }
 ];

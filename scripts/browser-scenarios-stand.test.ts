@@ -27,9 +27,9 @@ describe("production Search setup and OpenRouter", () => {
     for (const connections of [
       [],
       [connection("router", "openrouter", [model("openai/gpt-6-astra")])],
-      [connection("router", "openrouter", [model("perplexity/sonar-pro-search", "openrouter_chat_completions", false)])],
-      [connection("router", "openrouter", [model("perplexity/sonar-pro-search")], false)],
-      [connection("compatible", "openai_compatible", [model("perplexity/sonar-pro-search", "openai_chat_completions_compatible")])]
+      [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash", "openrouter_chat_completions", false)])],
+      [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash")], false)],
+      [connection("compatible", "openai_compatible", [model("deepseek/deepseek-v4.1-flash", "openai_chat_completions_compatible")])]
     ]) {
       const calls = stand(connections);
       await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", deepseekKey: "synthetic", searchModel: "search-model-1",
@@ -47,7 +47,7 @@ describe("production Search setup and OpenRouter", () => {
       const method = init.method ?? "GET";
       calls.push(`${method} ${url.pathname}`);
       if (url.pathname === "/api/admin/providers" && method === "GET") {
-        return Response.json({ connections: added ? [connection("router", "openrouter", [model("perplexity/sonar-pro-search")])] : [] });
+        return Response.json({ connections: added ? [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash")])] : [] });
       }
       if (url.pathname === "/api/admin/providers/quick-setup" && method === "GET") return Response.json({ providers: [{ provider: "openrouter", stateToken: "state-1" }] });
       if (url.pathname === "/api/admin/providers/quick-setup" && method === "POST") {
@@ -84,8 +84,8 @@ describe("production Search setup and OpenRouter", () => {
 
   it("reuses only a live OpenRouter connection with a key and the exact model on OpenRouter's adapter", async () => {
     const calls = stand([connection("other", "openrouter", [model("openai/gpt-6-astra")]),
-      connection("router", "openrouter", [model("openai/gpt-6-astra"), model("perplexity/sonar-pro-search")])]);
-    await expect(perplexitySearchConnection(api, "perplexity/sonar-pro-search")).resolves.toBe("router");
+      connection("router", "openrouter", [model("openai/gpt-6-astra"), model("deepseek/deepseek-v4.1-flash")])]);
+    await expect(perplexitySearchConnection(api, "deepseek/deepseek-v4.1-flash")).resolves.toBe("router");
     expect(calls).toEqual(["GET /api/admin/providers"]);
   });
 });

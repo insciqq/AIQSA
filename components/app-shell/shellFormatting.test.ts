@@ -275,7 +275,6 @@ describe("shell labels", () => {
       documentInputMode: "native_pdf",
       imageInput: true,
       nativeWebSearch: true,
-      openRouterPerplexitySearch: false,
       reasoning: true,
       streaming: true,
       toolCalling: true

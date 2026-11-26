@@ -5,9 +5,6 @@ import { validateRunParams } from "../../domain/runParams";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import { configuredModelParameterControls } from "../providers/providerModelCapabilities";
 import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
-import type { OpenRouterChatClient } from "../providers/openRouterChatTransport";
-import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
-import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
@@ -1234,108 +1231,21 @@ describe("provider admission", () => {
       });
     });
 
-    it("sends a migrated Perplexity Sonar template, chosen as the engine, with hidden, not disabled, reasoning", async () => {
-      // activeConfig.defaultParams after 20260928220000_perplexity_legacy_reasoning:
-      // only the former template reasoning object became {exclude: true}.
-      const perplexityModel: ModelSpec = {
-        adapterKind: "openrouter_chat_completions",
-        answerSelectable: false,
-        connectionId: "connection-openrouter",
-        defaultParams: {
-          maxTokens: 8192,
-          provider: { allowFallbacks: true, dataCollection: "deny", order: ["perplexity"], sort: "throughput" },
-          reasoning: { exclude: true },
-          stream: true,
-          temperature: 1
-        },
-        family: "openrouter",
-        id: "model-perplexity-search",
-        nativeSearch: true,
-        upstreamModelId: "perplexity/sonar-pro-search"
-      };
-      const option: OptionSpec = {
-        displayName: "Perplexity Search",
-        kind: "perplexity_search",
-        optionId: "perplexity-tool-search",
-        routes: [{
-          adapterKind: "provider_model_client",
-          id: "route-perplexity-client",
-          protocol: "openrouter_perplexity_chat",
-          providerModelId: perplexityModel.id,
-          revisionId: "revision-perplexity-client"
-        }],
-        sourceConnectionId: perplexityModel.connectionId
-      };
-      const { db } = admissionDb({
-        answer: anthropic, options: [option], policy: { engineOptionId: option.optionId }, technicalModels: [perplexityModel]
-      });
-      const search = expectSearch(await admit(db, anthropic));
-      const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () => ({
-        choices: [{ finish_reason: "stop", message: { content: "Fact [1].", role: "assistant" } }],
-        citations: ["https://example.com/source"],
-        id: "or-search", model: "perplexity/sonar-pro-search", object: "chat.completion",
-        usage: { completion_tokens: 3, prompt_tokens: 5 }
-      }));
-      const router = createSearchPlanToolRouter({
-        plan: {
-          mode: "engine",
-          options: [{
-            adapterKind: search.configuration.adapterKind,
-            config: search.configuration.config,
-            credentialMode: search.configuration.credentialMode,
-            displayName: search.configuration.displayName,
-            executionModes: search.configuration.executionModes,
-            modelId: search.configuration.modelId,
-            optionId: search.optionId,
-            protocol: search.configuration.protocol,
-            provider: search.configuration.provider,
-            providerModelId: search.configuration.providerModelId,
-            revisionId: search.revisionId,
-            searchStrategyRowId: search.integrationId,
-            use: search.use
-          }]
-        },
-        runtimes: {
-          [search.optionId]: {
-            adapter: {
-              buildRequestPreview: () => ({}),
-              async *stream() {
-                throw new Error("answer_adapter_must_not_execute_search");
-              }
-            },
-            responseTimeoutMs: 300_000,
-            searchAdapter: createOpenRouterPerplexitySearchAdapter({ client: { createChatCompletion } })
-          }
-        }
-      })!;
-      expect(router.tools.map((tool) => tool.name)).toEqual(["web_search"]);
-      const logs = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-      try {
-        const result = await router.execute({ arguments: { query: "bounded query" }, id: "call-1", name: "web_search" }, {});
-        expect(result.status).not.toBe("error");
-      } finally {
-        logs.mockRestore();
-      }
-
-      expect(createChatCompletion).toHaveBeenCalledOnce();
-      const body = createChatCompletion.mock.calls[0]![0];
-      expect(body).toMatchObject({ model: "perplexity/sonar-pro-search", stream: false });
-      expect(body.reasoning).toEqual({ exclude: true });
-      expect(JSON.stringify(body)).not.toMatch(/"enabled"|"effort"/u);
-    });
-
-    it("never lets Sonar search for itself as the answer model", async () => {
-      const sonarAnswer: ModelSpec = {
-        ...openRouterModel, answerSelectable: true, id: "model-sonar", nativeSearch: true, toolCalling: true
-      };
-      const option: OptionSpec = {
+    it("never searches through Perplexity Sonar, retired, even where a policy still names it, and replaces it with nothing", async () => {
+      // Sonar's stored kind and protocol, as a row the 2026-11-26 upgrade had not archived yet.
+      const sonar: OptionSpec = {
         displayName: "Perplexity Sonar", kind: "perplexity_search", optionId: "perplexity-tool-search",
         routes: [{ adapterKind: "provider_model_client", id: "route-sonar", protocol: "openrouter_perplexity_chat",
-          providerModelId: sonarAnswer.id, revisionId: "revision-sonar" }],
-        sourceConnectionId: sonarAnswer.connectionId
+          providerModelId: openRouterModel.id, revisionId: "revision-sonar" }],
+        sourceConnectionId: openRouterModel.connectionId
       };
-      const { db } = admissionDb({ answer: sonarAnswer, options: [option], policy: { engineOptionId: option.optionId } });
-      expect((await admit(db, sonarAnswer)).searchUnavailable).toBe("search_engine_unavailable");
+      const { db } = admissionDb({
+        answer: anthropic, options: [sonar, openAiOption()], policy: { engineOptionId: sonar.optionId },
+        technicalModels: [openRouterModel, officialOpenAiSearchModel]
+      });
+      const plan = await admit(db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_engine_unavailable");
     });
   });
 });

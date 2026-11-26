@@ -179,4 +179,11 @@ describe("Search adapter configuration", () => {
       expect(decodeAdminSearchDraft({ ...stored, protocol: "deepseek_responses_web_search" })).toBeNull();
     }
   });
+
+  it("refuses a stored draft of Perplexity Sonar, so its route reads as unavailable", () => {
+    // Retired 2026-11-26; the upgrade archived its sources, whose revisions still name it.
+    expect(() => normalizeSearchDraft({ ...clientDraft, protocol: "openrouter_perplexity_chat" }))
+      .toThrow("search_configuration_invalid");
+    expect(decodeAdminSearchDraft({ ...clientDraft, protocol: "openrouter_perplexity_chat" })).toBeNull();
+  });
 });

@@ -18,7 +18,7 @@ import type { SubagentThreadLookup, SubagentTurnRecord } from "./threadStore";
 const parent = { connectionId: "connection-1", effort: "high", efforts: ["low", "high"], providerModelId: "pm-sol", upstreamModelId: "gpt-6-sol" };
 
 const catalog = freezeSubagentModels([{
-  capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false,
+  capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
     reasoning: true, streaming: true, text: true, toolCalling: true },
   contextWindow: 100_000, defaultParams: {}, displayName: "Luna", modelId: "pm-luna",
   parameterControls: { reasoningEffort: { defaultValue: "low", options: ["low"], supported: true } } as never,

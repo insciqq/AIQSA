@@ -35,7 +35,7 @@ export const SEARCH_OPTION: CatalogWireSearchStrategy = {
 export function fakeCatalogModel(overrides: Partial<TelegramCatalogModel> = {}): TelegramCatalogModel {
   return {
     capabilities: {
-      background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false,
+      background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
       reasoning: false, streaming: true, text: true, toolCalling: true
     },
     contextWindow: 16_384,

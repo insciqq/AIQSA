@@ -767,12 +767,12 @@ export function researchAttributionCounts(attribution: ReturnType<typeof researc
     sources: Object.fromEntries(Object.entries(attribution.sources).map(([name, entry]) => [name, { cited: entry.urls.length, only: entry.only }])) };
 }
 
-/** The model production's Perplexity source searches with through OpenRouter. */
-export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "perplexity/sonar-pro-search";
+/** The technical model OpenRouter's web search with Perplexity runs on (Perplexity Sonar is retired, 2026-11-26). */
+export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "deepseek/deepseek-v4.1-flash";
 /** Production's Search plan for the acceptance run: each source, its protocol, and the upstream model its client route searches with. */
 export const RESEARCH_PRODUCTION_SEARCH = Object.freeze([
   { label: "openai", kind: "web_search", protocol: "openai_responses_web_search" },
-  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
+  { label: "perplexity", kind: "web_search", protocol: "openrouter_web_search", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
   { label: "deepseek", kind: "deepseek_search_api", protocol: "deepseek_search_api" }
 ] as const);
 /** The production sources `AIQSA_SUBAGENTS_T_SEARCH_SOURCES` picks from, in the plan's order: research must work with any one of them. */

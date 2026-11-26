@@ -533,7 +533,7 @@ describe("scheduled task admission on the agent engine", () => {
 
 describe("scheduled task search plan", () => {
   const capabilities = { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-    openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true } as const;
+    reasoning: false, streaming: true, text: true, toolCalling: true } as const;
   const options = [{
     displayName: "Web search", executionModes: ["all_selected" as const, "model_choice" as const], kind: "web_search" as const,
     strategyId: "web-search"

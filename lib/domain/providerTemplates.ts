@@ -33,6 +33,7 @@ export function isUnconfiguredProviderTemplate(connection: Readonly<{
     connection.activeVersion === 0 && connection.credentials.length === 0;
 }
 
+/** Never reuse an id: `…001210` was Perplexity Sonar Pro Search (retired 2026-11-26), whose rows installations keep. */
 export const providerModelTemplateIds = Object.freeze({
   "openai:gpt-6-sol": "00000000-0000-4000-8000-000000001246",
   "openai:gpt-6-luna": "00000000-0000-4000-8000-000000001247",
@@ -114,7 +115,6 @@ export const providerModelTemplateIds = Object.freeze({
   "openrouter:openai/gpt-6-astra": "00000000-0000-4000-8000-000000001230",
   "openrouter:cohere/rerank-4-pro": "00000000-0000-4000-8000-000000001218",
   "openrouter:google/gemini-3.5-flash": "00000000-0000-4000-8000-000000001208",
-  "openrouter:perplexity/sonar-pro-search": "00000000-0000-4000-8000-000000001210",
   "openrouter:qwen/qwen3-reranker-8b": "00000000-0000-4000-8000-000000001219",
   "openrouter:qwen/qwen3-embedding-8b": "00000000-0000-4000-8000-000000001231",
   "openrouter:voyageai/rerank-2.5": "00000000-0000-4000-8000-000000001217",

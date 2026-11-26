@@ -541,7 +541,7 @@ describe("acceptance options", () => {
     // DeepSeek's source borrows any DeepSeek model's key, so only its protocol is compared.
     expect(researchSearchSourceStatus({ ...source, configuration: { ...source.configuration, protocol: "deepseek_search_api", providerModelId: "other" },
       draftTestEvidence: { ...source.draftTestEvidence, protocol: "deepseek_search_api" } }, { protocol: "deepseek_search_api" })).toBe("ok");
-    expect(RESEARCH_PRODUCTION_SEARCH.map((entry) => entry.protocol)).toEqual(["openai_responses_web_search", "openrouter_perplexity_chat", "deepseek_search_api"]);
+    expect(RESEARCH_PRODUCTION_SEARCH.map((entry) => entry.protocol)).toEqual(["openai_responses_web_search", "openrouter_web_search", "deepseek_search_api"]);
   });
 
   it("attributes the cited records' links to the Search sources that returned them, in fetch_url's form", () => {

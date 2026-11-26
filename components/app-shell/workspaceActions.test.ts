@@ -148,7 +148,6 @@ function catalogModel(modelId: string, displayName: string): Catalog["models"][n
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: false,
       streaming: true,
       toolCalling: false
@@ -1483,7 +1482,6 @@ describe("workspace actions", () => {
             documentInputMode: "none",
             imageInput: false,
             nativeWebSearch: false,
-            openRouterPerplexitySearch: false,
             reasoning: false,
             streaming: true,
             toolCalling: false

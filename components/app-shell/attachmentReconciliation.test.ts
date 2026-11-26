@@ -19,7 +19,6 @@ const textOnlyModel: CatalogModel = {
     documentInputMode: "none",
     imageInput: false,
     nativeWebSearch: false,
-    openRouterPerplexitySearch: false,
     reasoning: false,
     streaming: true,
     toolCalling: false

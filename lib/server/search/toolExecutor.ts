@@ -355,7 +355,8 @@ export function searchExecutionConfiguration(option: NormalizedSearchPlanOption,
 }
 
 /** The engine request, or null for a protocol this release does not search
- * through, such as DeepSeek's retired hosted Search in a frozen plan. */
+ * through, such as DeepSeek's retired hosted Search or Perplexity Sonar in a
+ * frozen plan. */
 function queryOnlyRequest(
   correlationId: string,
   option: NormalizedSearchPlanOption,
@@ -363,26 +364,7 @@ function queryOnlyRequest(
 ): ProviderSearchRequest | null {
   const configured = searchExecutionConfiguration(option, { query });
   let searchPolicy: ProviderSearchPolicy;
-  if (option.protocol === "openrouter_perplexity_chat") {
-    searchPolicy = {
-      controls: {
-        maxOutputTokens: {
-          defaultValue: configured.maxOutputTokens,
-          maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
-        },
-        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
-      },
-      defaultParams: {
-        ...configured.defaultParams,
-        maxOutputTokens: configured.maxOutputTokens,
-        stream: false,
-        temperature: 0
-      },
-      modelId: option.modelId ?? "",
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    };
-  } else if (
+  if (
     option.protocol === "openai_responses_web_search" &&
     (option.provider === "openai" || option.provider === "openai_compatible")
   ) {

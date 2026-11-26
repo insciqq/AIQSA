@@ -33,7 +33,6 @@ export const searchProtocols = [
   "deepseek_search_api",
   "gemini_google_search",
   "openai_responses_web_search",
-  "openrouter_perplexity_chat",
   "openrouter_web_search"
 ] as const;
 export type SearchProtocol = (typeof searchProtocols)[number];
@@ -140,7 +139,7 @@ export type SearchEngineIdentity = Readonly<{ openRouterEngine?: string | null; 
  * The default engine order when the administrator chose none (operator decision 2026-11-26, after the eval's run 2):
  * OpenAI web search as a client engine (a technical model on an OpenAI-protocol connection, free on Codex LB), then
  * OpenRouter's web search with Perplexity, the DeepSeek Search API, Gemini Google Search and Anthropic web search.
- * OpenRouter's Parallel and Exa and Perplexity Sonar may be chosen but are never defaults.
+ * OpenRouter's Parallel and Exa may be chosen but are never defaults.
  */
 export const SEARCH_ENGINE_DEFAULT_ORDER: readonly Readonly<{ openRouterEngine?: string; protocol: SearchProtocol }>[] =
   Object.freeze([

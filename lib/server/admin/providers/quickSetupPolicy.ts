@@ -19,7 +19,7 @@ import {
 } from "../../providers/providerConfiguration";
 import { supportsPdfInputAdapter } from "../../providers/pdfInputEvidence";
 
-export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 14;
+export const ADMIN_PROVIDER_QUICK_SETUP_POLICY_VERSION = 15;
 
 type QuickSetupCandidateDefinition = Readonly<{
   candidateId: string;
@@ -335,11 +335,6 @@ const candidateDefinitions: Readonly<Record<
       candidateId: "p7-r5",
       recommended: false,
       templateKey: "openrouter:openai/gpt-6-astra"
-    }),
-    Object.freeze({
-      candidateId: "p7-r-search",
-      recommended: false,
-      templateKey: "openrouter:perplexity/sonar-pro-search"
     }),
     Object.freeze({
       candidateId: "p1-r1",

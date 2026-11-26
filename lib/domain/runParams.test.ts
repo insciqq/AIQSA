@@ -175,13 +175,10 @@ describe("run parameter validation", () => {
   });
 
   it("accepts only canonical bounded ordinary tool-search controls", () => {
-    const searchModelControls = modelControls(
-      "openrouter",
-      "perplexity/sonar-pro-search"
-    );
+    // A technical search model's bounded controls.
     const searchControls = {
-      maxOutputTokens: searchModelControls.maxOutputTokens,
-      temperature: searchModelControls.temperature
+      maxOutputTokens: { defaultValue: 8192, maxValue: 8192 },
+      temperature: { defaultValue: 1, maxValue: 2, minValue: 0, supported: true }
     };
 
     expect(

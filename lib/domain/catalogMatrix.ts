@@ -149,17 +149,14 @@ function clientRouteCompatible(
   if (option.kind === "gemini_google_search") {
     return route.protocol === "gemini_google_search";
   }
-  if (option.kind === "web_search") {
-    // The DeepSeek Search API and OpenRouter's web search are web_search
-    // sources of their own, reached only through this client route.
-    return route.protocol === "anthropic_web_search" ||
-      route.protocol === "deepseek_search_api" ||
-      route.protocol === "openai_responses_web_search" ||
-      route.protocol === "openrouter_web_search";
-  }
-  return option.kind === "perplexity_tool_search" &&
-    route.protocol === "openrouter_perplexity_chat" &&
-    (route.providerModelId !== model.modelId || option.sourceConnectionId !== model.provider);
+  // The DeepSeek Search API and OpenRouter's web search are web_search
+  // sources of their own, reached only through this client route.
+  return option.kind === "web_search" && (
+    route.protocol === "anthropic_web_search" ||
+    route.protocol === "deepseek_search_api" ||
+    route.protocol === "openai_responses_web_search" ||
+    route.protocol === "openrouter_web_search"
+  );
 }
 
 export function compatibleSearchRoutesForModel(
@@ -221,7 +218,6 @@ export function buildCatalogModel(
   const searchOptionCompatibility: NonNullable<CatalogModel["searchOptionCompatibility"]> = webSearch
     ? { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] } }
     : {};
-  const openRouterPerplexitySearch = webSearch === "engine" && search.engine?.protocol === "openrouter_perplexity_chat";
   const controls = model.parameterControls;
   const reasoningDefaults = controls.reasoningEffort.supported
     ? {
@@ -274,7 +270,6 @@ export function buildCatalogModel(
           model.adapterKind === "openai_responses_compatible" ||
           model.adapterKind === "gemini_interactions_native") &&
         model.capabilities.nativeSearch,
-      openRouterPerplexitySearch,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,
       text: true,

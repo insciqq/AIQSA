@@ -79,13 +79,12 @@ describe("catalog capability matrix", () => {
     });
   });
 
-  it("exposes one OpenAI Search source and Perplexity to an OpenAI model", () => {
+  it("exposes one OpenAI Search source to an OpenAI model", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
       "openai-native-web-search",
-      "perplexity-tool-search",
       "search-disabled"
     ]);
   });
@@ -398,7 +397,6 @@ describe("catalog capability matrix", () => {
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
-      "perplexity-tool-search",
       "search-disabled"
     ]);
   });
@@ -447,27 +445,6 @@ describe("catalog capability matrix", () => {
       ...openAI!,
       capabilities: { ...openAI!.capabilities, toolCalling: false }
     }, anthropicSearch)).toBeNull();
-  });
-
-  it("excludes only the exact Perplexity technical deployment from answering with itself", () => {
-    const technical = defaultProviderModels.find(
-      (entry) => entry.provider === "openrouter" && entry.modelId === "perplexity/sonar-pro-search"
-    );
-    expect(technical).toBeDefined();
-    expect(availableSearchStrategiesForModel(technical!, defaultSearchStrategies)).not.toContain(
-      "perplexity-tool-search"
-    );
-
-    const sameModelIdOnAnotherConnection = {
-      ...technical!,
-      adapterKind: "openai_responses_compatible" as const,
-      provider: "custom-connection",
-      providerFamily: "openai_compatible"
-    };
-    expect(availableSearchStrategiesForModel(
-      sameModelIdOnAnotherConnection,
-      defaultSearchStrategies
-    )).toContain("perplexity-tool-search");
   });
 
   it("offers one logical OpenAI Search through its query-only route to tool-capable models", () => {
@@ -532,7 +509,7 @@ describe("catalog capability matrix", () => {
 
     // Without native web search, Claude searches with the installation's engine.
     expect(buildCatalogModel(claude, engine)).toMatchObject({
-      capabilities: { nativeWebSearch: false, openRouterPerplexitySearch: false },
+      capabilities: { nativeWebSearch: false },
       searchOptionCompatibility: { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true } },
       searchStrategyIds: [WEB_SEARCH_OPTION_ID],
       webSearch: "engine"
@@ -544,7 +521,7 @@ describe("catalog capability matrix", () => {
     expect(buildCatalogModel(gpt, { ...engine, engine: { protocol: "deepseek_search_api", usable: false } }).webSearch).toBe("in_answer");
     expect(buildCatalogModel(claude, { ...engine, engine: null })).toMatchObject({ searchStrategyIds: [], webSearch: null });
     expect(buildCatalogModel(gpt, { ...engine, entitled: false })).toMatchObject({ searchStrategyIds: [], webSearch: null });
-    expect(catalogModelWebSearch(claude, { ...engine, engine: { protocol: "openrouter_perplexity_chat", usable: true } }))
+    expect(catalogModelWebSearch(claude, { ...engine, engine: { protocol: "openrouter_web_search", usable: true } }))
       .toBe("engine");
   });
 
@@ -580,15 +557,15 @@ describe("catalog capability matrix", () => {
     expect(model).not.toHaveProperty("routeProviderPreferences");
 
     const strategyTemplate = defaultSearchStrategies.find(
-      ({ strategyId }) => strategyId === "perplexity-tool-search"
+      ({ strategyId }) => strategyId === "openai-native-web-search"
     );
     expect(strategyTemplate).toBeDefined();
     const strategy = toCatalogSearchStrategy(strategyTemplate!);
     expect(strategy).toEqual({
-      description: "Web evidence from Perplexity through OpenRouter.",
-      displayName: "Perplexity",
-      kind: "perplexity_tool_search",
-      strategyId: "perplexity-tool-search"
+      description: "Web evidence from OpenAI Search.",
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      strategyId: "openai-native-web-search"
     });
     expect(strategy).not.toHaveProperty("config");
     expect(strategy).not.toHaveProperty("providerModelId");

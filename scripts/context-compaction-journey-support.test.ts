@@ -201,7 +201,7 @@ describe("probe answer check", () => {
 function catalogModel(overrides: Partial<CatalogModel>): CatalogModel {
   return {
     capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-      openRouterPerplexitySearch: false, reasoning: true, streaming: true, toolCalling: true },
+      reasoning: true, streaming: true, toolCalling: true },
     contextWindow: 32_768,
     defaultParams: {},
     displayName: "Model",

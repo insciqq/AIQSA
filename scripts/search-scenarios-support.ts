@@ -144,7 +144,6 @@ export function engineLabel(engine: Readonly<{ openRouterEngine: string | null; 
   switch (engine.protocol) {
     case "openai_responses_web_search": return "openai_client";
     case "openrouter_web_search": return `openrouter_${engine.openRouterEngine && /^[a-z0-9_]{1,32}$/u.test(engine.openRouterEngine) ? engine.openRouterEngine : "other"}`;
-    case "openrouter_perplexity_chat": return "perplexity_sonar";
     case "deepseek_search_api": return "deepseek";
     case "gemini_google_search": return "gemini";
     case "anthropic_web_search": return "anthropic";

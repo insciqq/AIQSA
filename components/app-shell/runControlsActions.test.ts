@@ -22,7 +22,6 @@ function openRouterModel(
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: reasoningEffort.supported,
       streaming: true,
       toolCalling: true

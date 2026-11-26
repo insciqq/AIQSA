@@ -63,7 +63,7 @@ type Engine = Readonly<{
 
 const ENGINES: readonly Engine[] = [
   { key: "DEEPSEEK_API_KEY", kind: "deepseek_search_api", name: "deepseek-search-api", prefer: /pro/iu, provider: "deepseek" },
-  { key: "OPENROUTER_API_KEY", kind: "perplexity_search", name: "perplexity", prefer: /flash/iu, provider: "openrouter" },
+  { key: "OPENROUTER_API_KEY", kind: "web_search", name: "perplexity", prefer: /flash/iu, provider: "openrouter" },
   { key: "OPENAI_API_KEY", kind: "web_search", name: "openai", prefer: /luna/iu, provider: "openai" },
   { key: "GEMINI_API_KEY", kind: "gemini_google_search", name: "google", prefer: /flash-lite|flash/iu, provider: "gemini" }
 ];

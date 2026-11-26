@@ -19,19 +19,18 @@ import { OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS } from "../../../domain/catalog"
 const searchProtocols = {
   anthropic_web_search: "anthropic_web_search", deepseek_search_api: "deepseek_search_api",
   gemini_google_search: "gemini_google_search", openrouter_web_search: "openrouter_web_search",
-  perplexity_search: "openrouter_perplexity_chat", web_search: "openai_responses_web_search"
+  web_search: "openai_responses_web_search"
 } as const satisfies Record<AdminSearchProviderModelOption["searchKind"], AdminSearchDraft["protocol"]>;
 
-/** A Search source provider setup owns on the connection: its own (the
- * provider's Search, Perplexity Sonar on OpenRouter), the DeepSeek Search API,
- * or OpenRouter's web search. */
+/** A Search source provider setup owns on the connection: the provider's own
+ * Search, the DeepSeek Search API, or OpenRouter's web search. */
 type SetupSearch = "deepseek_search_api" | "openrouter_web_search" | "own";
 
-function setupSourceKind(setupSearch: SetupSearch, family: string, kind: AdminSearchIntegration["kind"]): boolean {
+function setupSourceKind(setupSearch: SetupSearch, kind: AdminSearchIntegration["kind"]): boolean {
   if (setupSearch === "deepseek_search_api") return kind === "deepseek_search_api";
   // An OpenRouter connection's web search is its `web_search` source.
   if (setupSearch === "openrouter_web_search") return kind === "web_search";
-  return family === "openrouter" ? kind === "perplexity_search" : kind !== "deepseek_search_api";
+  return kind !== "deepseek_search_api";
 }
 
 function setupModelKind(setupSearch: SetupSearch, kind: AdminSearchProviderModelOption["searchKind"]): boolean {
@@ -149,11 +148,11 @@ export function createAdminProviderBootstrap(input: {
     }
     // Setup owns the connection's own Search; a DeepSeek connection's is the
     // DeepSeek Search API (its hosted Search is retired, operator decision
-    // 2026-10-24), and an OpenRouter connection also gets OpenRouter's web
-    // search beside its Perplexity Sonar source. Each is checked and
-    // published on its own.
+    // 2026-10-24), and an OpenRouter connection's is OpenRouter's web search
+    // (Perplexity Sonar is retired, operator decision 2026-11-26). Each is
+    // checked and published on its own.
     const setupSearches: readonly SetupSearch[] = connection.family === "deepseek" ? ["deepseek_search_api"]
-      : connection.family === "openrouter" ? ["own", "openrouter_web_search"] : ["own"];
+      : connection.family === "openrouter" ? ["openrouter_web_search"] : ["own"];
     for (const setupSearch of setupSearches) {
       const searchApi = setupSearch === "deepseek_search_api";
       const webSearch = setupSearch === "openrouter_web_search";
@@ -162,7 +161,7 @@ export function createAdminProviderBootstrap(input: {
         value.signal.throwIfAborted();
         const search = await input.search.list({ userId: value.userId });
         const existing = search.integrations.find((source) => source.sourceConnectionId === connection.id &&
-          setupSourceKind(setupSearch, connection.family, source.kind));
+          setupSourceKind(setupSearch, source.kind));
         // An off switch, also one set before any setup, and an unfinished
         // Search edit remain owned by the operator, even when a different key
         // was just saved. Setup never pays for a check it cannot publish.

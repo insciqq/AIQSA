@@ -1,6 +1,5 @@
 import type { ModelRunSseEvent, ModelRunUsage } from "../../domain/modelRunEvents";
 import type { ContextTruncationSummary } from "../../domain/contextBudget";
-import type { SearchRunParamControls } from "../../domain/runParams";
 import type { ModelToolCall, RunTool } from "../tools/types";
 import type { McpDiscoveryState, McpRunPlanSnapshot } from "../mcp/runPlan";
 import type { SearchSource } from "../search/evidence";
@@ -364,13 +363,6 @@ export type ProviderSearchReasoningPolicy =
   | "provider_default";
 
 export type ProviderSearchPolicy =
-  | Readonly<{
-      controls: SearchRunParamControls;
-      defaultParams: Record<string, unknown>;
-      modelId: string;
-      provider: "openrouter";
-      strategyId: "perplexity-tool-search";
-    }>
   | Readonly<{
       /** The technical model's own OpenRouter parameters: its provider
        * routing and data collection apply to the search request too. */

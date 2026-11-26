@@ -45,7 +45,7 @@ export function searchEngineSetupDetail(source: AdminSearchIntegration): string 
   if (!source.ready) {
     if (source.configurable) return "Choose an enabled Search model in Configure so it can search.";
     // A built-in without its own route yet: provider setup adds it with the key.
-    return source.kind === "perplexity_search" || source.kind === "deepseek_search_api"
+    return source.kind === "deepseek_search_api"
       ? "Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models."
       : "Adding a key on its provider page sets it up.";
   }
@@ -92,7 +92,7 @@ export function searchCheckSummary(source: AdminSearchIntegration, now = new Dat
   };
 }
 
-/** `Working · Sonar on OpenRouter · checked today 12:51` for the page header. */
+/** `Working · DeepSeek V4.1 Flash on OpenRouter · checked today 12:51` for the page header. */
 export function searchHeaderStatus(source: AdminSearchIntegration, now = new Date()): string {
   const check = searchCheckSummary(source, now);
   return [
@@ -250,15 +250,13 @@ export function draftForModel(
     ...(webSearch ? { openRouterWebSearch: current?.openRouterWebSearch ?? defaultOpenRouterWebSearchSettings() } : {}),
     protocol: webSearch
       ? "openrouter_web_search"
-      : model.searchKind === "perplexity_search"
-        ? "openrouter_perplexity_chat"
-        : model.searchKind === "gemini_google_search"
-          ? "gemini_google_search"
-          : model.searchKind === "anthropic_web_search"
-            ? "anthropic_web_search"
-            : model.searchKind === "deepseek_search_api"
-              ? "deepseek_search_api"
-              : "openai_responses_web_search",
+      : model.searchKind === "gemini_google_search"
+        ? "gemini_google_search"
+        : model.searchKind === "anthropic_web_search"
+          ? "anthropic_web_search"
+          : model.searchKind === "deepseek_search_api"
+            ? "deepseek_search_api"
+            : "openai_responses_web_search",
     providerModelId: model.id,
     queryMaxCharacters: searchApi
       ? Math.min(queryMaxCharacters, DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS)
@@ -300,12 +298,12 @@ export function searchFormFrom(source: AdminSearchIntegration): SearchSourceForm
 /** The stored kind of a source built on a model of this Search kind: OpenRouter's web search is a `web_search`
  * source of its OpenRouter connection. */
 function sourceKindFor(searchKind: AdminSearchProviderModelOption["searchKind"]): AdminSearchIntegration["kind"] {
-  if (searchKind === "deepseek_search_api" || searchKind === "perplexity_search") return searchKind;
+  if (searchKind === "deepseek_search_api") return searchKind;
   return searchKind === "gemini_google_search" ? "gemini_google_search" : "web_search";
 }
 
-/** Models a manual source can be built on: enabled Perplexity models,
- * OpenRouter models for OpenRouter's web search, and DeepSeek models carrying
+/** Models a manual source can be built on: enabled OpenRouter models for
+ * OpenRouter's web search, and DeepSeek models carrying
  * their connection's key for the DeepSeek Search API, whose connection has no
  * live, configured source of that kind yet. A built-in source that provider
  * setup skipped, such as one switched off before its key was added, is
@@ -313,8 +311,7 @@ function sourceKindFor(searchKind: AdminSearchProviderModelOption["searchKind"])
 export function manuallyAddableModels(catalog: AdminSearchCatalog): AdminSearchProviderModelOption[] {
   return catalog.providerModels.filter((model) =>
     model.enabled &&
-    (model.searchKind === "perplexity_search" || model.searchKind === "deepseek_search_api" ||
-      model.searchKind === "openrouter_web_search") &&
+    (model.searchKind === "deepseek_search_api" || model.searchKind === "openrouter_web_search") &&
     !catalog.integrations.some((source) =>
       source.archivedAt === null && source.configurable && source.kind === sourceKindFor(model.searchKind) &&
       source.sourceConnectionId === model.connectionId));

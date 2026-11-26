@@ -174,8 +174,9 @@
  *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default) and DEEPSEEK_API_KEY:
  *     production's Search plan, every search to three sources at once (`all_selected`), through the Control Center's routes
  *     (`/api/admin/search`, its `actions`): OpenAI Responses web search on a codex-lb connection whose model is SEARCH_MODEL (added by
- *     `ensureModel` with native Search; its setup creates the connection's client source), Perplexity on an OpenRouter connection's
- *     `perplexity/sonar-pro-search` (`openrouter_perplexity_chat`), and the DeepSeek Search API. The OpenRouter connection must already
+ *     `ensureModel` with native Search; its setup creates the connection's client source), OpenRouter's web search with Perplexity on
+ *     an OpenRouter connection's `deepseek/deepseek-v4.1-flash` (`openrouter_web_search`), and the DeepSeek Search API. The OpenRouter
+ *     connection must already
  *     be on the stand, live with a key and that model, checked first so a stand without it stops before anything paid
  *     (`research_search_perplexity_perplexity_connection_missing`): the harness never adds one, since an OpenRouter connection's first
  *     key, through Quick Setup or the manual routes alike, adds and checks every built-in OpenRouter model. DeepSeek, when missing, comes

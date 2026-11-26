@@ -96,7 +96,7 @@ function harness(options: Readonly<{ dispatchOffsetMs?: (taskId: string) => numb
   const webhookEvents = new Map<string, ScheduledWebhookEvent>();
   const catalog: ScheduledTaskRunCatalog = {
     models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-      openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+      reasoning: false, streaming: true, text: true, toolCalling: true },
     modelId: "model-a", provider: "connection-a", searchStrategyIds: ["web"] }],
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchStrategies: [{ displayName: "Web", executionModes: ["all_selected", "model_choice"], kind: "web_search", strategyId: "web" }]
@@ -748,7 +748,7 @@ describe("scheduled task runner", () => {
       appBaseUrl: "https://aiqsa.example.test",
       loadPinnedSkills: async () => [],
       loadCatalog: async () => ({ models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false,
-        nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+        nativeWebSearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
       searchStrategies: [] }),
       dispatchOffsetMs: () => 0,
@@ -790,7 +790,7 @@ describe("scheduled task runner", () => {
 
     const searching = h.addTask({ searchEnabled: true, userId: "owner-2" });
     h.setCatalog(() => ({ models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false,
-      nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+      nativeWebSearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
     modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
     searchStrategies: [] }));
     await h.tick();
@@ -799,7 +799,7 @@ describe("scheduled task runner", () => {
     const refused = h.addTask({ userId: "owner-3" });
     h.setCatalog((userId) => userId === "owner-3" ? {
       models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+        reasoning: false, streaming: true, text: true, toolCalling: true },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
       searchPlan: { mode: "all_selected", optionIds: [] }, searchStrategies: [] } : null);
     h.setReply(() => ({ error: "credential_revoked", status: 403 }));
@@ -811,7 +811,7 @@ describe("scheduled task runner", () => {
     const toolless = h.addTask({ userId: "owner-4" });
     h.setCatalog((userId) => userId === "owner-4" ? {
       models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: false },
+        reasoning: false, streaming: true, text: true, toolCalling: false },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
       searchPlan: { mode: "all_selected", optionIds: [] }, searchStrategies: [] } : null);
     await h.tick();
@@ -927,7 +927,7 @@ describe("scheduled task runner", () => {
       loadCatalog: async () => {
         if (catalogFails) throw new Error("catalog_unavailable");
         return { models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-          openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: true },
+          reasoning: false, streaming: true, text: true, toolCalling: true },
         modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }], searchPlan: { mode: "all_selected", optionIds: [] },
         searchStrategies: [] };
       },
@@ -1148,7 +1148,7 @@ describe("scheduled task runner with the owner's tools", () => {
     // Room for both Workspace tasks at once: this test is about the pause, not the scheduled Workspace cap.
     const h = harness({ workspaceMaxConcurrent: 2 });
     const noTools = (userId: string) => ({ models: [{ capabilities: { background: false, documentInputMode: "none" as const,
-      imageInput: false, nativeWebSearch: false, openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true as const,
+      imageInput: false, nativeWebSearch: false, reasoning: false, streaming: true, text: true as const,
       toolCalling: userId === "owner-3" }, modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
     searchPlan: { mode: "all_selected" as const, optionIds: [] }, searchStrategies: [] });
     h.setCatalog(noTools);
@@ -1440,7 +1440,7 @@ describe("scheduled monitoring checks", () => {
     const task = h.addTask({ kind: "monitoring" });
     h.setCatalog(() => ({
       models: [{ capabilities: { background: false, documentInputMode: "none", imageInput: false, nativeWebSearch: false,
-        openRouterPerplexitySearch: false, reasoning: false, streaming: true, text: true, toolCalling: false },
+        reasoning: false, streaming: true, text: true, toolCalling: false },
       modelId: "model-a", provider: "connection-a", searchStrategyIds: [] }],
       searchPlan: { mode: "all_selected", optionIds: [] },
       searchStrategies: []

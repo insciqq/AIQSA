@@ -411,7 +411,7 @@ const modelCapabilityDefinitions = [
     alias: "search",
     label: "Web search",
     supported: (model: CatalogModel) =>
-      model.capabilities.nativeWebSearch || model.capabilities.openRouterPerplexitySearch
+      model.capabilities.nativeWebSearch
   },
   {
     alias: "stream",

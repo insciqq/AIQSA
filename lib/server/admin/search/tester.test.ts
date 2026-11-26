@@ -62,7 +62,7 @@ describe("admin Search diagnostic policies", () => {
     });
   });
 
-  it("keeps OpenAI and Perplexity diagnostics on their typed client policies", () => {
+  it("keeps OpenAI diagnostics on their typed client policy and refuses Perplexity Sonar", () => {
     expect(adminSearchProviderPolicy({
       capabilities,
       defaultParams: {},
@@ -74,23 +74,14 @@ describe("admin Search diagnostic policies", () => {
       provider: "openai",
       strategyId: "openai-responses-web-search"
     });
-    expect(adminSearchProviderPolicy({
+    // Perplexity Sonar (retired 2026-11-26) has no policy any more.
+    expect(() => adminSearchProviderPolicy({
       capabilities,
-      defaultParams: { routing: "private" },
-      draft: draft("openrouter_perplexity_chat"),
+      defaultParams: {},
+      draft: draft("openrouter_perplexity_chat" as AdminSearchDraft["protocol"]),
       modelId: "perplexity/sonar-pro-search",
       provider: "openrouter"
-    })).toMatchObject({
-      defaultParams: {
-        maxOutputTokens: 4_096,
-        routing: "private",
-        stream: false,
-        temperature: 0
-      },
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    });
+    })).toThrow("search_protocol_not_supported");
   });
 
   it("runs OpenRouter's web search with the draft's engine on the technical model and its routing", () => {

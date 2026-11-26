@@ -146,7 +146,6 @@ export const composerGalleryConfig: ComposerConfig = {
         documentInputMode: "native_pdf",
         imageInput: true,
         nativeWebSearch: true,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true
@@ -177,7 +176,6 @@ export const composerGalleryConfig: ComposerConfig = {
         documentInputMode: "pdf_text_extraction",
         imageInput: true,
         nativeWebSearch: false,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true
@@ -208,7 +206,6 @@ export const composerGalleryConfig: ComposerConfig = {
         documentInputMode: "native_pdf",
         imageInput: true,
         nativeWebSearch: true,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true

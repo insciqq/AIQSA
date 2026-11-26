@@ -81,7 +81,6 @@ export type CatalogWireModelCapabilities = {
   /** Present on tool-calling models; absent means no image tools route. */
   imageRoutes?: CatalogImageRoutes;
   nativeWebSearch: boolean;
-  openRouterPerplexitySearch: boolean;
   reasoning: boolean;
   streaming: boolean;
   text: true;
@@ -125,7 +124,7 @@ export type CatalogWireSearchStrategy = {
   description?: string;
   displayName: string;
   executionModes?: SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search" | "web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "provider_model_web_search" | "web_search";
   privacy?: "answer_provider" | "query_only";
   protocol?: SearchProtocol;
   revisionId?: string;
@@ -323,7 +322,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     typeof capabilities.imageInput !== "boolean" ||
     (capabilities.imageRoutes !== undefined && (!isRecord(capabilities.imageRoutes) || typeof capabilities.imageRoutes.systemVision !== "boolean" || typeof capabilities.imageRoutes.imageEditing !== "boolean")) ||
     typeof capabilities.nativeWebSearch !== "boolean" ||
-    typeof capabilities.openRouterPerplexitySearch !== "boolean" ||
     typeof capabilities.reasoning !== "boolean" ||
     typeof capabilities.streaming !== "boolean" ||
     typeof capabilities.toolCalling !== "boolean" ||
@@ -352,7 +350,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       ...(isRecord(capabilities.imageRoutes) ? { imageRoutes: { systemVision: capabilities.imageRoutes.systemVision as boolean,
         imageEditing: capabilities.imageRoutes.imageEditing as boolean } } : {}),
       nativeWebSearch: capabilities.nativeWebSearch,
-      openRouterPerplexitySearch: capabilities.openRouterPerplexitySearch,
       reasoning: capabilities.reasoning,
       streaming: capabilities.streaming,
       toolCalling: capabilities.toolCalling
@@ -410,7 +407,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       value.kind !== "anthropic_native_web_search" &&
       value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
-      value.kind !== "perplexity_tool_search" &&
       value.kind !== "provider_model_web_search" &&
       value.kind !== "web_search") ||
     !nonEmptyString(value.strategyId)
@@ -435,7 +431,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       protocol !== "deepseek_search_api" &&
       protocol !== "gemini_google_search" &&
       protocol !== "openai_responses_web_search" &&
-      protocol !== "openrouter_perplexity_chat" &&
       protocol !== "openrouter_web_search") ||
     (value.revisionId !== undefined && !nonEmptyString(value.revisionId))
   ) {

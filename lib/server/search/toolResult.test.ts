@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { CITED_SEARCH_TOOL_RESULT_VERSION, rehydratePersistedSearchToolExecutionResult, SEARCH_ENTRY_EXCERPT_CHARACTERS,
-  SEARCH_FAIR_SHARE_FIRST_SOURCES, SEARCH_RESULT_LIST_FINDINGS, searchExecutionsFromToolResult, searchToolResultEntrySpans,
+import { CITED_SEARCH_TOOL_RESULT_VERSION, compactSearchToolExecutionResult, LEGACY_SEARCH_TOOL_RESULT_VERSION,
+  rehydratePersistedSearchToolExecutionResult, SEARCH_ENTRY_EXCERPT_CHARACTERS, SEARCH_FAIR_SHARE_FIRST_SOURCES,
+  SEARCH_RESULT_LIST_FINDINGS, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultEntrySpans,
   searchToolResultFairShare, searchToolResultText, type SearchExecutionEvidence } from "./toolResult";
 import { deepSeekEngine, failedSearchEngine, proseFindings, searchEngine, searchResult, threeEngineResult } from "./toolResult.testFixtures";
 import type { ToolExecutionResult } from "../tools/types";
@@ -245,4 +246,41 @@ describe("an answer that searched DeepSeek's retired hosted Search", () => {
       expect.objectContaining({ optionId: "deepseek-native-web-search", sourceAttribution: "provider_unavailable", sources: [] })
     ]);
   });
+});
+
+describe("an answer whose sources came from Perplexity Sonar", () => {
+  // As the executor stored Sonar before its retirement on 2026-11-26: findings citing its numbered sources, beside
+  // another engine, in the result versions the runs of that time wrote.
+  const sonar = searchEngine({ count: 3, displayName: "Perplexity", findings: "Sonar findings [1], and more [3].",
+    host: "pplx.example", optionId: "perplexity-tool-search", protocol: "openrouter_perplexity_chat", provider: "openrouter" });
+  const other = searchEngine({ count: 2, displayName: "OpenAI", findings: "OpenAI findings [1].", host: "openai.example",
+    optionId: "openai", provider: "openai" });
+
+  it.each([CITED_SEARCH_TOOL_RESULT_VERSION, LEGACY_SEARCH_TOOL_RESULT_VERSION])(
+    "still rehydrates its version %s row with Sonar's findings and every source",
+    (version) => {
+      const executions = [sonar, other];
+      const stored: ToolExecutionResult = { callId: "c1", content: searchToolResultContent(executions, version),
+        name: "search_selected_engines", rawPreview: { searchExecutions: executions, searchResultVersion: version },
+        status: "complete", usage };
+      // The stored row holds the version's marker, not the text, which is rebuilt from the executions when read.
+      expect(compactSearchToolExecutionResult(stored)?.content).toEqual([{ type: "json",
+        value: { aiqsaType: "search_result", version } }]);
+      const snapshot = snapshotToolExecutionResult(stored, toolLoopPersistenceLimits.resultBytes);
+      if (!snapshot) throw new Error("expected a stored search result");
+      const rehydrated = parsePersistedToolExecutionResult({ id: stored.callId, name: stored.name }, snapshot);
+      if (!rehydrated) throw new Error("expected the stored search result to parse");
+      expect(rehydrated.content).toEqual(stored.content);
+      expect(textOf(rehydrated!)).toContain("Sonar findings [1], and more [3].");
+      expect(textOf(rehydrated!)).toContain("https://pplx.example/page-3");
+      expect(searchExecutionsFromToolResult(rehydrated!)).toEqual([
+        expect.objectContaining({ optionId: "perplexity-tool-search", protocol: "openrouter_perplexity_chat",
+          sources: [expect.objectContaining({ url: "https://pplx.example/page-1" }),
+            expect.objectContaining({ url: "https://pplx.example/page-2" }),
+            expect.objectContaining({ url: "https://pplx.example/page-3" })] }),
+        expect.objectContaining({ optionId: "openai", sources: [expect.objectContaining({ url: "https://openai.example/page-1" }),
+          expect.objectContaining({ url: "https://openai.example/page-2" })] })
+      ]);
+    }
+  );
 });

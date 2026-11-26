@@ -74,7 +74,7 @@ function providerModel(input: Readonly<{
       upstreamModelId: adapterKind === "gemini_interactions_native"
         ? "gemini-search"
         : adapterKind === "openrouter_chat_completions"
-          ? "perplexity/sonar"
+          ? "deepseek/deepseek-v4.1-flash"
         : "opaque-search-model"
     },
     activeVersion: 1,
@@ -664,67 +664,25 @@ describe("admin Search service", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it("keeps Perplexity Search client-only", async () => {
-    const perplexityDraft: AdminSearchDraft = {
-      ...draft,
-      protocol: "openrouter_perplexity_chat"
-    };
+  it("refuses a Perplexity Sonar source, retired 2026-11-26, before any write", async () => {
+    const sonarDraft = { ...draft, protocol: "openrouter_perplexity_chat" } as unknown as AdminSearchDraft;
     const technical = providerModel({ adapterKind: "openrouter_chat_completions" });
-    const strategyCreate = vi.fn(async () => undefined);
-    const strategyUpdate = vi.fn(async () => undefined);
-    const revisions = revisionRepository();
-    const tx = {
-      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
-      $queryRaw: vi.fn(async () => []),
-      providerModel: { findFirst: vi.fn(async () => technical) },
-      searchIntegrationRevision: revisions,
-      searchOption: {
-        create: vi.fn(async () => undefined),
-        findMany: vi.fn(async () => []),
-        findUnique: vi.fn(async () => option([
-          pendingChild(perplexityDraft, {
-            id: "perplexity-client",
-            strategyId: "perplexity-search-perplex:client"
-          })
-        ], {
-          id: "perplexity-option",
-          kind: "perplexity_search",
-          optionId: "perplexity-search-perplex",
-          templateKey: null
-        }))
-      },
-      searchStrategy: {
-        create: strategyCreate,
-        findUnique: vi.fn(async () => null),
-        update: strategyUpdate
-      }
-    };
-    const ids = ["perplexity-option", "perplexity-client"];
+    const transaction = vi.fn();
     const prisma = {
-      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
+      $transaction: transaction,
       providerModel: { findFirst: vi.fn(async () => technical) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({
-      idFactory: () => ids.shift()!,
-      prisma,
-      tester: { currentBinding: currentProbeBinding, test: vi.fn() }
-    });
+    const test = vi.fn();
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test } });
 
-    await service.createDraft({
+    await expect(service.createDraft({
       description: "Perplexity evidence",
       displayName: "Perplexity Search",
-      draft: perplexityDraft,
+      draft: sonarDraft,
       userId: "admin-1"
-    });
-
-    expect(strategyCreate).toHaveBeenCalledTimes(1);
-    expect(revisions.create).toHaveBeenCalledTimes(1);
-    expect(strategyCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        adapterKind: "provider_model_client",
-        kind: "perplexity_tool_search"
-      })
-    });
+    })).rejects.toMatchObject({ code: "search_configuration_invalid" });
+    expect(test).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1866,7 +1824,7 @@ describe("OpenRouter web search source", () => {
   const webBinding = { ...PROBE_BINDING, connectionId: "connection-openrouter" };
   const openRouterModel = () => providerModel({ adapterKind: "openrouter_chat_completions", connectionId: "connection-openrouter" });
 
-  it("lists OpenRouter models as technical models beside Sonar, and its source as a ready web source", async () => {
+  it("lists OpenRouter models as technical models of its web search only, and its source as a ready web source", async () => {
     const row = option([child(webDraft, { id: "strategy-web", strategyId: "openrouter-web-search-1:client" })], {
       displayName: "OpenRouter Web Search", id: "source-web", optionId: "openrouter-web-search-1",
       sourceConnectionId: "connection-openrouter", templateKey: null
@@ -1882,8 +1840,8 @@ describe("OpenRouter web search source", () => {
       broaderModelSetup: "ready", configurable: true, configuration: webDraft, executionModes: ["all_selected", "model_choice"],
       kind: "web_search", ready: true
     })]);
+    // Perplexity Sonar is retired: an OpenRouter model has no Search kind of its own any more.
     expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
-      "perplexity_search:technical-1",
       "openrouter_web_search:technical-1"
     ]);
     expect(decodeAdminSearchCatalog(JSON.parse(JSON.stringify({ search: catalog })))).not.toBeNull();

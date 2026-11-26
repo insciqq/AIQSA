@@ -67,7 +67,6 @@ const model: CatalogModel = {
     documentInputMode: "pdf_text_extraction",
     imageInput: true,
     nativeWebSearch: true,
-    openRouterPerplexitySearch: true,
     reasoning: true,
     streaming: true,
     toolCalling: true

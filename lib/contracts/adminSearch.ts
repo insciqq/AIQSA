@@ -90,7 +90,7 @@ export type AdminSearchTestEvidence = {
   status: "available" | "unavailable";
 };
 
-export type AdminSearchKind = "deepseek_search_api" | "gemini_google_search" | "perplexity_search" | "web_search";
+export type AdminSearchKind = "deepseek_search_api" | "gemini_google_search" | "web_search";
 export type AdminSearchReadiness = "ready" | "setup_required" | "source_unavailable";
 export type AdminSearchBroaderModelSetup = "not_applicable" | "ready" | "setup_required";
 
@@ -138,7 +138,7 @@ export type AdminSearchProviderModelOption = {
    * `openrouter_web_search` lists an OpenRouter model that may run
    * OpenRouter's web search as its technical model once its probe passes. */
   searchKind: "anthropic_web_search" | "deepseek_search_api" | "gemini_google_search" | "openrouter_web_search" |
-    "perplexity_search" | "web_search";
+    "web_search";
 };
 
 export type AdminSearchCatalog = {
@@ -207,7 +207,6 @@ export function decodeAdminSearchDraft(value: unknown): AdminSearchDraft | null 
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
-      value.protocol === "openrouter_perplexity_chat" ||
       value.protocol === "openrouter_web_search") &&
     nullableString(value.providerModelId) &&
     Number.isSafeInteger(value.queryMaxCharacters) &&
@@ -248,7 +247,6 @@ function evidence(value: unknown): value is AdminSearchTestEvidence | null {
       value.protocol === "deepseek_search_api" ||
       value.protocol === "gemini_google_search" ||
       value.protocol === "openai_responses_web_search" ||
-      value.protocol === "openrouter_perplexity_chat" ||
       value.protocol === "openrouter_web_search") &&
     (value.status === "available" || value.status === "unavailable")
   );
@@ -269,8 +267,7 @@ function integration(value: unknown): boolean {
     Array.isArray(value.executionModes) && value.executionModes.every((mode) =>
       mode === "all_selected" || mode === "model_choice") &&
     string(value.id) &&
-    (value.kind === "deepseek_search_api" || value.kind === "gemini_google_search" ||
-      value.kind === "perplexity_search" || value.kind === "web_search") &&
+    (value.kind === "deepseek_search_api" || value.kind === "gemini_google_search" || value.kind === "web_search") &&
     (providerModel === null ||
       (isRecord(providerModel) && string(providerModel.connectionDisplayName) &&
         string(providerModel.connectionId) && string(providerModel.displayName) &&
@@ -293,8 +290,7 @@ function providerModel(value: unknown): boolean {
     (value.searchKind === "anthropic_web_search" ||
       value.searchKind === "deepseek_search_api" ||
       value.searchKind === "gemini_google_search" ||
-      value.searchKind === "openrouter_web_search" ||
-      value.searchKind === "perplexity_search" || value.searchKind === "web_search");
+      value.searchKind === "openrouter_web_search" || value.searchKind === "web_search");
 }
 
 function policy(value: unknown): value is AdminSearchPolicy {

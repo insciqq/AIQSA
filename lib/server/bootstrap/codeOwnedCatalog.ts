@@ -75,14 +75,6 @@ const builtInSearchOptions = Object.freeze({
     sourceConnectionId: providerTemplateIds.openAiConnection,
     templateKey: "search:openai"
   }),
-  "perplexity-tool-search": Object.freeze({
-    description: "Web search provided by Perplexity through OpenRouter.",
-    displayName: "Perplexity Search",
-    id: "00000000-0000-4000-8000-000000001404",
-    kind: "perplexity_search",
-    sourceConnectionId: providerTemplateIds.openRouterConnection,
-    templateKey: "search:perplexity"
-  }),
   "search-disabled": Object.freeze({
     description: "Answer without web search.",
     displayName: "Off",
@@ -408,9 +400,9 @@ async function synchronizeSearch(
     });
   }
 
-  const logicalOptions = options.mode === "installation"
-    ? defaultSearchStrategies.filter((candidate) => candidate.kind !== "perplexity_tool_search")
-    : defaultSearchStrategies;
+  // Perplexity Sonar (`perplexity-tool-search`, templateKey `search:perplexity`) is retired (operator decision
+  // 2026-11-26): its archived rows stay as the upgrade left them, and nothing here creates or repairs them.
+  const logicalOptions = defaultSearchStrategies;
   const method = options.mode === "installation" ? "bootstrap" : "seed";
 
   for (const logicalOption of logicalOptions) {
