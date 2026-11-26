@@ -175,6 +175,9 @@ describe("catalog handler", () => {
       "webSearch"
     ]);
     expect(body.catalog.models[0].capabilities.text).toBe(true);
+    // A v0.5.2 tab open during the upgrade decodes a model only with this boolean; it stays false for one release.
+    expect(body.catalog.models.length).toBeGreaterThan(0);
+    for (const model of body.catalog.models) expect(model.capabilities.openRouterPerplexitySearch).toBe(false);
     // Users switch Search on or off: one virtual source while a model can search, whichever engine runs.
     expect(body.catalog.searchStrategies).toEqual([{
       description: "Searches the web with the engine your administrator set up.",

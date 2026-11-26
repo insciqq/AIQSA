@@ -270,6 +270,8 @@ export function buildCatalogModel(
           model.adapterKind === "openai_responses_compatible" ||
           model.adapterKind === "gemini_interactions_native") &&
         model.capabilities.nativeSearch,
+      // Deprecated, always false: a v0.5.2 tab open during the upgrade requires it (`CatalogWireModelCapabilities`).
+      openRouterPerplexitySearch: false,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,
       text: true,

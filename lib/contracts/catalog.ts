@@ -81,6 +81,11 @@ export type CatalogWireModelCapabilities = {
   /** Present on tool-calling models; absent means no image tools route. */
   imageRoutes?: CatalogImageRoutes;
   nativeWebSearch: boolean;
+  /**
+   * Retired with Perplexity Sonar (search-v2, 2026-11-26) and always false. Still sent for one release because a
+   * v0.5.2 tab open during the upgrade rejects a catalog without it; nothing reads it. Remove in the next release.
+   */
+  openRouterPerplexitySearch?: false;
   reasoning: boolean;
   streaming: boolean;
   text: true;
