@@ -882,7 +882,7 @@ const GATE_ROLES = ["gap_judge", "verifier", "skeptic"] as const;
 const VERDICT_LINE = /^\s*(?:[-*]\s*)?\**C(\d{1,3})\**\s*\|\s*\**(supported|partly|unsupported|contradicted|could[_ ]not[_ ]check)\**/iu;
 /** What the per-task budget does not count. */
 const UNCOUNTED_TOOLS = new Set(["record_evidence", "change_research_frame"]);
-const SEARCH_TOOL = /^search_(?:selected_engines|engine_[1-3])$/u;
+const SEARCH_TOOL = /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u;
 const NOTE_CHANGES = new Set(["note_candidate", "set_aside"]);
 const TURN_STATES = new Set(["stopped", "failed", "interrupted", "blocked"]);
 /** A refusal for a call budget: the per-task budget (whatever its code says of a budget or a call limit) or the run's. */

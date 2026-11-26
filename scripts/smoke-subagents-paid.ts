@@ -1625,7 +1625,7 @@ async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
     const tools = await toolRows(ctx.db, chat.id);
     const verdict = oracleQ({ main: await pageReads(ctx.db, chat.id, null), reader: threadId ? await pageReads(ctx.db, chat.id, threadId) : {},
       searches: route.mode === "model_choice" ? null
-        : tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^search_(?:selected_engines|engine_[1-3])$/u.test(row.toolName)).length,
+        : tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u.test(row.toolName)).length,
       settled: evidence.settled, turn });
     if (verdict.failed.length > 0) failed = true;
     routes.push({ checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal: terminal.status });
@@ -1644,7 +1644,7 @@ async function handOverEvidence(db: PostgresClient, chatId: string): Promise<Omi
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND "subagentThreadId" IS NOT NULL) AS "subagentCalls",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
-      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^(web_search|search_selected_engines|search_engine_[1-3])$') AS "searches",
       (SELECT count(*)::int FROM "SubagentThread" WHERE "chatId" = $1 AND "parentThreadId" IS NOT NULL) AS "helperThreads",
       (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1) AS "total",
       (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1 AND "state"::text = 'done' AND "outcome"::text = 'done') AS "done",
@@ -1693,7 +1693,7 @@ async function ownTypeEvidence(db: PostgresClient, chatId: string): Promise<Omit
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
       (SELECT count(*)::int FROM calls WHERE "subagentThreadId" IN (SELECT "id" FROM threads) AND "toolName" ~ $4) AS "workspaceCalls",
-      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^(web_search|search_selected_engines|search_engine_[1-3])$') AS "searches",
       (SELECT count(*)::int FROM turns) AS "total",
       (SELECT count(*)::int FROM turns WHERE "state" = 'done' AND "outcome" = 'done') AS "done",
       (SELECT count(*)::int FROM turns WHERE "outcome" = 'partial') AS "partial",
@@ -2422,7 +2422,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         } catch { facts.acceptance = { failed: "research_acceptance_failed" }; }
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
-          searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
+          searches: calls.filter((call) => /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
         if (act === "restart" || act === "outage") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
         // A push follows the run's end by its grace and the push service's own time.
