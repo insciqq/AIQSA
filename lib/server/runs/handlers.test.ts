@@ -10,6 +10,7 @@ import { createTestAuth } from "@/tests/support/auth";
 import { assistantRowContextLoader } from "@/tests/support/assistantRuns";
 import { assistantRowsFromFlatFields, type AssistantRows } from "../../contracts/assistants";
 import { DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
+import { SEARCH_ON_PLAN } from "../../contracts/search";
 import { BROWSER_SIGN_IN_TURN_KIND, browserSignInRequestText } from "../../contracts/browserSignIn";
 import type { AssistantRunResolution } from "../assistants/runMaterialization";
 import {
@@ -2072,6 +2073,18 @@ describe("model run route handlers", () => {
       expect(await refusal(await send({}, { [DEEP_RESEARCH_SEND_FIELD]: value }))).toEqual([400, { error: DEEP_RESEARCH_REFUSALS.invalid }]);
     }
     expect(await refusal(await send({}, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
+    // A model searching inside its own answer gives its researchers nothing to search with: they need the client engine.
+    const inAnswerOnly: NonNullable<RunHandlerDeps["providerAdmission"]> = { async load(input) {
+      return { ...currentAdmissionPlan(input, { nativePdfInput: false, nativeSearch: true, pdf: true, reasoning: true, streaming: true,
+        toolCalling: true, vision: true }), requestedSearchPlan: SEARCH_ON_PLAN, searches: [{ bindingKey: null, configuration: {
+        adapterKind: "answer_provider_hosted", config: { queryMaxCharacters: 500, timeoutMs: 15_000 }, credentialMode: "answer_provider",
+        displayName: "OpenAI Web Search", executionModes: ["all_selected"], kind: "openai_native_web_search", modelId: null,
+        protocol: "openai_responses_web_search", provider: "fake", providerModelId: null, revisionId: "revision-hosted",
+        searchStrategyRowId: "integration-hosted", strategyId: "openai-native-web-search" }, integrationId: "integration-hosted",
+      optionId: "openai-native-web-search", ordinal: 0, revisionId: "revision-hosted", use: "in_answer" }] };
+    } };
+    expect(await refusal(await send({ providerAdmission: inAnswerOnly }, { deepResearch: true, searchEnabled: true })))
+      .toEqual([409, { error: DEEP_RESEARCH_REFUSALS.needsSearch }]);
     expect(await refusal(await send({ connectorTurn: "telegram" }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
     expect(await refusal(await send({ nativeEngine: plain }, { deepResearch: true }))).toEqual([409, { error: DEEP_RESEARCH_REFUSALS.unavailable }]);
     expect(state.created).toBeNull();

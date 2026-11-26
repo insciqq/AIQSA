@@ -97,6 +97,7 @@ import { recordEvidenceEngineTool, type RecordEvidenceTarget } from "../tools/re
 import { createRunResearch, deepResearchRefusal, researchAuthorityChain, researchOffered, researchRequestOf, researchRunOf, type ResearchAvailability, type ResearchEngineDeps,
   type RunResearch } from "../research/run";
 import { researchAnswerLayout } from "../research/notes";
+import { subagentSearchSourceCount } from "../search/toolExecutor";
 import { researchPageCard, researchPageRequest, writeResearchPage } from "../research/page";
 import { ARTIFACT_TOOL_NAME } from "../tools/artifact";
 
@@ -774,7 +775,7 @@ function nativeRunResponse(input: NativeRunExecutionInput): Response {
         // (operator decision 2026-11-05). No words in a chat offer it, and a start call in the items authorizes nothing: the turns a
         // continuation goes on from must have been sent with it.
         const researchAvailability: ResearchAvailability = { monitoring: normalizedRequest.monitoringVerdictTool === true, scheduled: input.scheduled === true,
-          searchOptions: normalizedRequest.searchPlan.options.length, subagents: Boolean(subagents && engine.research && engine.subagentThreads), connector: input.connectorTurn !== undefined };
+          searchOptions: subagentSearchSourceCount(normalizedRequest.searchPlan), subagents: Boolean(subagents && engine.research && engine.subagentThreads), connector: input.connectorTurn !== undefined };
         const researchRequest = researchRequestOf({ approval: Boolean(input.approvalContinuation), chosen: normalizedRequest.deepResearch === true, items: conversation.items });
         const offeredResearch = subagents && engine.research && engine.subagentThreads && researchRequest && researchOffered({ ...researchAvailability, request: researchRequest })
           ? createRunResearch({ authority: researchRequest === "chosen" ? [] : researchAuthorityChain({ continuationTurns, messages: conversationMessages,

@@ -284,6 +284,26 @@ export function searchToolRoutes(plan: NormalizedSearchPlan): readonly Readonly<
   }];
 }
 
+/**
+ * A sub-agent's or researcher's Search (operator decisions 2026-11-26): the run's client engine and backup behind
+ * `web_search`, whatever its model, never the parent's in-answer search, which belongs to the parent's model and
+ * connection. A plan admitted before the single engine stays as it was frozen.
+ */
+export function subagentSearchPlan(plan: NormalizedSearchPlan): NormalizedSearchPlan {
+  // A request a test or an earlier snapshot built without a plan stays without one.
+  if ((plan as NormalizedSearchPlan | undefined)?.mode !== "engine") return plan;
+  return { ...plan, options: plan.options.filter((option) => option.use !== "in_answer") };
+}
+
+/**
+ * How many sources a run's sub-agents and researchers can search: a single-engine run's bound client engine and its
+ * backup, so in-answer search alone opens no research; a plan admitted before counts every source, as it did.
+ */
+export function subagentSearchSourceCount(plan: NormalizedSearchPlan): number {
+  if (plan.mode !== "engine") return plan.options.length;
+  return searchToolRoutes(subagentSearchPlan(plan))[0]?.options.length ?? 0;
+}
+
 /** A source's admitted query limit, frozen with the run's Search plan; a snapshot without a valid one keeps the historical limit. */
 export function searchQueryMaxCharacters(option: NormalizedSearchPlanOption): number {
   const value = option.config.queryMaxCharacters;

@@ -12,7 +12,9 @@ import type { ModelToolCall } from "../tools/types";
 import {
   createSearchPlanToolRouter,
   SearchToolCancelledError,
-  searchExecutionsFromToolResult
+  searchExecutionsFromToolResult,
+  subagentSearchPlan,
+  subagentSearchSourceCount
 } from "./toolExecutor";
 import { MAX_SEARCH_FINDINGS_BYTES, type SearchSource } from "./evidence";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
@@ -329,6 +331,23 @@ describe("Search plan tool router", () => {
       rawPreview: { providerCall: false }, usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } };
     const snapshot = snapshotToolExecutionResult(result, toolLoopPersistenceLimits.resultBytes);
     expect(snapshot && parsePersistedToolExecutionResult({ id: result.callId, name: result.name }, snapshot)).toMatchObject(result);
+  });
+
+  it("counts for research only the client engine and backup the run's sub-agents and researchers search with", () => {
+    const hosted = option("openai", { adapterKind: "answer_provider_hosted", credentialMode: "answer_provider", use: "in_answer" });
+    const engine = option("deepseek", { use: "engine" });
+    const backup = option("perplexity", { use: "backup" });
+    // In-answer search belongs to the main agent's own answer: alone it gives researchers nothing to search with.
+    expect(subagentSearchSourceCount({ mode: "engine", options: [hosted] })).toBe(0);
+    expect(subagentSearchSourceCount({ mode: "engine", options: [], unavailable: "search_engine_unavailable" })).toBe(0);
+    expect(subagentSearchSourceCount({ mode: "engine", options: [hosted, engine] })).toBe(1);
+    expect(subagentSearchSourceCount({ mode: "engine", options: [hosted, engine, backup] })).toBe(2);
+    expect(subagentSearchPlan({ mode: "engine", options: [hosted, engine, backup] }).options.map((item) => item.optionId))
+      .toEqual(["deepseek", "perplexity"]);
+    // A plan accepted before the single engine counts every source, as it did, and reaches sub-agents as frozen.
+    const legacy = { mode: "model_choice" as const, options: [option("openai", { adapterKind: "answer_provider_hosted" })] };
+    expect(subagentSearchSourceCount(legacy)).toBe(1);
+    expect(subagentSearchPlan(legacy)).toBe(legacy);
   });
 
   it("offers one web_search tool whose words name no engine, source or connection", () => {

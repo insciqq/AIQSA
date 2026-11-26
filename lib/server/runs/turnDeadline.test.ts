@@ -101,13 +101,19 @@ describe("turn deadlines", () => {
       .toBe(1_800_000);
   });
 
-  it("bounds web_search by the engine alone without a backup, and offers it no bound while the answer searches in itself", () => {
-    const engine = { ...source(120_000), use: "engine" as const };
+  it("bounds web_search by the engine alone without a backup, and by the sub-agents' engine while the answer searches in itself", () => {
+    const engine = { ...source(120_000), optionId: "engine", use: "engine" as const };
     expect(toolCallBounds({ searchPlan: { mode: "engine", options: [engine] } }, ANSWER_MS)
       .call({ capability: "web_search", name: "web_search" })).toBe(120_000);
-    const hosted = { ...source(900_000), adapterKind: "answer_provider_hosted" as const, use: "in_answer" as const };
-    // No tool is offered, so any name falls back to the floor.
-    expect(toolCallBounds({ searchPlan: { mode: "engine", options: [hosted, engine] } }, ANSWER_MS)
+    const hosted = { ...source(900_000), adapterKind: "answer_provider_hosted" as const, optionId: "hosted", use: "in_answer" as const };
+    const backup = { ...source(600_000), optionId: "backup", use: "backup" as const };
+    // The main agent has no `web_search`, but its sub-agents and researchers search with the engine, then the backup.
+    expect(toolCallBounds({ searchPlan: { mode: "engine", options: [hosted, engine, backup] } }, ANSWER_MS)
+      .call({ capability: "web_search", name: "web_search" })).toBe(720_000);
+    // A pre-upgrade plan with a hosted source offered no tool to anyone, so any name falls back to the floor.
+    const { use: _hostedUse, ...legacyHosted } = hosted;
+    const { use: _engineUse, ...legacyClient } = engine;
+    expect(toolCallBounds({ searchPlan: { mode: "all_selected", options: [legacyHosted, legacyClient] } }, ANSWER_MS)
       .call({ capability: "web_search", name: "web_search" })).toBe(300_000);
   });
 
