@@ -96,6 +96,15 @@ export function canAccessSearchStrategy(
     entitlements.fullAccess === true || entitlements.searchStrategies.has(searchStrategy);
 }
 
+/**
+ * Whether the user may search at all. Search is installation-wide, so Full access or an enabled grant of any Search
+ * source other than `search-disabled` opens it, whichever source the grant names (admission's `hasSearchEntitlement`).
+ */
+export function searchEntitled(entitlements: ResolvedEntitlements): boolean {
+  return entitlements.fullAccess === true ||
+    [...entitlements.searchStrategies].some((strategyId) => strategyId !== "search-disabled");
+}
+
 export function validateRunAccess(
   entitlements: ResolvedEntitlements,
   request: RunAccessRequest

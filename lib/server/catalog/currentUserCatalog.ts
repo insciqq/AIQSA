@@ -15,13 +15,13 @@ import {
 import {
   canAccessModel,
   canAccessSearchStrategy,
+  searchEntitled,
   type ResolvedEntitlements
 } from "../auth/entitlements";
 import {
   decodeSearchPlan,
   hostedSearchProtocolUsable,
   resolveSearchEngine,
-  SEARCH_DISABLED_STRATEGY_ID,
   searchPlanEnabled,
   searchSettingPlan,
   type SearchPlan,
@@ -142,12 +142,6 @@ export function resolveEffectiveModelDefaultId(input: Readonly<{
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Whether the user may search at all: Full access or a grant of any Search source (`hasSearchEntitlement`). */
-export function searchEntitled(entitlements: ResolvedEntitlements): boolean {
-  return entitlements.fullAccess === true ||
-    [...entitlements.searchStrategies].some((strategyId) => strategyId !== SEARCH_DISABLED_STRATEGY_ID);
 }
 
 /**

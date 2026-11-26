@@ -10,12 +10,13 @@ import { resolveProviderCredential } from "@/lib/domain/providerCredentialResolu
 import {
   canAccessModel,
   canAccessSearchStrategy,
+  searchEntitled,
   type ResolvedEntitlements
 } from "@/lib/server/auth/entitlements";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { isAssistantAvailable } from "@/lib/server/assistants/bindingAccess";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
-import { searchEntitled, type CatalogData, type CatalogSearchData } from "@/lib/server/catalog/currentUserCatalog";
+import type { CatalogData, CatalogSearchData } from "@/lib/server/catalog/currentUserCatalog";
 import {
   decodeInstallationSearchPolicy,
   INSTALLATION_SEARCH_POLICY_ID,
