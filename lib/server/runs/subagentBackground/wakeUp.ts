@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PrismaClient } from "@prisma/client";
+import { isSearchUnavailableReason } from "../../../contracts/search";
 import type { AuthenticatedSession, RequestAuthResolver } from "../../auth/requestAuth";
 import { logEvent } from "../../observability";
 import type { SubagentCallbackClaim } from "../../subagents/ports";
@@ -14,7 +15,7 @@ import type { SubagentWakeUpAdmitter, SubagentWakeUpOutcome } from "./callbacks"
  * (`systemTurnKind: subagent_callback`), never the user's speech, and its
  * admission claims the callbacks it renders in the same transaction.
  * The send mirrors the branch's latest main-agent turn: its model, Search
- * sources, MCP mode (Auto, Load all or Off), Skills mode and pinned Skills and
+ * on or off, MCP mode (Auto, Load all or Off), Skills mode and pinned Skills and
  * Workspace switch, never a substitute; an Assistant chat takes only what the
  * Assistant leaves to the chat.
  */
@@ -28,6 +29,17 @@ export type SubagentWakeUpSend = (input: Readonly<{
 
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Whether the turn's user had Search on: a single-engine plan binds no source when Search was off and records why it
+ * could not search when it was on; a plan accepted before the single engine has sources only when it was on. A send
+ * says only on or off, so an accepted plan never travels back as a send's plan.
+ */
+function acceptedSearchEnabled(searchPlan: unknown): boolean {
+  if (!record(searchPlan)) return false;
+  const options = Array.isArray(searchPlan.options) ? searchPlan.options : [];
+  return options.length > 0 || searchPlan.mode === "engine" && isSearchUnavailableReason(searchPlan.unavailable);
+}
 
 /** The send body of a wake-up: the branch's latest main-agent turn's choices, as the composer would send them. */
 export function wakeUpSendBody(input: Readonly<{
@@ -49,8 +61,6 @@ export function wakeUpSendBody(input: Readonly<{
     workspace: { enabled: workspace }
   };
   if (input.assistantChat) return common;
-  const searchPlan = record(request.searchPlan) ? request.searchPlan : {};
-  const options = Array.isArray(searchPlan.options) ? searchPlan.options : [];
   const skills = record(request.skills) && request.skills.mode === "off" ? "off" : "auto";
   // Auto freezes a discovery catalog; Load all freezes the whole plan without one; Off freezes neither.
   const mcp = request.mcpDiscovery !== undefined ? "auto" : request.mcp !== undefined ? "load_all" : "off";
@@ -64,10 +74,7 @@ export function wakeUpSendBody(input: Readonly<{
     ...(pinned.length > 0 ? { skillIds: pinned } : {}),
     ...(input.answerBinding ? { modelId: input.answerBinding.providerModelId, provider: input.answerBinding.connectionId } : {}),
     ...(record(request.params) ? { params: request.params } : {}),
-    searchPlan: {
-      mode: typeof searchPlan.mode === "string" ? searchPlan.mode : "all_selected",
-      optionIds: options.flatMap((option) => record(option) && typeof option.optionId === "string" ? [option.optionId] : [])
-    },
+    searchEnabled: acceptedSearchEnabled(request.searchPlan),
     skills: { mode: skills }
   };
 }

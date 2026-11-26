@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+import { searchSettingPlan } from "../../../contracts/search";
+import { decodeRunSearchRequest } from "../runPreparation";
 import { createSubagentWakeUpAdmitter, wakeUpOutcomeOf, wakeUpSendBody, type SubagentWakeUpSend } from "./wakeUp";
 
 const request = {
@@ -36,8 +38,9 @@ describe("sub-agent wake-up turn", () => {
     const body = wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: { connectionId: "conn", providerModelId: "model" },
       assistantChat: false, normalizedRequest: request });
     expect(body).toMatchObject({ expectedActiveLeafId: "leaf", mcp: { mode: "auto" }, modelId: "model", params: { reasoningEffort: "high" },
-      provider: "conn", searchPlan: { mode: "all_selected", optionIds: ["web"] }, skills: { mode: "off" }, timeZone: "Europe/Moscow",
+      provider: "conn", searchEnabled: true, skills: { mode: "off" }, timeZone: "Europe/Moscow",
       workspace: { enabled: true } });
+    expect(body).not.toHaveProperty("searchPlan");
     expect(body).not.toHaveProperty("systemTurn");
     expect(body).toMatchObject({ skillIds: ["skill-1"] });
     // Load all and Off travel as chosen, never as Auto.
@@ -50,6 +53,26 @@ describe("sub-agent wake-up turn", () => {
     // An Assistant governs its own model, tools and Search: only the chat's own choices travel.
     expect(Object.keys(wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: null, assistantChat: true,
       normalizedRequest: request })).sort()).toEqual(["admissionId", "content", "expectedActiveLeafId", "timeZone", "workspace"]);
+  });
+
+  it.each([
+    ["an engine the turn bound", { mode: "engine", options: [{ optionId: "deepseek", use: "engine" }] }, true],
+    ["in-answer search alone", { mode: "engine", options: [{ optionId: "openai", use: "in_answer" }] }, true],
+    ["Search off", { mode: "engine", options: [] }, false],
+    ["an engine that could not search", { mode: "engine", options: [], unavailable: "search_engine_unavailable" }, true],
+    ["no engine configured", { mode: "engine", options: [], unavailable: "search_engine_not_configured" }, true],
+    ["an unknown reason", { mode: "engine", options: [], unavailable: "something_else" }, false],
+    ["a pre-upgrade source", { mode: "all_selected", options: [{ optionId: "web" }] }, true],
+    ["a pre-upgrade model choice", { mode: "model_choice", options: [{ optionId: "a" }, { optionId: "b" }] }, true],
+    ["a pre-upgrade Off", { mode: "all_selected", options: [] }, false],
+    ["no plan", undefined, false]
+  ])("sends Search on or off as the turn chose it, never its accepted plan: %s", (_name, searchPlan, enabled) => {
+    const body = wakeUpSendBody({ activeLeafMessageId: "leaf", answerBinding: null, assistantChat: false,
+      normalizedRequest: { ...request, searchPlan } });
+    expect(body.searchEnabled).toBe(enabled);
+    expect(body).not.toHaveProperty("searchPlan");
+    // The send handler's decoder reads it as the composer's switch, so no callback retry meets `search_plan_invalid`.
+    expect(decodeRunSearchRequest(body)).toEqual({ ok: true, plan: searchSettingPlan(enabled) });
   });
 
   it("reads usage limits, a user's answer that started first and a lost claim from the refusal", () => {
