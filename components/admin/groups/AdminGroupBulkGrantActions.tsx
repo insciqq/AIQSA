@@ -6,10 +6,13 @@ export function AdminGroupBulkGrantActions({
   groupName,
   onClear,
   onGrant,
+  clearable,
   resourceLabel,
   selected,
   total
 }: Readonly<{
+  /** Whether Clear has something to remove; by default, any granted resource. */
+  clearable?: boolean;
   disabled: boolean;
   groupName: string;
   onClear(): void;
@@ -33,7 +36,7 @@ export function AdminGroupBulkGrantActions({
         >Grant all</UiV2Button>
         <UiV2Button
           aria-label={`Clear current ${resourceLabel} for ${groupName}`}
-          disabled={disabled || selected === 0}
+          disabled={disabled || !(clearable ?? selected > 0)}
           onClick={onClear}
           tone="ghost"
           type="button"

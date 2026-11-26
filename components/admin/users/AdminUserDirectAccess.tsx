@@ -2,6 +2,7 @@
 
 import { inputClass } from "@/components/admin/adminPrimitives";
 import { providerDisplayName, providerModelDisplayName, searchStrategyDisplayName } from "@/components/admin/adminViewUtils";
+import { SEARCH_DISABLED_STRATEGY_ID } from "@/lib/contracts/search";
 import type { AdminUsersController } from "@/components/admin/useAdminUsersController";
 import type { AdminUserPageProviders } from "@/components/admin/users/AdminUserPage";
 import { UiV2Button } from "@/components/ui-v2";
@@ -119,6 +120,14 @@ function grantAvailable(catalog: AdminCatalog, grant: Pick<AdminAccessGrantRecor
   return catalog.providers.some((provider) => provider.id === grant.provider);
 }
 
+/** A Search grant of a source no longer listed still lets the user search: Search is installation-wide (operator
+ * decisions 2026-11-26), so any Search grant but `search-disabled` counts. */
+function grantStatus(catalog: AdminCatalog, grant: Pick<AdminAccessGrantRecord, "enabled" | "modelId" | "provider" | "searchStrategy">): string {
+  if (!grant.enabled) return " · Disabled grant";
+  if (grantAvailable(catalog, grant)) return "";
+  return grant.searchStrategy && grant.searchStrategy !== SEARCH_DISABLED_STRATEGY_ID ? " · Still lets this user search" : " · Unavailable";
+}
+
 export function AdminUserDirectGrants({ catalog, user, users }: Readonly<{
   catalog: AdminCatalog;
   user: AdminUserRecord;
@@ -151,7 +160,7 @@ export function AdminUserDirectGrants({ catalog, user, users }: Readonly<{
         <ul aria-label="Direct grants" className={listClass}>
           {user.directGrants.map((grant) => (
             <li className="flex min-w-0 flex-wrap items-center gap-2 px-4 py-2.5" key={grant.id}>
-              <span className="min-w-0 flex-1 basis-48 break-words text-sm text-ink [overflow-wrap:anywhere]">{grantLabel(catalog, grant)}{!grant.enabled ? " · Disabled grant" : !grantAvailable(catalog, grant) ? " · Unavailable" : ""}</span>
+              <span className="min-w-0 flex-1 basis-48 break-words text-sm text-ink [overflow-wrap:anywhere]">{grantLabel(catalog, grant)}{grantStatus(catalog, grant)}</span>
               <UiV2Button disabled={busy || users.actionsDisabled} onClick={() => void save([grantChange(grant, false)])} tone="ghost" type="button">Remove grant</UiV2Button>
             </li>
           ))}

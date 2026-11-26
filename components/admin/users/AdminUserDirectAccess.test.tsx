@@ -97,6 +97,14 @@ describe("direct user access controls", () => {
     }, expect.any(String)));
   });
 
+  it("says a direct Search grant of a source no longer listed still lets the user search", () => {
+    const sonar: AdminUserRecord = { ...person, directGrants: [{ enabled: true, groupId: null, id: "sonar", modelId: null, provider: null,
+      resourceDisplayName: "Perplexity Search", searchStrategy: "perplexity-tool-search", userId: "person" }] };
+    render(<Harness runAction={vi.fn<AdminRunAction>(async () => ({ ok: true }))} user={sonar} />);
+    expect(screen.getByRole("list", { name: "Direct grants" }))
+      .toHaveTextContent("Perplexity Search · Search · Still lets this user search");
+  });
+
   it("exposes provider loading and error states without key controls", () => {
     const runAction = vi.fn<AdminRunAction>(async () => ({ ok: true }));
     const view = render(<Harness connection={connection()} loaded={false} runAction={runAction} />);

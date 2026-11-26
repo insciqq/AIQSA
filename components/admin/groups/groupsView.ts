@@ -6,6 +6,7 @@ import type {
   AdminUserRecord
 } from "@/lib/contracts/admin";
 import type { AdminProviderConnection } from "@/lib/contracts/adminProviders";
+import { SEARCH_DISABLED_STRATEGY_ID } from "@/lib/contracts/search";
 
 /**
  * Presentation rules for the Groups section (PRD 5.9): the list filters and
@@ -123,10 +124,32 @@ export function groupModelChanges(group: Pick<AdminGroup, "accessGrants">, catal
   return changes;
 }
 
+/**
+ * The group's enabled Search grants that let its members search. Search is installation-wide (operator decisions
+ * 2026-11-26), so a grant of any source but `search-disabled` counts, an archived or removed one's included, such as
+ * Perplexity Sonar's after its retirement.
+ */
+export function groupSearchGrants(group: Pick<AdminGroup, "accessGrants">): string[] {
+  return [...new Set(enabledGrants(group).flatMap((grant) =>
+    grant.searchStrategy && grant.searchStrategy !== SEARCH_DISABLED_STRATEGY_ID ? [grant.searchStrategy] : []))];
+}
+
+/** Enabled Search grants of sources the catalog no longer lists, which still let the members search. */
+export function groupUnlistedSearchGrants(group: Pick<AdminGroup, "accessGrants">, catalog: AdminCatalog): string[] {
+  const listed = new Set(catalogSearchSources(catalog).map((source) => source.strategyId));
+  return groupSearchGrants(group).filter((strategyId) => !listed.has(strategyId));
+}
+
+/** Granting covers the current sources; clearing also removes the grants of sources no longer listed, so it ends the
+ * members' Search access. */
 export function groupSearchChanges(group: Pick<AdminGroup, "accessGrants">, catalog: AdminCatalog, enabled: boolean): AdminGroupGrantChange[] {
-  return catalogSearchSources(catalog)
+  const current = catalogSearchSources(catalog)
     .filter((source) => grantEnabled(group, { searchStrategy: source.strategyId }) !== enabled)
     .map((source) => ({ enabled, searchStrategy: source.strategyId }));
+  return enabled ? current : [
+    ...current,
+    ...groupUnlistedSearchGrants(group, catalog).map((searchStrategy) => ({ enabled: false, searchStrategy }))
+  ];
 }
 
 export type AdminGroupAccessCounts = Readonly<{
@@ -134,6 +157,8 @@ export type AdminGroupAccessCounts = Readonly<{
   models: number;
   providers: number;
   search: number;
+  /** Whether the members may search: any enabled Search grant, one of a source no longer listed included. */
+  searchAccess: boolean;
 }>;
 
 /** Effective counts against the current catalog; grants on retired models or Search sources do not count. */
@@ -155,7 +180,7 @@ export function groupAccessCounts(group: Pick<AdminGroup, "accessGrants">, catal
     }
   }
   const search = catalogSearchSources(catalog).filter((source) => grantEnabled(group, { searchStrategy: source.strategyId })).length;
-  return { models: modelKeys.size, providers, search };
+  return { models: modelKeys.size, providers, search, searchAccess: groupSearchGrants(group).length > 0 };
 }
 
 function count(n: number, singular: string, plural = `${singular}s`): string {
@@ -167,10 +192,10 @@ export function groupAccessSummary(group: AdminGroup, catalog: AdminCatalog): st
   if (isFullAccessGroup(group)) return "Everything, including providers and servers added later";
   if (group.archivedAt) return "Archived · grants no longer apply";
   const counts = groupAccessCounts(group, catalog);
-  if (!counts.models && !counts.search) return "No access";
+  if (!counts.models && !counts.searchAccess) return "No access";
   return [
     counts.models ? count(counts.models, "model") : null,
-    counts.search ? count(counts.search, "Search source") : null
+    counts.search ? count(counts.search, "Search source") : counts.searchAccess ? "Web search" : null
   ].filter((part): part is string => part !== null).join(" · ");
 }
 
@@ -186,7 +211,7 @@ export function groupHeaderSummary(
   return [
     members,
     count(counts.models, "model"),
-    count(counts.search, "Search source"),
+    counts.search || !counts.searchAccess ? count(counts.search, "Search source") : "Web search",
     mcpServerCount === null ? null : count(mcpServerCount, "MCP server")
   ].filter((part): part is string => part !== null).join(" · ");
 }
