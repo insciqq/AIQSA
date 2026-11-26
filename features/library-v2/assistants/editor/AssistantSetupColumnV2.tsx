@@ -18,7 +18,7 @@ import {
   type AssistantRowPolicy
 } from "@/lib/contracts/assistants";
 import { SKILL_ASSISTANT_MAX_AVAILABLE, SKILL_MAX_PINNED } from "@/lib/contracts/skills";
-import { MAX_SEARCH_PLAN_OPTIONS } from "@/lib/domain/search";
+import { WEB_SEARCH_OPTION_ID } from "@/lib/domain/search";
 import { useId, useState, type ReactNode } from "react";
 import {
   ASSISTANT_INHERIT_LABEL,
@@ -204,71 +204,29 @@ function ModelBody({ editor }: Readonly<{ editor: AssistantEditorView }>) {
   );
 }
 
+/**
+ * Web search: Inherit, Off or On (operator decisions 2026-11-26). The engine
+ * is the installation's, so the row names no source; On is written as the one
+ * virtual source, and a stored row that names sources reads as On.
+ */
 function SearchBody({ editor }: Readonly<{ editor: AssistantEditorView }>) {
   const name = useId();
   const value = editor.draft.rows.search.value;
-  const options = editor.options.searchOptions;
-  const selectedIds = value.mode === "inherit" || value.mode === "off" ? [] : value.optionIds;
-  const mode = value.mode === "inherit" ? "inherit" : value.mode === "off" ? "off" : "selected";
-  const setIds = (optionIds: string[]) => editor.onRowChange("search", {
-    value: { mode: value.mode === "all_selected" ? "all_selected" : "model_choice", optionIds }
-  });
+  const mode = value.mode === "inherit" ? "inherit" : value.mode === "off" ? "off" : "on";
   return (
-    <>
-      <ModeChoices
-        label="Web search"
-        name={name}
-        options={[
-          { label: ASSISTANT_INHERIT_LABEL, mode: "inherit" },
-          { label: "Off", mode: "off" },
-          { label: "Selected sources", mode: "selected", sub: `${selectedIds.length} of ${MAX_SEARCH_PLAN_OPTIONS}` }
-        ]}
-        value={mode}
-        onChange={(next) => editor.onRowChange("search", {
-          value: next === "inherit" ? { mode: "inherit" } : next === "off" ? { mode: "off" } : { mode: "model_choice", optionIds: [] }
-        })}
-      />
-      {mode === "selected" ? (
-        <fieldset className="v2-assistant-setup-options">
-          <legend>Sources</legend>
-          {options.length === 0 ? <p>No Search sources are available to you.</p> : null}
-          {options.map((option) => {
-            const checked = selectedIds.includes(option.id);
-            return (
-              <label key={option.id}>
-                <input
-                  checked={checked}
-                  disabled={!checked && selectedIds.length >= MAX_SEARCH_PLAN_OPTIONS}
-                  type="checkbox"
-                  onChange={() => setIds(checked ? selectedIds.filter((id) => id !== option.id) : [...selectedIds, option.id])}
-                />
-                <span>{option.label}</span>
-              </label>
-            );
-          })}
-          {selectedIds.filter((id) => !options.some((option) => option.id === id)).map((id) => (
-            <label key={id}>
-              <input checked type="checkbox" onChange={() => setIds(selectedIds.filter((selected) => selected !== id))} />
-              <span>Unavailable source<small>Remove it to choose another source.</small></span>
-            </label>
-          ))}
-        </fieldset>
-      ) : null}
-      {mode === "selected" && selectedIds.length > 1 ? (
-        <label className="v2-assistant-setup-select">
-          When the model searches
-          <select
-            value={value.mode === "all_selected" ? "all_selected" : "model_choice"}
-            onChange={(event) => editor.onRowChange("search", {
-              value: { mode: event.currentTarget.value === "all_selected" ? "all_selected" : "model_choice", optionIds: selectedIds }
-            })}
-          >
-            <option value="all_selected">Search all selected sources</option>
-            <option value="model_choice">Let the model choose</option>
-          </select>
-        </label>
-      ) : null}
-    </>
+    <ModeChoices
+      label="Web search"
+      name={name}
+      options={[
+        { label: ASSISTANT_INHERIT_LABEL, mode: "inherit" },
+        { label: "Off", mode: "off" },
+        { label: "On", mode: "on", sub: "Searches with the engine your administrator set up" }
+      ]}
+      value={mode}
+      onChange={(next) => editor.onRowChange("search", {
+        value: next === "inherit" ? { mode: "inherit" } : next === "off" ? { mode: "off" } : { mode: "all_selected", optionIds: [WEB_SEARCH_OPTION_ID] }
+      })}
+    />
   );
 }
 

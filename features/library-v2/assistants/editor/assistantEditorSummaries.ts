@@ -52,10 +52,8 @@ export function assistantRowSummary(
     case "search": {
       const value = rows.search.value;
       if (value.mode === "inherit") return ASSISTANT_INHERIT_LABEL;
-      if (value.mode === "off") return "Off";
-      if (value.optionIds.length === 0) return "No sources selected";
-      return namedList(value.optionIds.map((id) =>
-        options.searchOptions.find((option) => option.id === id)?.label ?? "Unavailable source"), "sources");
+      // On or off (operator decisions 2026-11-26): a row that names any source is on.
+      return value.mode === "off" || value.optionIds.length === 0 ? "Off" : "On";
     }
     case "tools": {
       const value = rows.tools.value;

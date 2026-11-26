@@ -35,7 +35,8 @@ import {
   type UiV2IconName,
   UiV2Icon,
   UiV2IconButton,
-  UiV2ProviderMark
+  UiV2ProviderMark,
+  UiV2Switch
 } from "@/components/ui-v2";
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
@@ -63,11 +64,8 @@ import {
   attachmentSendBlockReasonV2,
   type ComposerAttachmentItemV2
 } from "@/features/attachments-v2/attachmentPresentation";
-import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
 import { touchInputPrimaryV2 } from "@/components/ui-v2/touchInputV2";
-import type { SearchPlanMode } from "@/lib/domain/search";
-import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
-import type { CatalogModel, CatalogProvider, CatalogSearchStrategy } from "@/lib/contracts/catalog";
+import type { CatalogModel, CatalogProvider, CatalogSearch } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { resolveEffectiveSkillIds } from "@/lib/contracts/skills";
 import type { ComposerConfig } from "@/lib/contracts/composerConfig";
@@ -134,15 +132,6 @@ const LAYER_WIDTH_PX: Record<Exclude<ComposerV2Layer, null>, number> = {
   skills: 340,
   tools: 340
 };
-const SEARCH_PROVIDER_FAMILY_NAMES: Readonly<Record<string, string>> = {
-  anthropic: "Anthropic",
-  deepseek: "DeepSeek",
-  google: "Google",
-  openai: "OpenAI",
-  openrouter: "OpenRouter",
-  perplexity: "Perplexity"
-};
-
 function CapabilityChipContent({ label, icon, count = 0, signal, description, descriptionId }: Readonly<{
   label: string;
   icon: UiV2IconName;
@@ -164,20 +153,21 @@ function CapabilityChipContent({ label, icon, count = 0, signal, description, de
   </>;
 }
 
-function searchEngineShortName(
-  strategy: CatalogSearchStrategy,
-  providerFamily: string | undefined
-): string {
-  const withoutSuffix = strategy.displayName
-    .replace(/\s+web\s+search$/iu, "")
-    .replace(/\s+search$/iu, "")
-    .trim();
-  const normalized = withoutSuffix.toLocaleLowerCase();
-  if (withoutSuffix && normalized !== "search" && normalized !== "web") {
-    return withoutSuffix;
-  }
-  return (providerFamily && SEARCH_PROVIDER_FAMILY_NAMES[providerFamily.toLocaleLowerCase()]) ||
-    strategy.displayName;
+/**
+ * Why Search, switched on, cannot search for this message: the user holds no
+ * Search grant, the installation's engine is not set up or cannot search now,
+ * or this model searches in no way. Null while it can. The server decides; the
+ * composer only names the catalog's reason (operator decisions 2026-11-26).
+ */
+function searchUnavailableReason(
+  model: Pick<CatalogModel, "webSearch"> | undefined,
+  search: CatalogSearch | null
+): string | null {
+  if (search?.reason === "search_not_granted") return "Not available to you";
+  if (model?.webSearch === "engine" || model?.webSearch === "in_answer") return null;
+  if (search?.reason === "search_engine_not_configured") return "Not set up yet";
+  if (search?.reason === "search_engine_unavailable") return "Unavailable right now";
+  return "Unavailable for this model";
 }
 
 /** Left offset (px, relative to the composer frame) for a chip-anchored layer. */
@@ -402,10 +392,12 @@ export type ComposerV2Props = Readonly<{
   onRetryAttachment?(id: string): void;
   onSelectModel?(model: CatalogModel): void;
   onSelectMcp?(selection: McpRunSelection): void;
-  /** Without an Assistant this saves the user's Search default for every chat. */
-  onSelectSearchOptionIds?(optionIds: readonly string[]): void;
-  /** How an Assistant's adjustable Search row combines sources; ordinary chats search all selected sources. */
-  searchPlanMode?: SearchPlanMode;
+  /**
+   * Turns Search on or off. Without an Assistant it saves the user's switch for every chat and is only ever called
+   * with true: Search is turned off in Chat defaults (operator decisions 2026-10-24 and 2026-11-26). An Assistant
+   * chat's adjustable Search row changes for this chat, Off included.
+   */
+  onSearchEnabledChange?(enabled: boolean): void;
   onSend?(): void;
   onFollowup?(runId: string): void;
   followupSending?: boolean;
@@ -423,7 +415,8 @@ export type ComposerV2Props = Readonly<{
   onSelectSkillsMode?(mode: "auto" | "off"): void;
   selectedModelId: string;
   selectedProvider: string;
-  selectedSearchOptionIds?: readonly string[];
+  /** The user's Search switch, or an Assistant chat's Search row: on or off, never a source. */
+  searchEnabled?: boolean;
   selectedSkillIds?: readonly string[];
   selectedSkills?: readonly { id: string; name: string }[];
   sending?: boolean;
@@ -585,8 +578,7 @@ export function ComposerV2({
   onRetryAttachment,
   onSelectMcp,
   onSelectModel,
-  onSelectSearchOptionIds,
-  searchPlanMode = "all_selected",
+  onSearchEnabledChange,
   onSend,
   onFollowup,
   followupSending = false,
@@ -600,7 +592,7 @@ export function ComposerV2({
   onSelectSkillsMode,
   selectedModelId,
   selectedProvider,
-  selectedSearchOptionIds = [],
+  searchEnabled = false,
   selectedSkillIds = [],
   selectedSkills = [],
   sending = false,
@@ -634,7 +626,6 @@ export function ComposerV2({
   const currentModel = models.find(
     (model) => model.modelId === selectedModelId && model.provider === selectedProvider
   );
-  const currentProvider = providers.find((provider) => provider.id === currentModel?.provider);
   const noModels = Boolean(config && models.length === 0);
   // The Assistant's part in each row: a dot on the control while the value is
   // the Assistant's, and the menu's first line in words. Nothing is hidden.
@@ -711,14 +702,6 @@ export function ComposerV2({
     field.setSelectionRange(pending.caret, pending.caret);
   }, [draft]);
   const artifactMenuReason = artifactUnavailableReason ?? inputBlockedReason ?? (onCreateArtifact ? null : "Unavailable");
-
-  const concreteSearchOptions = config?.catalog.searchStrategies.filter(
-    (option) => option.kind !== "none"
-  ) ?? [];
-  const compatibleSearchOptionIds = new Set(
-    currentModel?.searchStrategyIds.filter((id) => id !== "search-disabled") ?? []
-  );
-  const selectedSearchSet = new Set(selectedSearchOptionIds);
 
   const groupedModels = useMemo(() => {
     const normalizedQuery = modelQuery.trim().toLocaleLowerCase();
@@ -1114,34 +1097,32 @@ export function ComposerV2({
     );
   }
 
-  // Keep unavailable saved choices discoverable so the user can remove them.
-  const activeSearchStrategies = concreteSearchOptions.filter((option) =>
-    selectedSearchSet.has(option.strategyId) && compatibleSearchOptionIds.has(option.strategyId)
-  );
-  const activeSearchStrategy = activeSearchStrategies[0];
-  const searchActive = Boolean(activeSearchStrategy);
-  const activeSearchEngineName = activeSearchStrategy
-    ? searchEngineShortName(
-        activeSearchStrategy,
-        currentModel?.providerFamily ?? currentProvider?.family
-      )
-    : null;
-  const searchDescription = `Search: ${selectedSearchOptionIds.length ? selectedSearchOptionIds.map(id => {
-    const option = concreteSearchOptions.find(candidate => candidate.strategyId === id);
-    if (!option) return "Unavailable source";
-    const name = searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family);
-    return compatibleSearchOptionIds.has(id) ? name : `${name} (unavailable for this model)`;
-  }).join(", ") : "Off"}${assistantRowDescription(searchProvenance)}`;
+  // Search is on or off (operator decisions 2026-11-26): which engine runs is the installation's, and whether it can
+  // search now is the catalog's word, shown here but never turning the switch off.
+  const catalogSearch = config?.catalog.search ?? null;
+  const searchBlockedReason = searchEnabled ? searchUnavailableReason(currentModel, catalogSearch) : null;
+  const searchActive = searchEnabled && searchBlockedReason === null;
+  const searchDescription = `Search: ${searchEnabled ? searchBlockedReason ? `On · ${searchBlockedReason.toLocaleLowerCase()}` : "On" : "Off"}${
+    assistantRowDescription(searchProvenance)}`;
+  // A user without Search sees no chip, unless an Assistant's row names Search.
   const searchChipVisible = Boolean(config) && (
-    selectedSearchOptionIds.length > 0 || concreteSearchOptions.length > 0 ||
+    searchEnabled || catalogSearch?.reason !== "search_not_granted" ||
     (searchProvenance !== null && searchProvenance.kind !== "own")
   );
-  // Deep research needs a Search source: the plan a send would carry, from the server-filtered
-  // catalog and this model, never a guess. An Assistant whose fixed Search has none never researches,
-  // so it offers nothing; otherwise the item says how to make it possible.
-  const deepResearchHasSearch = Boolean(config && currentModel) && reconcileModelSearchPlan(
-    currentModel, selectedSearchOptionIds, searchPlanMode, config?.catalog.searchStrategies ?? []
-  ).optionIds.length > 0;
+  // Ordinary chats turn Search off only in Chat defaults; an Assistant chat's adjustable row turns it off here.
+  const searchSwitchLocked = searchFixed || activeRun || !onSearchEnabledChange ||
+    (searchEnabled && !boundAssistant) || (!searchEnabled && catalogSearch?.reason === "search_not_granted");
+  const searchLayerNote = searchFixed ? null
+    : searchEnabled
+      ? boundAssistant ? "Applies to this chat." : "On for every chat. To turn search off, use Chat defaults in Settings."
+      : boundAssistant ? "Applies to this chat." : "Turning it on applies to every chat.";
+  const searchStatusLine = !searchEnabled ? null
+    : searchBlockedReason ? `${searchBlockedReason}.`
+      : currentModel?.webSearch === "in_answer" ? "This model searches inside its own answer."
+        : catalogSearch?.engine ? `Searches with ${catalogSearch.engine.displayName}.` : null;
+  // Deep research needs Search this model can run, from the server-filtered catalog, never a guess. An Assistant
+  // whose fixed Search is off never researches, so it offers nothing; otherwise the item says how to make it possible.
+  const deepResearchHasSearch = Boolean(config && currentModel) && searchActive;
   const deepResearchOffered = Boolean(onDeepResearchChange) && !messageOnly && !(searchFixed && !deepResearchHasSearch);
   const deepResearchOn = deepResearch && deepResearchOffered && deepResearchHasSearch;
   const deepResearchMenuReason = inputBlockedReason ?? (deepResearchHasSearch ? null : "Turn on Search to use Deep research");
@@ -1195,16 +1176,12 @@ export function ComposerV2({
   // with Off"); null when the user cannot see all of it.
   const assistantRows = boundAssistant?.rows;
   const assistantSearch = assistantRows?.search.assistantValue;
-  const assistantSearchIds = assistantSearch && "optionIds" in assistantSearch && !assistantSearch.hiddenCount
-    ? assistantSearch.optionIds
-    : [];
-  const assistantSearchOptions = assistantSearchIds.flatMap((id) =>
-    concreteSearchOptions.filter((option) => option.strategyId === id));
+  // Any source an Assistant names means on (operator decisions 2026-11-26).
   const assistantSearchLabel = assistantSearch?.mode === "off"
     ? "Off"
-    : assistantSearchIds.length > 0 && assistantSearchOptions.length === assistantSearchIds.length
-      ? assistantSearchOptions.map((option) =>
-          searchEngineShortName(option, currentModel?.providerFamily ?? currentProvider?.family)).join(", ")
+    : assistantSearch && "optionIds" in assistantSearch &&
+        (assistantSearch.optionIds.length > 0 || (assistantSearch.hiddenCount ?? 0) > 0)
+      ? "On"
       : null;
   const assistantTools = assistantRows?.tools.assistantValue;
   const assistantToolsCount = assistantTools?.mode === "exact"
@@ -1284,7 +1261,7 @@ export function ComposerV2({
       },
       search: searchChipVisible ? {
         detail: searchDescription.replace(/^Search: /u, ""),
-        disabledReason: onSelectSearchOptionIds ? null : "Unavailable",
+        disabledReason: onSearchEnabledChange ? null : "Unavailable",
         run: () => openFromPalette("search", searchTriggerRef.current)
       } : null
     },
@@ -1515,12 +1492,13 @@ export function ComposerV2({
                   data-quiet={searchActive ? undefined : ""} data-glyph="globe"
                   data-provenance={searchProvenance?.marker ? "assistant" : undefined}
                   data-tooltip={searchDescription} data-tooltip-side="top"
-                  disabled={activeRun || !onSelectSearchOptionIds}
+                  data-search-state={searchEnabled ? searchActive ? "on" : "unavailable" : "off"}
+                  disabled={activeRun || !onSearchEnabledChange}
                   aria-controls={`${layerId}-search`} aria-expanded={layer === "search"} aria-haspopup="dialog"
-                  aria-label={activeSearchEngineName ? `Choose web search: ${activeSearchEngineName}` : "Choose web search"}
+                  aria-label="Web search"
                   aria-describedby={`${layerId}-search-description`}
                   onClick={event => openLayer("search", event.currentTarget)}>
-                  <CapabilityChipContent label={selectedSearchOptionIds.length ? "Search" : "Search off"} icon="globe" count={selectedSearchOptionIds.length > 1 ? selectedSearchOptionIds.length : 0}
+                  <CapabilityChipContent label={searchEnabled ? "Search" : "Search off"} icon="globe"
                     description={searchDescription} descriptionId={`${layerId}-search-description`} />
                 </button>
               ) : null}
@@ -1742,20 +1720,27 @@ export function ComposerV2({
                 <div className="v2-composer-layer-scroll">
                   <p className="v2-composer-layer-title">Web search</p>
                   {provenanceNotice(searchProvenance, assistantSearchLabel)}
-                  {/* Search is turned off only in Chat defaults (operator
-                      decision 2026-10-24); an Assistant's adjustable row
-                      keeps its own per-chat choice, Off included. */}
-                  <SearchPlanPickerV2
-                    options={concreteSearchOptions.map(option => ({ ...option,
-                      executionModes: currentModel?.searchOptionCompatibility?.[option.strategyId]?.executionModes ?? option.executionModes }))}
-                    selectedIds={selectedSearchOptionIds}
-                    availableIds={compatibleSearchOptionIds}
-                    disabled={searchFixed || activeRun || !onSelectSearchOptionIds}
-                    allowEmpty={Boolean(boundAssistant)}
-                    combineMode={boundAssistant ? searchPlanMode : "all_selected"}
-                    lastSourceNote="To turn search off, use Chat defaults in Settings."
-                    onChange={optionIds => onSelectSearchOptionIds?.(optionIds)}
-                  />
+                  {/* Search is on or off, never a source (operator decision
+                      2026-11-26), and is turned off only in Chat defaults; an
+                      Assistant's adjustable row keeps its own per-chat
+                      choice, Off included. */}
+                  <div className="v2-composer-search-switch" data-testid="composer-v2-search-switch">
+                    <span className="v2-composer-search-switch-copy">
+                      <span className="v2-composer-search-switch-label" id={`${layerId}-search-switch-label`}>Search the web</span>
+                      {searchStatusLine ? (
+                        <span className="v2-composer-search-switch-status" data-search-blocked={searchBlockedReason ? "" : undefined}
+                          id={`${layerId}-search-switch-status`}>{searchStatusLine}</span>
+                      ) : null}
+                    </span>
+                    <UiV2Switch
+                      aria-describedby={searchStatusLine ? `${layerId}-search-switch-status` : undefined}
+                      checked={searchEnabled}
+                      disabled={searchSwitchLocked}
+                      label="Search the web"
+                      onChange={(next) => onSearchEnabledChange?.(next)}
+                    />
+                  </div>
+                  {searchLayerNote ? <p className="v2-composer-layer-note">{searchLayerNote}</p> : null}
                   {resetToAssistantRow(searchProvenance, "button")}
                 </div>
               ) : layer === "files" ? (

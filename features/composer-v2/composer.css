@@ -458,14 +458,43 @@
   width: min(21.25rem, calc(100vw - 2rem));
 }
 
-/* The source picker shares the layer title's (and the sheet header's)
-   0.625rem inset: its count, rows and links line up under the title. */
-.v2-composer-layer .v2-search-plan-picker {
-  padding-inline: 0.625rem;
+/* Search on or off: one switch row on the layer title's (and the sheet
+   header's) 0.625rem inset, its status line under the label. */
+.v2-composer-search-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  padding: 0.375rem 0.625rem;
 }
 
-.v2-composer-layer .v2-search-plan-source {
-  padding-inline: 0;
+.v2-composer-search-switch-copy {
+  display: grid;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.v2-composer-search-switch-label {
+  color: var(--v2-color-text);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.v2-composer-search-switch-status {
+  color: var(--v2-color-text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.v2-composer-search-switch-status[data-search-blocked] {
+  color: var(--v2-color-warn);
+}
+
+.v2-composer-search-switch .v2-switch {
+  flex: 0 0 auto;
 }
 
 .v2-composer-layer[data-kind="files"] {

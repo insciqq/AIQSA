@@ -259,13 +259,32 @@ describe("Assistant editor page", () => {
     expect(view.onOpenMcpSettings).toHaveBeenCalledOnce();
   });
 
-  it("chooses Web search as Inherit, Off or a selection", () => {
+  it("chooses Web search as Inherit, Off or On, with no source list", () => {
     const view = editor();
     renderPage(view);
 
     fireEvent.click(screen.getByRole("button", { name: "Web search" }));
-    fireEvent.click(within(row("search")).getByRole("radio", { name: /Selected sources/ }));
-    expect(view.onRowChange).toHaveBeenCalledWith("search", { value: { mode: "model_choice", optionIds: [] } });
+    const search = row("search");
+    expect(within(search).getAllByRole("radio").map((radio) => radio.closest("label")?.textContent))
+      .toEqual(["Your default (Inherit)", "Off", "OnSearches with the engine your administrator set up"]);
+    expect(within(search).queryByRole("checkbox")).toBeNull();
+    expect(within(search).queryByRole("combobox")).toBeNull();
+    expect(search).not.toHaveTextContent("Let the model choose");
+    fireEvent.click(within(search).getByRole("radio", { name: /^On/ }));
+    expect(view.onRowChange).toHaveBeenCalledWith("search", { value: { mode: "all_selected", optionIds: ["web-search"] } });
+    fireEvent.click(within(search).getByRole("radio", { name: "Off" }));
+    expect(view.onRowChange).toHaveBeenCalledWith("search", { value: { mode: "off" } });
+  });
+
+  it("reads a stored Search row that names sources as On", () => {
+    const rows = defaultAssistantDraftRows();
+    renderPage(editor({
+      draft: draft({ rows: { ...rows, search: { policy: "fixed", value: { mode: "model_choice", optionIds: ["old-a", "old-b"] } } } })
+    }));
+
+    expect(within(row("search")).getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("On");
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
+    expect(within(row("search")).getByRole("radio", { name: /^On/ })).toBeChecked();
   });
 
   it("offers five Setup rows and no Knowledge row", () => {
