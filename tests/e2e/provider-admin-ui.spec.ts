@@ -55,6 +55,7 @@ type QuickCatalogBody = {
     defaults: {
       modelId: string;
       provider: string;
+      searchEnabled: boolean;
     };
     models: Array<{
       displayName: string;
@@ -1017,11 +1018,13 @@ test("administrator adds OpenAI through the Add provider sheet, retries a reject
   const chatId = await activeChatId(page);
   trackedChatIds.push(chatId);
   await expect.poll(() => messageRequests.length).toBe(1);
+  // A send carries the user's Search switch, whatever the installation can search with now. The shared
+  // administrator's switch is whatever earlier specs left in Chat defaults, so the page's catalog says which.
+  expect(typeof catalogBody.catalog.defaults.searchEnabled).toBe("boolean");
   expect(messageRequests[0]).toMatchObject({
     modelId: installedFixture.modelId,
     provider: installedFixture.connectionId,
-    // A send carries the user's Search switch, on by default, whatever the installation can search with now.
-    searchEnabled: true
+    searchEnabled: catalogBody.catalog.defaults.searchEnabled
   });
   expect(messageRequests[0]).not.toHaveProperty("searchPlan");
   expect(messageRequests[0]?.content).toEqual({
