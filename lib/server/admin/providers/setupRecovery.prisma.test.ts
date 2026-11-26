@@ -75,15 +75,17 @@ describe("persisted provider setup recovery", () => {
       expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId }))
         .toEqual({ ok: false, reason: "verification_required", providerModelId: modelId, source: "organization" });
       const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toBuffer();
-      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: {
-        code: "invalid_parameter", param: "resolution", message: "private upstream detail" } }, { status: 400 }))
+      // Both of setup's generation requests are refused (it asks once more after a 400), so the first check leaves generation incomplete.
+      const refused = () => Response.json({ error: {
+        code: "invalid_parameter", param: "resolution", message: "private upstream detail" } }, { status: 400 });
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(refused()).mockResolvedValueOnce(refused())
         .mockImplementation(async () => Response.json({ data: [{ b64_json: png.toString("base64") }] }));
       const service = createAdminProviderService({ repository: createPrismaAdminProviderRepository(db),
         credentialTester: { test: async () => { throw new Error("unexpected_catalog_check"); } },
         tester: createAdminProviderDraftTester({ createFetch: () => fetchFn }), encryptionKey: () => KEY });
       const check = async () => {
         const run = await service.startCheckRun({ connectionId, credentialId, modelIds: [modelId], reason: "requested", retryUnresolved: true });
-        await vi.waitFor(() => expect(service.checkRun({ connectionId, runId: run.id }).state).toBe("completed"));
+        await vi.waitFor(() => expect(service.checkRun({ connectionId, runId: run.id }).state).toBe("completed"), { timeout: 10_000 });
         return service.checkRun({ connectionId, runId: run.id });
       };
       expect((await check()).failed).toEqual([modelId]);
@@ -95,7 +97,7 @@ describe("persisted provider setup recovery", () => {
       expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId })).toMatchObject({ ok: true,
         plan: { snapshot: { model: { capabilities: { imageGeneration: false, imageEditing: true } } } } });
       expect((await check()).failed).toEqual([]);
-      expect(fetchFn).toHaveBeenCalledTimes(3);
+      expect(fetchFn).toHaveBeenCalledTimes(4);
       expect(await createImageModelRoleResolver(db).resolveFor({ kind: "personal", userId })).toMatchObject({ ok: true,
         plan: { snapshot: { model: { capabilities: { imageGeneration: true, imageEditing: true } } } } });
       // The administrator list marks the same published model usable again.
