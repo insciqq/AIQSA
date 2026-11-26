@@ -280,9 +280,10 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
  * A family's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it. DeepSeek's checks
  * its own two models and its Search API. OpenRouter's first key, by Quick Setup or by hand, adds and checks every built-in OpenRouter model
  * (`providerSetupModels`), so it runs only when the operator approved that one-time cost (`AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved`,
- * operator decision 2026-11-02 for the parity acceptance).
+ * operator decision 2026-11-02 for the parity acceptance). Gemini's first key likewise checks every built-in Gemini model, so
+ * `scripts/smoke-search-paid.ts` adds it only with its own approval.
  */
-export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "openrouter", secret: string): Promise<string> {
+export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "gemini" | "openrouter", secret: string): Promise<string> {
   const existing = (await connections(api)).find((connection) => connection.family === provider && !connection.checkRunning);
   if (existing) return existing.id;
   const snapshot = await json(api, "/api/admin/providers/quick-setup");

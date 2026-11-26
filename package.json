@@ -75,7 +75,8 @@
     "task:complete": "node scripts/task-ledger.mjs complete",
     "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts",
     "smoke:browser-scenarios-paid": "tsx scripts/smoke-browser-scenarios-paid.ts",
-    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts"
+    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts",
+    "smoke:search-paid": "tsx scripts/smoke-search-paid.ts"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",
