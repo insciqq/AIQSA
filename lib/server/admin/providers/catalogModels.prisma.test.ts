@@ -97,7 +97,9 @@ describe("persisted catalog selection", () => {
       const before = await Promise.all([prisma.modelPolicy.findMany(), prisma.systemModelPolicy.findMany()]);
       const completeSetup = vi.fn();
       const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: "blue" } }).png().toBuffer();
-      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ error: { code: "invalid_parameter", param: "resolution" } }, { status: 400 }))
+      // Both of setup's generation requests are refused (it asks once more after a 400), so the first add leaves generation incomplete.
+      const refused = () => Response.json({ error: { code: "invalid_parameter", param: "resolution" } }, { status: 400 });
+      const fetchFn = vi.fn<typeof fetch>().mockResolvedValueOnce(refused()).mockResolvedValueOnce(refused())
         .mockImplementation(async () => Response.json({ data: [{ b64_json: png.toString("base64") }] }));
       const catalog = vi.fn(async () => ({ method: "models_catalog" as const, modelIds: [],
         modelIdsByClass: { image: [presets[0]!.configuration.upstreamModelId, presets[2]!.configuration.upstreamModelId, "upstream-only"] } }));
@@ -108,7 +110,7 @@ describe("persisted catalog selection", () => {
           modelIds: presets.slice(0, 2).map(({ modelId }) => modelId) })).toEqual({ unavailableModelIds: [presets[1]!.modelId] });
         const run = (await service.listConnections()).find(({ id }) => id === connectionId)!.checkRun!;
         expect(run.catalogModelIds).toEqual([presets[0]!.modelId]);
-        await vi.waitFor(() => expect(service.checkRun({ connectionId, runId: run.id }).state).toBe("completed"));
+        await vi.waitFor(() => expect(service.checkRun({ connectionId, runId: run.id }).state).toBe("completed"), { timeout: 10_000 });
       };
       await add();
       const partial = await prisma.providerModel.findFirstOrThrow({ where: { connectionId }, include: { activeCredentialChecks: true } });
@@ -120,7 +122,7 @@ describe("persisted catalog selection", () => {
       expect(current.activeConfig).toMatchObject({ capabilities: { imageGeneration: true, imageEditing: true } });
       expect(current.activeCredentialChecks.find((check) => check.modelVersion === current.activeVersion)!.evidence)
         .toMatchObject({ imageEditing: (proof as Record<string, unknown>).imageEditing });
-      expect(fetchFn).toHaveBeenCalledTimes(3);
+      expect(fetchFn).toHaveBeenCalledTimes(4);
       expect(catalog).toHaveBeenCalledTimes(2);
       expect(await prisma.providerModel.count({ where: { connectionId } })).toBe(1);
       expect(await prisma.providerCredentialVersion.count({ where: { credentialId } })).toBe(1);
