@@ -3252,12 +3252,10 @@ describe("run preparation", () => {
           credentialMode: "provider_model",
           displayName: `Search ${ordinal + 1}`,
           executionModes: ["all_selected", "model_choice"],
-          kind: optionId === "perplexity-tool-search"
-            ? "perplexity_tool_search"
-            : "provider_model_web_search",
+          kind: "provider_model_web_search",
           modelId: `search-model-${ordinal + 1}`,
           protocol: optionId === "perplexity-tool-search"
-            ? "openrouter_perplexity_chat"
+            ? "openrouter_web_search"
             : "openai_responses_web_search",
           provider: optionId === "perplexity-tool-search" ? "openrouter" : "openai_compatible",
           providerModelId: `technical-${ordinal + 1}`,
@@ -3408,9 +3406,9 @@ describe("run preparation", () => {
           credentialMode: "provider_model",
           displayName: "Perplexity Search",
           executionModes: ["all_selected", "model_choice"],
-          kind: "perplexity_tool_search",
+          kind: "provider_model_web_search",
           modelId: "perplexity/sonar-pro-search",
-          protocol: "openrouter_perplexity_chat",
+          protocol: "openrouter_web_search",
           provider: "openrouter",
           providerModelId: "technical-perplexity",
           revisionId: "revision-perplexity",

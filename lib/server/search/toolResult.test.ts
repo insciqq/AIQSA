@@ -256,7 +256,7 @@ describe("an answer whose sources came from Perplexity Sonar", () => {
   const other = searchEngine({ count: 2, displayName: "OpenAI", findings: "OpenAI findings [1].", host: "openai.example",
     optionId: "openai", provider: "openai" });
 
-  it.each([CITED_SEARCH_TOOL_RESULT_VERSION, LEGACY_SEARCH_TOOL_RESULT_VERSION])(
+  it.each([CITED_SEARCH_TOOL_RESULT_VERSION, LEGACY_SEARCH_TOOL_RESULT_VERSION] as const)(
     "still rehydrates its version %s row with Sonar's findings and every source",
     (version) => {
       const executions = [sonar, other];
