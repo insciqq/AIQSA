@@ -414,8 +414,6 @@ const PROVIDER_MODELS: AdminSearchCatalog["providerModels"] = [
     id: "model-openai-luna", searchKind: "web_search", searchReasoningSupported: true },
   { connectionDisplayName: "OpenRouter", connectionId: "connection-openrouter", displayName: "DeepSeek V4.1 Flash", enabled: true,
     id: "model-openrouter-flash", searchKind: "openrouter_web_search", searchReasoningSupported: false },
-  { connectionDisplayName: "OpenRouter", connectionId: "connection-openrouter", displayName: "Sonar Pro", enabled: true,
-    id: "model-openrouter-sonar", searchKind: "perplexity_search", searchReasoningSupported: false },
   { connectionDisplayName: "DeepSeek", connectionId: "connection-deepseek", displayName: "DeepSeek V4.1", enabled: true,
     id: "model-deepseek-chat", searchKind: "deepseek_search_api", searchReasoningSupported: false }
 ];
