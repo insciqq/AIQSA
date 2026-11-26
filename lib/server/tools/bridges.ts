@@ -80,7 +80,7 @@ function withChatToolCallName(toolCall: unknown, name: string | undefined): unkn
 
 function usesHostedSearchRoute(
   request: ProviderRunRequest,
-  protocol: "anthropic_web_search" | "gemini_google_search" | "openai_responses_web_search"
+  protocol: "anthropic_web_search" | "openai_responses_web_search"
 ): boolean {
   return request.searchPlan.options.some((option) =>
     option.adapterKind === "answer_provider_hosted" && option.protocol === protocol);
@@ -427,14 +427,8 @@ export const geminiInteractionsToolBridge: ProviderToolBridge = {
       }
     );
   },
-  serializeHostedTools(request) {
-    return usesHostedSearchRoute(
-      request,
-      "gemini_google_search"
-    )
-      ? [{ type: "google_search" }]
-      : [];
-  },
+  // Gemini's hosted Google Search never coexists with function tools, so it is never sent in an answer; Google
+  // Search runs as the installation's engine (`lib/server/providers/geminiInteractionsSearch.ts`).
   serializeTool: geminiFunctionTool,
   supportsToolCalling(input) {
     return input.provider === "gemini";

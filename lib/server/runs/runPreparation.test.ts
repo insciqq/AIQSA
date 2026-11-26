@@ -402,7 +402,6 @@ function nativeSearchCoexistencePlans(
   };
   const client: ProviderAdmissionPlan = {
     ...base,
-    requiresClientToolCoexistence: true,
     requestedSearchPlan,
     searches: [{
       bindingKey: `search:${optionId}`,
@@ -1407,13 +1406,11 @@ describe("run preparation", () => {
     "describes Search only after its admitted Workspace coexistence route (%s)", async adapterKind => {
       const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
       const h = createHarness();
-      const load = vi.fn(async (input: { requiresClientToolCoexistence?: boolean }) =>
-        input.requiresClientToolCoexistence ? client : hosted);
+      const load = vi.fn(async () => client);
       const result = materializePreparedRunData(preparedFrom(await prepareRun({ ...h.deps,
         workspace: contractWorkspace(), providerAdmission: { load }
       }, sendInput(successBody({ workspace: { enabled: true }, modelId: hosted.selection.providerModelId,
         provider: hosted.selection.providerConnectionId, params: {}, searchPlan: { mode: "model_choice", optionIds: [optionId] } })))));
-      expect(load).toHaveBeenLastCalledWith(expect.objectContaining({ requiresClientToolCoexistence: true }));
       expect(result.normalizedRequest.searchPlan.options).toEqual([expect.objectContaining({ adapterKind: "provider_model_client", optionId })]);
       expect(result.normalizedRequest.prompt.system).toContain("Web search is available in this chat as its own tool.");
       expect(result.providerRequest.tools?.some(tool => tool.capability === "web_search")).toBe(true);
@@ -3136,9 +3133,7 @@ describe("run preparation", () => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(
       "gemini_interactions_native"
     );
-    const admissionLoad = vi.fn(async (input: {
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const admissionLoad = vi.fn(async () => client);
     const attachment = runAttachment({
       extractedText: "Private MCP coexistence evidence",
       id: "document-mcp-search",
@@ -3174,12 +3169,8 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     expect(result.ok).toBe(true);
     const prepared = materializePreparedRunData(result.prepared);
-    // Chat models always call tools, so admission asks for coexistence at once.
     expect(admissionLoad).toHaveBeenCalledTimes(1);
-    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({
-      requiresClientToolCoexistence: true,
-      searchPlan: SEARCH_ON_PLAN
-    });
+    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({ searchPlan: SEARCH_ON_PLAN });
     expect(prepared.normalizedRequest.searchPlan).toMatchObject({
       mode: "engine",
       options: [expect.objectContaining({
@@ -3207,9 +3198,7 @@ describe("run preparation", () => {
     "anthropic_messages" as const
   ])("routes singleton $0 Search alongside the built-in session tool", async (adapterKind) => {
     const { client, hosted, optionId } = nativeSearchCoexistencePlans(adapterKind);
-    const admissionLoad = vi.fn(async (input: {
-      requiresClientToolCoexistence?: boolean;
-    }) => input.requiresClientToolCoexistence ? client : hosted);
+    const admissionLoad = vi.fn(async () => client);
     const harness = createHarness();
     const result = await prepareRun(
       {
@@ -3228,7 +3217,6 @@ describe("run preparation", () => {
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
     const prepared = materializePreparedRunData(result.prepared);
     expect(admissionLoad).toHaveBeenCalledTimes(1);
-    expect(admissionLoad.mock.calls[0]?.[0]).toMatchObject({ requiresClientToolCoexistence: true });
     expect(prepared.normalizedRequest.searchPlan?.options[0]?.adapterKind).toBe(
       "provider_model_client"
     );

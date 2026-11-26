@@ -270,7 +270,6 @@ export type RunPreparationDeps = Readonly<{
     load(input: {
       providerConnectionId: string;
       providerModelId: string;
-      requiresClientToolCoexistence?: boolean;
       /** Search on when it names any source (`loadProviderAdmissionPlan`). */
       searchPlan: import("../../domain/search").SearchPlan;
       userId: string;
@@ -1255,8 +1254,6 @@ export async function prepareRun(
     admissionPlan = await providerAdmission.load({
       providerConnectionId: selectedProvider,
       providerModelId: selectedModelId,
-      // Chat models always call tools, so hosted Search must coexist with them.
-      requiresClientToolCoexistence: true,
       searchPlan: requestedSearchPlan,
       userId: input.userId
     });

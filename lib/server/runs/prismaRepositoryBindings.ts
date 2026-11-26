@@ -505,9 +505,6 @@ export async function insertAcceptedProviderRunBindings(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
-      ...(input.plan.requiresClientToolCoexistence
-        ? { requiresClientToolCoexistence: true }
-        : {}),
       searchPlan: input.plan.requestedSearchPlan,
       userId: input.userId
     });

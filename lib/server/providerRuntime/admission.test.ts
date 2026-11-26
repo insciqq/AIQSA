@@ -952,20 +952,18 @@ describe("provider admission", () => {
       }],
       sourceConnectionId: deepSeekCarrier.connectionId
     });
-    const admit = (db: unknown, answer: ModelSpec, extra: Readonly<{ requiresClientToolCoexistence?: boolean }> = {}) =>
+    const admit = (db: unknown, answer: ModelSpec) =>
       loadProviderAdmissionPlan(db as Prisma.TransactionClient, {
         providerConnectionId: answer.connectionId,
         providerModelId: answer.id,
-        requiresClientToolCoexistence: true,
         searchPlan: on,
-        userId: "user-1",
-        ...extra
+        userId: "user-1"
       });
     const uses = (plan: ProviderAdmissionPlan) => plan.searches.map((search) => [search.optionId, search.use]);
 
     it("reads nothing of Search while it is off", async () => {
       const { db, searchOptionFindMany } = admissionDb({ answer: officialOpenAiModel, options: [openAiOption()] });
-      const plan = await admit(db, officialOpenAiModel, {});
+      const plan = await admit(db, officialOpenAiModel);
       const offPlan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
         providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
         searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
@@ -1189,7 +1187,7 @@ describe("provider admission", () => {
       const plan = await loadProviderAdmissionPlan(tx, {
         providerConnectionId: anthropic.connectionId, providerModelId: anthropic.id,
         searchPlan: searchOn ? on : { mode: "all_selected", optionIds: [] },
-        userId: "user-1", requiresClientToolCoexistence: true
+        userId: "user-1"
       });
 
       await insertAcceptedProviderRunBindings(tx, { plan, nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });

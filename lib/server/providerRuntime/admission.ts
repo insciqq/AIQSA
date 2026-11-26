@@ -100,7 +100,6 @@ export type DecisionProviderAdmissionRole = RerankerProviderAdmissionRole;
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   fingerprint: string;
-  requiresClientToolCoexistence?: true;
   /** Search on or off as admitted (`SEARCH_ON_PLAN` or `SEARCH_OFF_PLAN`). */
   requestedSearchPlan: SearchPlan;
   /** In-answer search first, then the installation's engine and its backup, in the order a request uses them. */
@@ -909,7 +908,6 @@ export async function loadProviderAdmissionPlan(
   input: {
     providerConnectionId: string;
     providerModelId: string;
-    requiresClientToolCoexistence?: boolean;
     searchPlan: SearchPlan;
     userId: string;
   }
@@ -1007,7 +1005,6 @@ export async function loadProviderAdmissionPlan(
 
   const withoutFingerprint = {
     answer,
-    ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
     requestedSearchPlan: searchSettingPlan(searchEnabled),
     searches,
     ...(searchUnavailable ? { searchUnavailable } : {}),

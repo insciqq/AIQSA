@@ -191,7 +191,7 @@ export function createPrismaSubagentModelCatalog(input: Readonly<{ prisma: Catal
         if (!binding && background) return unavailable;
         if (!binding) {
           const role = (await loadProviderAdmissionPlan(input.prisma, { providerConnectionId: entry.connectionId,
-            providerModelId: entry.providerModelId, requiresClientToolCoexistence: true, searchPlan: { mode: "all_selected", optionIds: [] },
+            providerModelId: entry.providerModelId, searchPlan: { mode: "all_selected", optionIds: [] },
             userId })).answer;
           if (role.modelConfiguration.capabilities.toolCalling !== true) return unavailable;
           const data = { bindingKey, connectionId: role.snapshot.connectionId, credentialId: role.snapshot.credentialId,

@@ -439,12 +439,6 @@ function maxOutputTokens(params: Record<string, unknown>): number {
   return value;
 }
 
-function usesHostedGoogleSearch(request: ProviderRunRequest): boolean {
-  return request.searchPlan.options.some((option) =>
-    option.adapterKind === "answer_provider_hosted" &&
-    option.protocol === "gemini_google_search");
-}
-
 /** Under `any` Gemini compiles every advertised function schema, and an
  * arbitrary MCP/Workspace/first-party schema can make the forced round fail
  * with HTTP 400. A round forced to obtain one advertised tool narrows the
@@ -497,13 +491,8 @@ function buildGeminiInteractionsBody(
   const serializedTools = (request.tools ?? []).map((tool) =>
     geminiInteractionsToolBridge.serializeTool(tool).tool
   );
-  const hostedTools = usesHostedGoogleSearch(request)
-    ? [{ type: "google_search" }]
-    : [];
-  if (hostedTools.length > 0 && serializedTools.length > 0) {
-    throw new Error("gemini_interactions_tool_combination_unsupported");
-  }
-  const tools: Record<string, unknown>[] = [...hostedTools, ...serializedTools];
+  // Hosted Google Search never coexists with function tools, so an answer never carries it.
+  const tools: Record<string, unknown>[] = serializedTools;
   const effort = reasoningEffort(request);
   const generationConfig: GeminiInteractionsRequestBody["generation_config"] = {
     max_output_tokens: maxOutputTokens(request.params),
