@@ -279,14 +279,16 @@ export type InstallationSearchDb = Pick<Prisma.TransactionClient, "providerModel
 
 /** The installation's Search as admission reads it: the policy, every live source and the technical models behind them. */
 export async function loadInstallationSearch(db: InstallationSearchDb): Promise<InstallationSearch> {
-  const [policyRow, options] = await Promise.all([
-    db.searchPolicy.findUnique({ select: installationSearchPolicySelect, where: { id: INSTALLATION_SEARCH_POLICY_ID } }),
-    db.searchOption.findMany({
-      include: searchOptionRouteInclude,
-      orderBy: [{ createdAt: "asc" }, { optionId: "asc" }],
-      where: { archivedAt: null, enabled: true }
-    }) as Promise<SearchOptionRouteRow[]>
-  ]);
+  // One statement at a time: admission also reads this inside its binding transaction.
+  const policyRow = await db.searchPolicy.findUnique({
+    select: installationSearchPolicySelect,
+    where: { id: INSTALLATION_SEARCH_POLICY_ID }
+  });
+  const options = await db.searchOption.findMany({
+    include: searchOptionRouteInclude,
+    orderBy: [{ createdAt: "asc" }, { optionId: "asc" }],
+    where: { archivedAt: null, enabled: true }
+  }) as SearchOptionRouteRow[];
   const technicalIds = [...new Set(options.flatMap((option) => option.strategies.flatMap((strategy) =>
     strategy.adapterKind === "provider_model_client" && strategy.providerModelId ? [strategy.providerModelId] : [])))];
   const models = technicalIds.length > 0
