@@ -1,11 +1,7 @@
 import type { ModelRunSseEvent } from "../../domain/modelRunEvents";
 import {
-  createOpenRouterPerplexitySearchAdapter as createOpenRouterPerplexitySearchAdapterBoundary
-} from "./openRouterPerplexitySearch";
-import {
   buildOpenRouterChatRequest,
-  buildOpenRouterChatRequestPreview,
-  buildOpenRouterPerplexitySearchRequest
+  buildOpenRouterChatRequestPreview
 } from "./openRouterChatRequest";
 import {
   streamOpenRouterJsonResponse,
@@ -17,14 +13,12 @@ import {
 } from "./openRouterChatTransport";
 import type {
   ProviderAdapter,
-  ProviderRunResult,
-  ProviderSearchAdapter
+  ProviderRunResult
 } from "./types";
 import { providerStreamTimingLimits } from "./network";
 
 export {
   buildOpenRouterChatRequest,
-  buildOpenRouterPerplexitySearchRequest,
   createFetchOpenRouterChatClient
 };
 export type { OpenRouterChatClient };
@@ -65,10 +59,4 @@ export function createOpenRouterChatAdapter(options: OpenRouterAdapterOptions): 
       return yield* streamOpenRouterJsonResponse(response, request);
     }
   };
-}
-
-export function createOpenRouterPerplexitySearchAdapter(
-  options: OpenRouterAdapterOptions
-): ProviderSearchAdapter {
-  return createOpenRouterPerplexitySearchAdapterBoundary({ client: options.client });
 }

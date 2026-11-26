@@ -1413,10 +1413,6 @@ describe("Prisma-backed run repository", () => {
         defaults: {
           controlDefaults: {
             temperature: "0.2"
-          },
-          searchPreferencePlan: {
-            mode: "model_choice",
-            optionIds: ["company-search", "secondary-search"]
           }
         },
         question: "Atomic defaults",

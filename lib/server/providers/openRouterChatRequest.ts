@@ -1,4 +1,3 @@
-import { admittedOutputAllowance } from "./modelOutputAllowance";
 import { configuredModelParameterControls } from "./providerModelCapabilities";
 import { resolveProviderToolChoice } from "./providerToolChoice";
 import { anthropicToolSchemas } from "./anthropicStrictSchema";
@@ -7,10 +6,6 @@ import {
   normalizeOpenRouterParams,
   type OpenRouterParams
 } from "../../domain/providerParams";
-import {
-  invalidRunParamsError,
-  validateSearchRunParams
-} from "../../domain/runParams";
 import { textFromContentBlocks } from "../../domain/modelRunEvents";
 import { openRouterChatToolBridge } from "../tools/bridges";
 import {
@@ -23,8 +18,7 @@ import {
 import { conversationPreview, providerPromptCacheKey, textConversationForRequest } from "./context";
 import type {
   ProviderAttachment,
-  ProviderRunRequest,
-  ProviderSearchRequest
+  ProviderRunRequest
 } from "./types";
 import { providerInstructionsWithPersonalContext } from "./personalContext";
 import { isOpenAIChatRecord as isRecord } from "./openaiChatCompletions";
@@ -82,18 +76,6 @@ export type OpenRouterChatRequestPreview = {
     role: "assistant" | "user";
     text: string;
   }[];
-};
-
-export type OpenRouterPerplexitySearchRequestPreview = {
-  body: {
-    model: string;
-    query_characters: number;
-    strategy: string;
-    stream: false;
-  };
-  provider: "openrouter";
-  redactions: ["search_query"];
-  stage: "tool_search";
 };
 
 type PrivateBuildOptions = OpenRouterChatRequestOptions & {
@@ -548,103 +530,5 @@ export function buildOpenRouterChatRequestPreview(
       "selected_skill_instructions",
       "provider_continuation_opaque_fields"
     ]
-  };
-}
-
-function searchParamsFromRequest(request: ProviderSearchRequest): OpenRouterParams {
-  const policy = request.searchPolicy;
-  if (
-    policy.provider !== "openrouter" ||
-    policy.strategyId !== "perplexity-tool-search" ||
-    !request.strategyId.trim()
-  ) {
-    throw new Error("openrouter_search_policy_invalid");
-  }
-
-  const requestControls = validateSearchRunParams(
-    request.searchControls,
-    policy.controls
-  );
-  if (!requestControls.ok) {
-    throw new Error(invalidRunParamsError);
-  }
-
-  const defaults = normalizeOpenRouterParams(policy.defaultParams);
-  const defaultControls = validateSearchRunParams(
-    {
-      maxOutputTokens: defaults.maxTokens,
-      ...(typeof defaults.temperature === "number"
-        ? { temperature: defaults.temperature }
-        : {})
-    },
-    policy.controls
-  );
-  if (!defaultControls.ok || !isRecord(policy.defaultParams.provider)) {
-    throw new Error("openrouter_search_policy_invalid");
-  }
-
-  const controls = requestControls.params ?? {};
-  return normalizeOpenRouterParams({
-    ...policy.defaultParams,
-    maxOutputTokens:
-      typeof controls.maxOutputTokens === "number"
-        ? controls.maxOutputTokens
-        : defaults.maxTokens,
-    provider: policy.defaultParams.provider,
-    stream: false,
-    ...(typeof controls.temperature === "number"
-      ? { temperature: controls.temperature }
-      : {})
-  });
-}
-
-function buildSearchText(request: ProviderSearchRequest): string {
-  return [
-    "Search the web for the user's question and return concise findings with citations.",
-    `Question:\n${request.query}`
-  ].join("\n\n");
-}
-
-export function buildOpenRouterPerplexitySearchRequest(
-  request: ProviderSearchRequest
-): OpenRouterChatRequestBody {
-  const body = buildOpenRouterBody({
-    chatId: request.correlationId,
-    messages: [
-      {
-        content:
-          "You are AIQSA's Perplexity search tool executor. Use current sources, keep findings concise, and preserve citations.",
-        role: "system"
-      },
-      {
-        content: buildSearchText(request),
-        role: "user"
-      }
-    ],
-    metadata: {
-      app: "aiqsa",
-      stage: "tool_search",
-      strategy: request.strategyId
-    },
-    modelId: request.searchPolicy.modelId,
-    params: searchParamsFromRequest(request),
-    stream: false
-  });
-  return request.generationBudget ? { ...body, max_completion_tokens: admittedOutputAllowance(request.generationBudget, body) } : body;
-}
-
-export function buildOpenRouterPerplexitySearchRequestPreview(
-  request: ProviderSearchRequest
-): OpenRouterPerplexitySearchRequestPreview {
-  return {
-    body: {
-      model: request.searchPolicy.modelId,
-      query_characters: request.query.length,
-      strategy: request.strategyId,
-      stream: false
-    },
-    provider: "openrouter",
-    redactions: ["search_query"],
-    stage: "tool_search"
   };
 }

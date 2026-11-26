@@ -28,9 +28,12 @@ import {
 import { createOpenAIResponsesSearchAdapter } from "./openaiResponsesSearch";
 import {
   createFetchOpenRouterChatClient,
-  createOpenRouterChatAdapter,
-  createOpenRouterPerplexitySearchAdapter
+  createOpenRouterChatAdapter
 } from "./openRouterChat";
+import {
+  createFetchOpenRouterResponsesSearchClient,
+  createOpenRouterWebSearchAdapter
+} from "./openRouterWebSearch";
 import {
   codexLbConnection,
   normalizeProviderConnectionConfiguration,
@@ -554,9 +557,19 @@ function createProviderRuntimeBindingUnobserved(input: Readonly<{
         defaultTimeoutMs: responseTimeoutMs,
         fetchFn
       });
+      // OpenRouter's web search runs on the Responses API of the same
+      // connection and key.
+      const webSearch = createOpenRouterWebSearchAdapter({
+        client: createFetchOpenRouterResponsesSearchClient({
+          apiKey: clientSecret,
+          baseUrl,
+          defaultTimeoutMs: responseTimeoutMs,
+          fetchFn
+        })
+      });
       return {
         adapter: createOpenRouterChatAdapter({ client }),
-        searchAdapter: createOpenRouterPerplexitySearchAdapter({ client }),
+        searchAdapter: webSearch,
         structuredOutputAdapter: createOpenRouterStructuredOutputAdapter({
           client,
           model: snapshot.model

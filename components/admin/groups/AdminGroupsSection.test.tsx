@@ -550,6 +550,30 @@ describe("AdminGroupsSection", () => {
     expect(mcpGrant).toHaveBeenCalledWith("server-antv", { canUse: true, groupId: "group-research" });
   });
 
+  it("says a grant of an archived Search source still lets members search, and Clear removes it", async () => {
+    const snapshot = dashboardFixture();
+    // Perplexity Sonar's grant after its retirement (2026-11-26): archived, so the catalog no longer lists it.
+    const sonar = grant({ groupId: empty.id, id: "sonar", resourceDisplayName: "Perplexity Search", searchStrategy: "perplexity-tool-search" });
+    const { posts } = renderSection({
+      initialDashboard: { ...snapshot, groups: snapshot.groups.map((entry) => entry.id === empty.id ? { ...entry, accessGrants: [sonar] } : entry) },
+      persistGrants: true,
+      resource: empty.id
+    });
+    const search = within(await screen.findByTestId("admin-group-search"));
+    expect(search.getByText("0 of 2 Search sources granted · None")).toBeInTheDocument();
+    expect(search.getByTestId("admin-group-search-unlisted")).toHaveTextContent("Members can search");
+    const clear = search.getByRole("button", { name: "Clear current Search sources for Interns" });
+    expect(clear).toBeEnabled();
+    fireEvent.click(clear);
+    await waitFor(() => expect(posts).toEqual([{
+      action: "set_group_grants",
+      changes: [{ enabled: false, searchStrategy: "perplexity-tool-search" }],
+      groupId: empty.id
+    }]));
+    await waitFor(() => expect(search.queryByTestId("admin-group-search-unlisted")).not.toBeInTheDocument());
+    expect(clear).toBeDisabled();
+  });
+
   it("grants all current models across providers and Search sources, then clears each section from saved state", async () => {
     const { posts } = renderSection({ persistGrants: true, resource: empty.id });
     const page = await screen.findByTestId("admin-group-page");

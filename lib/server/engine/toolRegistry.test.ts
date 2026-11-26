@@ -393,8 +393,8 @@ describe("native tool registry", () => {
         }) }
       } }
     } }));
-    const search = registry.resolve("search_selected_engines")!;
-    const execution = { call: { arguments: { query: "long query" }, id: "c1", name: "search_selected_engines" }, ordinal: 0,
+    const search = registry.resolve("web_search")!;
+    const execution = { call: { arguments: { query: "long query" }, id: "c1", name: "web_search" }, ordinal: 0,
       persistedToolCallId: "row-1", round: 1, signal: new AbortController().signal };
     const result = await search.execute(execution);
     expect(result.status).toBe("complete");

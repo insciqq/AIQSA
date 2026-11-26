@@ -166,6 +166,7 @@ import { attachmentDownloadHref } from "@/components/app-shell/workspaceClient";
 import type { ComposerConfig, ComposerConfigMcpServer } from "@/lib/contracts/composerConfig";
 import type { McpRuntimeErrorCode, UserMcpServer } from "@/lib/contracts/mcp";
 import { isMcpAutoDiscoveryFailureCode } from "@/lib/contracts/runs";
+import { SEARCH_DISABLED_STRATEGY_ID, searchSettingPlan } from "@/lib/domain/search";
 import type {
   ChatNavigationFolderWire,
   ChatNavigationSummaryWire
@@ -1040,8 +1041,9 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       onRetryConfig={composer.retryCatalog}
       onSelectMcp={composer.selectMcpMode}
       onSelectModel={composer.selectModel}
-      onSelectSearchOptionIds={(ids) => composer.selectSearchPlan(ids, composer.searchPlanMode)}
-      searchPlanMode={composer.searchPlanMode}
+      onSearchEnabledChange={(enabled) =>
+        composer.selectSearchPlan(searchSettingPlan(enabled).optionIds, composer.searchPlanMode)}
+      searchEnabled={composer.selectedSearchOptionIds.some((id) => id !== SEARCH_DISABLED_STRATEGY_ID)}
       onSend={() => void composer.submitComposer()}
       onFollowup={canSubmitFollowup
           ? runId => void composer.submitFollowup?.(runId) : undefined}
@@ -1054,7 +1056,6 @@ export function PowerAppShellV2View(props: PowerAppShellV2Props) {
       mcpSelection={mcpSelection}
       selectedModelId={composer.selectedModelId}
       selectedProvider={composer.selectedProvider}
-      selectedSearchOptionIds={composer.selectedSearchOptionIds}
       sendWithEnter={composer.sendWithEnter}
       sending={composer.sending}
       selectedSkillIds={selectedSkills.map((skill) => skill.id)}

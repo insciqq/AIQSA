@@ -1,4 +1,4 @@
-import { expect, test, type Locator } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { matrixCatalog } from "./shell/catalog";
 import { installMatrixCatalogFixture } from "./shell/catalogFixture";
 import { runAccountMenuAction, showSettingsSection } from "./shell/page";
@@ -17,10 +17,8 @@ for (const theme of ["dark", "light"] as const) {
     await authenticateWithLocalToken(page.request);
     await page.context().addCookies([{ name: "aiqsa.theme", value: theme, url: "http://127.0.0.1:3000" }]);
     const catalog = structuredClone(matrixCatalog);
-    catalog.searchStrategies = Array.from({ length: 6 }, (_, index) => ({
-      description: "Synthetic search engine", displayName: `Search engine ${index + 1}`,
-      kind: "perplexity_tool_search", strategyId: `search-${index + 1}`
-    }));
+    // Search is one switch for every chat with no choice of source (search-v2, 2026-11-26).
+    catalog.defaults.searchEnabled = true;
     await installMatrixCatalogFixture(page, undefined, { catalog });
     await page.route("**/api/uploads", route => route.fulfill({ json: {
       nextCursor: null,
@@ -98,29 +96,24 @@ for (const theme of ["dark", "light"] as const) {
       await expectWithinViewport(page, models);
       await page.screenshot({ path: testInfo.outputPath(`model-default-${size.width}-${theme}.png`) });
       await page.keyboard.press("Escape");
-      await settings.getByLabel("Web search default").click();
-      const menu = settings.getByTestId("settings-default-search").locator(".v2-search-plan-picker");
-      await expect(menu.getByRole("checkbox")).toHaveCount(6);
-      // The last checked source cannot be unchecked, so other sources leave
-      // only once a wanted one is on.
-      const wanted = /Search engine [123]/u;
-      const sourceLabel = (source: Locator) => source.evaluate((element) => element.closest("label")?.textContent ?? "");
-      for (const source of await menu.getByRole("checkbox", { checked: true }).all()) {
-        if (!wanted.test(await sourceLabel(source)) && await source.isEnabled()) await source.uncheck();
-      }
-      await menu.getByRole("checkbox", { name: /Search engine 1/ }).check();
-      for (const source of await menu.getByRole("checkbox", { checked: true }).all()) {
-        if (!wanted.test(await sourceLabel(source))) await source.uncheck();
-      }
-      for (const name of [/Search engine 2/, /Search engine 3/]) await menu.getByRole("checkbox", { name }).check();
-      await expect(menu.getByRole("checkbox", { name: /Search engine 4/ })).toBeDisabled();
-      await expect(menu.getByRole("combobox")).toHaveCount(0);
-      await menu.scrollIntoViewIfNeeded();
-      await expectWithinViewport(page, menu);
+      const searchRow = settings.getByTestId("settings-default-search");
+      const searchSwitch = searchRow.getByRole("switch", { name: "Web search default" });
+      await expect(searchSwitch).toHaveAttribute("aria-checked", "true");
+      await expect(searchRow.getByRole("checkbox")).toHaveCount(0);
+      await expect(searchRow.getByRole("combobox")).toHaveCount(0);
+      await searchRow.scrollIntoViewIfNeeded();
+      await expectWithinViewport(page, searchRow);
       await expectNoHorizontalOverflow(page);
       await page.screenshot({ path: testInfo.outputPath(`search-${size.width}-${theme}.png`) });
-      await settings.getByLabel("Web search default").click();
-      await expect(settings.getByLabel("Web search default")).toBeFocused();
+      // Keyboard only: Space asks before turning Search off, and Keep search on leaves it on.
+      await searchSwitch.focus();
+      await page.keyboard.press("Space");
+      const confirmation = page.getByRole("dialog", { name: "Turn off web search" });
+      await expect(confirmation).toBeVisible();
+      await page.screenshot({ path: testInfo.outputPath(`search-off-confirmation-${size.width}-${theme}.png`) });
+      await confirmation.getByRole("button", { name: "Keep search on" }).click();
+      await expect(confirmation).toHaveCount(0);
+      await expect(searchSwitch).toHaveAttribute("aria-checked", "true");
       await settings.getByRole("button", { name: "Back to chat" }).click();
     }
   });

@@ -42,8 +42,8 @@ export type ToolResultClearingPolicy = Readonly<{
 /** Product tool names the clearing reads, kept here so the module stays a light leaf (its test pins them to their owners). */
 export const CLEARING_PRODUCT_TOOLS = Object.freeze({
   fetchUrl: "fetch_url",
-  /** The Search tools (`HARNESS_SEARCH_TOOL`): one for every selected source, or one per source. */
-  search: /^(?:search_selected_engines|search_engine_[1-3])$/u
+  /** The Search tools (`HARNESS_SEARCH_TOOL`): `web_search`, and the names earlier runs gave them. */
+  search: /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u
 });
 
 /** A call whose result is text from outside that an agent read: a page, Search results, a command's or the browser's output, a file, a saved result read again. */

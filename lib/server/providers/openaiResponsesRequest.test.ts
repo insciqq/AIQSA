@@ -261,7 +261,7 @@ describe("OpenAI Responses request builder", () => {
             executionModes: ["all_selected", "model_choice"],
             modelId: "perplexity/sonar",
             optionId: "perplexity-tool-search",
-            protocol: "openrouter_perplexity_chat",
+            protocol: "openrouter_web_search",
             provider: "openrouter",
             providerModelId: "technical-perplexity",
             searchStrategyRowId: "route-perplexity"

@@ -1211,7 +1211,15 @@ model MemoryLegacySuggestion {
 
 model SearchPolicy {
   id              String   @id
+  /// The previous release's view of `engineOptionId` and `backupOptionId`, kept in step by their writer.
   defaultPlan     Json     @default("{\"mode\":\"all_selected\",\"optionIds\":[]}")
+  /// The administrator's Search engine (`SearchOption.optionId`); null lets the default order pick it. A chosen
+  /// engine that cannot search is never replaced (`lib/server/search/engineResolution.ts`), so no foreign key clears it.
+  engineOptionId  String?
+  /// The administrator's backup, called only when a call to the engine failed.
+  backupOptionId  String?
+  /// OpenAI-protocol answer models with verified hosted search search inside their own answer.
+  inAnswerSearch  Boolean  @default(true)
   version         Int      @default(1)
   updatedByUserId String?
   createdAt       DateTime @default(now())

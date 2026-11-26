@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { builtInSearchDraft, normalizeSearchDraft, searchDraftHash } from "../../../lib/server/search/configuration";
+import { adminSearchExecutionDefaults } from "../../../lib/contracts/adminSearch";
+import { normalizeSearchDraft, searchDraftHash } from "../../../lib/server/search/configuration";
 import { searchValidationFingerprint } from "../../../lib/server/search/probeBinding";
 import {
   createTestProviderExecutionAuthority,
@@ -94,8 +95,9 @@ export async function createCatalogOnlyAnswerModel(prisma: PrismaClient, label: 
 }
 
 /**
- * A Perplexity-kind Search source whose technical model is a synthetic
- * OpenRouter-family model, so the Fake QSA model reaches it as a client route.
+ * An OpenRouter web search source (engine Perplexity) whose technical model is
+ * a synthetic OpenRouter-family model, so the Fake QSA model reaches it as a
+ * client route.
  */
 export async function createCatalogOnlySearchSource(prisma: PrismaClient, label: string): Promise<CatalogOnlySearchSource> {
   const suffix = randomUUID().slice(0, 8);
@@ -138,17 +140,20 @@ export async function createCatalogOnlySearchSource(prisma: PrismaClient, label:
       data: {
         description: "Synthetic Search source for browser specs",
         displayName,
-        kind: "perplexity_search",
+        kind: "web_search",
         optionId,
         sourceConnectionId: authority.connectionId
       },
       select: { id: true }
     });
-    const draft = normalizeSearchDraft(builtInSearchDraft({
-      config: {},
-      kind: "perplexity_tool_search",
+    const draft = normalizeSearchDraft({
+      ...adminSearchExecutionDefaults,
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      openRouterWebSearch: { engine: "perplexity", mode: null },
+      protocol: "openrouter_web_search",
       providerModelId: authority.providerModelId
-    }));
+    });
     const strategy = await prisma.searchStrategy.create({
       data: {
         adapterKind: draft.adapterKind,
@@ -157,7 +162,7 @@ export async function createCatalogOnlySearchSource(prisma: PrismaClient, label:
         description: "Synthetic Search source for browser specs",
         displayName,
         draft: draft as unknown as Prisma.InputJsonValue,
-        kind: "perplexity_tool_search",
+        kind: "provider_model_web_search",
         modelId: technical.upstreamModelId,
         provider: authority.connectionId,
         providerModelId: authority.providerModelId,

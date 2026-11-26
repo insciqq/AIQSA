@@ -87,6 +87,7 @@ const openrouter: Record<string, Tariff> = {
   "deepseek/deepseek-v4.1-flash-1017": [0.15, 0.003, null, 0.6],
   "deepseek/deepseek-v4.1-flash": [0.04, 0.0016, null, 0.144],
   "deepseek/deepseek-v4-pro-0813": [0.66, 0.022, null, 1.98],
+  // Perplexity Sonar is retired (2026-11-26); its tariff stays as the price migrations wrote it for the rows installations keep.
   "perplexity/sonar-pro-search": [3, null, null, 15]
 };
 

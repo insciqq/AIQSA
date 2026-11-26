@@ -8,10 +8,15 @@ import {
   draftForModel,
   emptySearchForm,
   manuallyAddableModels,
+  openRouterEngineLabel,
+  openRouterModeLabel,
   searchExecutionValidation,
   searchFormFrom,
   searchFormsEqual,
+  searchModelOptionKey,
   searchModelOptionLabel,
+  searchProtocolResultsOnly,
+  selectedSearchModel,
   sourceIdentityFor,
   type SearchSourceForm
 } from "@/components/admin/search/searchSourceView";
@@ -21,10 +26,13 @@ import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
 import {
   adminSearchExecutionLimits,
   DEEPSEEK_SEARCH_API_QUERY_MAX_CHARACTERS,
+  defaultOpenRouterWebSearchSettings,
+  OPENROUTER_WEB_SEARCH_ENGINES,
   type AdminSearchCatalog,
   type AdminSearchDraft,
   type AdminSearchIntegration,
-  type AdminSearchProviderModelOption
+  type AdminSearchProviderModelOption,
+  type OpenRouterWebSearchEngine
 } from "@/lib/contracts/adminSearch";
 import { useId, useState } from "react";
 
@@ -52,7 +60,7 @@ function ModelField({
   options: readonly AdminSearchProviderModelOption[];
   setForm(value: SearchSourceForm): void;
 }>) {
-  const selected = options.find((candidate) => candidate.id === form.draft.providerModelId);
+  const selected = selectedSearchModel(form.draft, options);
   return (
     <label className="block min-w-0">
       <span className={fieldLabel}>Search model</span>
@@ -62,7 +70,7 @@ function ModelField({
         onChange={(event) => {
           const previousModel = selected;
           const previousIdentity = previousModel ? sourceIdentityFor(previousModel) : null;
-          const model = options.find((candidate) => candidate.id === event.currentTarget.value);
+          const model = options.find((candidate) => searchModelOptionKey(candidate) === event.currentTarget.value);
           if (!model) {
             setForm({
               ...form,
@@ -87,21 +95,25 @@ function ModelField({
             draft: draftForModel(model, form.draft)
           });
         }}
-        value={form.draft.providerModelId ?? ""}
+        value={selected ? searchModelOptionKey(selected) : ""}
       >
         <option value="">Select a Search-capable model</option>
         {options.map((model) => (
-          <option disabled={!model.enabled} key={`${model.searchKind}:${model.id}`} value={model.id}>
+          <option disabled={!model.enabled} key={searchModelOptionKey(model)} value={searchModelOptionKey(model)}>
             {searchModelOptionLabel(model)}
           </option>
         ))}
       </select>
       <span className={helpText}>
         {creating && options.length === 0
-          ? "No model is available for a manual source. Manual sources use a Perplexity model on OpenRouter or the DeepSeek Search API on a DeepSeek connection; turn one on first."
+          ? "No model is available for a manual source. Manual sources use OpenRouter web search or a Perplexity model on OpenRouter, or the DeepSeek Search API on a DeepSeek connection; turn one on first."
           : selected?.searchKind === "deepseek_search_api"
             ? "Searches with the DeepSeek Search API using this connection's key; the model itself is never called."
-            : "The connection and model this source searches with."}
+            : selected?.searchKind === "openrouter_web_search"
+              ? "Runs OpenRouter's web search and returns its results. DeepSeek V4.1 Flash and GPT-6 Luna passed this check; Save checks any model first and keeps it only if it searches."
+              : selected?.searchKind === "web_search"
+                ? "Runs OpenAI's web search and returns findings per source. Save checks the model first and keeps it only if it searches."
+                : "The connection and model this source searches with."}
       </span>
     </label>
   );
@@ -122,9 +134,11 @@ function SourceFields({
 }>) {
   const creating = mode.kind === "create";
   const options = creating ? providerModels : configurableModels(mode.source, providerModels);
-  const selectedModel = options.find((model) => model.id === form.draft.providerModelId);
-  // The raw results API has no model reply to limit and a 128-character query.
+  const selectedModel = selectedSearchModel(form.draft, options);
+  // The raw results API has a 128-character query.
   const searchApi = form.draft.protocol === "deepseek_search_api";
+  // Results-only engines have no model reply to limit.
+  const resultsOnly = searchProtocolResultsOnly(form.draft.protocol);
   const selectedModelTimeoutSeconds = selectedModel?.responseTimeoutSeconds ?? 300;
   const validation = searchExecutionValidation(form);
   const ids = useId();
@@ -133,17 +147,60 @@ function SourceFields({
   const updateDraft = (patch: Partial<AdminSearchDraft>) => setForm({ ...form, draft: { ...form.draft, ...patch } });
   const reasoningProtocol = form.draft.protocol === "anthropic_web_search" ||
     form.draft.protocol === "openai_responses_web_search";
+  const webSearch = form.draft.protocol === "openrouter_web_search"
+    ? form.draft.openRouterWebSearch ?? defaultOpenRouterWebSearchSettings()
+    : null;
+  const webSearchModes: readonly string[] = webSearch ? OPENROUTER_WEB_SEARCH_ENGINES[webSearch.engine].modes : [];
+  const advanced = form.draft.adapterKind === "provider_model_client" && !resultsOnly;
 
   return (
     <div className="flex flex-col gap-4">
-      {creating ? (
-        <ModelField
-          creating
-          disabled={disabled}
-          form={form}
-          options={options}
-          setForm={setForm}
-        />
+      {/* The Search model comes first: for the OpenAI and OpenRouter engines it is the model that searches. */}
+      <ModelField
+        creating={creating}
+        disabled={disabled}
+        form={form}
+        options={options}
+        setForm={setForm}
+      />
+      {webSearch ? (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block min-w-0">
+            <span className={fieldLabel}>OpenRouter engine</span>
+            <select
+              className={inputClass}
+              disabled={disabled}
+              onChange={(event) => {
+                const engine = event.currentTarget.value as OpenRouterWebSearchEngine;
+                updateDraft({ openRouterWebSearch: defaultOpenRouterWebSearchSettings(engine) });
+              }}
+              value={webSearch.engine}
+            >
+              {(Object.keys(OPENROUTER_WEB_SEARCH_ENGINES) as OpenRouterWebSearchEngine[]).map((engine) => (
+                <option key={engine} value={engine}>{openRouterEngineLabel(engine)}</option>
+              ))}
+            </select>
+            <span className={helpText}>Perplexity is the default; Parallel and Exa are used only when chosen here.</span>
+          </label>
+          {webSearchModes.length > 0 ? (
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Engine mode</span>
+              <select
+                className={inputClass}
+                disabled={disabled}
+                onChange={(event) => updateDraft({
+                  openRouterWebSearch: { engine: webSearch.engine, mode: event.currentTarget.value }
+                })}
+                value={webSearch.mode ?? ""}
+              >
+                {webSearchModes.map((value) => (
+                  <option key={value} value={value}>{openRouterModeLabel(value)}</option>
+                ))}
+              </select>
+              <span className={helpText}>Modes differ in speed, depth and price.</span>
+            </label>
+          ) : null}
+        </div>
       ) : null}
       <label className="block min-w-0">
         <span className={fieldLabel}>Name</span>
@@ -165,7 +222,7 @@ function SourceFields({
           onChange={(event) => setForm({ ...form, description: event.currentTarget.value })}
           value={form.description}
         />
-        <span className={helpText}>Shown to people when they choose sources.</span>
+        <span className={helpText}>Describes the source in this list.</span>
       </label>
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="block min-w-0">
@@ -203,7 +260,7 @@ function SourceFields({
           ? ` The selected model allows ${selectedModelTimeoutSeconds} seconds per answer; the earlier limit wins, so the effective limit is ${Math.min(form.draft.timeoutMs / 1_000, selectedModelTimeoutSeconds)} seconds.`
           : ` Maximum ${adminSearchExecutionLimits.timeoutMs.maximum / 60_000} minutes.`}
       </p>
-      {form.draft.adapterKind === "provider_model_client" && (!creating || !searchApi) ? (
+      {advanced ? (
         <details className="group rounded-[10px] border border-trace-subtle bg-control-surface/45 px-3">
           <summary className={`flex min-h-touch cursor-pointer list-none items-center justify-between gap-3 py-2.5 text-left ${focusRing}`}>
             <span>
@@ -213,41 +270,30 @@ function SourceFields({
             <UiV2Icon className="size-3.5 shrink-0 text-ink-muted transition-transform group-open:rotate-90" name="chevron-right" />
           </summary>
           <div className="flex flex-col gap-4 border-t border-trace-subtle py-4">
-            {!creating ? (
-              <ModelField
-                creating={false}
+            <label className="block min-w-0">
+              <span className={fieldLabel}>Maximum Search output, tokens</span>
+              <input
+                aria-describedby={`${outputHelpId}${validation.maxOutputTokens ? ` ${outputErrorId}` : ""}`}
+                aria-invalid={validation.maxOutputTokens ? true : undefined}
+                className={inputClass}
                 disabled={disabled}
-                form={form}
-                options={options}
-                setForm={setForm}
+                max={adminSearchExecutionLimits.maxOutputTokens.maximum}
+                min={adminSearchExecutionLimits.maxOutputTokens.minimum}
+                onChange={(event) => setForm({
+                  ...form,
+                  draft: { ...form.draft, maxOutputTokens: event.currentTarget.value.trim() ? Number(event.currentTarget.value) : null },
+                  executionInputs: { ...form.executionInputs, maxOutputTokens: event.currentTarget.value }
+                })}
+                step={1}
+                type="number"
+                value={form.executionInputs.maxOutputTokens}
+                placeholder="Auto"
               />
-            ) : null}
-            {searchApi ? null : (
-              <label className="block min-w-0">
-                <span className={fieldLabel}>Maximum Search output, tokens</span>
-                <input
-                  aria-describedby={`${outputHelpId}${validation.maxOutputTokens ? ` ${outputErrorId}` : ""}`}
-                  aria-invalid={validation.maxOutputTokens ? true : undefined}
-                  className={inputClass}
-                  disabled={disabled}
-                  max={adminSearchExecutionLimits.maxOutputTokens.maximum}
-                  min={adminSearchExecutionLimits.maxOutputTokens.minimum}
-                  onChange={(event) => setForm({
-                    ...form,
-                    draft: { ...form.draft, maxOutputTokens: event.currentTarget.value.trim() ? Number(event.currentTarget.value) : null },
-                    executionInputs: { ...form.executionInputs, maxOutputTokens: event.currentTarget.value }
-                  })}
-                  step={1}
-                  type="number"
-                  value={form.executionInputs.maxOutputTokens}
-                  placeholder="Auto"
-                />
-                <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Leave blank for Auto to use the selected model’s allowance. The final answer has its own output limit.</span>
-                {validation.maxOutputTokens ? (
-                  <span className="mt-1 block text-xs text-critical" id={outputErrorId}>{validation.maxOutputTokens}</span>
-                ) : null}
-              </label>
-            )}
+              <span className={helpText} id={outputHelpId}>Limits each Search model reply, including reasoning tokens where the provider counts them. Leave blank for Auto to use the selected model’s allowance. The final answer has its own output limit.</span>
+              {validation.maxOutputTokens ? (
+                <span className="mt-1 block text-xs text-critical" id={outputErrorId}>{validation.maxOutputTokens}</span>
+              ) : null}
+            </label>
             {reasoningProtocol && selectedModel?.searchReasoningSupported ? (
               <label className="block min-w-0">
                 <span className={fieldLabel}>Search reasoning</span>
@@ -338,7 +384,7 @@ function SheetBody({
     <UiV2Sheet
       closeBlocked={busy}
       description={creating
-        ? "Users see one source; AIQSA applies it to every compatible chat model."
+        ? "Once its check passes, the source can be chosen as the engine or the backup."
         : `${mode.source.displayName} · changes apply to new chats once the check passes.`}
       footer={(
         <>

@@ -163,9 +163,10 @@ describe("assistant draft decode", () => {
     if (decoded.ok) {
       expect(decoded.draft.rows).not.toHaveProperty("knowledge");
       expect(decoded.draft.name).toBe("Code Reviewer");
+      // Search is on or off: a draft that names sources is on, whichever engine runs.
       expect(decoded.draft.rows.search).toEqual({
         policy: "fixed",
-        value: { mode: "all_selected", optionIds: ["openai-native-web-search"] }
+        value: { mode: "all_selected", optionIds: ["web-search"] }
       });
       expect(decoded.draft.answerRules).toBeNull();
     }
@@ -525,7 +526,10 @@ describe("Assistant row vocabulary", () => {
     expect(decodeAssistantModelValue({ mode: "model", modelId: " model-1 " })).toEqual({ mode: "model", modelId: "model-1" });
     expect(decodeAssistantSearchValue({ mode: "inherit" })).toEqual({ mode: "inherit" });
     expect(decodeAssistantSearchValue({ mode: "off" })).toEqual({ mode: "off" });
-    expect(decodeAssistantSearchValue({ mode: "model_choice", optionIds: ["web"] }))
+    // A written or stored value that names sources is Search on; the server's own projection reads as it was sent.
+    expect(decodeAssistantSearchValue({ mode: "model_choice", optionIds: ["web", "news"] }))
+      .toEqual({ mode: "all_selected", optionIds: ["web-search"] });
+    expect(decodeAssistantSearchValue({ mode: "model_choice", optionIds: ["web"] }, "projection"))
       .toEqual({ mode: "model_choice", optionIds: ["web"] });
     expect(decodeAssistantToolsValue({ mode: "inherit" })).toEqual({ mode: "inherit" });
     expect(decodeAssistantToolsValue({ mode: "off" })).toEqual({ mode: "off" });

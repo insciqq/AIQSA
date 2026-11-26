@@ -302,10 +302,8 @@ describe("settings handler", () => {
         }
       },
       defaultProviderModelId: "gpt-5.5",
-      defaultSearchPlan: {
-        mode: "all_selected",
-        optionIds: ["openai-native-web-search"]
-      },
+      // A plan that names sources is Search on, stored as no personal plan: the engine is the administrator's.
+      defaultSearchPlan: null,
       showCitations: false,
       showReasoningBlocks: true,
     });
@@ -315,18 +313,12 @@ describe("settings handler", () => {
     expect(capturedUpdate).not.toHaveProperty("defaultModelId");
     expect(capturedUpdate).not.toHaveProperty("defaultProvider");
     expect(capturedValidationModels).toHaveLength(1);
-    expect(capturedValidationModels[0]).toMatchObject({
-      modelId: "gpt-5.5",
-      provider: "openai",
-      searchStrategyIds: ["search-disabled", "openai-native-web-search"]
-    });
+    expect(capturedValidationModels[0]).toMatchObject({ modelId: "gpt-5.5", provider: "openai" });
     const responseBody = (await response.json()) as { settings: UserSettingsRecord };
     expect(responseBody).toMatchObject({
       settings: {
-        defaultSearchPlan: {
-          mode: "all_selected",
-          optionIds: ["openai-native-web-search"]
-        },
+        defaultSearchPlan: { mode: "all_selected", optionIds: ["web-search"] },
+        searchEnabled: true,
         showCitations: false,
         showReasoningBlocks: true,
       }
@@ -347,6 +339,7 @@ describe("settings handler", () => {
       "personalModelDefault",
       "defaultSearchPlan",
       "organizationSearchPlan",
+      "searchEnabled",
       "searchPreferenceSource",
       "sendWithEnter",
       "showCitations",
@@ -603,13 +596,40 @@ describe("settings handler", () => {
     expect(captured).toMatchObject({ defaultSearchPlan: null });
     await expect(inherited.json()).resolves.toMatchObject({
       settings: {
-        defaultSearchPlan: {
-          mode: "all_selected",
-          optionIds: ["openai-native-web-search"]
-        },
+        defaultSearchPlan: { mode: "all_selected", optionIds: ["web-search"] },
+        searchEnabled: true,
         searchPreferenceSource: "organization"
       }
     });
+  });
+
+  it("switches Search off and on with searchEnabled, storing Off as a plan without sources", async () => {
+    const data = baseSettingsData();
+    const captured: UserSettingsUpdate[] = [];
+    const PATCH = createUpdateSettingsHandler({
+      resolveAuth: auth.resolveAuth,
+      loadSettingsData: async () => data,
+      updateSettings: async (_userId, update) => {
+        captured.push(update);
+        return updated({ ...data.settings, defaultSearchPlan: update.defaultSearchPlan ?? null });
+      }
+    });
+    const send = (body: unknown) => PATCH(new Request("http://app.local/api/me/settings", {
+      body: JSON.stringify(body), headers: { cookie: authCookie() }, method: "PATCH"
+    }));
+
+    const off = await send({ searchEnabled: false });
+    expect(off.status).toBe(200);
+    await expect(off.json()).resolves.toMatchObject({
+      settings: { defaultSearchPlan: { mode: "all_selected", optionIds: [] }, searchEnabled: false, searchPreferenceSource: "personal" }
+    });
+    expect((await send({ searchEnabled: true })).status).toBe(200);
+    expect(captured).toEqual([
+      { defaultSearchPlan: { mode: "all_selected", optionIds: [] } },
+      { defaultSearchPlan: null }
+    ]);
+    expect((await send({ searchEnabled: "on" })).status).toBe(400);
+    expect(captured).toHaveLength(2);
   });
 
   it("clears a personal model override and projects the entitled organization default", async () => {

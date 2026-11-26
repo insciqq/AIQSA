@@ -4,6 +4,7 @@ import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdi
 import { join, resolve } from "node:path";
 import type { AdminProviderModelConfiguration } from "../lib/contracts/adminProviders";
 import { RESEARCH_PLAN_RELEASES, RESEARCH_TIME_MS } from "../lib/contracts/research";
+import { OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS } from "../lib/domain/catalog";
 import { extractFetchUrls, normalizeFetchUrl } from "../lib/server/webFetch/urls";
 import type { PurposeUsageRow } from "./subagent-scenarios-support";
 
@@ -767,12 +768,17 @@ export function researchAttributionCounts(attribution: ReturnType<typeof researc
     sources: Object.fromEntries(Object.entries(attribution.sources).map(([name, entry]) => [name, { cited: entry.urls.length, only: entry.only }])) };
 }
 
-/** The model production's Perplexity source searches with through OpenRouter. */
-export const RESEARCH_PERPLEXITY_SEARCH_MODEL = "perplexity/sonar-pro-search";
+/**
+ * The technical models OpenRouter's web search with Perplexity may run on, in provider setup's order (Perplexity Sonar
+ * is retired, 2026-11-26): the source keeps whichever of them its setup or its administrator chose, Quick Setup's
+ * `-1017` snapshot included.
+ */
+export const RESEARCH_PERPLEXITY_SEARCH_MODELS: readonly string[] = Object.freeze(
+  OPENROUTER_WEB_SEARCH_TECHNICAL_MODELS.map((model) => model.upstreamModelId));
 /** Production's Search plan for the acceptance run: each source, its protocol, and the upstream model its client route searches with. */
 export const RESEARCH_PRODUCTION_SEARCH = Object.freeze([
   { label: "openai", kind: "web_search", protocol: "openai_responses_web_search" },
-  { label: "perplexity", kind: "perplexity_search", protocol: "openrouter_perplexity_chat", upstreamModelId: RESEARCH_PERPLEXITY_SEARCH_MODEL },
+  { label: "perplexity", kind: "web_search", openRouterEngine: "perplexity", protocol: "openrouter_web_search" },
   { label: "deepseek", kind: "deepseek_search_api", protocol: "deepseek_search_api" }
 ] as const);
 /** The production sources `AIQSA_SUBAGENTS_T_SEARCH_SOURCES` picks from, in the plan's order: research must work with any one of them. */
@@ -783,7 +789,8 @@ export type ResearchSearchLabel = typeof RESEARCH_SEARCH_LABELS[number];
  * Whether an Admin Search source is fit to start research on, as a code: `ok` only when it is live, published, on the
  * expected client route, and its latest check searched for real and returned sources.
  */
-export function researchSearchSourceStatus(integration: unknown, expected: Readonly<{ protocol: string; providerModelId?: string }>): string {
+export function researchSearchSourceStatus(integration: unknown,
+  expected: Readonly<{ openRouterEngine?: string; protocol: string; providerModelId?: string }>): string {
   if (!record(integration)) return "missing";
   if (integration.archivedAt !== null) return "archived";
   if (integration.enabled !== true) return "disabled";
@@ -791,7 +798,9 @@ export function researchSearchSourceStatus(integration: unknown, expected: Reado
   if (integration.configurationActive !== true || integration.draftDirty === true) return "not_published";
   const configuration = record(integration.configuration) ? integration.configuration : null;
   if (!configuration || configuration.adapterKind !== "provider_model_client" || configuration.protocol !== expected.protocol ||
-    (expected.providerModelId !== undefined && configuration.providerModelId !== expected.providerModelId)) return "configuration_mismatch";
+    (expected.providerModelId !== undefined && configuration.providerModelId !== expected.providerModelId) ||
+    (expected.openRouterEngine !== undefined && (!record(configuration.openRouterWebSearch) ||
+      configuration.openRouterWebSearch.engine !== expected.openRouterEngine))) return "configuration_mismatch";
   const evidence = record(integration.draftTestEvidence) ? integration.draftTestEvidence : null;
   if (!evidence || evidence.method !== "provider_search" || evidence.protocol !== expected.protocol) return "not_checked";
   if (evidence.status !== "available") return "check_unavailable";
@@ -882,7 +891,7 @@ const GATE_ROLES = ["gap_judge", "verifier", "skeptic"] as const;
 const VERDICT_LINE = /^\s*(?:[-*]\s*)?\**C(\d{1,3})\**\s*\|\s*\**(supported|partly|unsupported|contradicted|could[_ ]not[_ ]check)\**/iu;
 /** What the per-task budget does not count. */
 const UNCOUNTED_TOOLS = new Set(["record_evidence", "change_research_frame"]);
-const SEARCH_TOOL = /^search_(?:selected_engines|engine_[1-3])$/u;
+const SEARCH_TOOL = /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u;
 const NOTE_CHANGES = new Set(["note_candidate", "set_aside"]);
 const TURN_STATES = new Set(["stopped", "failed", "interrupted", "blocked"]);
 /** A refusal for a call budget: the per-task budget (whatever its code says of a budget or a call limit) or the run's. */

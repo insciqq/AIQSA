@@ -466,7 +466,6 @@ export type AcceptedRunDefaults = {
   modelId: string;
   provider: string;
   searchPlan: SearchPlan;
-  searchPreferencePlan?: SearchPlan | null;
   userId: string;
 };
 

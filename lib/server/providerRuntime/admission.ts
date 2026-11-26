@@ -21,15 +21,24 @@ import type {
 import { FULL_ACCESS_GROUP_SYSTEM_ROLE } from "../auth/fullAccessGroup";
 import {
   decodeSearchPlan,
-  hostedSearchProtocolUsable,
-  type SearchPlan
+  SEARCH_DISABLED_STRATEGY_ID,
+  searchPlanEnabled,
+  searchSettingPlan,
+  type SearchOptionUse,
+  type SearchPlan,
+  type SearchUnavailableReason
 } from "../../domain/search";
 import {
-  searchStrategyKind,
-  normalizeSearchDraft,
   searchExecutionModes,
   technicalSearchModelSupports
 } from "../search/configuration";
+import {
+  loadInstallationSearch,
+  routeBelongsToOption,
+  type ResolvedSearchRoute as ResolvedSearchRouteRow,
+  type SearchEngineOption,
+  type SearchOptionRouteRow
+} from "../search/engineResolution";
 import { DEEPSEEK_SEARCH_API_MODEL_ID } from "../providers/deepSeekSearchApi";
 import type { SearchProbeBinding } from "../search/probeBinding";
 import { hasVerifiedStructuredOutput } from "../providers/structuredOutputEvidence";
@@ -91,11 +100,9 @@ export type DecisionProviderAdmissionRole = RerankerProviderAdmissionRole;
 export type ProviderAdmissionPlan = Readonly<{
   answer: ProviderAdmissionRole;
   fingerprint: string;
-  requiresClientToolCoexistence?: true;
-  requiresClientSearchRoutes?: true;
+  /** Search on or off as admitted (`SEARCH_ON_PLAN` or `SEARCH_OFF_PLAN`). */
   requestedSearchPlan: SearchPlan;
-  requestedSearchPreferencePlan?: SearchPlan | null;
-  requestedSearchPreferenceSource?: "organization" | "personal";
+  /** In-answer search first, then the installation's engine and its backup, in the order a request uses them. */
   searches: readonly Readonly<{
     bindingKey: string | null;
     configuration: RunSearchStrategyConfiguration;
@@ -104,7 +111,10 @@ export type ProviderAdmissionPlan = Readonly<{
     ordinal: number;
     revisionId: string;
     role?: ProviderAdmissionRole;
+    use: SearchOptionUse;
   }>[];
+  /** Search was on but no engine could be bound for the run, and why. */
+  searchUnavailable?: SearchUnavailableReason;
   selection: Readonly<{
     providerConnectionId: string;
     providerModelId: string;
@@ -121,6 +131,7 @@ export type AdmissionPrisma = Pick<
   | "providerModelCredentialCheck"
   | "providerUserCredentialAssignment"
   | "searchOption"
+  | "searchPolicy"
   | "searchStrategy"
   | "user"
   | "userGroup"
@@ -266,16 +277,21 @@ async function hasModelEntitlement(
   return count > 0;
 }
 
+/**
+ * Whether the user may search. With one installation engine (operator decisions 2026-11-26) a grant of any Search
+ * source, the user's or a group's, carries over as the right to search with whatever engine the administrator runs;
+ * the protected Full access group has it. Which engine runs is never the grant's.
+ */
 async function hasSearchEntitlement(
   db: AdmissionPrisma,
-  input: { fullAccess: boolean; groupIds: string[]; strategyId: string; userId: string }
+  input: { fullAccess: boolean; groupIds: string[]; userId: string }
 ): Promise<boolean> {
-  if (input.strategyId === "search-disabled") return true;
   if (input.fullAccess) return true;
   return (await db.accessGrant.count({
     where: {
       enabled: true,
-      searchStrategy: input.strategyId,
+      searchStrategy: { not: null },
+      NOT: { searchStrategy: SEARCH_DISABLED_STRATEGY_ID },
       OR: [
         { userId: input.userId },
         ...(input.groupIds.length ? [{ groupId: { in: input.groupIds } }] : [])
@@ -765,120 +781,15 @@ export async function loadInstallationDecisionProviderRole(
   }
 }
 
-type LoadedSearchOption = Readonly<{
-  archivedAt: Date | null;
-  displayName: string;
-  enabled: boolean;
-  id: string;
-  kind: string;
-  optionId: string;
-  sourceConnectionId: string | null;
-  strategies: ReadonlyArray<Readonly<{
-    activeRevision: null | Readonly<{
-      adapterKind: string;
-      configuration: unknown;
-      credentialMode: string;
-      id: string;
-      providerModelId: string | null;
-    }>;
-    activeRevisionId: string | null;
-    adapterKind: string;
-    archivedAt: Date | null;
-    credentialMode: string;
-    enabled: boolean;
-    id: string;
-    kind: string;
-    providerModelId: string | null;
-    strategyId: string;
-  }>>;
-}>;
+type LoadedSearchOption = SearchOptionRouteRow;
+type ResolvedSearchRoute = ResolvedSearchRouteRow;
 
-type ResolvedSearchRoute = Readonly<{
-  draft: ReturnType<typeof normalizeSearchDraft>;
-  revisionId: string;
-  strategy: LoadedSearchOption["strategies"][number];
-}>;
-
-type ResolvedSearchRouteCandidate = Readonly<{
-  option: LoadedSearchOption;
-  ordinal: number;
-  role?: ProviderAdmissionRole;
-  route: ResolvedSearchRoute;
-}>;
-
-function supportedSearchOption(option: LoadedSearchOption): boolean {
-  if (!option.enabled || option.archivedAt !== null) return false;
-  if (option.kind === "none") return false;
-  return (
-    option.kind === "web_search" ||
-    option.kind === "deepseek_search_api" ||
-    option.kind === "gemini_google_search" ||
-    option.kind === "perplexity_search"
-  ) && typeof option.sourceConnectionId === "string" && option.sourceConnectionId.length > 0;
-}
-
-function normalizeActiveSearchRoute(
-  strategy: LoadedSearchOption["strategies"][number]
-): ResolvedSearchRoute | null {
-  const revision = strategy.activeRevision;
-  if (
-    !strategy.enabled ||
-    strategy.archivedAt !== null ||
-    !strategy.activeRevisionId ||
-    !revision ||
-    revision.id !== strategy.activeRevisionId
-  ) {
-    return null;
-  }
-  let draft: ReturnType<typeof normalizeSearchDraft>;
-  try {
-    draft = normalizeSearchDraft(revision.configuration);
-  } catch {
-    return null;
-  }
-  if (
-    revision.adapterKind !== draft.adapterKind ||
-    revision.credentialMode !== draft.credentialMode ||
-    revision.providerModelId !== draft.providerModelId ||
-    strategy.adapterKind !== draft.adapterKind ||
-    strategy.credentialMode !== draft.credentialMode ||
-    strategy.providerModelId !== draft.providerModelId ||
-    strategy.kind !== searchStrategyKind(draft.protocol, draft.adapterKind)
-  ) {
-    return null;
-  }
-  return {
-    draft,
-    revisionId: revision.id,
-    strategy
-  };
-}
-
-function hasAmbiguousRouteKinds(routes: readonly ResolvedSearchRoute[]): boolean {
-  const seen = new Set<string>();
-  for (const route of routes) {
-    if (seen.has(route.draft.adapterKind)) return true;
-    seen.add(route.draft.adapterKind);
-  }
-  return false;
-}
-
-function hostedRouteCompatible(
-  option: LoadedSearchOption,
-  route: ResolvedSearchRoute,
-  answer: ProviderAdmissionRole
-): boolean {
-  if (
-    route.draft.adapterKind !== "answer_provider_hosted" ||
-    option.sourceConnectionId !== answer.snapshot.connectionId ||
-    !answer.modelConfiguration.capabilities.nativeSearch
-  ) {
-    return false;
-  }
-  // Every chat model calls tools, and only OpenAI hosted Search coexists with
-  // them; other sources search through their client route.
-  return option.kind === "web_search" &&
-    hostedSearchProtocolUsable(route.draft.protocol) &&
+/**
+ * OpenAI's hosted search inside an OpenAI-protocol answer model's own request: on the answer's own connection, with
+ * the model's verified hosted search, beside its function tools.
+ */
+function inAnswerSearchUsable(answer: ProviderAdmissionRole): boolean {
+  return answer.modelConfiguration.capabilities.nativeSearch === true &&
     (answer.snapshot.model.adapterKind === "openai_responses_native" ||
       answer.snapshot.model.adapterKind === "openai_responses_compatible");
 }
@@ -886,110 +797,13 @@ function hostedRouteCompatible(
 function clientRouteCompatible(
   option: LoadedSearchOption,
   route: ResolvedSearchRoute,
-  answer: ProviderAdmissionRole,
-  answerModelId: string
+  answer: ProviderAdmissionRole
 ): boolean {
-  if (
-    route.draft.adapterKind !== "provider_model_client" ||
-    !route.draft.providerModelId ||
-    !option.sourceConnectionId ||
-    !answer.modelConfiguration.capabilities.toolCalling
-  ) {
-    return false;
-  }
-  if (option.kind === "web_search") {
-    return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "openai_responses_web_search";
-  }
-  if (option.kind === "gemini_google_search") {
-    return route.draft.protocol === "gemini_google_search";
-  }
-  // Raw results reach any tool-calling answer model; the technical model
-  // only carries the DeepSeek connection key and never answers.
-  if (option.kind === "deepseek_search_api") {
-    return route.draft.protocol === "deepseek_search_api";
-  }
-  return option.kind === "perplexity_search" &&
-    route.draft.protocol === "openrouter_perplexity_chat" &&
-    route.draft.providerModelId !== answerModelId;
-}
-
-function routeBelongsToOption(
-  option: LoadedSearchOption,
-  route: ResolvedSearchRoute
-): boolean {
-  if (option.kind === "web_search") {
-    return route.draft.protocol === "anthropic_web_search" ||
-      route.draft.protocol === "openai_responses_web_search";
-  }
-  if (option.kind === "gemini_google_search") {
-    return route.draft.protocol === "gemini_google_search";
-  }
-  if (option.kind === "deepseek_search_api") {
-    return route.draft.adapterKind === "provider_model_client" &&
-      route.draft.protocol === "deepseek_search_api";
-  }
-  return option.kind === "perplexity_search" &&
-    route.draft.adapterKind === "provider_model_client" &&
-    route.draft.protocol === "openrouter_perplexity_chat";
-}
-
-function hostedRouteSupportsClientTools(candidate: ResolvedSearchRouteCandidate): boolean {
-  return candidate.route.draft.adapterKind === "answer_provider_hosted" &&
-    hostedSearchProtocolUsable(candidate.route.draft.protocol);
-}
-
-function validCompleteRouteAssignment(input: Readonly<{
-  assignment: readonly ResolvedSearchRouteCandidate[];
-  mode: SearchPlan["mode"];
-  requiresClientToolCoexistence: boolean;
-}>): boolean {
-  const hosted = input.assignment.filter((candidate) =>
-    candidate.route.draft.adapterKind === "answer_provider_hosted"
-  );
-  if (hosted.length > 1) return false;
-  // A singleton logical source has no fan-out distinction, so its existing
-  // same-connection hosted behavior remains preferred in either UI mode.
-  if (
-    input.assignment.length > 1 &&
-    input.mode === "all_selected" &&
-    hosted.length > 0
-  ) {
-    return false;
-  }
-  if (hosted.length === 0) return true;
-  const mustCoexistWithClientTools = input.requiresClientToolCoexistence ||
-    input.assignment.some((candidate) =>
-      candidate.route.draft.adapterKind === "provider_model_client"
-    );
-  return !mustCoexistWithClientTools || hostedRouteSupportsClientTools(hosted[0]!);
-}
-
-function firstCompleteRouteAssignment(input: Readonly<{
-  candidates: readonly (readonly ResolvedSearchRouteCandidate[])[];
-  mode: SearchPlan["mode"];
-  requiresClientToolCoexistence: boolean;
-}>): ResolvedSearchRouteCandidate[] | null {
-  const assignment: ResolvedSearchRouteCandidate[] = [];
-  function visit(index: number): ResolvedSearchRouteCandidate[] | null {
-    if (index === input.candidates.length) {
-      return validCompleteRouteAssignment({
-        assignment,
-        mode: input.mode,
-        requiresClientToolCoexistence: input.requiresClientToolCoexistence
-      })
-        ? [...assignment]
-        : null;
-    }
-    for (const candidate of input.candidates[index] ?? []) {
-      assignment.push(candidate);
-      const complete = visit(index + 1);
-      assignment.pop();
-      if (complete) return complete;
-    }
-    return null;
-  }
-  return visit(0);
+  // Results reach any tool-calling answer model; a technical model only runs the search.
+  return route.draft.adapterKind === "provider_model_client" &&
+    Boolean(route.draft.providerModelId) &&
+    Boolean(option.sourceConnectionId) &&
+    answer.modelConfiguration.capabilities.toolCalling === true;
 }
 
 async function loadClientRouteRole(
@@ -1056,7 +870,8 @@ function searchConfiguration(
       ...(role
         ? {
             modelCapabilities: role.modelConfiguration.capabilities,
-            ...(route.draft.protocol === "openrouter_perplexity_chat"
+            // An OpenRouter technical model brings its routing and data collection.
+            ...(route.draft.protocol === "openrouter_web_search"
               ? { modelDefaultParams: role.modelConfiguration.defaultParams }
               : {})
           }
@@ -1080,16 +895,20 @@ function searchConfiguration(
   };
 }
 
+/**
+ * Admits the run's answer model and, with Search on, the installation's Search (operator decisions 2026-11-26): an
+ * OpenAI-protocol answer model with verified hosted search searches inside its own answer while the administrator's
+ * switch is on, and the run always binds the installation's client engine and its backup, which every request
+ * without in-answer search (another model, a sub-agent, a researcher) searches with through `web_search`. Search is on
+ * when `searchPlan` names any source; the sources it names are the browser's, never which engine runs. An engine that
+ * cannot be used is never replaced: the plan carries the reason (`searchUnavailable`) and admission still succeeds.
+ */
 export async function loadProviderAdmissionPlan(
   db: AdmissionPrisma,
   input: {
     providerConnectionId: string;
     providerModelId: string;
-    requiresClientToolCoexistence?: boolean;
-    requiresClientSearchRoutes?: boolean;
     searchPlan: SearchPlan;
-    searchPreferencePlan?: SearchPlan | null;
-    searchPreferenceSource?: "organization" | "personal";
     userId: string;
   }
 ): Promise<ProviderAdmissionPlan> {
@@ -1115,99 +934,6 @@ export async function loadProviderAdmissionPlan(
   const fullAccess = memberships.some(
     (membership) => membership.group.systemRole === FULL_ACCESS_GROUP_SYSTEM_ROLE
   );
-  const optionCache = new Map<string, Promise<LoadedSearchOption | null>>();
-  const loadOption = (optionId: string): Promise<LoadedSearchOption | null> => {
-    const cached = optionCache.get(optionId);
-    if (cached) return cached;
-    const pending = db.searchOption.findFirst({
-      include: {
-        strategies: {
-          include: {
-            activeRevision: {
-              select: {
-                adapterKind: true,
-                configuration: true,
-                credentialMode: true,
-                id: true,
-                providerModelId: true
-              }
-            }
-          },
-          orderBy: [{ createdAt: "asc" }, { strategyId: "asc" }],
-          where: {
-            activeRevisionId: { not: null },
-            archivedAt: null,
-            enabled: true
-          }
-        }
-      },
-      where: {
-        archivedAt: null,
-        enabled: true,
-        optionId
-      }
-    }) as Promise<LoadedSearchOption | null>;
-    optionCache.set(optionId, pending);
-    return pending;
-  };
-
-  let requestedSearchPreferencePlan = input.searchPreferencePlan;
-  if (input.searchPreferenceSource === "personal") {
-    if (!input.searchPreferencePlan) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
-    requestedSearchPreferencePlan = input.searchPreferencePlan;
-    const preferenceOptions: LoadedSearchOption[] = [];
-    for (const optionId of requestedSearchPreferencePlan.optionIds) {
-      const option = await loadOption(optionId);
-      if (!option || !supportedSearchOption(option) || option.kind === "none" ||
-        !(await hasSearchEntitlement(db, {
-          fullAccess,
-          groupIds,
-          strategyId: optionId,
-          userId: input.userId
-        }))) {
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      const routes = option.strategies.flatMap((strategy) => {
-        const route = normalizeActiveSearchRoute(strategy);
-        return route && routeBelongsToOption(option, route) ? [route] : [];
-      });
-      if (hasAmbiguousRouteKinds(routes)) {
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      let ready = routes.some((route) => route.draft.adapterKind === "answer_provider_hosted" &&
-        hostedSearchProtocolUsable(route.draft.protocol));
-      let readinessError: ProviderAdmissionError | undefined;
-      if (!ready) {
-        for (const route of routes) {
-          try {
-            if (await loadClientRouteRole(db, {
-              fullAccess,
-              groupIds,
-              option,
-              route,
-              userId: input.userId
-            })) {
-              ready = true;
-              break;
-            }
-          } catch (error) {
-            if (!(error instanceof ProviderAdmissionError)) throw error;
-            readinessError ??= error;
-          }
-        }
-      }
-      if (!ready) {
-        if (readinessError) throw readinessError;
-        throw new ProviderAdmissionError("search_strategy_not_available");
-      }
-      preferenceOptions.push(option);
-    }
-  } else if (input.searchPreferenceSource !== undefined &&
-    input.searchPreferenceSource !== "organization") {
-    throw new ProviderAdmissionError("search_strategy_not_available");
-  }
   const answer = await loadRole(db, {
     connectionId: input.providerConnectionId,
     credentialAuthority: { fullAccess, groupIds, kind: "user", userId: input.userId },
@@ -1219,97 +945,69 @@ export async function loadProviderAdmissionPlan(
 
   const decodedPlan = decodeSearchPlan(input.searchPlan);
   if (!decodedPlan.ok) throw new ProviderAdmissionError("search_strategy_not_available");
-  const requestedSearchPlan = decodedPlan.plan;
-  const optionIds = requestedSearchPlan.optionIds;
+  const searchEnabled = searchPlanEnabled(decodedPlan.plan);
   const searches: NonNullable<ProviderAdmissionPlan["searches"]>[number][] = [];
-  const routeCandidates: ResolvedSearchRouteCandidate[][] = [];
-  let routeLoadError: ProviderAdmissionError | undefined;
+  let searchUnavailable: SearchUnavailableReason | undefined;
 
-  const strategyIds = [...optionIds];
-
-  for (const [ordinal, optionId] of strategyIds.entries()) {
-    const option = await loadOption(optionId);
-    if (!option || !supportedSearchOption(option) ||
-      !(await hasSearchEntitlement(db, {
-        fullAccess,
-        groupIds,
-        strategyId: optionId,
-        userId: input.userId
-      }))) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
+  if (searchEnabled && !(await hasSearchEntitlement(db, { fullAccess, groupIds, userId: input.userId }))) {
+    searchUnavailable = "search_not_granted";
+  } else if (searchEnabled) {
+    const installation = await loadInstallationSearch(db);
+    const hosted = installation.policy.inAnswerSearch && inAnswerSearchUsable(answer)
+      ? installation.hosted.get(answer.snapshot.connectionId) ?? null
+      : null;
+    if (hosted) {
+      searches.push({
+        bindingKey: null,
+        configuration: searchConfiguration(hosted.option, hosted.route, answer, undefined),
+        integrationId: hosted.route.strategy.id,
+        optionId: hosted.option.optionId,
+        ordinal: searches.length,
+        revisionId: hosted.route.revisionId,
+        use: "in_answer"
+      });
     }
-    if (option.kind === "none") continue;
-
-    const routes = option.strategies.flatMap((strategy) => {
-      const route = normalizeActiveSearchRoute(strategy);
-      return route && routeBelongsToOption(option, route) ? [route] : [];
-    });
-    if (hasAmbiguousRouteKinds(routes)) {
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
-    const candidates: ResolvedSearchRouteCandidate[] = routes
-      .filter((route) => !input.requiresClientSearchRoutes && hostedRouteCompatible(option, route, answer))
-      .map((route) => ({ option, ordinal, route }));
-    const clientRouteRequired = candidates.length === 0 || optionIds.length > 1 ||
-      input.requiresClientToolCoexistence === true;
-    for (const route of clientRouteRequired ? routes : []) {
-      if (!clientRouteCompatible(option, route, answer, input.providerModelId)) continue;
+    const bind = async (candidate: SearchEngineOption, use: "backup" | "engine"): Promise<boolean> => {
+      const route = candidate.route;
+      if (!route || !clientRouteCompatible(candidate.option, route, answer)) return false;
+      let role: ProviderAdmissionRole | null;
       try {
-        const role = await loadClientRouteRole(db, {
-          fullAccess,
-          groupIds,
-          option,
-          route,
-          userId: input.userId
+        role = await loadClientRouteRole(db, {
+          fullAccess, groupIds, option: candidate.option, route, userId: input.userId
         });
-        if (role) candidates.push({ option, ordinal, role, route });
       } catch (error) {
         if (!(error instanceof ProviderAdmissionError)) throw error;
-        routeLoadError ??= error;
+        role = null;
       }
+      if (!role) return false;
+      searches.push({
+        bindingKey: `search:${candidate.optionId}`,
+        configuration: searchConfiguration(candidate.option, route, answer, role),
+        integrationId: route.strategy.id,
+        optionId: candidate.optionId,
+        ordinal: searches.length,
+        revisionId: route.revisionId,
+        role,
+        use
+      });
+      return true;
+    };
+    const { backup, engine, reason } = installation.resolution;
+    if (!engine) {
+      searchUnavailable = reason ?? "search_engine_not_configured";
+    } else if (!(await bind(engine, "engine"))) {
+      // This user's credentials or this answer model cannot reach the engine: no other engine stands in.
+      searchUnavailable = "search_engine_unavailable";
+    } else if (backup) {
+      await bind(backup, "backup");
     }
-    if (candidates.length === 0) {
-      if (routeLoadError) throw routeLoadError;
-      throw new ProviderAdmissionError("search_strategy_not_available");
-    }
-    routeCandidates.push(candidates);
-  }
-
-  const assignment = firstCompleteRouteAssignment({
-    candidates: routeCandidates,
-    mode: requestedSearchPlan.mode,
-    requiresClientToolCoexistence: input.requiresClientToolCoexistence === true
-  });
-  if (!assignment) {
-    if (routeLoadError) throw routeLoadError;
-    throw new ProviderAdmissionError("search_strategy_not_available");
-  }
-  for (const candidate of assignment) {
-    const { option, ordinal, role, route } = candidate;
-    const configuration = searchConfiguration(option, route, answer, role);
-    searches.push({
-      bindingKey: role ? `search:${option.optionId}` : null,
-      configuration,
-      integrationId: route.strategy.id,
-      optionId: option.optionId,
-      ordinal,
-      revisionId: route.revisionId,
-      ...(role ? { role } : {})
-    });
   }
 
   const withoutFingerprint = {
     answer,
-    ...(input.requiresClientToolCoexistence ? { requiresClientToolCoexistence: true as const } : {}),
-    ...(input.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true as const } : {}),
-    requestedSearchPlan,
-    ...(input.searchPreferenceSource
-      ? {
-          requestedSearchPreferencePlan: requestedSearchPreferencePlan ?? null,
-          requestedSearchPreferenceSource: input.searchPreferenceSource
-        }
-      : {}),
+    requestedSearchPlan: searchSettingPlan(searchEnabled),
     searches,
+    ...(searchUnavailable ? { searchUnavailable } : {}),
     selection: {
       providerConnectionId: input.providerConnectionId,
       providerModelId: input.providerModelId

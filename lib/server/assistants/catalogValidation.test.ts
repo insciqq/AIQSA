@@ -40,7 +40,6 @@ function model(
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: false,
       streaming: true,
       text: true,
@@ -220,94 +219,29 @@ describe("Assistant catalog validation", () => {
     )).toBe("tools");
   });
 
-  it("rejects Search plus MCP when the selected option has no client-tool-compatible route", () => {
-    const catalogModel = model({
-      "hosted-only": {
-        clientToolCompatible: false,
-        executionModes: ["model_choice"]
-      }
-    } as CatalogWireModel["searchOptionCompatibility"]);
+  it("lets Search on pass while the viewer can search with the Assistant's model, MCP beside it or not", () => {
+    const searching = model({ "web-search": { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] } });
     const view = {
       accessibleMcpServerIds: new Set(["mcp-1"]),
-      entitledSearchOptionIds: new Set(["hosted-only"]),
+      entitledSearchOptionIds: new Set(["web-search"]),
       mcpRunPlan: {
         isGenerationLive: () => false,
         now: new Date("2026-08-07T10:00:00.000Z"),
         recordsByServerId: new Map()
       },
-      modelById: new Map([[catalogModel.modelId, catalogModel]]),
+      modelById: new Map([[searching.modelId, searching]])
     } satisfies AssistantCatalogView;
-
-    expect(validateAssistantConfigurationAgainstCatalog(
-      {
-        ...configuration({ mcpServerIds: ["mcp-1"], optionIds: ["hosted-only"] }),
-        searchPlan: { mode: "model_choice", optionIds: ["hosted-only"] }
-      },
-      view,
-      { mcpRunnability: "accessible" }
-    )).toBe("search");
-
-  });
-
-  it("rejects a multi-source model-choice plan without a complete route assignment", () => {
-    const catalogModel = model({
-      "hosted-a": {
-        clientToolCompatible: false,
-        executionModes: ["model_choice"]
-      },
-      "hosted-b": {
-        clientToolCompatible: false,
-        executionModes: ["model_choice"]
-      }
-    });
-    const view = {
-      accessibleMcpServerIds: new Set<string>(),
-      entitledSearchOptionIds: new Set(["hosted-a", "hosted-b"]),
-      mcpRunPlan: {
-        isGenerationLive: () => false,
-        now: new Date("2026-08-07T10:00:00.000Z"),
-        recordsByServerId: new Map()
-      },
-      modelById: new Map([[catalogModel.modelId, catalogModel]])
-    } satisfies AssistantCatalogView;
-
-    expect(validateAssistantConfigurationAgainstCatalog(
-      {
-        ...configuration({ optionIds: ["hosted-a", "hosted-b"] }),
-        searchPlan: {
-          mode: "model_choice",
-          optionIds: ["hosted-a", "hosted-b"]
-        }
-      },
-      view,
-      { mcpRunnability: "accessible" }
-    )).toBe("search");
-
-    const completeModel = model({
-      "hosted-a": {
-        clientToolCompatible: false,
-        executionModes: ["model_choice"]
-      },
-      "client-b": {
-        clientToolCompatible: true,
-        executionModes: ["model_choice"]
-      }
-    });
-    expect(validateAssistantConfigurationAgainstCatalog(
-      {
-        ...configuration({ optionIds: ["hosted-a", "client-b"] }),
-        searchPlan: {
-          mode: "model_choice",
-          optionIds: ["hosted-a", "client-b"]
-        }
-      },
-      {
-        ...view,
-        entitledSearchOptionIds: new Set(["hosted-a", "client-b"]),
-        modelById: new Map([[completeModel.modelId, completeModel]])
-      },
-      { mcpRunnability: "accessible" }
-    )).toBeNull();
+    for (const optionIds of [["web-search"], ["a-source-stored-before-the-single-engine", "another"]]) {
+      expect(validateAssistantConfigurationAgainstCatalog(
+        configuration({ mcpServerIds: ["mcp-1"], optionIds }), view, { mcpRunnability: "accessible" }
+      )).toBeNull();
+    }
+    // A model that cannot search, or a viewer who may not, fails the row.
+    const silent = model();
+    expect(validateAssistantConfigurationAgainstCatalog(configuration({ optionIds: ["web-search"] }),
+      { ...view, modelById: new Map([[silent.modelId, silent]]) }, { mcpRunnability: "accessible" })).toBe("search");
+    expect(validateAssistantConfigurationAgainstCatalog(configuration({ optionIds: ["web-search"] }),
+      { ...view, entitledSearchOptionIds: new Set() }, { mcpRunnability: "accessible" })).toBe("search");
   });
 
   it("rejects an exact MCP subset whose combined inventory exceeds run-plan limits", () => {
@@ -337,7 +271,7 @@ describe("Assistant catalog validation", () => {
   it("needs no catalog entry for inherit, Off and None and checks Search entitlement without a model", () => {
     const view = {
       accessibleMcpServerIds: new Set<string>(),
-      entitledSearchOptionIds: new Set(["entitled"]),
+      entitledSearchOptionIds: new Set(["web-search"]),
       mcpRunPlan: { isGenerationLive: () => false, now: new Date("2026-08-07T10:00:00.000Z"), recordsByServerId: new Map() },
       modelById: new Map<string, CatalogWireModel>()
     } satisfies AssistantCatalogView;
@@ -346,29 +280,32 @@ describe("Assistant catalog validation", () => {
       controls: { temperature: 0.4 }, model: { mode: "inherit" }, search: { mode: "inherit" }, tools: { mode: "inherit" }
     }, view, options)).toEqual({});
     expect(assistantRowCatalogFailures({
-      controls: {}, model: { mode: "inherit" }, search: { mode: "all_selected", optionIds: ["entitled"] }, tools: { mode: "off" }
+      controls: {}, model: { mode: "inherit" }, search: { mode: "all_selected", optionIds: ["web-search"] }, tools: { mode: "off" }
     }, view, options)).toEqual({});
     expect(assistantRowCatalogFailures({
+      controls: {}, model: { mode: "inherit" }, search: { mode: "all_selected", optionIds: ["web-search"] }, tools: { mode: "off" }
+    }, { ...view, entitledSearchOptionIds: new Set() }, options)).toEqual({ search: true });
+    expect(assistantRowCatalogFailures({
       controls: {}, model: { mode: "model", modelId: "hidden-model" },
-      search: { mode: "all_selected", optionIds: ["entitled", "hidden"] },
+      search: { mode: "all_selected", optionIds: ["web-search"] },
       tools: { mode: "exact", serverIds: ["hidden-server"] }
-    }, view, options)).toEqual({ model: true, search: true, tools: true });
+    }, view, options)).toEqual({ model: true, tools: true });
   });
 });
 
 describe("Assistant rows for a copier", () => {
   const view = {
     accessibleMcpServerIds: new Set(["mcp-1"]),
-    entitledSearchOptionIds: new Set(["web"]),
+    entitledSearchOptionIds: new Set(["web-search"]),
     mcpRunPlan: { isGenerationLive: () => false, now: new Date("2026-08-07T10:00:00.000Z"), recordsByServerId: new Map() },
-    modelById: new Map([["model-1", model({ web: { clientToolCompatible: true, executionModes: ["all_selected"] } })]])
+    modelById: new Map([["model-1", model({ "web-search": { clientToolCompatible: true, executionModes: ["all_selected"] } })]])
   } satisfies AssistantCatalogView;
 
   function rows(overrides: Partial<AssistantRows> = {}): AssistantRows {
     return {
       controls: { policy: "fixed", value: { temperature: 0.5 } },
       model: { policy: "fixed", value: { mode: "model", modelId: "model-1" } },
-      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web"] } },
+      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web-search"] } },
       skills: { policy: "fixed", value: { links: [
         { delivery: "always", skillId: "skill-usable" }, { delivery: "on_demand", skillId: "skill-private" }
       ], mode: "auto" } },
@@ -385,9 +322,8 @@ describe("Assistant rows for a copier", () => {
 
   it("downgrades unusable rows to adjustable inherit and drops unusable Skills", () => {
     const copied = assistantRowsForCopier(rows({
-      model: { policy: "fixed", value: { mode: "model", modelId: "hidden-model" } },
-      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["web", "hidden-search"] } }
-    }), view, { skillIds: new Set(["skill-usable"]) });
+      model: { policy: "fixed", value: { mode: "model", modelId: "hidden-model" } }
+    }), { ...view, entitledSearchOptionIds: new Set() }, { skillIds: new Set(["skill-usable"]) });
     expect(copied.report).toEqual({ downgradedRows: ["model", "controls", "search"], droppedSkillCount: 1 });
     expect(copied.rows).toEqual({
       controls: { policy: "adjustable", value: {} },
@@ -417,14 +353,12 @@ describe("Assistant rows for a copier", () => {
       .toEqual({ downgradedRows: [], droppedSkillCount: 0 });
   });
 
-  it("resets tools before judging a Search plan that only fails next to MCP", () => {
-    const hostedModel = model({ hosted: { clientToolCompatible: false, executionModes: ["all_selected"] } });
+  it("keeps Search on beside MCP for a copier whose model searches in its own answer", () => {
+    const inAnswer = model({ "web-search": { clientToolCompatible: true, executionModes: ["all_selected"] } });
     const copied = assistantRowsForCopier(rows({
-      search: { policy: "fixed", value: { mode: "all_selected", optionIds: ["hosted"] } },
       tools: { policy: "adjustable", value: { mode: "exact", serverIds: ["hidden-server"] } }
-    }), { ...view, entitledSearchOptionIds: new Set(["hosted"]), modelById: new Map([["model-1", hostedModel]]) },
-    { skillIds: new Set(["skill-usable", "skill-private"]) });
+    }), { ...view, modelById: new Map([["model-1", inAnswer]]) }, { skillIds: new Set(["skill-usable", "skill-private"]) });
     expect(copied.report).toEqual({ downgradedRows: ["tools"], droppedSkillCount: 0 });
-    expect(copied.rows.search).toEqual({ policy: "fixed", value: { mode: "all_selected", optionIds: ["hosted"] } });
+    expect(copied.rows.search).toEqual({ policy: "fixed", value: { mode: "all_selected", optionIds: ["web-search"] } });
   });
 });

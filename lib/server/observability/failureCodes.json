@@ -1147,6 +1147,7 @@
   "deepseek_search_operation_missing",
   "openai_search_findings_invalid",
   "openai_search_operation_missing",
+  "openai_search_refused",
   "openai_search_sources_invalid",
   "openrouter_search_findings_invalid",
   "openrouter_search_sources_invalid",

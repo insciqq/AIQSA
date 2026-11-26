@@ -3,7 +3,13 @@ import type {
   SearchStrategyCatalogEntry,
   SearchStrategyRouteCatalogEntry
 } from "./catalog";
-import { hostedSearchProtocolUsable, type SearchPlan, type SearchPlanMode } from "./search";
+import {
+  hostedSearchProtocolUsable,
+  WEB_SEARCH_OPTION_ID,
+  type ModelWebSearch,
+  type SearchPlan,
+  type SearchPlanMode
+} from "./search";
 import type {
   CatalogWireModel,
   CatalogWireSearchStrategy
@@ -143,16 +149,14 @@ function clientRouteCompatible(
   if (option.kind === "gemini_google_search") {
     return route.protocol === "gemini_google_search";
   }
-  if (option.kind === "web_search") {
-    // The DeepSeek Search API is a web_search source of its own, reached
-    // only through this client route.
-    return route.protocol === "anthropic_web_search" ||
-      route.protocol === "deepseek_search_api" ||
-      route.protocol === "openai_responses_web_search";
-  }
-  return option.kind === "perplexity_tool_search" &&
-    route.protocol === "openrouter_perplexity_chat" &&
-    (route.providerModelId !== model.modelId || option.sourceConnectionId !== model.provider);
+  // The DeepSeek Search API and OpenRouter's web search are web_search
+  // sources of their own, reached only through this client route.
+  return option.kind === "web_search" && (
+    route.protocol === "anthropic_web_search" ||
+    route.protocol === "deepseek_search_api" ||
+    route.protocol === "openai_responses_web_search" ||
+    route.protocol === "openrouter_web_search"
+  );
 }
 
 export function compatibleSearchRoutesForModel(
@@ -177,27 +181,43 @@ export function resolveSearchRouteForModel(
   return compatibleSearchRoutesForModel(model, option)[0] ?? null;
 }
 
+/**
+ * What the user's catalog knows of the installation's Search (operator decisions 2026-11-26), as the server resolved
+ * it: whether the user may search, whether the installation's engine reaches them, and the connections whose
+ * OpenAI-protocol answer models search inside their own answer.
+ */
+export type CatalogSearchAvailability = Readonly<{
+  engine: Readonly<{ protocol: string; usable: boolean }> | null;
+  entitled: boolean;
+  inAnswerConnectionIds: readonly string[];
+}>;
+
+/** How a model searches, as admission will bind it: in its own answer, with the engine through `web_search`, or not. */
+export function catalogModelWebSearch(
+  model: Pick<ProviderModelCatalogEntry, "adapterKind" | "capabilities" | "provider">,
+  search: CatalogSearchAvailability
+): ModelWebSearch {
+  if (!search.entitled) return null;
+  if (
+    search.inAnswerConnectionIds.includes(model.provider) &&
+    model.capabilities.nativeSearch &&
+    (model.adapterKind === "openai_responses_native" || model.adapterKind === "openai_responses_compatible")
+  ) {
+    return "in_answer";
+  }
+  return search.engine?.usable && model.capabilities.toolCalling ? "engine" : null;
+}
+
 export function buildCatalogModel(
   model: ProviderModelCatalogEntry,
-  entitledStrategies: SearchStrategyCatalogEntry[]
+  search: CatalogSearchAvailability
 ): CatalogModel {
-  const searchStrategyIds = availableSearchStrategiesForModel(model, entitledStrategies);
-  const searchOptionCompatibility = Object.fromEntries(entitledStrategies.flatMap((option) => {
-    const routes = compatibleSearchRoutesForModel(model, option);
-    return routes.length
-      ? [[option.strategyId, {
-          // This is deliberately only a coarse, privacy-safe capability bit:
-          // Assistant validation needs to know that MCP can force Search onto
-          // a client route, but must not expose the technical model or route.
-          clientToolCompatible: routes.some(
-            (route) => route.adapterKind === "provider_model_client"
-          ),
-          executionModes: [...new Set(routes.flatMap((route) => route.executionModes))]
-        }]]
-      : [];
-  }));
-  const openRouterPerplexitySearch = entitledStrategies.some((option) =>
-    option.kind === "perplexity_tool_search" && searchStrategyIds.includes(option.strategyId));
+  const webSearch = catalogModelWebSearch(model, search);
+  // Earlier clients read Search as sources: a model that can search lists the one virtual source that means on.
+  const searchStrategyIds = webSearch ? [WEB_SEARCH_OPTION_ID] : [];
+  const searchOptionCompatibility: NonNullable<CatalogModel["searchOptionCompatibility"]> = webSearch
+    ? { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] } }
+    : {};
   const controls = model.parameterControls;
   const reasoningDefaults = controls.reasoningEffort.supported
     ? {
@@ -250,7 +270,8 @@ export function buildCatalogModel(
           model.adapterKind === "openai_responses_compatible" ||
           model.adapterKind === "gemini_interactions_native") &&
         model.capabilities.nativeSearch,
-      openRouterPerplexitySearch,
+      // Deprecated, always false: a v0.5.2 tab open during the upgrade requires it (`CatalogWireModelCapabilities`).
+      openRouterPerplexitySearch: false,
       reasoning: model.capabilities.reasoning,
       streaming: model.capabilities.streaming,
       text: true,
@@ -265,7 +286,19 @@ export function buildCatalogModel(
     providerFamily: model.providerFamily,
     searchOptionCompatibility,
     searchStrategyIds,
-    upstreamModelId: model.upstreamModelId
+    upstreamModelId: model.upstreamModelId,
+    webSearch
+  };
+}
+
+/** The one source the catalog lists while the user can search: Search on, whichever engine runs. */
+export function webSearchCatalogEntry(): SearchStrategyCatalogEntry {
+  return {
+    description: "Searches the web with the engine your administrator set up.",
+    displayName: "Web search",
+    kind: "web_search",
+    routes: [],
+    strategyId: WEB_SEARCH_OPTION_ID
   };
 }
 

@@ -71,7 +71,7 @@ describe("Telegram chat bridge: a message becomes an ordinary chat", () => {
       params: { maxOutputTokens: 1_024, reasoning: { effort: "none" }, temperature: 0.7 },
       personalDraft: { folderId: null, memoryMode: "NORMAL" },
       provider: "connection-fake",
-      searchPlan: { mode: "all_selected", optionIds: [SEARCH_OPTION.strategyId] },
+      searchEnabled: true,
       skills: { mode: "auto" },
       // The Workspace is ambient as in the web chat: no switch, asked for whenever the installation offers it.
       workspace: { enabled: true }
@@ -559,7 +559,7 @@ describe("Telegram chat bridge: commands", () => {
     expect(h.fake.botMessages(h.user.id)).toHaveLength(1);
     await say(h, h.fake.inject.text(h.user, "no search please"));
     await h.settle();
-    expect(gateway.sent.at(-1)!.body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+    expect(gateway.sent.at(-1)!.body.searchEnabled).toBe(false);
     expect(gateway.sent.at(-1)!.body).toMatchObject({ workspace: { enabled: true } });
     expect(gateway.sent.at(-1)!.body).not.toHaveProperty("agentEnabled");
     // The Model button opens the model list in the same message.

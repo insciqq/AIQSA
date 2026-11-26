@@ -130,7 +130,6 @@ export function catalogModel(overrides: Partial<CatalogModel> = {}): CatalogMode
       documentInputMode: "none",
       imageInput: false,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: true,
       streaming: true,
       toolCalling: true

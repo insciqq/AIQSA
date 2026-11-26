@@ -28,7 +28,7 @@ import {
   JOURNEY_LIMITS, discoveredContextWindow, journeyReuseDecision, modelInConnection, readConnections,
   type JourneyConnection
 } from "./context-compaction-journey-support";
-import { RESEARCH_PERPLEXITY_SEARCH_MODEL, RESEARCH_PRODUCTION_SEARCH, RESEARCH_SEARCH_LABELS, researchSearchSourceStatus, type ResearchSearchLabel } from "./research-eval-support";
+import { RESEARCH_PERPLEXITY_SEARCH_MODELS, RESEARCH_PRODUCTION_SEARCH, RESEARCH_SEARCH_LABELS, researchSearchSourceStatus, type ResearchSearchLabel } from "./research-eval-support";
 
 export const REQUEST_TIMEOUT_MS = 60_000;
 export const SETUP_TIMEOUT_MS = 900_000;
@@ -280,9 +280,10 @@ async function searchIntegrations(api: Api): Promise<readonly StandSearchIntegra
  * A family's connection: reused when one exists, else added through Quick Setup as an administrator's first key would add it. DeepSeek's checks
  * its own two models and its Search API. OpenRouter's first key, by Quick Setup or by hand, adds and checks every built-in OpenRouter model
  * (`providerSetupModels`), so it runs only when the operator approved that one-time cost (`AIQSA_SUBAGENTS_OPENROUTER_SETUP=approved`,
- * operator decision 2026-11-02 for the parity acceptance).
+ * operator decision 2026-11-02 for the parity acceptance). Gemini's first key likewise checks every built-in Gemini model, so
+ * `scripts/smoke-search-paid.ts` adds it only with its own approval.
  */
-export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "openrouter", secret: string): Promise<string> {
+export async function ensureFamilyConnection(api: Api, provider: "deepseek" | "gemini" | "openrouter", secret: string): Promise<string> {
   const existing = (await connections(api)).find((connection) => connection.family === provider && !connection.checkRunning);
   if (existing) return existing.id;
   const snapshot = await json(api, "/api/admin/providers/quick-setup");
@@ -314,16 +315,34 @@ export async function ensureSearchSource(api: Api, input: SearchSourceInput): Pr
 }
 
 /**
- * The OpenRouter connection Perplexity searches on: one the stand already has, live, with a default key and the exact model on
- * OpenRouter's own adapter. The harness never adds one: an OpenRouter connection's first key, through Quick Setup or through the
- * manual Add provider and key routes alike, adds and checks every built-in OpenRouter model (`activateCredentialSecret` and
- * `providerSetupModels` in `lib/server/admin/providers/`), which the operator does not allow. Without one: `perplexity_connection_missing`.
+ * The OpenRouter connection OpenRouter's web search with Perplexity runs on, and the technical model it runs with: the stand's live
+ * Perplexity web search source, on the model its route publishes, else a live connection with a default key and one of
+ * `upstreamModelIds` (in that order) on OpenRouter's own adapter. The harness never adds a connection: an OpenRouter connection's first
+ * key, through Quick Setup or through the manual Add provider and key routes alike, adds and checks every built-in OpenRouter model
+ * (`activateCredentialSecret` and `providerSetupModels` in `lib/server/admin/providers/`), which the operator does not allow. Without
+ * one: `perplexity_connection_missing`.
  */
-export async function perplexitySearchConnection(api: Api, upstreamModelId: string): Promise<string> {
-  const found = (await connections(api)).find((connection) => connection.family === "openrouter" && connection.enabled && connection.active &&
-    !connection.checkRunning && connection.defaultCredentialVersionId !== null && connection.models.some((model) => model.enabled && model.activeConfig !== null &&
-      model.activeConfig.upstreamModelId === upstreamModelId && model.activeConfig.adapterKind === "openrouter_chat_completions"));
-  return found?.id ?? fail("perplexity_connection_missing");
+export async function perplexitySearchConnection(api: Api, upstreamModelIds: readonly string[]):
+  Promise<Readonly<{ connectionId: string; upstreamModelId: string }>> {
+  const live = (await connections(api)).filter((connection) => connection.family === "openrouter" && connection.enabled && connection.active &&
+    !connection.checkRunning && connection.defaultCredentialVersionId !== null);
+  const technical = (connection: JourneyConnection, accept: (model: JourneyConnection["models"][number]) => boolean) =>
+    connection.models.find((model) => model.enabled && model.activeConfig !== null &&
+      model.activeConfig.adapterKind === "openrouter_chat_completions" && accept(model)) ?? null;
+  if (live.length === 0) return fail("perplexity_connection_missing");
+  for (const source of await searchIntegrations(api)) {
+    const configuration = isRecord(source.configuration) ? source.configuration : null;
+    const connection = live.find((candidate) => candidate.id === source.sourceConnectionId);
+    if (!connection || source.archivedAt !== null || source.kind !== "web_search" || configuration?.protocol !== "openrouter_web_search" ||
+      !isRecord(configuration.openRouterWebSearch) || configuration.openRouterWebSearch.engine !== "perplexity") continue;
+    const model = technical(connection, (candidate) => candidate.id === configuration.providerModelId);
+    if (model?.activeConfig) return { connectionId: connection.id, upstreamModelId: model.activeConfig.upstreamModelId };
+  }
+  for (const upstreamModelId of upstreamModelIds) {
+    const connection = live.find((candidate) => technical(candidate, (model) => model.activeConfig?.upstreamModelId === upstreamModelId));
+    if (connection) return { connectionId: connection.id, upstreamModelId };
+  }
+  return fail("perplexity_connection_missing");
 }
 
 export type ClientSearchSource = Readonly<{ id: string; providerModelId: string; strategyId: string }>;
@@ -336,12 +355,14 @@ export type ClientSearchSource = Readonly<{ id: string; providerModelId: string;
  * enabled model carries the source, as the DeepSeek Search API borrows its connection's key and never calls the model.
  */
 export async function ensureClientSearchSource(api: Api, input: Readonly<{ connectionId: string; displayName: string;
-  kind: "deepseek_search_api" | "perplexity_search" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
+  kind: "deepseek_search_api" | "web_search"; protocol: string; upstreamModelId: string | null }>): Promise<ClientSearchSource> {
   const connection = await checksIdle(api, input.connectionId);
   const model = input.upstreamModelId === null ? connection.models.find((entry) => entry.enabled) ?? null
     : connection.models.find((entry) => entry.enabled && (entry.activeConfig ?? entry.draftConfig).upstreamModelId === input.upstreamModelId) ?? null;
   if (!model) return fail(`search_model_missing_${input.kind}`);
-  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null, protocol: input.protocol,
+  const draft = { adapterKind: "provider_model_client", credentialMode: "provider_model", maxOutputTokens: null,
+    // OpenRouter's web search names its engine: Perplexity, the template's default.
+    ...(input.protocol === "openrouter_web_search" ? { openRouterWebSearch: { engine: "perplexity", mode: null } } : {}), protocol: input.protocol,
     providerModelId: model.id, queryMaxCharacters: input.protocol === "deepseek_search_api" ? 128 : 1_000, reasoningPolicy: "lowest_supported", timeoutMs: 120_000 };
   const description = "Web search available in chat.";
   const live = async () => (await searchIntegrations(api)).find((entry) => entry.sourceConnectionId === input.connectionId &&
@@ -351,7 +372,9 @@ export async function ensureClientSearchSource(api: Api, input: Readonly<{ conne
   if (!existing || !configuration) {
     const created = await json(api, "/api/admin/search", { body: { check: true, description, displayName: input.displayName, draft }, method: "POST", timeoutMs: SETUP_TIMEOUT_MS });
     if (!isRecord(created) || typeof created.selectedIntegrationId !== "string") fail("search_source_create_invalid");
-  } else if (configuration.providerModelId !== model.id || configuration.protocol !== input.protocol || configuration.adapterKind !== "provider_model_client") {
+  } else if (configuration.providerModelId !== model.id || configuration.protocol !== input.protocol || configuration.adapterKind !== "provider_model_client" ||
+    // OpenRouter's web search with another engine is saved again with Perplexity.
+    input.protocol === "openrouter_web_search" && (!isRecord(configuration.openRouterWebSearch) || configuration.openRouterWebSearch.engine !== "perplexity")) {
     // A DeepSeek source keeps whichever DeepSeek model carries its key: the API never calls it.
     if (input.upstreamModelId !== null || configuration.protocol !== input.protocol) {
       await json(api, `/api/admin/search/${encodeURIComponent(existing.id)}/actions`, { body: { action: "save_and_check", description,
@@ -413,12 +436,12 @@ export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot
   const wanted = (label: ResearchSearchLabel) => selected.some((spec) => spec.label === label);
   const perplexity = !wanted("perplexity") ? null : await step("perplexity", async () => {
     try {
-      return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL);
+      return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODELS);
     } catch (error) {
       if (!input.openrouterSetupKey || !(error instanceof BrowserScenarioError)) throw error;
       await ensureFamilyConnection(api, "openrouter", input.openrouterSetupKey);
       return poll(SETUP_TIMEOUT_MS, async () => {
-        try { return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODEL); } catch { return null; }
+        try { return await perplexitySearchConnection(api, RESEARCH_PERPLEXITY_SEARCH_MODELS); } catch { return null; }
       }, "perplexity_connection_missing", 3_000);
     }
   });
@@ -427,16 +450,17 @@ export async function ensureProductionSearch(api: Api, input: Readonly<{ apiRoot
     "Research search model", { nativeSearch: true, vision: false }));
   const deepseek = !wanted("deepseek") ? null
     : await step("deepseek", () => ensureFamilyConnection(api, "deepseek", input.deepseekKey ?? fail("deepseek_key_required")));
-  const connections = { deepseek, openai: openai?.connectionId ?? null, perplexity };
+  const connections = { deepseek, openai: openai?.connectionId ?? null, perplexity: perplexity?.connectionId ?? null };
   const sources: { label: string; optionId: string }[] = [];
   for (const spec of selected) {
     const connectionId = connections[spec.label] ?? fail(`research_search_${spec.label}_connection_missing`);
-    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? spec.upstreamModelId : null;
+    const upstreamModelId = spec.label === "openai" ? searchModel : spec.label === "perplexity" ? perplexity?.upstreamModelId ?? null : null;
     const source = await step(spec.label, () => ensureClientSearchSource(api, { connectionId, displayName: PRODUCTION_SEARCH_NAMES[spec.label],
       kind: spec.kind, protocol: spec.protocol, upstreamModelId }));
     const checked = await step(spec.label, () => checkSearchSource(api, source.id));
     const status = checked.code ?? researchSearchSourceStatus(checked.integration,
-      { protocol: spec.protocol, ...(upstreamModelId === null ? {} : { providerModelId: source.providerModelId }) });
+      { protocol: spec.protocol, ...("openRouterEngine" in spec ? { openRouterEngine: spec.openRouterEngine } : {}),
+        ...(upstreamModelId === null ? {} : { providerModelId: source.providerModelId }) });
     input.report(spec.label, status);
     if (status !== "ok") fail(`research_search_${spec.label}_${status}`);
     sources.push({ label: spec.label, optionId: source.strategyId });

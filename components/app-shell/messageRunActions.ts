@@ -55,8 +55,7 @@ import type { SavedControlDraft } from "@/components/app-shell/powerAppShellData
 import { defaultParameterControls } from "@/components/app-shell/controlDefaults";
 import type { RunStreamTokenBuffer } from "@/components/app-shell/useRunStream";
 import { useWorkspaceStore } from "@/components/app-shell/workspaceStore";
-import type { SearchPlanMode } from "@/lib/domain/search";
-import { reconcileModelSearchPlan } from "@/lib/domain/catalogMatrix";
+import { SEARCH_DISABLED_STRATEGY_ID } from "@/lib/domain/search";
 import {
   boundComposerAssistant,
   type ComposerMcpSelection
@@ -113,12 +112,12 @@ type MessageRunControlSnapshot = {
   skillsMode: "auto" | "off";
   params: Record<string, unknown>;
   provider: string;
-  searchPreferencePlan: {
-    mode: SearchPlanMode;
-    optionIds: string[];
-  };
-  searchPreferenceSource: Catalog["defaults"]["searchPreferenceSource"];
-  searchOptions: Catalog["searchStrategies"];
+  /**
+   * The user's Search switch, or an Assistant chat's Search row, as the composer holds it: on or off whatever the
+   * engine or this model can do now, since admission binds the engine or says why it cannot (operator decisions
+   * 2026-11-26).
+   */
+  searchEnabled: boolean;
   skillIds: string[];
   toolsOverride: { tools: "none" } | Record<string, never>;
   workspaceEnabled: boolean;
@@ -391,7 +390,6 @@ export function useMessageRunActions({
       selectedModelId,
       selectedProvider,
       selectedSearchOptionIds,
-      searchPlanMode,
       mcpSelection,
       selectedSkills
     } = controls;
@@ -435,7 +433,6 @@ export function useMessageRunActions({
           searchStrategyIds: [...selectedModel.searchStrategyIds]
         }
       : undefined;
-    const searchPreferenceOptionIds = [...selectedSearchOptionIds];
     // An Assistant chat never offers a computer (D-07), nor does an installation with Connect off.
     const computer = controls.assistant || resolveComputerOffered?.() !== true
       ? undefined
@@ -464,17 +461,7 @@ export function useMessageRunActions({
       modelId: selectedModelId,
       params: { ...buildParams() },
       provider: selectedProvider,
-      searchPreferencePlan: {
-        mode: searchPlanMode,
-        optionIds: searchPreferenceOptionIds
-      },
-      searchPreferenceSource: catalog?.defaults.searchPreferenceSource ?? "personal",
-      searchOptions: (catalog?.searchStrategies ?? []).map((option) => ({
-        ...option,
-        ...(option.executionModes
-          ? { executionModes: [...option.executionModes] }
-          : {})
-      })),
+      searchEnabled: selectedSearchOptionIds.some((optionId) => optionId !== SEARCH_DISABLED_STRATEGY_ID),
       skillIds: selectedSkills.map((skill) => skill.id),
       toolsOverride: toolsOverride(model),
       workspaceEnabled,
@@ -552,12 +539,6 @@ export function useMessageRunActions({
     const computerField = options.computer !== false && snapshot.computer !== undefined
       ? { [COMPUTER_SEND_FIELD]: snapshot.computer }
       : {};
-    const effectiveSearchPlan = reconcileModelSearchPlan(
-      snapshot.model,
-      snapshot.searchPreferencePlan.optionIds,
-      snapshot.searchPreferencePlan.mode,
-      snapshot.searchOptions
-    );
     const timeZone = clientTimeZone();
 
     if (snapshot.assistant) {
@@ -571,7 +552,7 @@ export function useMessageRunActions({
         ...(changed.has("controls")
           ? { controlDefaults: assistantControlDefaults(snapshot.controlDefaults, snapshot.model) }
           : {}),
-        ...(changed.has("search") ? { searchPlan: effectiveSearchPlan } : {}),
+        ...(changed.has("search") ? { searchEnabled: snapshot.searchEnabled } : {}),
         ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
         ...(changed.has("skills") ? { skills: { mode: snapshot.skillsMode } } : {}),
         ...(timeZone ? { timeZone } : {}),
@@ -589,13 +570,7 @@ export function useMessageRunActions({
         : { mcp: snapshot.mcpSelection }),
       ...(snapshot.skillsMode === "off" ? { skills: { mode: "off" } } : {}),
       provider: snapshot.provider,
-      searchPlan: effectiveSearchPlan,
-      ...(snapshot.searchPreferenceSource
-        ? {
-            searchPreferencePlan: snapshot.searchPreferencePlan,
-            searchPreferenceSource: snapshot.searchPreferenceSource
-          }
-        : {}),
+      searchEnabled: snapshot.searchEnabled,
       ...(timeZone ? { timeZone } : {}),
       ...(snapshot.skillIds.length > 0 ? { skillIds: [...snapshot.skillIds] } : {}),
       ...snapshot.toolsOverride,
@@ -1005,32 +980,9 @@ export function useMessageRunActions({
       setNotice({ kind: "error", text: artifactBlockReason });
       return;
     }
-    // A Search engine the model cannot run is never kept silently (UX audit
-    // 2026-09-02 A6): the message goes out without it, the composer choice
-    // becomes Off, and a short notice says so.
-    // An Assistant's own Search row is resolved by admission, not sent.
-    const searchSent = !runControlSnapshot.assistant ||
-      runControlSnapshot.assistant.changedRows.includes("search");
-    const unavailableSearchOptionId = !searchSent ? undefined : runControlSnapshot.searchPreferencePlan.optionIds.find(
-      (optionId) => optionId !== "search-disabled" && !modelForSend.searchStrategyIds.includes(optionId)
-    );
-    if (unavailableSearchOptionId) {
-      const optionName = runControlSnapshot.searchOptions.find(
-        (option) => option.strategyId === unavailableSearchOptionId
-      )?.displayName ?? "The selected search engine";
-      useComposerControlStore.getState().setSelectedSearchPlan(
-        runControlSnapshot.searchPreferencePlan.optionIds.filter((optionId) =>
-          modelForSend.searchStrategyIds.includes(optionId)
-        ),
-        runControlSnapshot.searchPreferencePlan.mode,
-        "system"
-      );
-      setNotice({
-        autoDismiss: true,
-        kind: "error",
-        text: `Sent without web search: ${optionName} is not available for ${modelForSend.displayName}.`
-      });
-    }
+    // Search goes out as the user's switch, on even while this model or the
+    // engine cannot search now: admission binds the engine or the answer says
+    // why it could not search, never a silent Off (operator decisions 2026-11-26).
     // The composer's server-owned PDF route preview for exactly this model;
     // unknown (null) keeps the local readiness checks.
     const pdfRoute = sourceSession.attachments.some((attachment) => attachment.kind === "pdf")

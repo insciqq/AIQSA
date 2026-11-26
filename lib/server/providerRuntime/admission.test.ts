@@ -5,9 +5,6 @@ import { validateRunParams } from "../../domain/runParams";
 import type { ProviderReasoningRequestMapping } from "../../contracts/providerReasoningRequestMapping";
 import { configuredModelParameterControls } from "../providers/providerModelCapabilities";
 import { insertAcceptedProviderRunBindings } from "../runs/prismaRepositoryBindings";
-import type { OpenRouterChatClient } from "../providers/openRouterChatTransport";
-import { createOpenRouterPerplexitySearchAdapter } from "../providers/openRouterPerplexitySearch";
-import { createSearchPlanToolRouter } from "../search/toolExecutor";
 import { loadInstallationAnswerProviderRole, loadInstallationRerankerProviderRole, loadProviderAdmissionPlan, ProviderAdmissionError, type ProviderAdmissionPlan } from "./admission";
 
 const capabilities = (input: Readonly<{
@@ -60,12 +57,15 @@ type RouteSpec = Readonly<{
   adapterKind: "answer_provider_hosted" | "provider_model_client";
   enabled?: boolean;
   id: string;
+  /** OpenRouter's web search engine; Perplexity when absent. */
+  openRouterEngine?: "exa" | "parallel" | "perplexity";
   protocol:
     | "anthropic_web_search"
     | "deepseek_search_api"
     | "gemini_google_search"
     | "openai_responses_web_search"
-    | "openrouter_perplexity_chat";
+    | "openrouter_perplexity_chat"
+    | "openrouter_web_search";
   providerModelId?: string | null;
   revisionId: string;
 }>;
@@ -163,6 +163,11 @@ function physicalRoute(spec: RouteSpec) {
     adapterKind: spec.adapterKind,
     credentialMode,
     maxOutputTokens: 4_096,
+    ...(spec.protocol === "openrouter_web_search"
+      ? { openRouterWebSearch: spec.openRouterEngine === "parallel"
+          ? { engine: "parallel", mode: "fast" }
+          : spec.openRouterEngine === "exa" ? { engine: "exa", mode: "auto" } : { engine: "perplexity", mode: null } }
+      : {}),
     protocol: spec.protocol,
     providerModelId,
     // The DeepSeek Search API takes at most 128 query characters.
@@ -193,9 +198,11 @@ function physicalRoute(spec: RouteSpec) {
   };
 }
 
-function logicalOption(spec: OptionSpec) {
+function logicalOption(spec: OptionSpec, index = 0) {
   return {
     archivedAt: null,
+    // Sources are ordered by when they were set up; the list order stands for it.
+    createdAt: new Date(Date.UTC(2026, 7, 1) + index * 60_000),
     displayName: spec.displayName,
     enabled: true,
     id: `option-row:${spec.optionId}`,
@@ -217,9 +224,14 @@ function admissionDb(input: Readonly<{
   options: readonly OptionSpec[];
   credentialCheckEvidenceByModel?: Readonly<Record<string, unknown>>;
   credentialCheckEvidenceByCredential?: Readonly<Record<string, unknown>>;
+  /** The installation's Search policy row; none reads as the default policy. */
+  policy?: Readonly<{ backupOptionId?: string | null; engineOptionId?: string | null; inAnswerSearch?: boolean }>;
   technicalModels?: readonly ModelSpec[];
   unassignedPolicy?: "require_assignment" | "use_default";
+  /** Models that are not live at all. */
   unavailableModelIds?: readonly string[];
+  /** Live models this user's admission cannot load (their credentials do not reach them). */
+  unreachableModelIds?: readonly string[];
   userRole?: "admin" | "user";
 }>) {
   const models = new Map(
@@ -232,24 +244,37 @@ function admissionDb(input: Readonly<{
       )
     ])
   );
-  const options = new Map(input.options.map((spec) => [spec.optionId, logicalOption(spec)]));
+  const options = new Map(input.options.map((spec, index) => [spec.optionId, logicalOption(spec, index)]));
   const grantedSearchOptionIds = new Set(input.grantedSearchOptionIds ?? []);
+  // A Search grant of any source lets its holder search; a model grant counts as granted.
   const accessGrantCount = vi.fn(async (args?: {
-    where?: { searchStrategy?: string };
-  }) => args?.where?.searchStrategy
-    ? Number(grantedSearchOptionIds.has(args.where.searchStrategy))
+    where?: { searchStrategy?: unknown };
+  }) => args?.where?.searchStrategy !== undefined
+    ? Number(grantedSearchOptionIds.size > 0)
     : 1);
   const unavailableModelIds = new Set(input.unavailableModelIds ?? []);
+  const unreachableModelIds = new Set(input.unreachableModelIds ?? []);
   const providerModelFindFirst = vi.fn(async (args?: { where?: { id?: string } }) => {
     const id = args?.where?.id ?? input.answer.id;
-    return unavailableModelIds.has(id) ? null : models.get(id) ?? null;
+    return unavailableModelIds.has(id) || unreachableModelIds.has(id) ? null : models.get(id) ?? null;
   });
+  const providerModelFindMany = vi.fn(async (args?: { where?: { id?: { in?: readonly string[] } } }) =>
+    (args?.where?.id?.in ?? []).flatMap((id) => {
+      const model = models.get(id);
+      return model && !unavailableModelIds.has(id)
+        ? [{ activeConfig: model.activeConfig, connectionId: model.connectionId, id }]
+        : [];
+    }));
   const providerModelFindUnique = vi.fn(async (args?: { where?: { id?: string } }) => {
     const model = models.get(args?.where?.id ?? "");
     return model ? { connectionId: model.connectionId } : null;
   });
   const searchOptionFindFirst = vi.fn(async (args?: { where?: { optionId?: string } }) =>
     options.get(args?.where?.optionId ?? "") ?? null);
+  const searchOptionFindMany = vi.fn(async () => [...options.values()]);
+  const searchPolicyFindUnique = vi.fn(async () => input.policy
+    ? { backupOptionId: null, engineOptionId: null, inAnswerSearch: true, ...input.policy }
+    : null);
   const db = {
     accessGrant: { count: accessGrantCount },
     providerCredential: {
@@ -284,6 +309,7 @@ function admissionDb(input: Readonly<{
     },
     providerModel: {
       findFirst: providerModelFindFirst,
+      findMany: providerModelFindMany,
       findUnique: providerModelFindUnique
     },
     providerModelCredentialCheck: {
@@ -298,7 +324,8 @@ function admissionDb(input: Readonly<{
         id: "check-1"
       }))
     },
-    searchOption: { findFirst: searchOptionFindFirst },
+    searchOption: { findFirst: searchOptionFindFirst, findMany: searchOptionFindMany },
+    searchPolicy: { findUnique: searchPolicyFindUnique },
     user: {
       findFirst: vi.fn(async () => ({ id: "user-1", role: input.userRole ?? "admin" }))
     },
@@ -312,7 +339,8 @@ function admissionDb(input: Readonly<{
     accessGrantCount,
     db,
     providerModelFindUnique,
-    searchOptionFindFirst
+    searchOptionFindFirst,
+    searchOptionFindMany
   };
 }
 
@@ -872,73 +900,7 @@ describe("provider admission", () => {
     expect(db.providerCredential.findMany).not.toHaveBeenCalled();
   });
 
-  it("requires a query-only client route for Agent even when hosted Search can coexist with tools", async () => {
-    const option = openAiOption();
-    const { db } = admissionDb({ answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel] });
-    const input = { providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "all_selected" as const, optionIds: [option.optionId] }, userId: "user-1",
-      requiresClientToolCoexistence: true, requiresClientSearchRoutes: true };
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, input);
-    expect(expectSearch(plan)).toMatchObject({ bindingKey: `search:${option.optionId}`, configuration: { adapterKind: "provider_model_client" } });
-    expect(plan.requiresClientSearchRoutes).toBe(true);
-    const hostedOnly = admissionDb({ answer: officialOpenAiModel,
-      options: [{ ...option, routes: option.routes!.filter((route) => route.adapterKind === "answer_provider_hosted") }] });
-    await expect(loadProviderAdmissionPlan(hostedOnly.db as unknown as Prisma.TransactionClient, input))
-      .rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it.each([false, true])("persists Agent bindings after revalidation with Search enabled=%s", async (searchEnabled) => {
-    const option = openAiOption();
-    const { db } = admissionDb({ answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel] });
-    const createMany = vi.fn(async () => ({ count: searchEnabled ? 2 : 1 }));
-    const tx = { ...db, providerRunBinding: { createMany } } as unknown as Prisma.TransactionClient;
-    const plan = await loadProviderAdmissionPlan(tx, {
-      providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "all_selected", optionIds: searchEnabled ? [option.optionId] : [] },
-      userId: "user-1", requiresClientToolCoexistence: true, requiresClientSearchRoutes: true
-    });
-
-    await insertAcceptedProviderRunBindings(tx, { plan, nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });
-
-    expect(createMany).toHaveBeenCalledExactlyOnceWith({ data: [
-      expect.objectContaining({ role: "answer", providerModelId: officialOpenAiModel.id, modelRunId: "agent-run" }),
-      ...(searchEnabled ? [expect.objectContaining({ role: "search", bindingKey: `search:${option.optionId}`,
-        providerModelId: officialOpenAiSearchModel.id, modelRunId: "agent-run" })] : [])
-    ] });
-  });
-
-  it("prefers official OpenAI hosted Search and persists its exact physical ids", async () => {
-    const option = openAiOption();
-    const { db, providerModelFindUnique } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-    const search = expectSearch(plan);
-
-    expect(search).toMatchObject({
-      bindingKey: null,
-      integrationId: "route-hosted:openai",
-      optionId: "openai-native-web-search",
-      revisionId: "revision-hosted:openai"
-    });
-    expect(search.configuration).toMatchObject({
-      adapterKind: "answer_provider_hosted",
-      displayName: "OpenAI Search",
-      searchStrategyRowId: "route-hosted:openai",
-      strategyId: "openai-native-web-search"
-    });
-    expect(providerModelFindUnique).not.toHaveBeenCalled();
-  });
-
-  it("uses the same official OpenAI source through its client route for Anthropic", async () => {
+  describe("the installation's Search engine", () => {
     const anthropic: ModelSpec = {
       adapterKind: "anthropic_messages",
       connectionId: "connection-anthropic",
@@ -946,592 +908,30 @@ describe("provider admission", () => {
       id: "model-opus",
       upstreamModelId: "claude-opus-5"
     };
-    const option = openAiOption();
-    const { db } = admissionDb({
-      answer: anthropic,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-    const search = expectSearch(plan);
-
-    expect(search).toMatchObject({
-      bindingKey: "search:openai-native-web-search",
-      integrationId: "route-client:openai",
-      optionId: "openai-native-web-search",
-      revisionId: "revision-client:openai",
-      role: { snapshot: { connectionId: "connection-openai", providerFamily: "openai" } }
-    });
-    expect(search.configuration).toMatchObject({
-      adapterKind: "provider_model_client",
-      config: {
-        maxOutputTokens: 4_096,
-        reasoningPolicy: "lowest_supported"
-      },
-      modelId: "gpt-5.6-search",
-      providerModelId: "model-openai-search",
-      searchStrategyRowId: "route-client:openai"
-    });
-    expect(search.configuration.config).not.toHaveProperty("modelDefaultParams");
-  });
-
-  it("never admits hosted Anthropic Search, which cannot coexist with chat tools", async () => {
-    const option = anthropicOption();
-    const { db } = admissionDb({
-      answer: officialAnthropicModel,
-      options: [option],
-      technicalModels: [officialAnthropicSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialAnthropicModel.connectionId,
-      providerModelId: officialAnthropicModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      integrationId: "route-client:anthropic",
-      configuration: { adapterKind: "provider_model_client", provider: "anthropic" }
-    });
-  });
-
-  it.each([
-    {
-      answer: officialOpenAiModel,
-      label: "cross-provider answers",
-      requiresClientToolCoexistence: false
-    },
-    {
-      answer: officialAnthropicModel,
-      label: "MCP coexistence",
-      requiresClientToolCoexistence: true
-    }
-  ])("uses the exact Anthropic client route for $label", async (request) => {
-    const option = anthropicOption();
-    const { db } = admissionDb({
-      answer: request.answer,
-      options: [option],
-      technicalModels: [officialAnthropicSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: request.answer.connectionId,
-      providerModelId: request.answer.id,
-      ...(request.requiresClientToolCoexistence
-        ? { requiresClientToolCoexistence: true }
-        : {}),
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      bindingKey: "search:anthropic-web-search",
-      integrationId: "route-client:anthropic",
-      optionId: "anthropic-web-search",
-      revisionId: "revision-client:anthropic",
-      configuration: {
-        adapterKind: "provider_model_client",
-        modelId: "claude-opus-5",
-        provider: "anthropic",
-        providerModelId: "model-anthropic-search"
-      },
-      role: {
-        snapshot: {
-          connectionId: officialAnthropicModel.connectionId,
-          providerFamily: "anthropic"
-        }
-      }
-    });
-  });
-
-  it.each([
-    {
-      label: "does not advertise native Search",
-      technicalModel: { ...officialAnthropicSearchModel, nativeSearch: false }
-    },
-    {
-      label: "is bound to a non-Anthropic adapter",
-      technicalModel: {
-        ...officialAnthropicSearchModel,
-        adapterKind: "openai_responses_native" as const
-      }
-    }
-  ])("fails closed when the Anthropic client model $label", async ({ technicalModel }) => {
-    const option = anthropicOption(technicalModel.id);
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [option],
-      technicalModels: [technicalModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("searches same-connection Gemini answers through the client route", async () => {
-    const option = geminiOption();
-    const { db } = admissionDb({
-      answer: geminiModel,
-      options: [option],
-      technicalModels: [geminiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: geminiModel.connectionId,
-      providerModelId: geminiModel.id,
-      searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      configuration: { adapterKind: "provider_model_client" }
-    });
-  });
-
-  it("uses the Gemini client route for cross-provider answers and MCP coexistence", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus-gemini-search",
-      upstreamModelId: "claude-opus-5"
-    };
-    const option = geminiOption();
-    for (const request of [
-      {
-        answer: anthropic,
-        requiresClientToolCoexistence: false
-      },
-      {
-        answer: geminiModel,
-        requiresClientToolCoexistence: true
-      }
-    ]) {
-      const { db } = admissionDb({
-        answer: request.answer,
-        options: [option],
-        technicalModels: [geminiSearchModel]
-      });
-      const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-        providerConnectionId: request.answer.connectionId,
-        providerModelId: request.answer.id,
-        ...(request.requiresClientToolCoexistence
-          ? { requiresClientToolCoexistence: true }
-          : {}),
-        searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-        userId: "user-1"
-      });
-      expect(expectSearch(plan)).toMatchObject({
-        bindingKey: "search:gemini-google-search",
-        integrationId: "route-client:gemini",
-        configuration: { adapterKind: "provider_model_client", provider: "gemini" },
-        role: { snapshot: { connectionId: geminiModel.connectionId } }
-      });
-    }
-  });
-
-  it("resolves a multi-source plan as all-client or fails without a complete assignment", async () => {
-    const openAi = openAiOption();
-    const google = geminiOption();
-    const { db } = admissionDb({
-      answer: geminiModel,
-      options: [google, openAi],
-      technicalModels: [geminiSearchModel, officialOpenAiSearchModel]
-    });
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: geminiModel.connectionId,
-      providerModelId: geminiModel.id,
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [google.optionId, openAi.optionId]
-      },
-      userId: "user-1"
-    });
-    expect(plan.searches?.map((search) => search.configuration.adapterKind)).toEqual([
-      "provider_model_client",
-      "provider_model_client"
-    ]);
-
-    const modelChoiceDb = admissionDb({
-      answer: officialOpenAiModel,
-      options: [google, openAi],
-      technicalModels: [geminiSearchModel, officialOpenAiSearchModel]
-    });
-    const modelChoice = await loadProviderAdmissionPlan(
-      modelChoiceDb.db as unknown as Prisma.TransactionClient,
-      {
-        providerConnectionId: officialOpenAiModel.connectionId,
-        providerModelId: officialOpenAiModel.id,
-        searchPlan: {
-          mode: "model_choice",
-          optionIds: [google.optionId, openAi.optionId]
-        },
-        userId: "user-1"
-      }
-    );
-    expect(modelChoice.searches?.map((search) => search.configuration.adapterKind)).toEqual([
-      "provider_model_client",
-      "answer_provider_hosted"
-    ]);
-
-    const incomplete = admissionDb({
-      answer: geminiModel,
-      options: [geminiOption(false), openAi],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-    await expect(loadProviderAdmissionPlan(
-      incomplete.db as unknown as Prisma.TransactionClient,
-      {
-        providerConnectionId: geminiModel.connectionId,
-        providerModelId: geminiModel.id,
-        searchPlan: {
-          mode: "all_selected",
-          optionIds: ["gemini-google-search", openAi.optionId]
-        },
-        userId: "user-1"
-      }
-    )).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it.each([
-    {
-      credentialIdByConnection: {
-        [officialOpenAiModel.connectionId]: "credential:connection-openai:replacement"
-      },
-      credentialVersionIdByConnection: {
-        [officialOpenAiModel.connectionId]: "credential-version:connection-openai:replacement"
-      },
-      expectedCredentialId: "credential:connection-openai:replacement",
-      expectedCredentialVersionId: "credential-version:connection-openai:replacement",
-      label: "credential"
-    },
-    {
-      credentialIdByConnection: undefined,
-      credentialVersionIdByConnection: {
-        [officialOpenAiModel.connectionId]: "credential-version:connection-openai:v2"
-      },
-      expectedCredentialId: "credential:connection-openai",
-      expectedCredentialVersionId: "credential-version:connection-openai:v2",
-      label: "credential version"
-    }
-  ])("resolves the current $label at admission without requiring a new Search probe", async (authority) => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const option = openAiOption();
-    const { db } = admissionDb({
-      answer: anthropic,
-      credentialIdByConnection: authority.credentialIdByConnection,
-      credentialVersionIdByConnection: authority.credentialVersionIdByConnection,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan).role?.authority).toMatchObject({
-      credentialId: authority.expectedCredentialId,
-      credentialVersionId: authority.expectedCredentialVersionId,
-      providerModelId: officialOpenAiSearchModel.id
-    });
-  });
-
-  it("pins the current rotated credential version without mutating the Search source", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const rotatedVersion = "credential-version:connection-openai:v2";
-    const option = openAiOption();
-    const { db } = admissionDb({
-      answer: anthropic,
-      credentialVersionIdByConnection: {
-        [officialOpenAiModel.connectionId]: rotatedVersion
-      },
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      integrationId: "route-client:openai",
-      revisionId: "revision-client:openai",
-      role: {
-        authority: { credentialVersionId: rotatedVersion }
-      }
-    });
-  });
-
-  it("rejects a disabled provider-model client route", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const source = openAiOption();
-    const option: OptionSpec = {
-      ...source,
-      routes: source.routes?.map((route) => route.adapterKind === "provider_model_client"
-        ? { ...route, enabled: false }
-        : route)
-    };
-    const { db } = admissionDb({
-      answer: anthropic,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("rejects a logical source with two active hosted routes", async () => {
-    const source = openAiOption();
-    const hosted = source.routes!.find((route) => route.adapterKind === "answer_provider_hosted")!;
-    const option: OptionSpec = {
-      ...source,
-      routes: [
-        ...source.routes!,
-        { ...hosted, id: "route-hosted-duplicate", revisionId: "revision-hosted-duplicate" }
-      ]
-    };
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("rejects a logical source with two active client routes", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const source = openAiOption();
-    const client = source.routes!.find((route) => route.adapterKind === "provider_model_client")!;
-    const option: OptionSpec = {
-      ...source,
-      routes: [
-        client,
-        { ...client, id: "route-client-duplicate", revisionId: "revision-client-duplicate" }
-      ]
-    };
-    const { db } = admissionDb({
-      answer: anthropic,
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("uses a custom Responses source in-process when it is the answer connection", async () => {
-    const customAnswer: ModelSpec = {
-      adapterKind: "openai_responses_compatible",
-      connectionId: "connection-custom",
-      family: "openai_compatible",
-      id: "model-custom-answer",
-      nativeSearch: true,
-      upstreamModelId: "custom-sol"
-    };
-    const customSearch = { ...customAnswer, answerSelectable: false, id: "model-custom-search" };
-    const option = openAiOption({
-      clientConnectionModelId: customSearch.id,
-      optionId: "custom-web-search:connection-custom",
-      sourceConnectionId: customAnswer.connectionId
-    });
-    const { db } = admissionDb({
-      answer: customAnswer,
-      options: [option],
-      technicalModels: [customSearch]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: customAnswer.connectionId,
-      providerModelId: customAnswer.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      bindingKey: null,
-      integrationId: "route-hosted:custom-web-search:connection-custom",
-      optionId: "custom-web-search:connection-custom",
-      revisionId: "revision-hosted:custom-web-search:connection-custom"
-    });
-  });
-
-  it("uses the custom source's client route for official GPT without substituting official Search", async () => {
-    const customSearch: ModelSpec = {
-      adapterKind: "openai_responses_compatible",
-      answerSelectable: false,
-      connectionId: "connection-custom",
-      family: "openai_compatible",
-      id: "model-custom-search",
-      nativeSearch: true,
-      upstreamModelId: "custom-search-model"
-    };
-    const option = openAiOption({
-      clientConnectionModelId: customSearch.id,
-      optionId: "custom-web-search:connection-custom",
-      sourceConnectionId: customSearch.connectionId
-    });
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [option],
-      technicalModels: [customSearch]
-    });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      bindingKey: "search:custom-web-search:connection-custom",
-      integrationId: "route-client:custom-web-search:connection-custom",
-      role: {
-        snapshot: {
-          connectionId: "connection-custom",
-          providerFamily: "openai_compatible"
-        }
-      }
-    });
-  });
-
-  it("rejects a client route whose provider model belongs to another source", async () => {
-    const option = openAiOption({
-      clientConnectionModelId: officialOpenAiSearchModel.id,
-      optionId: "custom-web-search:connection-custom",
-      sourceConnectionId: "connection-custom"
-    });
-    const { db } = admissionDb({
-      answer: {
-        adapterKind: "anthropic_messages",
-        connectionId: "connection-anthropic",
-        family: "anthropic",
-        id: "model-opus",
-        upstreamModelId: "claude-opus-5"
-      },
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: "connection-anthropic",
-      providerModelId: "model-opus",
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("keeps Perplexity as an independent client-routed Search source", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const perplexityModel: ModelSpec = {
+    const on = { mode: "all_selected" as const, optionIds: ["web-search"] };
+    const openRouterModel: ModelSpec = {
       adapterKind: "openrouter_chat_completions",
       answerSelectable: false,
       connectionId: "connection-openrouter",
       family: "openrouter",
-      id: "model-perplexity-search",
-      nativeSearch: true,
-      upstreamModelId: "perplexity/sonar"
+      id: "model-openrouter-flash",
+      upstreamModelId: "deepseek/deepseek-v4.1-flash"
     };
-    const option: OptionSpec = {
-      displayName: "Perplexity Search",
-      kind: "perplexity_search",
-      optionId: "perplexity-tool-search",
+    const openRouterOption = (engine: "parallel" | "perplexity" = "perplexity"): OptionSpec => ({
+      displayName: `OpenRouter ${engine}`,
+      kind: "web_search",
+      optionId: `openrouter-${engine}`,
       routes: [{
         adapterKind: "provider_model_client",
-        id: "route-perplexity-client",
-        protocol: "openrouter_perplexity_chat",
-        providerModelId: perplexityModel.id,
-        revisionId: "revision-perplexity-client"
+        id: `route-openrouter-${engine}`,
+        openRouterEngine: engine,
+        protocol: "openrouter_web_search",
+        providerModelId: openRouterModel.id,
+        revisionId: `revision-openrouter-${engine}`
       }],
-      sourceConnectionId: perplexityModel.connectionId
-    };
-    const { db } = admissionDb({
-      answer: anthropic,
-      options: [option],
-      technicalModels: [perplexityModel]
+      sourceConnectionId: openRouterModel.connectionId
     });
-
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
-      userId: "user-1"
-    });
-
-    expect(expectSearch(plan)).toMatchObject({
-      bindingKey: "search:perplexity-tool-search",
-      integrationId: "route-perplexity-client",
-      optionId: "perplexity-tool-search",
-      revisionId: "revision-perplexity-client",
-      role: { snapshot: { connectionId: "connection-openrouter" } }
-    });
-  });
-
-  describe("DeepSeek Search API", () => {
-    // A DeepSeek model without hosted Search still carries the connection key.
-    const carrier: ModelSpec = {
+    const deepSeekCarrier: ModelSpec = {
       adapterKind: "deepseek_responses_native",
       connectionId: "connection-deepseek",
       family: "deepseek",
@@ -1539,7 +939,7 @@ describe("provider admission", () => {
       nativeSearch: false,
       upstreamModelId: "deepseek-flash"
     };
-    const apiOption = (providerModelId = carrier.id): OptionSpec => ({
+    const deepSeekOption = (providerModelId = deepSeekCarrier.id): OptionSpec => ({
       displayName: "DeepSeek Search API",
       kind: "deepseek_search_api",
       optionId: "deepseek-search-api-1",
@@ -1550,358 +950,300 @@ describe("provider admission", () => {
         providerModelId,
         revisionId: "revision-deepseek-api"
       }],
-      sourceConnectionId: carrier.connectionId
+      sourceConnectionId: deepSeekCarrier.connectionId
+    });
+    const admit = (db: unknown, answer: ModelSpec) =>
+      loadProviderAdmissionPlan(db as Prisma.TransactionClient, {
+        providerConnectionId: answer.connectionId,
+        providerModelId: answer.id,
+        searchPlan: on,
+        userId: "user-1"
+      });
+    const uses = (plan: ProviderAdmissionPlan) => plan.searches.map((search) => [search.optionId, search.use]);
+
+    it("reads nothing of Search while it is off", async () => {
+      const { db, searchOptionFindMany } = admissionDb({ answer: officialOpenAiModel, options: [openAiOption()] });
+      const plan = await admit(db, officialOpenAiModel);
+      const offPlan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
+        providerConnectionId: officialOpenAiModel.connectionId, providerModelId: officialOpenAiModel.id,
+        searchPlan: { mode: "all_selected", optionIds: [] }, userId: "user-1"
+      });
+      expect(plan.requestedSearchPlan).toEqual(on);
+      expect(offPlan).toMatchObject({ requestedSearchPlan: { mode: "all_selected", optionIds: [] }, searches: [] });
+      expect(offPlan.searchUnavailable).toBeUndefined();
+      expect(searchOptionFindMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets GPT search inside its own answer and binds the engine for its sub-agents and researchers", async () => {
+      const option = openAiOption();
+      const { db, providerModelFindUnique } = admissionDb({
+        answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel]
+      });
+      const plan = await admit(db, officialOpenAiModel);
+
+      expect(uses(plan)).toEqual([[option.optionId, "in_answer"], [option.optionId, "engine"]]);
+      expect(plan.searches[0]).toMatchObject({
+        bindingKey: null, integrationId: "route-hosted:openai", revisionId: "revision-hosted:openai",
+        configuration: { adapterKind: "answer_provider_hosted", displayName: "OpenAI Search", strategyId: option.optionId }
+      });
+      expect(plan.searches[0]).not.toHaveProperty("role");
+      expect(plan.searches[1]).toMatchObject({
+        bindingKey: `search:${option.optionId}`, integrationId: "route-client:openai",
+        configuration: { adapterKind: "provider_model_client", modelId: "gpt-5.6-search" },
+        role: { snapshot: { connectionId: officialOpenAiModel.connectionId } }
+      });
+      expect(providerModelFindUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: officialOpenAiSearchModel.id } }));
+    });
+
+    it("gives GPT the engine's web_search instead while the administrator's switch is off", async () => {
+      const option = openAiOption();
+      const { db } = admissionDb({
+        answer: officialOpenAiModel, options: [option], policy: { inAnswerSearch: false },
+        technicalModels: [officialOpenAiSearchModel]
+      });
+      expect(uses(await admit(db, officialOpenAiModel))).toEqual([[option.optionId, "engine"]]);
+    });
+
+    it("never searches inside an answer without verified hosted search or on another protocol", async () => {
+      const option = openAiOption();
+      const unverified = { ...officialOpenAiModel, id: "model-openai-unverified", nativeSearch: false };
+      const first = admissionDb({ answer: unverified, options: [option], technicalModels: [officialOpenAiSearchModel] });
+      expect(uses(await admit(first.db, unverified))).toEqual([[option.optionId, "engine"]]);
+      // Hosted Anthropic and Gemini search never run beside chat tools; their client routes do.
+      const google = geminiOption();
+      const second = admissionDb({ answer: geminiModel, options: [google], technicalModels: [geminiSearchModel] });
+      const plan = await admit(second.db, geminiModel);
+      expect(uses(plan)).toEqual([[google.optionId, "engine"]]);
+      expect(plan.searches[0]).toMatchObject({ integrationId: "route-client:gemini", configuration: { provider: "gemini" } });
+      const claude = anthropicOption();
+      const third = admissionDb({ answer: officialAnthropicModel, options: [claude], technicalModels: [officialAnthropicSearchModel] });
+      expect((await admit(third.db, officialAnthropicModel)).searches[0]).toMatchObject({
+        integrationId: "route-client:anthropic", use: "engine", configuration: { adapterKind: "provider_model_client" }
+      });
+    });
+
+    it.each([
+      { engine: "openai-native-web-search", label: "OpenAI (Codex LB) only", options: () => [openAiOption()] },
+      { engine: "openrouter-perplexity", label: "OpenRouter only", options: () => [openRouterOption("parallel"), openRouterOption()] },
+      { engine: "deepseek-search-api-1", label: "DeepSeek only", options: () => [deepSeekOption()] },
+      { engine: "gemini-google-search", label: "Gemini only", options: () => [geminiOption()] },
+      { engine: "anthropic-web-search", label: "Anthropic only", options: () => [anthropicOption()] },
+      {
+        engine: "openai-native-web-search", label: "every provider, set up in reverse order",
+        options: () => [anthropicOption(), geminiOption(), deepSeekOption(), openRouterOption(), openAiOption()]
+      },
+      {
+        engine: "openrouter-perplexity", label: "OpenRouter, DeepSeek and Gemini",
+        options: () => [geminiOption(), deepSeekOption(), openRouterOption()]
+      }
+    ])("follows the default order on an installation with $label", async ({ engine, options }) => {
+      const { db } = admissionDb({
+        answer: anthropic, options: options(),
+        technicalModels: [officialOpenAiSearchModel, openRouterModel, deepSeekCarrier, geminiSearchModel, officialAnthropicSearchModel]
+      });
+      const plan = await admit(db, anthropic);
+      expect(uses(plan)).toEqual([[engine, "engine"]]);
+      expect(plan.searchUnavailable).toBeUndefined();
+    });
+
+    it("names why an installation without a default engine cannot search, and never picks Parallel or Sonar", async () => {
+      const sonar: OptionSpec = {
+        displayName: "Perplexity Sonar", kind: "perplexity_search", optionId: "perplexity-tool-search",
+        routes: [{ adapterKind: "provider_model_client", id: "route-sonar", protocol: "openrouter_perplexity_chat",
+          providerModelId: openRouterModel.id, revisionId: "revision-sonar" }],
+        sourceConnectionId: openRouterModel.connectionId
+      };
+      const { db } = admissionDb({ answer: anthropic, options: [openRouterOption("parallel"), sonar], technicalModels: [openRouterModel] });
+      const plan = await admit(db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_engine_not_configured");
+      // Admission still succeeds: the answer runs without Search and says why.
+      expect(plan.answer.snapshot.providerModelId).toBe(anthropic.id);
+    });
+
+    it("searches with the administrator's engine and never replaces it when it cannot search", async () => {
+      const options = [openAiOption(), geminiOption()];
+      const technicalModels = [officialOpenAiSearchModel, geminiSearchModel];
+      const chosen = admissionDb({ answer: anthropic, options, policy: { engineOptionId: "gemini-google-search" }, technicalModels });
+      expect(uses(await admit(chosen.db, anthropic))).toEqual([["gemini-google-search", "engine"]]);
+
+      const broken = admissionDb({
+        answer: anthropic, options, policy: { engineOptionId: "gemini-google-search" }, technicalModels,
+        unavailableModelIds: [geminiSearchModel.id]
+      });
+      const plan = await admit(broken.db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_engine_unavailable");
+    });
+
+    it("binds the backup beside a usable engine only, never in its place", async () => {
+      const options = [deepSeekOption(), geminiOption()];
+      const technicalModels = [deepSeekCarrier, geminiSearchModel];
+      const policy = { backupOptionId: "gemini-google-search", engineOptionId: "deepseek-search-api-1" };
+      const both = admissionDb({ answer: anthropic, options, policy, technicalModels });
+      const plan = await admit(both.db, anthropic);
+      expect(uses(plan)).toEqual([["deepseek-search-api-1", "engine"], ["gemini-google-search", "backup"]]);
+      expect(plan.searches.map((search) => search.bindingKey)).toEqual(["search:deepseek-search-api-1", "search:gemini-google-search"]);
+
+      const engineDown = admissionDb({ answer: anthropic, options, policy, technicalModels, unavailableModelIds: [deepSeekCarrier.id] });
+      const down = await admit(engineDown.db, anthropic);
+      expect(down.searches).toEqual([]);
+      expect(down.searchUnavailable).toBe("search_engine_unavailable");
+    });
+
+    it("leaves Search unavailable for a user the engine's credentials do not reach, without trying another engine", async () => {
+      const { db } = admissionDb({
+        answer: anthropic, options: [openAiOption(), geminiOption()],
+        technicalModels: [officialOpenAiSearchModel, geminiSearchModel], unreachableModelIds: [officialOpenAiSearchModel.id]
+      });
+      const plan = await admit(db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_engine_unavailable");
+    });
+
+    it("keeps in-answer search for GPT when only the engine cannot run, and names the reason for its sub-agents", async () => {
+      const option = openAiOption();
+      const { db } = admissionDb({
+        answer: officialOpenAiModel, options: [option], technicalModels: [officialOpenAiSearchModel],
+        unavailableModelIds: [officialOpenAiSearchModel.id]
+      });
+      const plan = await admit(db, officialOpenAiModel);
+      expect(uses(plan)).toEqual([[option.optionId, "in_answer"]]);
+      expect(plan.searchUnavailable).toBe("search_engine_not_configured");
+    });
+
+    it("lets any Search grant carry over to the engine, and names a user without one", async () => {
+      const option = geminiOption();
+      const granted = admissionDb({
+        answer: anthropic, fullAccess: false, grantedSearchOptionIds: ["an-earlier-source"], options: [option],
+        technicalModels: [geminiSearchModel]
+      });
+      expect(uses(await admit(granted.db, anthropic))).toEqual([[option.optionId, "engine"]]);
+
+      const ungranted = admissionDb({ answer: anthropic, fullAccess: false, options: [option], technicalModels: [geminiSearchModel] });
+      const plan = await admit(ungranted.db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_not_granted");
+      expect(ungranted.searchOptionFindMany).not.toHaveBeenCalled();
+    });
+
+    it("refuses an engine whose route lacks its exact active revision, is disabled, or competes with another", async () => {
+      const option = openAiOption();
+      const cases = [
+        { ...option, routes: option.routes!.map((route) => route.adapterKind === "provider_model_client" ? { ...route, enabled: false } : route) },
+        { ...option, routes: [...option.routes!, { ...option.routes![1]!, id: "route-client:second", revisionId: "revision-client:second" }] }
+      ];
+      for (const spec of cases) {
+        const { db } = admissionDb({ answer: anthropic, options: [spec], technicalModels: [officialOpenAiSearchModel] });
+        expect((await admit(db, anthropic)).searchUnavailable).toBe("search_engine_not_configured");
+      }
+      const missingRevision = admissionDb({ answer: anthropic, options: [option], technicalModels: [officialOpenAiSearchModel] });
+      const row = logicalOption(option);
+      missingRevision.searchOptionFindMany.mockImplementationOnce(async () => [{
+        ...row, strategies: row.strategies.map((strategy) => ({ ...strategy, activeRevision: null }))
+      }] as never);
+      expect((await admit(missingRevision.db, anthropic)).searchUnavailable).toBe("search_engine_not_configured");
+    });
+
+    it("refuses a client route whose technical model belongs to another connection", async () => {
+      const foreign: ModelSpec = { ...officialOpenAiSearchModel, connectionId: "connection-elsewhere" };
+      const { db } = admissionDb({ answer: anthropic, options: [openAiOption()], technicalModels: [foreign] });
+      expect((await admit(db, anthropic)).searchUnavailable).toBe("search_engine_not_configured");
+      const carrier = admissionDb({
+        answer: anthropic, options: [deepSeekOption(officialOpenAiSearchModel.id)],
+        technicalModels: [{ ...officialOpenAiSearchModel, connectionId: deepSeekCarrier.connectionId }]
+      });
+      expect((await admit(carrier.db, anthropic)).searchUnavailable).toBe("search_engine_not_configured");
     });
 
     it.each([
       ["OpenAI", officialOpenAiModel],
-      ["Claude", {
-        adapterKind: "anthropic_messages", connectionId: "connection-anthropic", family: "anthropic",
-        id: "model-opus", upstreamModelId: "claude-opus-5"
-      }],
-      ["DeepSeek", { ...carrier, id: "model-deepseek-pro", nativeSearch: true, upstreamModelId: "deepseek-v4-pro" }]
-    ] satisfies Array<[string, ModelSpec]>)("admits the raw results route for a %s answer model", async (_name, answer) => {
-      const { db } = admissionDb({ answer, options: [apiOption()], technicalModels: [carrier] });
-      const search = expectSearch(await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-        providerConnectionId: answer.connectionId,
-        providerModelId: answer.id,
-        searchPlan: { mode: "model_choice", optionIds: ["deepseek-search-api-1"] },
-        userId: "user-1"
-      }));
-
-      expect(search).toMatchObject({
+      ["Claude", anthropic],
+      ["DeepSeek", { ...deepSeekCarrier, id: "model-deepseek-pro", nativeSearch: true, upstreamModelId: "deepseek-v4-pro" }]
+    ] satisfies Array<[string, ModelSpec]>)("admits the DeepSeek Search API's raw results for a %s answer model", async (_name, answer) => {
+      const { db } = admissionDb({ answer, options: [deepSeekOption()], technicalModels: [deepSeekCarrier] });
+      const plan = await admit(db, answer);
+      expect(plan.searches.find((search) => search.use === "engine")).toMatchObject({
         bindingKey: "search:deepseek-search-api-1",
         configuration: {
           adapterKind: "provider_model_client",
-          executionModes: ["all_selected", "model_choice"],
           kind: "provider_model_web_search",
           // Usage and evidence name the API, not the carrier model.
           modelId: "deepseek-search-api",
           protocol: "deepseek_search_api",
           provider: "deepseek",
-          providerModelId: carrier.id
+          providerModelId: deepSeekCarrier.id
         },
         integrationId: "route-deepseek-api",
-        role: { snapshot: { connectionId: "connection-deepseek", providerModelId: carrier.id } }
+        role: { snapshot: { connectionId: "connection-deepseek", providerModelId: deepSeekCarrier.id } }
       });
     });
 
-    it("refuses a carrier that is not a DeepSeek model of the source connection", async () => {
-      const foreign: ModelSpec = { ...officialOpenAiSearchModel, connectionId: "connection-deepseek" };
-      const { db } = admissionDb({
-        answer: officialOpenAiModel,
-        options: [apiOption(foreign.id)],
-        technicalModels: [foreign]
-      });
-      await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-        providerConnectionId: officialOpenAiModel.connectionId,
-        providerModelId: officialOpenAiModel.id,
-        searchPlan: { mode: "model_choice", optionIds: ["deepseek-search-api-1"] },
+    it.each([false, true])("persists the run's bindings after revalidation with Search on=%s", async (searchOn) => {
+      const option = openAiOption();
+      const { db } = admissionDb({ answer: anthropic, options: [option], technicalModels: [officialOpenAiSearchModel] });
+      const createMany = vi.fn(async () => ({ count: searchOn ? 2 : 1 }));
+      const tx = { ...db, providerRunBinding: { createMany } } as unknown as Prisma.TransactionClient;
+      const plan = await loadProviderAdmissionPlan(tx, {
+        providerConnectionId: anthropic.connectionId, providerModelId: anthropic.id,
+        searchPlan: searchOn ? on : { mode: "all_selected", optionIds: [] },
         userId: "user-1"
-      })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-    });
-  });
+      });
 
-  it("sends a migrated Perplexity template to future Search with hidden, not disabled, reasoning", async () => {
-    const answer: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    // activeConfig.defaultParams after 20260928220000_perplexity_legacy_reasoning:
-    // only the former template reasoning object became {exclude: true}.
-    const perplexityModel: ModelSpec = {
-      adapterKind: "openrouter_chat_completions",
-      answerSelectable: false,
-      connectionId: "connection-openrouter",
-      defaultParams: {
-        maxTokens: 8192,
-        provider: { allowFallbacks: true, dataCollection: "deny", order: ["perplexity"], sort: "throughput" },
-        reasoning: { exclude: true },
-        stream: true,
-        temperature: 1
+      await insertAcceptedProviderRunBindings(tx, { plan, nativeBackgroundRequested: false, runId: "agent-run", userId: "user-1" });
+
+      expect(createMany).toHaveBeenCalledExactlyOnceWith({ data: [
+        expect.objectContaining({ role: "answer", providerModelId: anthropic.id, modelRunId: "agent-run" }),
+        ...(searchOn ? [expect.objectContaining({ role: "search", bindingKey: `search:${option.optionId}`,
+          providerModelId: officialOpenAiSearchModel.id, modelRunId: "agent-run" })] : [])
+      ] });
+    });
+
+    it.each([
+      {
+        credentialIdByConnection: { [officialOpenAiModel.connectionId]: "credential:connection-openai:replacement" },
+        credentialVersionIdByConnection: { [officialOpenAiModel.connectionId]: "credential-version:connection-openai:replacement" },
+        expectedCredentialId: "credential:connection-openai:replacement",
+        expectedCredentialVersionId: "credential-version:connection-openai:replacement",
+        label: "credential"
       },
-      family: "openrouter",
-      id: "model-perplexity-search",
-      nativeSearch: true,
-      upstreamModelId: "perplexity/sonar-pro-search"
-    };
-    const option: OptionSpec = {
-      displayName: "Perplexity Search",
-      kind: "perplexity_search",
-      optionId: "perplexity-tool-search",
-      routes: [{
-        adapterKind: "provider_model_client",
-        id: "route-perplexity-client",
-        protocol: "openrouter_perplexity_chat",
-        providerModelId: perplexityModel.id,
-        revisionId: "revision-perplexity-client"
-      }],
-      sourceConnectionId: perplexityModel.connectionId
-    };
-    const { db } = admissionDb({ answer, options: [option], technicalModels: [perplexityModel] });
-    const search = expectSearch(await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: answer.connectionId,
-      providerModelId: answer.id,
-      searchPlan: { mode: "all_selected", optionIds: [option.optionId] },
-      userId: "user-1"
-    }));
-    const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () => ({
-      choices: [{ finish_reason: "stop", message: { content: "Fact [1].", role: "assistant" } }],
-      citations: ["https://example.com/source"],
-      id: "or-search", model: "perplexity/sonar-pro-search", object: "chat.completion",
-      usage: { completion_tokens: 3, prompt_tokens: 5 }
-    }));
-    const router = createSearchPlanToolRouter({
-      plan: {
-        mode: "all_selected",
-        options: [{
-          adapterKind: search.configuration.adapterKind,
-          config: search.configuration.config,
-          credentialMode: search.configuration.credentialMode,
-          displayName: search.configuration.displayName,
-          executionModes: search.configuration.executionModes,
-          modelId: search.configuration.modelId,
-          optionId: search.optionId,
-          protocol: search.configuration.protocol,
-          provider: search.configuration.provider,
-          providerModelId: search.configuration.providerModelId,
-          revisionId: search.revisionId,
-          searchStrategyRowId: search.integrationId
-        }]
-      },
-      runtimes: {
-        [search.optionId]: {
-          adapter: {
-            buildRequestPreview: () => ({}),
-            async *stream() {
-              throw new Error("answer_adapter_must_not_execute_search");
-            }
-          },
-          responseTimeoutMs: 300_000,
-          searchAdapter: createOpenRouterPerplexitySearchAdapter({ client: { createChatCompletion } })
-        }
+      {
+        credentialIdByConnection: undefined,
+        credentialVersionIdByConnection: { [officialOpenAiModel.connectionId]: "credential-version:connection-openai:v2" },
+        expectedCredentialId: "credential:connection-openai",
+        expectedCredentialVersionId: "credential-version:connection-openai:v2",
+        label: "credential version"
       }
-    })!;
-    const logs = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    try {
-      const result = await router.execute(
-        { arguments: { query: "bounded query" }, id: "call-1", name: router.tools[0]!.name }, {}
-      );
-      expect(result.status).not.toBe("error");
-    } finally {
-      logs.mockRestore();
-    }
-
-    expect(createChatCompletion).toHaveBeenCalledOnce();
-    const body = createChatCompletion.mock.calls[0]![0];
-    expect(body).toMatchObject({ model: "perplexity/sonar-pro-search", stream: false });
-    expect(body.reasoning).toEqual({ exclude: true });
-    expect(JSON.stringify(body)).not.toMatch(/"enabled"|"effort"/u);
-  });
-
-  it("keeps Google Search native to Gemini and rejects it for non-Gemini answers", async () => {
-    const option: OptionSpec = {
-      displayName: "Google Search",
-      kind: "gemini_google_search",
-      optionId: "gemini-google-search",
-      routes: [{
-        adapterKind: "answer_provider_hosted",
-        id: "route-google-hosted",
-        protocol: "gemini_google_search",
-        revisionId: "revision-google-hosted"
-      }],
-      sourceConnectionId: "connection-gemini"
-    };
-    const { db } = admissionDb({ answer: officialOpenAiModel, options: [option] });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("refuses a Google Search source that has only its hosted route", async () => {
-    const gemini: ModelSpec = {
-      adapterKind: "gemini_interactions_native",
-      connectionId: "connection-gemini",
-      family: "gemini",
-      id: "model-gemini",
-      nativeSearch: true,
-      upstreamModelId: "gemini-3.6-flash"
-    };
-    const option: OptionSpec = {
-      displayName: "Google Search",
-      kind: "gemini_google_search",
-      optionId: "gemini-google-search",
-      routes: [{
-        adapterKind: "answer_provider_hosted",
-        id: "route-google-hosted",
-        protocol: "gemini_google_search",
-        revisionId: "revision-google-hosted"
-      }],
-      sourceConnectionId: gemini.connectionId
-    };
-    const { db } = admissionDb({ answer: gemini, options: [option] });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: gemini.connectionId,
-      providerModelId: gemini.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("checks personal preference grants against logical option ids", async () => {
-    const option = openAiOption();
-    const { accessGrantCount, db } = admissionDb({
-      answer: officialOpenAiModel,
-      fullAccess: false,
-      grantedSearchOptionIds: ["openai-native-web-search"],
-      options: [option],
-      technicalModels: [officialOpenAiSearchModel]
+    ])("pins the engine's current $label at admission without a new Search probe", async (authority) => {
+      const { db } = admissionDb({
+        answer: anthropic,
+        credentialIdByConnection: authority.credentialIdByConnection,
+        credentialVersionIdByConnection: authority.credentialVersionIdByConnection,
+        options: [openAiOption()],
+        technicalModels: [officialOpenAiSearchModel]
+      });
+      expect(expectSearch(await admit(db, anthropic)).role?.authority).toMatchObject({
+        credentialId: authority.expectedCredentialId,
+        credentialVersionId: authority.expectedCredentialVersionId,
+        providerModelId: officialOpenAiSearchModel.id
+      });
     });
 
-    const plan = await loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
-      searchPreferencePlan: {
-        mode: "model_choice",
-        optionIds: ["openai-native-web-search"]
-      },
-      searchPreferenceSource: "personal",
-      userId: "user-1"
+    it("never searches through Perplexity Sonar, retired, even where a policy still names it, and replaces it with nothing", async () => {
+      // Sonar's stored kind and protocol, as a row the 2026-11-26 upgrade had not archived yet.
+      const sonar: OptionSpec = {
+        displayName: "Perplexity Sonar", kind: "perplexity_search", optionId: "perplexity-tool-search",
+        routes: [{ adapterKind: "provider_model_client", id: "route-sonar", protocol: "openrouter_perplexity_chat",
+          providerModelId: openRouterModel.id, revisionId: "revision-sonar" }],
+        sourceConnectionId: openRouterModel.connectionId
+      };
+      const { db } = admissionDb({
+        answer: anthropic, options: [sonar, openAiOption()], policy: { engineOptionId: sonar.optionId },
+        technicalModels: [openRouterModel, officialOpenAiSearchModel]
+      });
+      const plan = await admit(db, anthropic);
+      expect(plan.searches).toEqual([]);
+      expect(plan.searchUnavailable).toBe("search_engine_unavailable");
     });
-
-    expect(plan.requestedSearchPreferencePlan).toEqual({
-      mode: "model_choice",
-      optionIds: ["openai-native-web-search"]
-    });
-    expect(accessGrantCount).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ searchStrategy: "openai-native-web-search" })
-    }));
-  });
-
-  it("rejects a personal Search preference with no normalized active route", async () => {
-    const unavailable: OptionSpec = {
-      displayName: "Unavailable Search",
-      kind: "web_search",
-      optionId: "unavailable-search",
-      routes: [],
-      sourceConnectionId: officialOpenAiModel.connectionId
-    };
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [unavailable]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "all_selected", optionIds: [] },
-      searchPreferencePlan: { mode: "model_choice", optionIds: [unavailable.optionId] },
-      searchPreferenceSource: "personal",
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("rejects a client-only preference whose dependency belongs to another source", async () => {
-    const unavailable: OptionSpec = {
-      displayName: "Custom Search",
-      kind: "web_search",
-      optionId: "custom-web-search:connection-custom",
-      routes: [{
-        adapterKind: "provider_model_client",
-        id: "route-client-mismatched",
-        protocol: "openai_responses_web_search",
-        providerModelId: officialOpenAiSearchModel.id,
-        revisionId: "revision-client-mismatched"
-      }],
-      sourceConnectionId: "connection-custom"
-    };
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [unavailable],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "all_selected", optionIds: [] },
-      searchPreferencePlan: { mode: "model_choice", optionIds: [unavailable.optionId] },
-      searchPreferenceSource: "personal",
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("rejects multiple client routes instead of silently trying a later dependency", async () => {
-    const anthropic: ModelSpec = {
-      adapterKind: "anthropic_messages",
-      connectionId: "connection-anthropic",
-      family: "anthropic",
-      id: "model-opus",
-      upstreamModelId: "claude-opus-5"
-    };
-    const firstSearchModel = { ...officialOpenAiSearchModel, id: "model-search-first" };
-    const secondSearchModel = { ...officialOpenAiSearchModel, id: "model-search-second" };
-    const option: OptionSpec = {
-      displayName: "OpenAI Search",
-      kind: "web_search",
-      optionId: "openai-native-web-search",
-      routes: [
-        {
-          adapterKind: "provider_model_client",
-          id: "route-client-first",
-          protocol: "openai_responses_web_search",
-          providerModelId: firstSearchModel.id,
-          revisionId: "revision-client-first"
-        },
-        {
-          adapterKind: "provider_model_client",
-          id: "route-client-second",
-          protocol: "openai_responses_web_search",
-          providerModelId: secondSearchModel.id,
-          revisionId: "revision-client-second"
-        }
-      ],
-      sourceConnectionId: officialOpenAiModel.connectionId
-    };
-    const { db } = admissionDb({
-      answer: anthropic,
-      options: [option],
-      technicalModels: [firstSearchModel, secondSearchModel]
-    });
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: anthropic.connectionId,
-      providerModelId: anthropic.id,
-      searchPlan: { mode: "model_choice", optionIds: [option.optionId] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
-  });
-
-  it("does not admit an active physical route without its exact active revision", async () => {
-    const option = logicalOption(openAiOption());
-    const { db } = admissionDb({
-      answer: officialOpenAiModel,
-      options: [openAiOption()],
-      technicalModels: [officialOpenAiSearchModel]
-    });
-    db.searchOption.findFirst.mockImplementationOnce(async () => ({
-      ...option,
-      strategies: [{ ...option.strategies[0]!, activeRevision: null }]
-    }) as never);
-
-    await expect(loadProviderAdmissionPlan(db as unknown as Prisma.TransactionClient, {
-      providerConnectionId: officialOpenAiModel.connectionId,
-      providerModelId: officialOpenAiModel.id,
-      searchPlan: { mode: "model_choice", optionIds: ["openai-native-web-search"] },
-      userId: "user-1"
-    })).rejects.toMatchObject({ code: "search_strategy_not_available" });
   });
 });

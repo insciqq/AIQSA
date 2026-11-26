@@ -15,6 +15,7 @@ import {
   groupModelChanges,
   groupProviderKey,
   groupSearchChanges,
+  groupUnlistedSearchGrants,
   isFullAccessGroup,
   providerAccess,
   providerAccessLabel,
@@ -347,21 +348,30 @@ function SearchSection({ catalog, controller, disabled, group }: Readonly<{
     group.accessGrants.filter((grant) => grant.enabled && grant.searchStrategy).map((grant) => grant.searchStrategy)
   );
   const sources = catalogSearchSources(catalog);
+  const unlisted = groupUnlistedSearchGrants(group, catalog);
+  const selected = sources.filter((source) => granted.has(source.strategyId)).length;
   return (
     <Section
       actions={<AdminGroupBulkGrantActions
+        clearable={selected > 0 || unlisted.length > 0}
         disabled={disabled}
         groupName={group.name}
         onClear={() => void controller.actions.applyGrants(group, groupSearchChanges(group, catalog, false), "Current Search source access cleared.")}
         onGrant={() => void controller.actions.applyGrants(group, groupSearchChanges(group, catalog, true), "All current Search sources granted.")}
         resourceLabel="Search sources"
-        selected={sources.filter((source) => granted.has(source.strategyId)).length}
+        selected={selected}
         total={sources.length}
       />}
       heading="Search sources"
       testId="admin-group-search"
     >
       <p className={helpClass}>Current Search sources only. Sources added later need a new grant.</p>
+      {unlisted.length ? (
+        <p className={helpClass} data-testid="admin-group-search-unlisted">
+          Members can search: any Search grant lets them search with the installation&apos;s engine, and this group keeps
+          the grant of a source no longer listed. Clear removes it too.
+        </p>
+      ) : null}
       <div className={cardClass}>
         {sources.length ? (
           <ul aria-label="Search sources" className="divide-y divide-trace-subtle">

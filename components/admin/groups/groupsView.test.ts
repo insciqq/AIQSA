@@ -81,7 +81,7 @@ describe("groupsView", () => {
   });
 
   it("counts effective access and ignores grants on models or Search sources the catalog no longer has", () => {
-    expect(groupAccessCounts(research, catalog)).toEqual({ models: 3, providers: 2, search: 1 });
+    expect(groupAccessCounts(research, catalog)).toEqual({ models: 3, providers: 2, search: 1, searchAccess: true });
     expect(groupAccessSummary(research, catalog)).toBe("3 models · 1 Search source");
     expect(groupAccessSummary(empty, catalog)).toBe("No access");
     expect(groupAccessSummary(archived, catalog)).toBe("Archived · grants no longer apply");
@@ -89,6 +89,24 @@ describe("groupsView", () => {
     expect(groupHeaderSummary(research, catalog, 4)).toBe("3 members · 3 models · 1 Search source · 4 MCP servers");
     expect(groupHeaderSummary(research, catalog, null)).toBe("3 members · 3 models · 1 Search source");
     expect(groupHeaderSummary(fullAccess, catalog, null)).toBe("1 member · every provider, model, Search source and MCP server");
+  });
+
+  it("shows Search access that only a grant of an archived source gives, and clears it", () => {
+    // Perplexity Sonar's grant after its retirement (2026-11-26): the source is archived and leaves the catalog, but
+    // any Search grant lets members search with the installation's engine.
+    const sonarOnly = group({ accessGrants: [grant({ id: "sonar", searchStrategy: "perplexity-tool-search" })],
+      id: "group-sonar", name: "Sonar", userCount: 2 });
+    expect(groupAccessCounts(sonarOnly, catalog)).toEqual({ models: 0, providers: 0, search: 0, searchAccess: true });
+    expect(groupAccessSummary(sonarOnly, catalog)).toBe("Web search");
+    expect(groupHeaderSummary(sonarOnly, catalog, null)).toBe("2 members · 0 models · Web search");
+    expect(groupSearchChanges(sonarOnly, catalog, false)).toEqual([{ enabled: false, searchStrategy: "perplexity-tool-search" }]);
+    expect(groupSearchChanges(sonarOnly, catalog, true)).toEqual([{ enabled: true, searchStrategy: "openai-search" }]);
+    // `search-disabled` and a disabled grant give no Search.
+    const none = group({ accessGrants: [grant({ id: "off", searchStrategy: "search-disabled" }),
+      grant({ enabled: false, id: "old", searchStrategy: "perplexity-tool-search" })], id: "group-none", name: "None" });
+    expect(groupAccessCounts(none, catalog).searchAccess).toBe(false);
+    expect(groupAccessSummary(none, catalog)).toBe("No access");
+    expect(groupSearchChanges(none, catalog, false)).toEqual([]);
   });
 
   it("filters the list by status and query, keeps Full access first and counts the pills", () => {
@@ -164,10 +182,10 @@ describe("groupsView", () => {
     ]);
     expect(groupModelChanges(empty, duplicateCatalog, true)).toHaveLength(4);
     expect(groupSearchChanges(research, duplicateCatalog, true)).toEqual([{ enabled: true, searchStrategy: "more-search" }]);
-    expect(groupAccessCounts(research, duplicateCatalog)).toEqual({ models: 3, providers: 2, search: 1 });
+    expect(groupAccessCounts(research, duplicateCatalog)).toEqual({ models: 3, providers: 2, search: 1, searchAccess: true });
   });
 
-  it("clears current selections and their provider-wide grants while preserving unavailable grants and other sections", () => {
+  it("clears current selections and their provider-wide grants while preserving unavailable model grants and other sections", () => {
     const withExplicitAndUnavailable = {
       ...research,
       accessGrants: [...research.accessGrants,
@@ -179,7 +197,11 @@ describe("groupsView", () => {
       { enabled: false, modelId: "gpt-5.5", provider: "conn-openai" },
       { enabled: false, modelId: "opus-5", provider: "conn-anthropic" }
     ]);
-    expect(groupSearchChanges(withExplicitAndUnavailable, catalog, false)).toEqual([{ enabled: false, searchStrategy: "openai-search" }]);
+    // A Search grant of a source no longer listed still lets members search, so clearing Search removes it too.
+    expect(groupSearchChanges(withExplicitAndUnavailable, catalog, false)).toEqual([
+      { enabled: false, searchStrategy: "openai-search" },
+      { enabled: false, searchStrategy: "gone-search" }
+    ]);
     expect(groupModelChanges(research, { ...catalog, models: [] }, false)).toEqual([]);
   });
 
@@ -197,7 +219,7 @@ describe("groupsView", () => {
       providers: [...catalog.providers, { id: "other-provider", name: "Other provider" }],
       searchStrategies: [...catalog.searchStrategies, { displayName: "Later Search", strategyId: "later-search" }]
     };
-    expect(groupAccessCounts(currentOnly, later)).toEqual({ models: 4, providers: 2, search: 1 });
+    expect(groupAccessCounts(currentOnly, later)).toEqual({ models: 4, providers: 2, search: 1, searchAccess: true });
     expect(providerAccess(currentOnly, "conn-openai")).toEqual({ kind: "some", modelIds: ["gpt-5.5", "gpt-mini"] });
     expect(groupModelChanges(currentOnly, later, true)).toEqual([
       { enabled: true, modelId: "later", provider: "conn-openai" },

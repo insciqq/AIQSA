@@ -7,8 +7,7 @@ import {
   readJsonBodyOrNull,
   requestBodyErrorResponse
 } from "../http/requestBody";
-import { decodeSearchPlan, type SearchPlan } from "../../domain/search";
-import { isSearchCombinationCompatible } from "../../domain/catalogMatrix";
+import { decodeSearchPlan, searchPlanEnabled, searchSettingPlan, type SearchPlan } from "../../domain/search";
 import {
   decodeChatDefaultMcpMode,
   isAssistantReferenceId,
@@ -26,9 +25,7 @@ import {
 
 export type UserSettingsRecord = CatalogSettingsRecord;
 
-export type SettingsHandlerData = CatalogSelectionData & {
-  searchPolicy?: { defaultPlan: unknown } | null;
-};
+export type SettingsHandlerData = CatalogSelectionData;
 
 export type UserSettingsUpdate = Partial<AnswerSoundPreferences & {
   /** Off also removes every browser push subscription of the account. */
@@ -199,6 +196,7 @@ function buildSettingsUpdate(
     "defaultWorkspaceEnabled",
     "defaultProviderModelId",
     "defaultSearchPlan",
+    "searchEnabled",
     "sendWithEnter",
     "showCitations",
     "showReasoningBlocks"
@@ -232,21 +230,19 @@ function buildSettingsUpdate(
     }
   }
 
-  if ("defaultSearchPlan" in body) {
+  // The user's Search switch (operator decisions 2026-11-26): on is stored as no personal plan, which follows Search
+  // on for everyone, and off as a plan without sources. An earlier client's plan says the same by naming any source;
+  // the sources it names are never stored, since the engine is the administrator's.
+  if ("searchEnabled" in body) {
+    if (typeof body.searchEnabled !== "boolean") return { error: "default_search_unavailable" };
+    update.defaultSearchPlan = body.searchEnabled ? null : searchSettingPlan(false);
+  } else if ("defaultSearchPlan" in body) {
     if (body.defaultSearchPlan === null) {
       update.defaultSearchPlan = null;
     } else {
       const decoded = decodeSearchPlan(body.defaultSearchPlan);
-      if (!decoded.ok || decoded.plan.optionIds.some((strategyId) =>
-        !data.searchStrategies.some((strategy) => strategy.strategyId === strategyId)) ||
-        !isSearchCombinationCompatible(
-          decoded.plan.optionIds,
-          data.searchStrategies,
-          decoded.plan.mode
-        )) {
-        return { error: "default_search_unavailable" };
-      }
-      update.defaultSearchPlan = decoded.plan;
+      if (!decoded.ok) return { error: "default_search_unavailable" };
+      update.defaultSearchPlan = searchPlanEnabled(decoded.plan) ? null : searchSettingPlan(false);
     }
   }
 
@@ -316,11 +312,7 @@ function serializeSettings(
   data: SettingsHandlerData
 ): UserSettingsWire {
   const selection = resolveCurrentUserCatalogSelection({ ...data, settings });
-  const searchPreference = resolveSearchPreference({
-    organizationPlan: data.searchPolicy?.defaultPlan,
-    settings,
-    strategies: selection.entitledStrategies
-  });
+  const searchPreference = resolveSearchPreference({ settings });
   const chatDefaults = resolveChatDefaults(settings);
   const defaultAssistant = catalogDefaultAssistant(settings);
   return {
@@ -339,6 +331,7 @@ function serializeSettings(
     personalModelDefault: selection.personalModelDefault,
     defaultSearchPlan: searchPreference.preferredPlan,
     organizationSearchPlan: searchPreference.organizationPlan,
+    searchEnabled: searchPreference.enabled,
     searchPreferenceSource: searchPreference.source,
     sendWithEnter: chatDefaults.sendWithEnter,
     showCitations: settings.showCitations,

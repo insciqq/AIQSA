@@ -17,11 +17,11 @@ function props(overrides: Partial<Parameters<typeof ComposerV2>[0]> = {}) {
     draft: "Проверь источники",
     onDraftChange: vi.fn(),
     onSelectModel: vi.fn(),
-    onSelectSearchOptionIds: vi.fn(),
+    onSearchEnabledChange: vi.fn(),
     onSend: vi.fn(),
     selectedModelId: "gpt-5.2",
     selectedProvider: "openai-work",
-    selectedSearchOptionIds: ["web-primary"],
+    searchEnabled: true,
     ...overrides
   } satisfies Parameters<typeof ComposerV2>[0];
 }
@@ -167,7 +167,7 @@ function galleryAssistant(
 /** Search, MCP and Skills: the chips an Assistant row can set. */
 function assistantChips() {
   return [
-    screen.getByRole("button", { name: /^Choose web search/u }),
+    screen.getByRole("button", { name: "Web search" }),
     screen.getByRole("button", { name: "Change MCP mode" }),
     screen.getByRole("button", { name: "Change Skills mode" })
   ];
@@ -322,7 +322,7 @@ describe("Composer v2", () => {
 
     expect(within(screen.getByTestId("composer-v2-deep-research")).getByText("Deep research")).toBeVisible();
     // Right after Search.
-    expect(screen.getByRole("button", { name: /^Choose web search/u }).nextElementSibling)
+    expect(screen.getByRole("button", { name: "Web search" }).nextElementSibling)
       .toBe(screen.getByTestId("composer-v2-deep-research"));
     expect(screen.getByRole("status")).toHaveTextContent(
       /^Deep research takes 30 to 60 minutes\. You will see a plan first, and you can close this tab\.$/u);
@@ -339,22 +339,30 @@ describe("Composer v2", () => {
 
   it("disables Deep research without a Search source and drops the chip when Search goes off", () => {
     const onDeepResearchChange = vi.fn();
-    const value = props({ onDeepResearchChange, selectedSearchOptionIds: [] });
+    const value = props({ onDeepResearchChange, searchEnabled: false });
     const { rerender } = render(<ComposerV2 {...value} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByRole("menuitem", { name: /^Deep research.*Turn on Search to use Deep research/u })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
-    // A source this model cannot run is no source either.
-    rerender(<ComposerV2 {...value} selectedModelId="gpt-5.2-mini" selectedSearchOptionIds={["research-search"]} />);
+    // Search on for a model that cannot search is no Search either.
+    const unsearchable = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) =>
+          model.modelId === "gpt-5.2-mini" ? { ...model, searchStrategyIds: [], webSearch: null } : model)
+      }
+    };
+    rerender(<ComposerV2 {...value} config={unsearchable} selectedModelId="gpt-5.2-mini" searchEnabled />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByRole("menuitem", { name: /^Deep research/u })).toBeDisabled();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
-    rerender(<ComposerV2 {...value} deepResearch selectedSearchOptionIds={["web-primary"]} />);
+    rerender(<ComposerV2 {...value} deepResearch searchEnabled />);
     expect(screen.getByTestId("composer-v2-deep-research")).toBeVisible();
     expect(onDeepResearchChange).not.toHaveBeenCalled();
-    rerender(<ComposerV2 {...value} deepResearch selectedSearchOptionIds={[]} />);
+    rerender(<ComposerV2 {...value} deepResearch searchEnabled={false} />);
     expect(screen.queryByTestId("composer-v2-deep-research")).not.toBeInTheDocument();
     expect(onDeepResearchChange).toHaveBeenCalledWith(false);
   });
@@ -365,14 +373,14 @@ describe("Composer v2", () => {
     expect(screen.queryByRole("menuitem", { name: /^Deep research/u })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
-    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), selectedSearchOptionIds: [],
+    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), searchEnabled: false,
       assistant: galleryAssistant({ policies: { search: "fixed" }, values: { search: { mode: "off" } } }) })} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.queryByRole("menuitem", { name: /^Deep research/u })).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 
     // An adjustable Search row can still be turned on, so the item stays and says how.
-    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), selectedSearchOptionIds: [],
+    rerender(<ComposerV2 {...props({ onDeepResearchChange: vi.fn(), searchEnabled: false,
       assistant: galleryAssistant({ values: { search: { mode: "off" } } }) })} />);
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(screen.getByRole("menuitem", { name: /^Deep research.*Turn on Search/u })).toBeDisabled();
@@ -635,7 +643,7 @@ describe("Composer v2", () => {
       config,
       initialLayer: "add",
       onOpenSkillLibrary,
-      onSelectSearchOptionIds: onSearch,
+      onSearchEnabledChange: onSearch,
       onSelectMcp
     })} />);
     const menuOpen = (name: string) =>
@@ -654,21 +662,23 @@ describe("Composer v2", () => {
     expect(onOpenSkillLibrary).toHaveBeenCalledOnce();
     menuClosed("Add");
 
-    // Search: only the sources, combined without closing the menu. There is
-    // no mode, turn-off or organization link, and the last source stays on.
-    fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
+    // Search: one switch, no source list, mode, turn-off or organization link.
+    // With Search on, an ordinary chat turns it off only in Chat defaults.
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
     const searchDialog = screen.getByRole("dialog", { name: "Web search" });
     expect(searchDialog).toBeVisible();
     expect(within(searchDialog).queryByRole("button", { name: /Turn off|organization/u })).toBeNull();
     expect(within(searchDialog).queryByRole("combobox")).toBeNull();
+    expect(within(searchDialog).queryByRole("checkbox")).toBeNull();
     expect(within(searchDialog).queryByText(/Research-grade search|Saved for this chat|Let the model choose/u)).toBeNull();
-    expect(within(searchDialog).getByRole("checkbox", { name: /Web Search/u })).toBeDisabled();
-    expect(searchDialog).toHaveTextContent("To turn search off, use Chat defaults in Settings.");
-    fireEvent.click(screen.getByRole("checkbox", { name: /Research Search/ }));
-    expect(onSearch).toHaveBeenCalledOnce();
-    expect(onSearch).toHaveBeenCalledWith(["web-primary", "research-search"]);
-    expect(screen.getByRole("dialog", { name: "Web search" })).toBeVisible();
-    fireEvent.keyDown(screen.getByRole("checkbox", { name: /Research Search/ }), { key: "Escape" });
+    const searchSwitch = within(searchDialog).getByRole("switch", { name: "Search the web" });
+    expect(searchSwitch).toBeChecked();
+    expect(searchSwitch).toBeDisabled();
+    expect(searchDialog).toHaveTextContent("This model searches inside its own answer.");
+    expect(searchDialog).toHaveTextContent("On for every chat. To turn search off, use Chat defaults in Settings.");
+    fireEvent.click(searchSwitch);
+    expect(onSearch).not.toHaveBeenCalled();
+    fireEvent.keyDown(searchDialog, { key: "Escape" });
 
     fireEvent.click(screen.getByRole("button", { name: "Change MCP mode" }));
     menuOpen("MCP tools");
@@ -688,43 +698,128 @@ describe("Composer v2", () => {
 
     expect(screen.queryByRole("group", { name: "Ways to start" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Choose web search: OpenAI" }))
-      .toHaveAccessibleDescription("Search: OpenAI");
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("Search: On");
     expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Choose Knowledge" })).toBeNull();
 
-    rerender(<ComposerV2 {...initial} selectedSearchOptionIds={[]} />);
-    expect(screen.getByRole("button", { name: "Choose web search" }))
-      .toHaveAccessibleDescription("Search: Off");
-    // Off still shows the chip; checking a source turns search back on.
-    expect(screen.getByRole("button", { name: "Choose web search" })).toHaveTextContent("Search off");
-    fireEvent.click(screen.getByRole("button", { name: "Choose web search" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: /Web Search/u }));
-    expect(initial.onSelectSearchOptionIds).toHaveBeenCalledWith(["web-primary"]);
+    rerender(<ComposerV2 {...initial} searchEnabled={false} />);
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("Search: Off");
+    // Off still shows the chip; its switch turns search back on for every chat.
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveTextContent("Search off");
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
+    const dialog = screen.getByRole("dialog", { name: "Web search" });
+    expect(dialog).toHaveTextContent("Turning it on applies to every chat.");
+    fireEvent.click(within(dialog).getByRole("switch", { name: "Search the web" }));
+    expect(initial.onSearchEnabledChange).toHaveBeenCalledWith(true);
     expect(screen.queryByRole("button", { name: "Turn off Search" })).toBeNull();
   });
 
-  it("keeps an unavailable saved Search source visible and removable once another source is on", () => {
-    const onSearch = vi.fn();
-    const { rerender } = render(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source"], onSelectSearchOptionIds: onSearch })} />);
-    const trigger = screen.getByRole("button", { name: "Choose web search" });
-    expect(trigger).toHaveAccessibleDescription("Search: Unavailable source");
+  it("says why Search, switched on, cannot search, and never turns it off", () => {
+    const unsearchable = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) =>
+          model.modelId === "gpt-5.2-mini" ? { ...model, searchStrategyIds: [], webSearch: null } : model)
+      }
+    };
+    const onSearchEnabledChange = vi.fn();
+    const { rerender } = render(<ComposerV2 {...props({ config: unsearchable, onSearchEnabledChange, selectedModelId: "gpt-5.2-mini" })} />);
+    const trigger = screen.getByRole("button", { name: "Web search" });
+    expect(trigger).toHaveAccessibleDescription("Search: On · unavailable for this model");
+    expect(trigger).toHaveAttribute("data-quiet");
+    expect(trigger).toHaveTextContent("Search");
     fireEvent.click(trigger);
-    expect(screen.getByRole("checkbox", { name: /Unavailable source/ })).toBeDisabled();
-    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: ["retired-source", "web-primary"], onSelectSearchOptionIds: onSearch })} />);
-    fireEvent.click(screen.getByRole("checkbox", { name: /Unavailable source/ }));
-    expect(onSearch).toHaveBeenCalledWith(["web-primary"]);
+    const status = within(screen.getByRole("dialog", { name: "Web search" })).getByText("Unavailable for this model.");
+    expect(within(screen.getByRole("dialog", { name: "Web search" })).getByRole("switch", { name: "Search the web" }))
+      .toBeChecked();
+    expect(status).toHaveAttribute("data-search-blocked");
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    // The engine cannot search now: the catalog's reason, never a substitute and never Off.
+    const engineDown = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) =>
+          model.webSearch === "engine" ? { ...model, webSearch: null } : model),
+        search: { engine: null, reason: "search_engine_unavailable" as const },
+        searchStrategies: []
+      }
+    };
+    rerender(<ComposerV2 {...props({ config: engineDown, onSearchEnabledChange, selectedModelId: "gpt-5.2-mini" })} />);
+    expect(screen.getByRole("button", { name: "Web search" }))
+      .toHaveAccessibleDescription("Search: On · unavailable right now");
+    // GPT searching inside its own answer still can.
+    rerender(<ComposerV2 {...props({ config: engineDown, onSearchEnabledChange })} />);
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("Search: On");
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
+    expect(screen.getByRole("dialog", { name: "Web search" })).toHaveTextContent("This model searches inside its own answer.");
+    expect(onSearchEnabledChange).not.toHaveBeenCalled();
+  });
+
+  it("hides Search from a user without it", () => {
+    const notGranted = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) => ({ ...model, searchStrategyIds: [], webSearch: null })),
+        search: { engine: null, reason: "search_not_granted" as const },
+        searchStrategies: []
+      }
+    };
+    const { rerender } = render(<ComposerV2 {...props({ config: notGranted, searchEnabled: false })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    rerender(<ComposerV2 {...props({ config: notGranted })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+  });
+
+  it("hides Search while no engine is set up, except for a model that searches inside its own answer", () => {
+    const notConfigured = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) =>
+          model.webSearch === "engine" ? { ...model, searchStrategyIds: [], webSearch: null } : model),
+        search: { engine: null, reason: "search_engine_not_configured" as const },
+        searchStrategies: []
+      }
+    };
+    const { rerender } = render(<ComposerV2 {...props({ config: notConfigured, selectedModelId: "gpt-5.2-mini" })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    rerender(<ComposerV2 {...props({ config: notConfigured, searchEnabled: false, selectedModelId: "gpt-5.2-mini" })} />);
+    expect(screen.queryByRole("button", { name: "Web search" })).toBeNull();
+    // GPT searching inside its own answer needs no engine.
+    rerender(<ComposerV2 {...props({ config: notConfigured })} />);
+    expect(screen.getByRole("button", { name: "Web search" })).toHaveAccessibleDescription("Search: On");
   });
 
   it("closes Search with Escape after a change disables the focused control", async () => {
-    const { rerender } = render(<ComposerV2 {...props()} />);
-    const trigger = screen.getByRole("button", { name: /^Choose web search/u });
+    const { rerender } = render(<ComposerV2 {...props({ searchEnabled: false })} />);
+    const trigger = screen.getByRole("button", { name: "Web search" });
     fireEvent.click(trigger);
-    screen.getByRole("checkbox", { name: /Research Search/u }).focus();
-    // It becomes the one source left on, which cannot be unchecked.
-    rerender(<ComposerV2 {...props({ selectedSearchOptionIds: ["research-search"] })} />);
-    expect(screen.getByRole("checkbox", { name: /Research Search/u })).toBeDisabled();
+    const control = screen.getByRole("switch", { name: "Search the web" });
+    control.focus();
+    // Search turned on: the composer cannot turn it off, so the switch locks.
+    rerender(<ComposerV2 {...props()} />);
+    expect(screen.getByRole("switch", { name: "Search the web" })).toBeDisabled();
     fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Web search" })).toBeNull();
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("moves focus into the Search layer and back to the chip on Escape", async () => {
+    const onSearchEnabledChange = vi.fn();
+    render(<ComposerV2 {...props({ onSearchEnabledChange, searchEnabled: false })} />);
+    const trigger = screen.getByRole("button", { name: "Web search" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    // The switch is a button, so Space and Enter press it; the browser pass checks the keys themselves.
+    const control = await screen.findByRole("switch", { name: "Search the web" });
+    control.focus();
+    fireEvent.click(control);
+    expect(onSearchEnabledChange).toHaveBeenCalledWith(true);
+    fireEvent.keyDown(control, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Web search" })).toBeNull();
     await waitFor(() => expect(trigger).toHaveFocus());
   });
@@ -844,9 +939,9 @@ describe("Composer v2", () => {
       assistant,
       onOpenSkillLibrary: vi.fn(),
       onSelectMcp,
-      onSelectSearchOptionIds: onSearch,
+      onSearchEnabledChange: onSearch,
       onSelectSkillsMode,
-      selectedSearchOptionIds: []
+      searchEnabled: false
     })} />);
 
     // A-13: MCP stays visible with the dot; its menu says why nothing is selectable.
@@ -875,10 +970,11 @@ describe("Composer v2", () => {
     expect(within(tools).queryByRole("menuitem", { name: /Reset to Assistant/ })).toBeNull();
     fireEvent.keyDown(tools, { key: "Escape" });
 
-    fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
     const search = screen.getByRole("dialog", { name: "Web search" });
     expect(within(search).getByTestId("assistant-row-provenance")).toHaveTextContent("Fixed by Research editor");
-    for (const source of within(search).getAllByRole("checkbox")) expect(source).toBeDisabled();
+    expect(within(search).getByRole("switch", { name: "Search the web" })).toBeDisabled();
+    expect(within(search).getByRole("switch", { name: "Search the web" })).not.toBeChecked();
     fireEvent.keyDown(search, { key: "Escape" });
 
     fireEvent.click(screen.getByRole("button", { name: "Change Skills mode" }));
@@ -1080,7 +1176,7 @@ describe("Composer v2", () => {
     expect(within(tools).queryByRole("menuitem", { name: /Reset to Assistant/ })).toBeNull();
     fireEvent.keyDown(tools, { key: "Escape" });
 
-    fireEvent.click(screen.getByRole("button", { name: /^Choose web search/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Web search" }));
     const search = screen.getByRole("dialog", { name: "Web search" });
     expect(within(search).queryByTestId("assistant-row-provenance")).toBeNull();
     expect(within(search).queryByRole("button", { name: /Reset to Assistant/ })).toBeNull();
@@ -1221,6 +1317,30 @@ describe("Composer v2", () => {
     expect(marks[0]).toHaveAttribute("aria-hidden", "true");
     expect(marks[1]?.textContent).toBe("G");
     expect(screen.getByRole("option", { name: /^GPT-5\.2Reasoning/ })).toBeVisible();
+  });
+
+  it("lists a model as searching when it searches with the engine, and not when it cannot search", () => {
+    const { rerender } = render(<ComposerV2 {...props({ initialLayer: "model" })} />);
+    // GPT-5.2 mini has no hosted search of its own; the installation's engine searches for it.
+    const glyphTitles = (option: HTMLElement) => [...option.querySelectorAll("svg title")].map((title) => title.textContent);
+    expect(glyphTitles(screen.getByRole("option", { name: /^GPT-5\.2 mini/ }))).toContain("Web search");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "web search" } });
+    expect(screen.getByRole("option", { name: /^GPT-5\.2 mini/ })).toBeVisible();
+
+    const unsearchable = {
+      ...composerGalleryConfig,
+      catalog: {
+        ...composerGalleryConfig.catalog,
+        models: composerGalleryConfig.catalog.models.map((model) => ({
+          ...model, capabilities: { ...model.capabilities, nativeWebSearch: true }, searchStrategyIds: [], webSearch: null
+        }))
+      }
+    };
+    rerender(<ComposerV2 {...props({ config: unsearchable, initialLayer: "model" })} />);
+    expect(screen.getByRole("searchbox", { name: "Search models" })).toHaveValue("web search");
+    expect(screen.queryByRole("option", { name: /^GPT-5\.2 mini/ })).toBeNull();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search models" }), { target: { value: "" } });
+    expect(glyphTitles(screen.getByRole("option", { name: /^GPT-5\.2 mini/ }))).not.toContain("Web search");
   });
 
   it("shows model capabilities as glyphs and keeps the Parameters footer", () => {

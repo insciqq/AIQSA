@@ -110,16 +110,6 @@ describe("provider tool bridges", () => {
   });
 
   it("derives hosted Search tools from the admitted physical route", () => {
-    const logicalGeminiClient = {
-      searchPlan: {
-        mode: "model_choice",
-        options: [{
-          adapterKind: "provider_model_client",
-          protocol: "gemini_google_search"
-        }]
-      },
-      searchStrategy: "gemini-google-search"
-    } as unknown as ProviderRunRequest;
     const hostedOpenAI = {
       searchPlan: {
         mode: "model_choice",
@@ -141,7 +131,8 @@ describe("provider tool bridges", () => {
       searchStrategy: "anthropic-web-search"
     } as unknown as ProviderRunRequest;
 
-    expect(geminiInteractionsToolBridge.serializeHostedTools?.(logicalGeminiClient)).toEqual([]);
+    // Gemini's hosted Google Search never coexists with function tools: its bridge sends none.
+    expect(geminiInteractionsToolBridge.serializeHostedTools).toBeUndefined();
     expect(openAIResponsesToolBridge.serializeHostedTools?.(hostedOpenAI)).toEqual([
       { type: "web_search" }
     ]);

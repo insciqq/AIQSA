@@ -164,7 +164,7 @@ for (const width of [1440, 390]) {
     await signInWithLocalToken(page, "/c/source");
     const composer = page.getByRole("textbox", { name: "Message" });
     await selectModel(page, chosen.provider, chosen.displayName);
-    await chooseSearchStrategy(page, "Perplexity");
+    await chooseSearchStrategy(page, "On");
     let parameters = await openRunSetup(page);
     await parameters.getByLabel("Temperature", { exact: true }).fill("0.4");
     await parameters.getByLabel("Max output tokens").fill("1700");
@@ -208,7 +208,7 @@ for (const width of [1440, 390]) {
     await expect(page.getByRole("article", { name: "Answer", exact: true })).toBeInViewport();
     expect(await composer.evaluate((element: HTMLTextAreaElement) => element.selectionStart === element.value.length && element.selectionEnd === element.value.length)).toBe(true);
     await expect(page.getByTestId("header-model-trigger")).toContainText(chosen.displayName);
-    await expect(page.getByRole("button", { name: /^Choose web search/ })).toContainText("Perplexity");
+    await expect(page.getByRole("button", { name: "Web search", exact: true })).toHaveAttribute("data-search-state", "on");
     await expect(page.getByRole("button", { name: "Change MCP mode" })).toHaveAttribute("data-mcp-mode", "load_all");
     for (const number of [1, 2]) await expect(page.getByRole("button", { name: `Remove draft-${number}.pdf` })).toBeVisible();
     if (width === 1440) {
@@ -230,8 +230,9 @@ for (const width of [1440, 390]) {
     await expect(parameters.getByRole("switch", { name: /^Streaming/ })).toHaveAttribute("aria-checked", "true");
     await expect(parameters.getByRole("switch", { name: /^Background/ })).toHaveAttribute("aria-checked", "true");
     await closeRunSetup(page);
-    await page.getByRole("button", { name: /^Choose web search/ }).click();
-    await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("checkbox", { name: /Perplexity/u })).toBeChecked();
+    await page.getByRole("button", { name: "Web search", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Web search" }).getByRole("switch", { name: "Search the web" }))
+      .toHaveAttribute("aria-checked", "true");
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.getByRole("treeitem", { name: source.title, exact: true }).click();

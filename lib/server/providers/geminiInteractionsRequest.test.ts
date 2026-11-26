@@ -508,16 +508,14 @@ describe("Gemini Interactions request builder", () => {
     expectNoBlankGeminiTextParts(preview.body);
   });
 
-  it("enables only native Google Search and rejects mixed hosted/client tools", () => {
-    const body = buildGeminiInteractionsRequest(request({
+  it("never sends hosted Google Search in an answer, even for a frozen hosted option", () => {
+    expect(buildGeminiInteractionsRequest(request({
       searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] }
-    }));
-    expect(body.tools).toEqual([{ type: "google_search" }]);
-
-    expect(() => buildGeminiInteractionsRequest(request({
+    }))).not.toHaveProperty("tools");
+    expect(buildGeminiInteractionsRequest(request({
       searchPlan: { mode: "model_choice", options: [hostedGoogleSearch()] },
       tools: [tool]
-    }))).toThrow("gemini_interactions_tool_combination_unsupported");
+    })).tools).toEqual([expect.objectContaining({ name: tool.name, type: "function" })]);
 
     expect(buildGeminiInteractionsRequest(request({
       searchPlan: { mode: "all_selected", options: [] }

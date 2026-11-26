@@ -477,9 +477,11 @@ describe("admin provider service", () => {
     const added = activateCredentialCas.mock.calls[0]![0].catalogAdditions?.map((model) => model.configuration.upstreamModelId) ?? [];
     if (version === 0) expect(added).toEqual(expect.arrayContaining([
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash-1017", "anthropic/claude-opus-5.5", "anthropic/claude-fable-5.1",
-        "google/gemini-3.8-flash", "openai/gpt-6-astra", "perplexity/sonar-pro-search", "qwen/qwen3-embedding-8b"
+        "google/gemini-3.8-flash", "openai/gpt-6-astra", "qwen/qwen3-embedding-8b"
       ]));
     else expect(added).toEqual([]);
+    // Perplexity Sonar is retired (2026-11-26): a new key no longer imports it.
+    expect(added).not.toContain("perplexity/sonar-pro-search");
     expect(added).not.toContain("deepseek/deepseek-v4-flash");
     // Legacy Quick Setup models are never imported, even when the key lists them.
     expect(added).not.toContain("anthropic/claude-opus-5");

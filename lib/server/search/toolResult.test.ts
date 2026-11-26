@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { LEGACY_SEARCH_TOOL_RESULT_VERSION, SEARCH_FAIR_SHARE_FIRST_SOURCES, searchExecutionsFromToolResult, searchToolResultFairShare,
-  type SearchExecutionEvidence } from "./toolResult";
-import { failedSearchEngine, proseFindings, searchEngine, searchResult, threeEngineResult } from "./toolResult.testFixtures";
+import { CITED_SEARCH_TOOL_RESULT_VERSION, compactSearchToolExecutionResult, LEGACY_SEARCH_TOOL_RESULT_VERSION,
+  rehydratePersistedSearchToolExecutionResult, SEARCH_ENTRY_EXCERPT_CHARACTERS, SEARCH_FAIR_SHARE_FIRST_SOURCES,
+  SEARCH_RESULT_LIST_FINDINGS, searchExecutionsFromToolResult, searchToolResultContent, searchToolResultEntrySpans,
+  searchToolResultFairShare, searchToolResultText, type SearchExecutionEvidence } from "./toolResult";
+import { deepSeekEngine, failedSearchEngine, proseFindings, searchEngine, searchResult, threeEngineResult } from "./toolResult.testFixtures";
 import type { ToolExecutionResult } from "../tools/types";
 import { parsePersistedToolExecutionResult, snapshotToolExecutionResult } from "../runs/toolExecutionPersistence";
 import { toolLoopPersistenceLimits } from "../runs/toolLoopPersistence";
 
 const BUDGET = 16_000;
+const usage = { inputTokens: 3, outputTokens: 4, reasoningTokens: 0, totalTokens: 7 };
 
 function textOf(result: ToolExecutionResult): string {
   const [content] = result.content;
@@ -20,8 +23,95 @@ function keptParts(shared: string): string[] {
     .map((part) => part.trim()).filter(Boolean);
 }
 
-describe("a merged search result's fair share", () => {
-  it("shows every engine's findings and the source lines they cite within the budget", () => {
+/** Every entry heading `[n] <name> source n — ` in `text` with the line after it, which must be its own URL. */
+function entriesOf(text: string, name: string, host: string): number[] {
+  const numbers: number[] = [];
+  for (const match of text.matchAll(new RegExp(`^\\[(\\d+)\\] ${name} source (\\d+) — [^\\n]*\\n([^\\n]*)`, "gmu"))) {
+    expect(match[1]).toBe(match[2]);
+    expect(match[3]).toBe(`https://${host}/page-${match[1]}`);
+    numbers.push(Number(match[1]));
+  }
+  return numbers;
+}
+
+describe("a search result's entries", () => {
+  it("render each source as its number, title, site, date, URL and bounded excerpt", () => {
+    const engine: SearchExecutionEvidence = { displayName: "Engine", findings: "Prices rose [1].", invocationId: "c1:e", modelId: "m",
+      optionId: "e", provider: "openrouter", revisionId: "r", status: "complete", usage, sources: [
+        { citation: 1, date: "2026-11-20T08:00:00+08:00", rank: 1, snippet: "Line one\n\nline   two.", title: "Report\nof prices",
+          url: "https://www.example.com/report" },
+        { rank: 2, snippet: `${"word ".repeat(600)}end`, title: "Long page", url: "https://news.example.org/long" },
+        { rank: 3, title: "example.net", url: "https://example.net/" },
+        { date: "November 2026", rank: 4, title: "Dated", url: "https://dated.example/a" }
+      ] };
+    const text = searchToolResultText([engine]);
+    const entries = text.split("\n\n");
+    expect(entries.slice(0, 3)).toEqual([
+      'Search source "Engine":\nPrices rose [1].',
+      'Sources for "Engine":\n[1] Report of prices — example.com, 2026-11-20\nhttps://www.example.com/report\nLine one line two.',
+      expect.stringMatching(/^\[2\] Long page — news\.example\.org\nhttps:\/\/news\.example\.org\/long\nword word .*…$/u)
+    ]);
+    expect(entries[2]!.split("\n")[2]!.length).toBeLessThanOrEqual(SEARCH_ENTRY_EXCERPT_CHARACTERS);
+    // A title that is the site names it once; a date that is no ISO time stays as given.
+    expect(entries.slice(3)).toEqual(["[3] example.net\nhttps://example.net/", "[4] Dated — dated.example, November 2026\nhttps://dated.example/a"]);
+  });
+
+  it("show a result list as its entries alone, and the server's words for an empty one", () => {
+    const list = deepSeekEngine(2, 47, "DeepSeek Search API");
+    expect(searchToolResultText([list])).toBe('Search source "DeepSeek Search API":\n' +
+      "[1] DeepSeek Search API source 1 — deepseek.example\nhttps://deepseek.example/page-1\nEntry 1 says model M-1 costs 1001 EUR. detail 1\n\n" +
+      "[2] DeepSeek Search API source 2 — deepseek.example\nhttps://deepseek.example/page-2\nEntry 2 says model M-2 costs 1002 EUR. detail 2");
+    expect(searchToolResultText([list])).not.toContain(SEARCH_RESULT_LIST_FINDINGS);
+    const failed = failedSearchEngine("Other", "other");
+    expect(searchToolResultText([list, failed]).endsWith('\n\nSearch warnings: "Other": provider_rate_limited')).toBe(true);
+    expect(searchToolResultText([failed])).toBe('Search warnings: "Other": provider_rate_limited');
+  });
+
+  it("name where each entry sits, so a cut can keep a URL with its result", () => {
+    const result = searchResult([deepSeekEngine(5, 200)]);
+    const text = textOf(result);
+    const spans = searchToolResultEntrySpans(result, text)!;
+    expect(spans).toHaveLength(5);
+    for (const [index, [start, end]] of spans.entries()) {
+      expect(text.slice(start, end)).toMatch(new RegExp(`^\\[${index + 1}\\] DeepSeek source ${index + 1} — [^\\n]+\\nhttps://deepseek\\.example/page-${index + 1}\\n`, "u"));
+    }
+    expect(searchToolResultEntrySpans(result, `${text} `)).toBeNull();
+  });
+});
+
+describe("an answer that searched before results became entries", () => {
+  // As the executor stored a DeepSeek Search API result between 2026-11-03 and 2026-11-26: version 3, the summaries as findings.
+  const saved = {
+    callId: "call-1", name: "search_engine_1", status: "complete" as const,
+    content: [{ type: "json" as const, value: { aiqsaType: "search_result", version: CITED_SEARCH_TOOL_RESULT_VERSION } }],
+    rawPreview: { searchResultVersion: CITED_SEARCH_TOOL_RESULT_VERSION, searchExecutions: [{
+      costUsd: 0.00075, displayName: "DeepSeek Search API",
+      findings: "[1] Example headline — Example News · 2026-10-01\nThe longer summary the model reads.",
+      invocationId: "call-1:deepseek-api", modelId: "deepseek-search-api", optionId: "deepseek-api", provider: "deepseek",
+      revisionId: "revision-1", sourceAttribution: "available", status: "complete",
+      sources: [{ citation: 1, date: "2026-10-01", rank: 1, snippet: "Short snippet.", title: "Example headline", url: "https://example.com/story" }],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, webSearchCount: 1 }
+    }] }
+  };
+
+  it("still decodes and renders exactly as it was saved", () => {
+    const decoded = parsePersistedToolExecutionResult({ id: "call-1", name: "search_engine_1" }, saved)!;
+    expect(decoded.content).toEqual([{ type: "text", text: [
+      'Search source "DeepSeek Search API":\n[1] Example headline — Example News · 2026-10-01\nThe longer summary the model reads.',
+      'Sources for "DeepSeek Search API":\n[1] Example headline — https://example.com/story'
+    ].join("\n\n") }]);
+    expect(searchExecutionsFromToolResult(decoded)).toEqual([expect.objectContaining({ costUsd: 0.00075,
+      sources: saved.rawPreview.searchExecutions[0]!.sources })]);
+    expect(rehydratePersistedSearchToolExecutionResult(saved)?.content).toEqual(decoded.content);
+    expect(snapshotToolExecutionResult(decoded, toolLoopPersistenceLimits.resultBytes)).toEqual(saved);
+    // A cut never reworks an old result: it falls back to the ordinary head and tail.
+    expect(searchToolResultFairShare(decoded, textOf(decoded), BUDGET)).toBeNull();
+    expect(searchToolResultEntrySpans(decoded, textOf(decoded))).toBeNull();
+  });
+});
+
+describe("a search result's fair share", () => {
+  it("shows every engine's findings and whole entries within the budget", () => {
     const result = threeEngineResult();
     const text = textOf(result);
     expect(text.length).toBeGreaterThan(60_000);
@@ -35,22 +125,32 @@ describe("a merged search result's fair share", () => {
     const perplexity = text.slice(text.indexOf("Search source \"Perplexity\""), text.indexOf("\n\nSearch source \"DeepSeek\""));
     expect(shared.text.startsWith(`${openAi}\n\n${perplexity}\n\n`)).toBe(true);
     const deepSeek = shared.text.slice(shared.text.indexOf("Search source \"DeepSeek\""));
-    // Whole DeepSeek entries: the shown findings end right before the next entry of the saved text.
-    const note = /\[Search source "DeepSeek": findings cut here, (\d+) of (\d+) characters shown; the rest starts at offset (\d+) of the saved result\.\]/u
+    // Whole entries in rank order, each with its URL, then where the first one left out starts in the saved text.
+    const shown = entriesOf(deepSeek, "DeepSeek", "deepseek.example");
+    expect(shown).toEqual(Array.from({ length: shown.length }, (_, index) => index + 1));
+    expect(shown.length).toBeGreaterThan(4);
+    const note = /\[Search source "DeepSeek": (\d+) of 50 results shown \(1-(\d+)\); the first one left out, result (\d+), starts at offset (\d+) of the saved result\.\]$/u
       .exec(deepSeek)!;
     expect(note).not.toBeNull();
-    expect(text.slice(Number(note[3]))).toMatch(/^\n\n\[\d+\] DeepSeek source \d+ — /u);
-    const shownEntries = [...deepSeek.slice(0, note.index).matchAll(/^\[(\d+)\] DeepSeek source \d+ — /gmu)].map((match) => Number(match[1]));
-    expect(shownEntries.length).toBeGreaterThan(5);
-    expect(shownEntries.length).toBeLessThan(50);
-    // Each cited source line is there, beside the first few, and the cut list names where the whole list starts.
-    for (const number of shownEntries) expect(deepSeek).toContain(`\n[${number}] DeepSeek source ${number} — https://deepseek.example/page-${number}`);
-    expect(deepSeek).not.toContain(`[${shownEntries.length + 1}] DeepSeek source ${shownEntries.length + 1} — https://`);
-    const list = /\[Sources for "DeepSeek": (\d+) of 50 shown, the first \d+ and those the shown findings cite; the whole list starts at offset (\d+) of the saved result\.\]/u
-      .exec(deepSeek)!;
-    expect(Number(list[1])).toBe(Math.max(shownEntries.length, SEARCH_FAIR_SHARE_FIRST_SOURCES));
-    expect(text.slice(Number(list[2]))).toMatch(/^Sources for "DeepSeek":\n\[1\] /u);
+    expect([Number(note[1]), Number(note[2]), Number(note[3])]).toEqual([shown.length, shown.length, shown.length + 1]);
+    expect(text.slice(Number(note[4]))).toMatch(new RegExp(`^\\[${shown.length + 1}\\] DeepSeek source ${shown.length + 1} — `, "u"));
     // Every kept part is the saved text verbatim.
+    for (const part of keptParts(shared.text)) expect(text).toContain(part);
+  });
+
+  it("keeps every shown result's URL inside its entry when one engine's fifty results run long", () => {
+    const result = searchResult([deepSeekEngine(50, SEARCH_ENTRY_EXCERPT_CHARACTERS + 400)]);
+    const text = textOf(result);
+    expect(text.length).toBeGreaterThan(50 * SEARCH_ENTRY_EXCERPT_CHARACTERS);
+    const shared = searchToolResultFairShare(result, text, BUDGET)!;
+    expect(shared.shown).toBeLessThanOrEqual(BUDGET);
+    const shown = entriesOf(shared.text, "DeepSeek", "deepseek.example");
+    expect(shown).toEqual(Array.from({ length: shown.length }, (_, index) => index + 1));
+    // About ten bounded entries fit what the model reads of a long result.
+    expect(shown.length).toBeGreaterThanOrEqual(9);
+    // No entry is cut: every one shown ends with its whole bounded excerpt.
+    const spans = searchToolResultEntrySpans(result, text)!;
+    for (const number of shown) expect(shared.text).toContain(text.slice(...spans[number - 1]!));
     for (const part of keptParts(shared.text)) expect(text).toContain(part);
   });
 
@@ -73,7 +173,7 @@ describe("a merged search result's fair share", () => {
     for (const part of keptParts(shared.text)) expect(text).toContain(part);
   });
 
-  it("keeps short findings whole and cuts a long source list to the first few and the cited ones", () => {
+  it("keeps short findings whole and gives a long source list its first entries and the cited ones", () => {
     const result = searchResult(["A", "B"].map((name) => searchEngine({ count: 400, displayName: name,
       findings: `${name} found it in [7] and [250].`, host: `${name.toLowerCase()}.example`, optionId: name })));
     const text = textOf(result);
@@ -81,10 +181,15 @@ describe("a merged search result's fair share", () => {
     const shared = searchToolResultFairShare(result, text, BUDGET)!;
     expect(shared.shown).toBeLessThanOrEqual(BUDGET);
     for (const name of ["A", "B"]) {
-      expect(shared.text).toContain(`Search source "${name}":\n${name} found it in [7] and [250].\n\nSources for "${name}":\n[1] `);
-      for (const number of [1, 2, 3, 7, 250]) expect(shared.text).toContain(`[${number}] ${name} source ${number} — `);
-      expect(shared.text).not.toContain(`[4] ${name} source 4 — `);
-      expect(shared.text).toContain(`[Sources for "${name}": 5 of 400 shown`);
+      const block = shared.text.slice(shared.text.indexOf(`Search source "${name}":\n`));
+      expect(block.startsWith(`Search source "${name}":\n${name} found it in [7] and [250].\n\nSources for "${name}":\n[1] `)).toBe(true);
+      const own = block.slice(0, block.indexOf("]\n\nSearch source") + 1 || undefined);
+      const shown = entriesOf(own, name, `${name.toLowerCase()}.example`);
+      const last = shown.at(-2)!;
+      expect(shown).toEqual([...Array.from({ length: last }, (_, index) => index + 1), 250]);
+      expect(last).toBeGreaterThan(SEARCH_FAIR_SHARE_FIRST_SOURCES);
+      expect(own).toContain(`[Sources for "${name}": ${last + 1} of 400 results shown (1-${last}, 250); the first one left out, result ${last + 1}, ` +
+        "starts at offset");
     }
   });
 
@@ -106,16 +211,15 @@ describe("a merged search result's fair share", () => {
     expect(searchToolResultFairShare(first, textOf(first), BUDGET)).toEqual(searchToolResultFairShare(second, textOf(second), BUDGET));
   });
 
-  it("declines a single engine, a legacy result, a text that is not the result's own, and a result that is no search", () => {
-    const single = searchResult([searchEngine({ count: 4, displayName: "A", findings: proseFindings("A", 40_000, 4), host: "a.example",
-      optionId: "a" })]);
-    expect(searchToolResultFairShare(single, textOf(single), BUDGET)).toBeNull();
+  it("declines a result of an earlier version, a text that is not the result's own, and a result that is no search", () => {
     const merged = threeEngineResult();
-    expect(searchToolResultFairShare({ ...merged, rawPreview: { ...merged.rawPreview, searchResultVersion: LEGACY_SEARCH_TOOL_RESULT_VERSION } },
+    expect(searchToolResultFairShare({ ...merged, rawPreview: { ...merged.rawPreview, searchResultVersion: CITED_SEARCH_TOOL_RESULT_VERSION } },
       textOf(merged), BUDGET)).toBeNull();
     expect(searchToolResultFairShare(merged, `${textOf(merged)}\n\nappended`, BUDGET)).toBeNull();
     expect(searchToolResultFairShare({ callId: "c", content: merged.content, name: "lookup", status: "complete" }, textOf(merged), BUDGET))
       .toBeNull();
+    const failed = searchResult([failedSearchEngine("A", "a")]);
+    expect(searchToolResultFairShare(failed, textOf(failed), BUDGET)).toBeNull();
   });
 });
 
@@ -142,4 +246,41 @@ describe("an answer that searched DeepSeek's retired hosted Search", () => {
       expect.objectContaining({ optionId: "deepseek-native-web-search", sourceAttribution: "provider_unavailable", sources: [] })
     ]);
   });
+});
+
+describe("an answer whose sources came from Perplexity Sonar", () => {
+  // As the executor stored Sonar before its retirement on 2026-11-26: findings citing its numbered sources, beside
+  // another engine, in the result versions the runs of that time wrote.
+  const sonar = searchEngine({ count: 3, displayName: "Perplexity", findings: "Sonar findings [1], and more [3].",
+    host: "pplx.example", optionId: "perplexity-tool-search", protocol: "openrouter_perplexity_chat", provider: "openrouter" });
+  const other = searchEngine({ count: 2, displayName: "OpenAI", findings: "OpenAI findings [1].", host: "openai.example",
+    optionId: "openai", provider: "openai" });
+
+  it.each([CITED_SEARCH_TOOL_RESULT_VERSION, LEGACY_SEARCH_TOOL_RESULT_VERSION] as const)(
+    "still rehydrates its version %s row with Sonar's findings and every source",
+    (version) => {
+      const executions = [sonar, other];
+      const stored: ToolExecutionResult = { callId: "c1", content: searchToolResultContent(executions, version),
+        name: "search_selected_engines", rawPreview: { searchExecutions: executions, searchResultVersion: version },
+        status: "complete", usage };
+      // The stored row holds the version's marker, not the text, which is rebuilt from the executions when read.
+      expect(compactSearchToolExecutionResult(stored)?.content).toEqual([{ type: "json",
+        value: { aiqsaType: "search_result", version } }]);
+      const snapshot = snapshotToolExecutionResult(stored, toolLoopPersistenceLimits.resultBytes);
+      if (!snapshot) throw new Error("expected a stored search result");
+      const rehydrated = parsePersistedToolExecutionResult({ id: stored.callId, name: stored.name }, snapshot);
+      if (!rehydrated) throw new Error("expected the stored search result to parse");
+      expect(rehydrated.content).toEqual(stored.content);
+      expect(textOf(rehydrated!)).toContain("Sonar findings [1], and more [3].");
+      expect(textOf(rehydrated!)).toContain("https://pplx.example/page-3");
+      expect(searchExecutionsFromToolResult(rehydrated!)).toEqual([
+        expect.objectContaining({ optionId: "perplexity-tool-search", protocol: "openrouter_perplexity_chat",
+          sources: [expect.objectContaining({ url: "https://pplx.example/page-1" }),
+            expect.objectContaining({ url: "https://pplx.example/page-2" }),
+            expect.objectContaining({ url: "https://pplx.example/page-3" })] }),
+        expect.objectContaining({ optionId: "openai", sources: [expect.objectContaining({ url: "https://openai.example/page-1" }),
+          expect.objectContaining({ url: "https://openai.example/page-2" })] })
+      ]);
+    }
+  );
 });

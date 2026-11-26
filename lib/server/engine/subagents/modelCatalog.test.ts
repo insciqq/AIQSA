@@ -14,7 +14,7 @@ import {
 function model(id: string, extra: Partial<CatalogWireModel> = {}, efforts: string[] = ["low", "medium", "high"]): CatalogWireModel {
   return {
     capabilities: { background: false, documentInputMode: "none", imageInput: true, nativeWebSearch: false,
-      openRouterPerplexitySearch: false, reasoning: true, streaming: true, text: true, toolCalling: true },
+      reasoning: true, streaming: true, text: true, toolCalling: true },
     contextWindow: 200_000, defaultParams: {}, displayName: `Model ${id}`, modelId: `pm-${id}`,
     parameterControls: {
       background: { defaultValue: false, supported: false }, maxOutputTokens: { defaultValue: 4_096 },

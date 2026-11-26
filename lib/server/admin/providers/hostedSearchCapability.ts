@@ -12,6 +12,9 @@ export function shouldProbeHostedSearch(model: ProviderModelConfiguration,
     (model.capabilities.nativeSearch || connection?.responsesRequestIsolationDetected === true);
 }
 
+/** The most sources a hosted Search proof records; a probe that found more records this many. */
+export const HOSTED_SEARCH_PROOF_MAX_SOURCES = 20;
+
 export function decodeHostedSearchVerificationEvidence(value: unknown): Evidence | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as Record<string, unknown>;
@@ -19,7 +22,7 @@ export function decodeHostedSearchVerificationEvidence(value: unknown): Evidence
     typeof item.upstreamModelId !== "string" || !item.upstreamModelId.trim() ||
     item.upstreamModelId !== item.upstreamModelId.trim() || item.upstreamModelId.length > 512 ||
     !Number.isSafeInteger(item.normalizedSourceCount) || Number(item.normalizedSourceCount) < 1 ||
-    Number(item.normalizedSourceCount) > 20) return null;
+    Number(item.normalizedSourceCount) > HOSTED_SEARCH_PROOF_MAX_SOURCES) return null;
   return { adapterKind: "openai_responses_compatible", normalizedSourceCount: Number(item.normalizedSourceCount),
     probeVersion: 1, upstreamModelId: item.upstreamModelId, verified: true };
 }

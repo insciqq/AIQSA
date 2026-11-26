@@ -10,12 +10,20 @@ import { resolveProviderCredential } from "@/lib/domain/providerCredentialResolu
 import {
   canAccessModel,
   canAccessSearchStrategy,
+  searchEntitled,
   type ResolvedEntitlements
 } from "@/lib/server/auth/entitlements";
 import { isTestModeAllowedEnv } from "@/lib/server/auth/csrf";
 import { isAssistantAvailable } from "@/lib/server/assistants/bindingAccess";
 import { loadEntitlementsForUser } from "@/lib/server/auth/dbEntitlements";
-import type { CatalogData } from "@/lib/server/catalog/currentUserCatalog";
+import type { CatalogData, CatalogSearchData } from "@/lib/server/catalog/currentUserCatalog";
+import {
+  decodeInstallationSearchPolicy,
+  INSTALLATION_SEARCH_POLICY_ID,
+  installationSearchPolicySelect,
+  resolveInstallationSearch,
+  type InstallationSearchPolicy
+} from "@/lib/server/search/engineResolution";
 import { availableSearchStrategiesForModel } from "@/lib/domain/catalogMatrix";
 import {
   normalizeProviderConnectionConfiguration,
@@ -197,7 +205,6 @@ const supportedSearchOptionKinds = new Map<string, SearchStrategyCatalogEntry["k
   ["deepseek_search_api", "web_search"],
   ["gemini_google_search", "gemini_google_search"],
   ["none", "none"],
-  ["perplexity_search", "perplexity_tool_search"],
   ["web_search", "web_search"]
 ]);
 
@@ -212,8 +219,12 @@ type CatalogSearchStrategyRow = SearchStrategy & {
 };
 
 export type CatalogSearchOptionRow = {
+  /** The query loads only live sources, so a row without these fields is live. */
+  archivedAt?: Date | null;
+  createdAt?: Date;
   description: string;
   displayName: string;
+  enabled?: boolean;
   id: string;
   kind: string;
   optionId: string;
@@ -221,6 +232,54 @@ export type CatalogSearchOptionRow = {
   sourceConnectionId: string | null;
   strategies: CatalogSearchStrategyRow[];
 };
+
+/**
+ * The installation's Search for this user (operator decisions 2026-11-26): the engine resolved over every live
+ * source whatever the user's grants, as admission resolves it (`resolveInstallationSearch`); whether the user's
+ * credentials reach the engine's technical model; and the connections whose OpenAI-protocol answer models search in
+ * their own answer. A user without any Search grant has the reason, never another engine.
+ */
+export function catalogSearch(input: Readonly<{
+  /** The models the user's credentials reach (`filterAvailableProviderModels`). */
+  availableModels: readonly CatalogProviderModelRow[];
+  entitlements: ResolvedEntitlements;
+  /** Every enabled answer model the catalog read. */
+  models: readonly CatalogProviderModelRow[];
+  policy: InstallationSearchPolicy;
+  searchOptions: readonly CatalogSearchOptionRow[];
+}>): CatalogSearchData {
+  const models = new Map(input.models.map((model) => [model.id, model]));
+  const installation = resolveInstallationSearch({
+    options: input.searchOptions.map((option) => ({
+      ...option,
+      archivedAt: option.archivedAt ?? null,
+      createdAt: option.createdAt ?? new Date(0),
+      enabled: option.enabled ?? true
+    })),
+    policy: input.policy,
+    technicalModelReady: ({ connectionId, protocol, providerModelId }) => {
+      const model = models.get(providerModelId);
+      const configuration = model ? activeModelConfiguration(model) : null;
+      return Boolean(model && configuration && model.connectionId === connectionId &&
+        technicalSearchModelSupports(protocol, {
+          adapterKind: configuration.adapterKind,
+          nativeSearch: configuration.capabilities.nativeSearch
+        }));
+    }
+  });
+  const engine = installation.resolution.engine;
+  const technicalModelId = engine?.route?.draft.providerModelId ?? null;
+  const usable = technicalModelId !== null && input.availableModels.some((model) => model.id === technicalModelId);
+  const entitled = searchEntitled(input.entitlements);
+  return {
+    engine: engine ? { displayName: engine.displayName, protocol: engine.protocol, usable } : null,
+    entitled,
+    inAnswerConnectionIds: installation.policy.inAnswerSearch ? [...installation.hosted.keys()] : [],
+    reason: !entitled
+      ? "search_not_granted"
+      : installation.resolution.reason ?? (usable ? null : "search_engine_unavailable")
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -454,21 +513,17 @@ function routeBelongsToOption(
   route: SearchStrategyRouteCatalogEntry
 ): boolean {
   if (storedKind === "web_search") {
+    // OpenRouter's web search is a client route of a `web_search` source on
+    // an OpenRouter connection.
     return route.protocol === "anthropic_web_search" ||
-      route.protocol === "openai_responses_web_search";
+      route.protocol === "openai_responses_web_search" ||
+      route.adapterKind === "provider_model_client" && route.protocol === "openrouter_web_search";
   }
   if (storedKind === "deepseek_search_api") {
     return route.adapterKind === "provider_model_client" &&
       route.protocol === "deepseek_search_api";
   }
-  if (storedKind === "gemini_google_search") {
-    return route.protocol === "gemini_google_search";
-  }
-  if (storedKind === "perplexity_search") {
-    return route.adapterKind === "provider_model_client" &&
-      route.protocol === "openrouter_perplexity_chat";
-  }
-  return false;
+  return storedKind === "gemini_google_search" && route.protocol === "gemini_google_search";
 }
 
 export function searchStrategyToCatalogRoute(
@@ -749,8 +804,8 @@ export function createPrismaCatalogDataLoader({
         where: { id: "installation" }
       }) ?? Promise.resolve(null),
       () => prisma.searchPolicy?.findUnique({
-        select: { defaultPlan: true },
-        where: { id: "installation" }
+        select: installationSearchPolicySelect,
+        where: { id: INSTALLATION_SEARCH_POLICY_ID }
       }) ?? Promise.resolve(null),
       () => checkDefaultAssistant && defaultAssistantId
         ? isAssistantAvailable(prisma, {
@@ -777,10 +832,18 @@ export function createPrismaCatalogDataLoader({
       searchOptions: searchOptions as CatalogSearchOptionRow[],
       userId
     });
+    const search = catalogSearch({
+      availableModels,
+      entitlements,
+      models: models as CatalogProviderModelRow[],
+      policy: decodeInstallationSearchPolicy(searchPolicy),
+      searchOptions: searchOptions as CatalogSearchOptionRow[]
+    });
 
     return {
       entitlements,
       modelPolicy,
+      search,
       models: exposedModels
         .map((model) => providerModelToCatalogEntry(model, {
           credentialCheckEvidence: activeProviderCredentialCheck({

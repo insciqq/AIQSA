@@ -2,7 +2,7 @@ import { MCP_RUNTIME_TIMEOUT_LIMITS } from "../../contracts/mcp";
 import { RESEARCH_TIME_MS } from "../../contracts/research";
 import { effectiveProviderResponseTimeoutMs } from "../providers/providerConfiguration";
 import type { NormalizedRunRequest } from "../providers/types";
-import { searchOptionTimeoutMs, searchToolRoutes } from "../search/toolExecutor";
+import { searchOptionTimeoutMs, searchToolRoutes, subagentSearchPlan } from "../search/toolExecutor";
 import { ANALYZE_IMAGE_TOOL_NAME, visionAnalysisTimeoutMs } from "../tools/analyzeImage";
 import { BROWSER_HANDOFF_TOOL_NAME, BROWSER_HANDOFF_WAIT_MS } from "../tools/browserHandoff";
 import { computerToolCallMs } from "../tools/computerTools";
@@ -103,8 +103,11 @@ export function toolCallBounds(request: Pick<NormalizedRunRequest,
   for (const server of request.mcpDiscovery?.catalog.servers ?? []) {
     for (const tool of server.tools) if (!mcp.has(tool.namespacedName)) mcp.set(tool.namespacedName, own(server.runtimeTimeouts?.callTimeoutMs));
   }
-  const search = new Map(searchToolRoutes(request.searchPlan).map((route) =>
-    [route.name, own(Math.max(...route.options.map(searchOptionTimeoutMs)))]));
+  // A call asks the engine and, only after it failed, the backup, so it may take both their timeouts. The bound is the
+  // sub-agents' `web_search`, which a main agent searching inside its own answer does not have but its sub-agents and
+  // researchers do; a main agent with the tool has the same one.
+  const search = new Map(searchToolRoutes(subagentSearchPlan(request.searchPlan)).map((route) =>
+    [route.name, own(route.options.reduce((sum, option) => sum + searchOptionTimeoutMs(option), 0))]));
   const workspace = request.workspace ? own(request.workspace.syncToolTimeoutSeconds * 1_000) : floor;
   const vision = request.visionAnalysis?.available ? own(visionAnalysisTimeoutMs(request.visionAnalysis)) : floor;
   const image = request.imagePlan ? own(imageGenerationWaitMs(request.imagePlan)) : floor;

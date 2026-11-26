@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { decodeAdminSearchCatalog, type AdminSearchDraft } from "../../../contracts/adminSearch";
 import { ProviderSearchExecutionError } from "../../providers/types";
-import { searchDraftHash } from "../../search/configuration";
+import { searchDraftHash, searchStrategyKind } from "../../search/configuration";
 import type { SearchProbeBinding } from "../../search/probeBinding";
 import { createAdminSearchService, type AdminSearchTester } from "./service";
 
@@ -74,7 +74,7 @@ function providerModel(input: Readonly<{
       upstreamModelId: adapterKind === "gemini_interactions_native"
         ? "gemini-search"
         : adapterKind === "openrouter_chat_completions"
-          ? "perplexity/sonar"
+          ? "deepseek/deepseek-v4.1-flash"
         : "opaque-search-model"
     },
     activeVersion: 1,
@@ -135,11 +135,14 @@ function child(
     activatedAt: NOW,
     adapterKind: configuration.adapterKind,
     archivedAt: null,
+    // Whole rows, as the service reads them.
+    credentialMode: configuration.credentialMode,
     draft: configuration,
     draftTestEvidence: null,
     draftVersion: 1,
     enabled: true,
     id: "strategy-1",
+    kind: searchStrategyKind(configuration.protocol, configuration.adapterKind),
     providerModelId: configuration.providerModelId,
     revisions: [{ revisionNumber: 1 }],
     strategyId: "physical-search-1",
@@ -661,67 +664,25 @@ describe("admin Search service", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
-  it("keeps Perplexity Search client-only", async () => {
-    const perplexityDraft: AdminSearchDraft = {
-      ...draft,
-      protocol: "openrouter_perplexity_chat"
-    };
+  it("refuses a Perplexity Sonar source, retired 2026-11-26, before any write", async () => {
+    const sonarDraft = { ...draft, protocol: "openrouter_perplexity_chat" } as unknown as AdminSearchDraft;
     const technical = providerModel({ adapterKind: "openrouter_chat_completions" });
-    const strategyCreate = vi.fn(async () => undefined);
-    const strategyUpdate = vi.fn(async () => undefined);
-    const revisions = revisionRepository();
-    const tx = {
-      searchPolicy: { updateMany: vi.fn(async () => ({ count: 0 })) },
-      $queryRaw: vi.fn(async () => []),
-      providerModel: { findFirst: vi.fn(async () => technical) },
-      searchIntegrationRevision: revisions,
-      searchOption: {
-        create: vi.fn(async () => undefined),
-        findMany: vi.fn(async () => []),
-        findUnique: vi.fn(async () => option([
-          pendingChild(perplexityDraft, {
-            id: "perplexity-client",
-            strategyId: "perplexity-search-perplex:client"
-          })
-        ], {
-          id: "perplexity-option",
-          kind: "perplexity_search",
-          optionId: "perplexity-search-perplex",
-          templateKey: null
-        }))
-      },
-      searchStrategy: {
-        create: strategyCreate,
-        findUnique: vi.fn(async () => null),
-        update: strategyUpdate
-      }
-    };
-    const ids = ["perplexity-option", "perplexity-client"];
+    const transaction = vi.fn();
     const prisma = {
-      $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx),
+      $transaction: transaction,
       providerModel: { findFirst: vi.fn(async () => technical) }
     } as unknown as PrismaClient;
-    const service = createAdminSearchService({
-      idFactory: () => ids.shift()!,
-      prisma,
-      tester: { currentBinding: currentProbeBinding, test: vi.fn() }
-    });
+    const test = vi.fn();
+    const service = createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test } });
 
-    await service.createDraft({
+    await expect(service.createDraft({
       description: "Perplexity evidence",
       displayName: "Perplexity Search",
-      draft: perplexityDraft,
+      draft: sonarDraft,
       userId: "admin-1"
-    });
-
-    expect(strategyCreate).toHaveBeenCalledTimes(1);
-    expect(revisions.create).toHaveBeenCalledTimes(1);
-    expect(strategyCreate).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        adapterKind: "provider_model_client",
-        kind: "perplexity_tool_search"
-      })
-    });
+    })).rejects.toMatchObject({ code: "search_configuration_invalid" });
+    expect(test).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1433,7 +1394,7 @@ describe("admin Search service", () => {
     expect(sourceUpdate).not.toHaveBeenCalled();
   });
 
-  it("validates logical policy kinds and permits normalized Google multi-source plans", async () => {
+  it("sets the engine, its backup and the in-answer switch, and refuses a hosted-only source as either", async () => {
     const updateMany = vi.fn(async () => ({ count: 1 }));
     // Google Search reaches chats only through its client route.
     const geminiDraft: AdminSearchDraft = {
@@ -1471,41 +1432,72 @@ describe("admin Search service", () => {
     });
 
     await service.updatePolicy({
-      defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
+      engineOptionId: "openai-search",
       expectedVersion: 3,
       userId: "admin-1"
     });
-    expect(updateMany).toHaveBeenCalledWith({
+    expect(updateMany).toHaveBeenLastCalledWith({
       data: {
+        backupOptionId: null,
+        // The previous release reads only the plan, kept in step.
         defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
+        engineOptionId: "openai-search",
+        inAnswerSearch: true,
         updatedByUserId: "admin-1",
         version: { increment: 1 }
       },
       where: { id: "installation", version: 3 }
     });
 
-    findMany.mockResolvedValueOnce([option([child({
-      ...draft,
-      adapterKind: "answer_provider_hosted",
-      credentialMode: "answer_provider",
-      providerModelId: null
-    })])]);
-    // A single source has no fan-out: its hosted-only route qualifies.
-    await service.updatePolicy({
-      defaultPlan: { mode: "all_selected", optionIds: ["openai-search"] },
-      expectedVersion: 3,
-      userId: "admin-1"
-    });
-
+    // An earlier client's plan names the engine first and the backup second.
     findMany.mockResolvedValueOnce([openAi, google]);
     await service.updatePolicy({
-      defaultPlan: {
-        mode: "model_choice",
-        optionIds: ["openai-search", "gemini-google-search"]
-      },
+      defaultPlan: { mode: "model_choice", optionIds: ["gemini-google-search", "openai-search"] },
       expectedVersion: 3,
       userId: "admin-1"
     });
+    expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      backupOptionId: "openai-search", engineOptionId: "gemini-google-search"
+    }) }));
+
+    findMany.mockResolvedValueOnce([openAi, google]);
+    await service.updatePolicy({ backupOptionId: null, engineOptionId: null, expectedVersion: 3, inAnswerSearch: false, userId: "admin-1" });
+    expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      backupOptionId: null, defaultPlan: { mode: "all_selected", optionIds: [] }, engineOptionId: null, inAnswerSearch: false
+    }) }));
+
+    // Every model and mode searches through the engine's client route, so a hosted-only source is neither.
+    const hostedOnly = [option([child({ ...draft, adapterKind: "answer_provider_hosted", credentialMode: "answer_provider",
+      providerModelId: null })])];
+    findMany.mockResolvedValueOnce(hostedOnly);
+    await expect(service.updatePolicy({ engineOptionId: "openai-search", expectedVersion: 3, userId: "admin-1" }))
+      .rejects.toMatchObject({ code: "search_default_unavailable" });
+    findMany.mockResolvedValueOnce([openAi]);
+    await expect(service.updatePolicy({ backupOptionId: "openai-search", engineOptionId: "openai-search", expectedVersion: 3,
+      userId: "admin-1" })).rejects.toMatchObject({ code: "search_default_unavailable" });
+    findMany.mockResolvedValueOnce([openAi]);
+    await expect(service.updatePolicy({ expectedVersion: 3, inAnswerSearch: "yes", userId: "admin-1" }))
+      .rejects.toMatchObject({ code: "search_default_unavailable" });
+  });
+
+  it("names the engine users search with now, and why none when it cannot search", async () => {
+    const openAi = option([child(draft)]);
+    const list = async (row: Record<string, unknown>, options = [openAi]) => createAdminSearchService({
+      prisma: {
+        providerModel: { findMany: vi.fn(async () => [providerModel()]) },
+        searchOption: { findMany: vi.fn(async () => options) },
+        searchPolicy: { findUnique: vi.fn(async () => ({ ...policyRow(3), ...row })) }
+      } as unknown as PrismaClient,
+      tester: { currentBinding: vi.fn(async () => PROBE_BINDING), test: vi.fn() }
+    }).list();
+    expect((await list({})).policy).toMatchObject({
+      backupOptionId: null, defaultPlan: { mode: "all_selected", optionIds: [] }, engineOptionId: null, inAnswerSearch: true,
+      resolved: { automatic: true, backupOptionId: null, engineOptionId: "openai-search", reason: null }
+    });
+    expect((await list({ engineOptionId: "removed-source" })).policy.resolved)
+      .toEqual({ automatic: false, backupOptionId: null, engineOptionId: null, reason: "search_engine_unavailable" });
+    expect((await list({}, [])).policy.resolved)
+      .toEqual({ automatic: true, backupOptionId: null, engineOptionId: null, reason: "search_engine_not_configured" });
   });
 });
 
@@ -1818,5 +1810,121 @@ describe("DeepSeek Search API source", () => {
         .rejects.toMatchObject({ code: "search_configuration_invalid" });
     }
     expect(state.test).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenRouter web search source", () => {
+  const webDraft: AdminSearchDraft = {
+    ...draft,
+    maxOutputTokens: null,
+    openRouterWebSearch: { engine: "perplexity", mode: null },
+    protocol: "openrouter_web_search",
+    providerModelId: "technical-1"
+  };
+  const webBinding = { ...PROBE_BINDING, connectionId: "connection-openrouter" };
+  const openRouterModel = () => providerModel({ adapterKind: "openrouter_chat_completions", connectionId: "connection-openrouter" });
+
+  it("lists OpenRouter models as technical models of its web search only, and its source as a ready web source", async () => {
+    const row = option([child(webDraft, { id: "strategy-web", strategyId: "openrouter-web-search-1:client" })], {
+      displayName: "OpenRouter Web Search", id: "source-web", optionId: "openrouter-web-search-1",
+      sourceConnectionId: "connection-openrouter", templateKey: null
+    });
+    const prisma = {
+      providerModel: { findMany: vi.fn(async () => [openRouterModel()]) },
+      searchOption: { findMany: vi.fn(async () => [row]) },
+      searchPolicy: { findUnique: vi.fn(async () => policyRow()) }
+    } as unknown as PrismaClient;
+    const catalog = await createAdminSearchService({ prisma, tester: { currentBinding: currentProbeBinding, test: vi.fn() } }).list();
+
+    expect(catalog.integrations).toEqual([expect.objectContaining({
+      broaderModelSetup: "ready", configurable: true, configuration: webDraft, executionModes: ["all_selected", "model_choice"],
+      kind: "web_search", ready: true
+    })]);
+    // Perplexity Sonar is retired: an OpenRouter model has no Search kind of its own any more.
+    expect(catalog.providerModels.map(({ id, searchKind }) => `${searchKind}:${id}`)).toEqual([
+      "openrouter_web_search:technical-1"
+    ]);
+    expect(decodeAdminSearchCatalog(JSON.parse(JSON.stringify({ search: catalog })))).not.toBeNull();
+  });
+
+  it("adds it as a client-only web source of the OpenRouter connection after one check", async () => {
+    const optionCreate = vi.fn(async () => ({}));
+    const strategyCreate = vi.fn(async () => ({}));
+    const created = option([child(webDraft, { id: "strategy-web", strategyId: "openrouter-web-search-1:client" })], {
+      enabled: false, id: "source-web", sourceConnectionId: "connection-openrouter", templateKey: null
+    });
+    const write = vi.fn(async () => ({ count: 1 }));
+    const tx = {
+      $queryRaw: vi.fn(async () => []),
+      providerModel: { findFirst: vi.fn(async () => openRouterModel()) },
+      searchIntegrationRevision: revisionRepository(),
+      searchOption: { create: optionCreate, findMany: vi.fn(async () => []), findUnique: vi.fn(async () => created), update: write },
+      searchStrategy: { create: strategyCreate, findUnique: vi.fn(async () => null), update: write, updateMany: write }
+    };
+    const test = vi.fn<AdminSearchTester["test"]>(async () => ({
+      method: "provider_search", normalizedSourceCount: 10, probeBinding: webBinding, protocol: "openrouter_web_search", status: "available"
+    }));
+    const service = createAdminSearchService({
+      prisma: { ...tx, $transaction: async (operation: (client: typeof tx) => Promise<unknown>) => operation(tx) } as unknown as PrismaClient,
+      tester: { currentBinding: vi.fn(async () => webBinding), test }
+    });
+    await service.createDraft({ check: true, description: "Web results.", displayName: "OpenRouter Web Search", draft: webDraft,
+      userId: "admin-1" });
+
+    expect(test).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ draft: webDraft }));
+    expect(optionCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ kind: "web_search",
+      sourceConnectionId: "connection-openrouter" }) });
+    // No hosted route: only the technical model runs OpenRouter's search.
+    expect(strategyCreate).toHaveBeenCalledExactlyOnceWith({ data: expect.objectContaining({
+      adapterKind: "provider_model_client", kind: "provider_model_web_search", provider: "openrouter", providerModelId: "technical-1"
+    }) });
+
+    test.mockResolvedValueOnce({ method: "provider_search", normalizedSourceCount: 10, probeBinding: webBinding,
+      protocol: "openrouter_web_search", status: "unavailable" });
+    await expect(service.createDraft({ check: true, description: "Web results.", displayName: "OpenRouter Web Search",
+      draft: webDraft, userId: "admin-1" })).rejects.toMatchObject({ code: "search_test_failed" });
+  });
+});
+
+describe("a source's check on the current binding", () => {
+  const webDraft: AdminSearchDraft = {
+    ...draft,
+    maxOutputTokens: null,
+    openRouterWebSearch: { engine: "perplexity", mode: null },
+    protocol: "openrouter_web_search",
+    providerModelId: "technical-1"
+  };
+  const binding = { ...PROBE_BINDING, connectionId: "connection-openrouter" };
+  const passed = { checkedAt: NOW.toISOString(), method: "provider_search", normalizedSourceCount: 10, probeBinding: binding,
+    protocol: "openrouter_web_search", status: "available" };
+
+  function service(input: Readonly<{ current?: SearchProbeBinding | Error; evidence?: unknown; stored?: AdminSearchDraft }> = {}) {
+    const row = option([child(input.stored ?? webDraft, {
+      draft: webDraft, draftTestEvidence: input.evidence === undefined ? passed : input.evidence, id: "strategy-web"
+    })], { id: "source-web", sourceConnectionId: "connection-openrouter", templateKey: null });
+    const currentBinding = vi.fn(async () => {
+      if (input.current instanceof Error) throw input.current;
+      return input.current ?? binding;
+    });
+    const prisma = { searchOption: { findUnique: vi.fn(async () => row) } } as unknown as PrismaClient;
+    return { currentBinding, service: createAdminSearchService({ prisma, tester: { currentBinding, test: vi.fn() } }) };
+  }
+  const check = (value: ReturnType<typeof service>) => value.service.checkedOnCurrentBinding({ id: "source-web", userId: "admin-1" });
+
+  it("holds only for a passing check of the active configuration on the exact current connection, model and key", async () => {
+    const current = service();
+    expect(await check(current)).toBe(true);
+    expect(current.currentBinding).toHaveBeenCalledWith(expect.objectContaining({ providerModelId: "technical-1", userId: "admin-1" }));
+    for (const stale of [
+      service({ current: { ...binding, credentialVersionId: "new-key" } }),
+      service({ current: { ...binding, modelVersion: 2 } }),
+      service({ current: new Error("search_provider_model_not_available") }),
+      service({ evidence: { ...passed, status: "unavailable" } }),
+      service({ evidence: { ...passed, normalizedSourceCount: 0 } }),
+      service({ evidence: { ...passed, probeBinding: undefined } }),
+      service({ evidence: null }),
+      // The edited configuration differs from the one in use.
+      service({ stored: { ...webDraft, openRouterWebSearch: { engine: "exa", mode: "auto" } } })
+    ]) expect(await check(stale)).toBe(false);
   });
 });

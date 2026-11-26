@@ -124,13 +124,16 @@ export function createAdminSearchCatalogHandler(input: Readonly<{
       if (auth.error || !auth.session) return auth.error!;
       const [value, bodyError] = await body(request);
       if (bodyError) return bodyError;
+      // The engine, its backup and the in-answer switch, or an earlier client's plan; at least one of them.
+      const fields = ["backupOptionId", "defaultPlan", "engineOptionId", "inAnswerSearch"] as const;
       if (!value || !Number.isSafeInteger(value.expectedVersion) ||
-        !isRecord(value.defaultPlan)) {
+        !fields.some((field) => Object.hasOwn(value, field)) ||
+        (Object.hasOwn(value, "defaultPlan") && !isRecord(value.defaultPlan))) {
         return Response.json({ error: "search_configuration_invalid" }, { status: 400 });
       }
       return safely(async () => {
         await input.service.updatePolicy({
-          defaultPlan: value.defaultPlan,
+          ...Object.fromEntries(fields.filter((field) => Object.hasOwn(value, field)).map((field) => [field, value[field]])),
           expectedVersion: Number(value.expectedVersion),
           userId: auth.session!.userId
         });

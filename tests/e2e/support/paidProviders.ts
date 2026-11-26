@@ -191,7 +191,7 @@ export async function connectionSearchSource(
   request: APIRequestContext,
   connectionId: string,
   kind: AdminSearchIntegration["kind"],
-  create?: Readonly<{ protocol: "openrouter_perplexity_chat" | "openai_responses_web_search"; preferModel?: RegExp }>
+  create?: Readonly<{ protocol: "openrouter_web_search" | "openai_responses_web_search"; preferModel?: RegExp }>
 ): Promise<AdminSearchIntegration> {
   const find = (catalog: AdminSearchCatalog) => catalog.integrations.find((integration) =>
     integration.sourceConnectionId === connectionId && integration.kind === kind && integration.archivedAt === null &&
@@ -200,12 +200,14 @@ export async function connectionSearchSource(
   if (!integration && create) {
     const catalog = await searchCatalog(request);
     const candidates = catalog.providerModels.filter((model) => model.connectionId === connectionId && model.enabled &&
-      model.searchKind === (kind === "perplexity_search" ? "perplexity_search" : "web_search"));
+      model.searchKind === (create.protocol === "openrouter_web_search" ? "openrouter_web_search" : "web_search"));
     const technical = candidates.find((model) => create.preferModel?.test(model.displayName)) ?? candidates[0];
     expect(technical, "the connection has a model that can run its Search source").toBeTruthy();
     const created = await request.post("/api/admin/search", { timeout: PAID_SETUP_TIMEOUT_MS, data: {
       check: true, description: "Paid usage check Search source.", displayName: `Paid usage Search ${randomUUID().slice(0, 8)}`,
       draft: { ...adminSearchExecutionDefaults, adapterKind: "provider_model_client", credentialMode: "provider_model",
+        // OpenRouter's web search names its engine: Perplexity, the template's default.
+        ...(create.protocol === "openrouter_web_search" ? { openRouterWebSearch: { engine: "perplexity", mode: null } } : {}),
         protocol: create.protocol, providerModelId: technical!.id }
     } });
     expect(created.ok(), `the Search source is created and checked (${created.status()})`).toBe(true);

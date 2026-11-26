@@ -85,7 +85,6 @@ const openrouter: Record<string, string> = {
   "deepseek/deepseek-v4.1-flash-1017": "2026-10-17",
   "deepseek/deepseek-v4.1-flash": "2026-09-10",
   "deepseek/deepseek-v4-pro-0813": "2026-08-12",
-  "perplexity/sonar-pro-search": "2025-10-30",
   "google/gemini-nano-banana-2.1": "2026-10-06",
   "google/gemini-3.1-flash-image": "2026-06-18",
   "google/gemini-3.1-flash-lite-image": "2026-06-30",

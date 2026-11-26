@@ -3,22 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import { currentSearchToolFixture } from "@/tests/support/tools";
 import { openRouterMixedTools } from "@/tests/support/openRouterTools";
 import { mcpFindToolsArguments } from "../mcp/discovery";
-import { validateSearchToolArguments } from "../search/query";
 import * as openRouterFacade from "./openRouterChat";
 import {
   buildOpenRouterChatRequest,
-  buildOpenRouterPerplexitySearchRequest,
   createFetchOpenRouterChatClient,
   createOpenRouterChatAdapter,
-  createOpenRouterPerplexitySearchAdapter,
   type OpenRouterAdapterOptions,
   type OpenRouterChatClient
 } from "./openRouterChat";
-import { createFakeOpenRouterPerplexitySearchAdapter } from "@/tests/support/openRouter";
 import type {
   ProviderRunRequest,
-  ProviderRunResult,
-  ProviderSearchRequest
+  ProviderRunResult
 } from "./types";
 
 function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunRequest {
@@ -62,50 +57,6 @@ function request(overrides: Partial<ProviderRunRequest> = {}): ProviderRunReques
     },
     provider: "openrouter",
     searchPlan: { mode: "all_selected", options: [] },
-    ...overrides
-  };
-}
-
-function searchRequest(overrides: Partial<ProviderSearchRequest> = {}): ProviderSearchRequest {
-  const validated = validateSearchToolArguments({ query: "Find one concise fact." });
-  if (!validated.ok) throw new Error(validated.code);
-  return {
-    correlationId: "search-call-1",
-    query: validated.query,
-    searchPolicy: {
-      controls: {
-        maxOutputTokens: {
-          defaultValue: 8192,
-          maxValue: 8192
-        },
-        temperature: {
-          defaultValue: 1,
-          maxValue: 2,
-          minValue: 0,
-          supported: true
-        }
-      },
-      defaultParams: {
-        maxOutputTokens: 1024,
-        provider: {
-          allowFallbacks: true,
-          dataCollection: "deny",
-          order: ["perplexity"],
-          requireParameters: false,
-          sort: "throughput",
-          zdr: false
-        },
-        reasoning: {
-          exclude: true
-        },
-        stream: false,
-        temperature: 0
-      },
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
-    },
-    strategyId: "perplexity-tool-search",
     ...overrides
   };
 }
@@ -194,16 +145,15 @@ describe("OpenRouter Chat facade", () => {
 
     for (const value of [
       buildOpenRouterChatRequest,
-      buildOpenRouterPerplexitySearchRequest,
       createFetchOpenRouterChatClient,
-      createOpenRouterChatAdapter,
-      createOpenRouterPerplexitySearchAdapter
+      createOpenRouterChatAdapter
     ]) {
       expect(value).toBeTypeOf("function");
     }
     expect(openRouterFacade).not.toHaveProperty("buildOpenRouterChatRequestPreview");
-    expect(openRouterFacade).not.toHaveProperty("buildOpenRouterPerplexitySearchRequestPreview");
-    expect(openRouterFacade).not.toHaveProperty("createFakeOpenRouterPerplexitySearchAdapter");
+    // Perplexity Sonar is retired (2026-11-26): the facade no longer offers its search.
+    expect(openRouterFacade).not.toHaveProperty("buildOpenRouterPerplexitySearchRequest");
+    expect(openRouterFacade).not.toHaveProperty("createOpenRouterPerplexitySearchAdapter");
     expect(options.client).toBe(client);
   });
 
@@ -527,74 +477,5 @@ describe("OpenRouter Chat facade", () => {
     await expect(
       adapter.stream(request({ params: { ...request().params, stream: false } })).next()
     ).rejects.toThrow("openrouter_terminal_response_invalid");
-  });
-
-  it("keeps the real and fake Perplexity search adapters wired through the public facade", async () => {
-    const createChatCompletion = vi.fn<OpenRouterChatClient["createChatCompletion"]>(async () => ({
-      choices: [
-        {
-          finish_reason: "stop",
-          message: {
-            content: "Search answer [1]",
-            role: "assistant"
-          }
-        }
-      ],
-      citations: ["https://example.com/source"],
-      id: "or-search-1",
-      model: "perplexity/sonar-pro-search",
-      usage: {
-        completion_tokens: 5,
-        prompt_tokens: 11
-      }
-    }));
-    const real = createOpenRouterPerplexitySearchAdapter({
-      client: { createChatCompletion }
-    });
-    const controller = new AbortController();
-    const search = searchRequest();
-
-    expect(real.buildRequestPreview(search)).toMatchObject({
-      body: { model: "perplexity/sonar-pro-search", stream: false },
-      provider: "openrouter",
-      stage: "tool_search"
-    });
-    const realResult = await real.search(search, { signal: controller.signal });
-    const [body, options] = createChatCompletion.mock.calls[0] ?? [];
-    expect(body).toMatchObject({
-      max_completion_tokens: 1024,
-      metadata: { stage: "tool_search", strategy: "perplexity-tool-search" },
-      model: "perplexity/sonar-pro-search",
-      stream: false
-    });
-    expect(options?.signal).toBe(controller.signal);
-    expect(realResult).toMatchObject({
-      findings: "Search answer [1]",
-      providerResponseId: "or-search-1",
-      sources: [{ url: "https://example.com/source" }],
-      usage: { inputTokens: 11, outputTokens: 5, totalTokens: 16 }
-    });
-    expect(realResult.artifacts).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          artifactType: "citation",
-          payload: expect.objectContaining({ url: "https://example.com/source" })
-        }),
-        type: "artifact"
-      })
-    );
-
-    const fake = createFakeOpenRouterPerplexitySearchAdapter();
-    const fakeResult = await fake.search(search);
-
-    expect(fakeResult).toMatchObject({
-      findings: expect.stringContaining("Fake Perplexity search findings"),
-      providerResponseId: "fake-openrouter-search-1"
-    });
-    expect(
-      fakeResult.artifacts
-        .filter((artifact) => artifact.type === "artifact")
-        .map((artifact) => artifact.data.artifactType)
-    ).toEqual(["search", "citation"]);
   });
 });

@@ -20,7 +20,6 @@ function model(
       documentInputMode,
       imageInput,
       nativeWebSearch: false,
-      openRouterPerplexitySearch: false,
       reasoning: false,
       streaming: true,
       toolCalling: false

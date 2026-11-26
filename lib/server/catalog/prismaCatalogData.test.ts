@@ -189,7 +189,7 @@ function providerBackedSearchModel(id = "technical-search-deployment") {
         mode: "automatic",
         providers: []
       },
-      upstreamModelId: "perplexity/sonar-pro-search"
+      upstreamModelId: "deepseek/deepseek-v4.1-flash"
     },
     connection: {
       family: "openrouter"
@@ -221,17 +221,18 @@ function searchStrategy(
 ): CatalogSearchStrategyRow {
   const kind = overrides.kind ?? "none";
   const adapterKind = overrides.adapterKind ?? (
-    kind === "perplexity_tool_search" || kind === "provider_model_web_search"
+    kind === "provider_model_web_search"
       ? "provider_model_client"
       : "answer_provider_hosted"
   );
   const credentialMode = adapterKind === "provider_model_client"
     ? "provider_model"
     : "answer_provider";
+  // An OpenRouter client route is OpenRouter's web search, here with Parallel, which is never a default engine.
   const protocol = kind === "gemini_google_search"
     ? "gemini_google_search"
-    : kind === "perplexity_tool_search"
-      ? "openrouter_perplexity_chat"
+    : kind === "provider_model_web_search" && overrides.provider === "openrouter"
+      ? "openrouter_web_search"
       : "openai_responses_web_search";
   const providerModelId = overrides.providerModelId ?? (
     adapterKind === "provider_model_client" ? "technical-search-deployment" : null
@@ -244,6 +245,7 @@ function searchStrategy(
           adapterKind,
           credentialMode,
           maxOutputTokens: 4_096,
+          ...(protocol === "openrouter_web_search" ? { openRouterWebSearch: { engine: "parallel", mode: "fast" } } : {}),
           protocol,
           providerModelId,
           queryMaxCharacters: 500,
@@ -642,26 +644,27 @@ describe("prisma catalog data loader", () => {
 
     const input = {
       availableProviderModels: [technicalModel],
-      entitlements: entitlements({ searches: ["perplexity-tool-search"] }),
+      entitlements: entitlements({ searches: ["openrouter-web-search"] }),
       searchOptions: [
         searchOption(),
         searchOption({
-          kind: "perplexity_search",
-          optionId: "perplexity-tool-search",
+          kind: "web_search",
+          optionId: "openrouter-web-search",
           sourceConnection: { id: "connection-openai" },
           sourceConnectionId: "connection-openai",
           strategies: [
             searchStrategy({
-              kind: "perplexity_tool_search",
+              kind: "provider_model_web_search",
               provider: "openrouter",
               providerModelId: "technical-search-deployment",
-              strategyId: "perplexity-tool-search"
+              strategyId: "openrouter-web-search:client"
             }),
             searchStrategy({
               activeRevision: null,
               id: "untested-search",
-              kind: "perplexity_tool_search",
-              strategyId: "untested-perplexity-route"
+              kind: "provider_model_web_search",
+              provider: "openrouter",
+              strategyId: "untested-openrouter-route"
             })
           ]
         })
@@ -676,10 +679,10 @@ describe("prisma catalog data loader", () => {
     });
     expect(options.map((option) => option.strategyId)).toEqual([
       "search-disabled",
-      "perplexity-tool-search"
+      "openrouter-web-search"
     ]);
     expect(options[1]?.routes.map((route) => route.physicalStrategyId)).toEqual([
-      "perplexity-tool-search"
+      "openrouter-web-search:client"
     ]);
   });
 
@@ -752,6 +755,75 @@ describe("prisma catalog data loader", () => {
     expect(exposed(true, { ...carrier, connection: { ...carrier.connection, credentials: [] } })).toEqual([]);
     // A web_search source on the DeepSeek connection (its retired hosted Search) never adopts the API's route.
     expect(searchOptionToCatalogEntry(stored("web_search"))?.routes).toEqual([]);
+  });
+
+  it("publishes OpenRouter's web search as a web source of its connection for any tool-calling answer model", () => {
+    const technical = providerModel({
+      activeConfig: {
+        adapterKind: "openrouter_chat_completions",
+        capabilities: { ...capabilities, nativeSearch: false },
+        defaultParams: {},
+        openRouterRouting: { mode: "automatic", providers: [] },
+        upstreamModelId: "deepseek/deepseek-v4.1-flash"
+      },
+      connection: { family: "openrouter", id: "connection-openrouter" },
+      model: { connectionId: "connection-openrouter", id: "deployment-flash" }
+    });
+    const configuration = {
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      maxOutputTokens: null,
+      openRouterWebSearch: { engine: "parallel", mode: "fast" },
+      protocol: "openrouter_web_search",
+      providerModelId: "deployment-flash",
+      queryMaxCharacters: 1_000,
+      reasoningPolicy: "lowest_supported",
+      timeoutMs: 120_000
+    };
+    const route = searchStrategy({
+      activeRevision: {
+        adapterKind: "provider_model_client", configuration, credentialMode: "provider_model",
+        id: "search-revision-web", providerModelId: "deployment-flash"
+      },
+      activeRevisionId: "search-revision-web",
+      adapterKind: "provider_model_client",
+      credentialMode: "provider_model",
+      kind: "provider_model_web_search",
+      provider: "openrouter",
+      providerModelId: "deployment-flash",
+      strategyId: "openrouter-web-search-1:client"
+    });
+    const stored = (kind: string) => searchOption({
+      kind,
+      optionId: "openrouter-web-search-1",
+      sourceConnection: { id: "connection-openrouter" },
+      sourceConnectionId: "connection-openrouter",
+      strategies: [route]
+    });
+    const exposed = filterExposedSearchOptions({
+      availableProviderModels: [technical],
+      entitlements: entitlements({ searches: ["openrouter-web-search-1"] }),
+      exposedProviderModels: [providerModel({
+        activeConfig: {
+          adapterKind: "anthropic_messages", capabilities, defaultParams: {}, upstreamModelId: "claude-opus-5"
+        },
+        connection: { family: "anthropic", id: "connection-answer" },
+        model: { connectionId: "connection-answer", id: "deployment-answer" }
+      })],
+      searchOptions: [stored("web_search")]
+    });
+
+    expect(exposed).toEqual([expect.objectContaining({
+      kind: "web_search",
+      routes: [expect.objectContaining({
+        adapterKind: "provider_model_client",
+        config: expect.objectContaining({ openRouterWebSearch: { engine: "parallel", mode: "fast" } }),
+        protocol: "openrouter_web_search"
+      })],
+      strategyId: "openrouter-web-search-1"
+    })]);
+    // A Perplexity Sonar row (retired 2026-11-26) is no Search source at all, whatever routes it holds.
+    expect(searchOptionToCatalogEntry(stored("perplexity_search"))).toBeNull();
   });
 
   it("publishes hosted Search only when an entitled available answer model can run it", () => {
@@ -1100,16 +1172,16 @@ describe("prisma catalog data loader", () => {
         findMany: vi.fn(async (_query?: unknown) => [
           searchOption(),
           searchOption({
-            displayName: "Perplexity Search",
-            kind: "perplexity_search",
-            optionId: "perplexity-tool-search",
+            displayName: "OpenRouter Web Search",
+            kind: "web_search",
+            optionId: "openrouter-web-search",
             sourceConnection: { id: "connection-search" },
             sourceConnectionId: "connection-search",
             strategies: [searchStrategy({
-              kind: "perplexity_tool_search",
+              kind: "provider_model_web_search",
               provider: "openrouter",
               providerModelId: "deployment-search",
-              strategyId: "perplexity-tool-search"
+              strategyId: "openrouter-web-search:client"
             })]
           })
         ])
@@ -1122,7 +1194,7 @@ describe("prisma catalog data loader", () => {
             defaultProviderModelId: "deployment-answer",
             defaultSearchPlan: {
               mode: "all_selected",
-              optionIds: ["perplexity-tool-search"]
+              optionIds: ["openrouter-web-search"]
             },
             showCitations: false,
             showReasoningBlocks: true,
@@ -1134,7 +1206,7 @@ describe("prisma catalog data loader", () => {
       env: {},
       loadEntitlements: async () => entitlements({
         models: [["connection-answer", "deployment-answer"]],
-        searches: ["perplexity-tool-search"]
+        searches: ["openrouter-web-search"]
       }),
       prisma: prisma as never
     });
@@ -1170,32 +1242,45 @@ describe("prisma catalog data loader", () => {
     ]);
     expect(data?.searchStrategies.map((strategy) => strategy.strategyId)).toEqual([
       "search-disabled",
-      "perplexity-tool-search"
+      "openrouter-web-search"
     ]);
 
     const catalog = buildCurrentUserCatalog(data!);
+    // A personal choice of sources is Search on; OpenRouter's Parallel is never a default engine, so nobody here can
+    // search until the administrator chooses it, and the catalog says why.
     expect(catalog.defaults).toMatchObject({
       modelId: "deployment-answer",
       provider: "connection-answer",
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: ["perplexity-tool-search"]
-      }
+      searchEnabled: true,
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] }
     });
-    expect(catalog.searchStrategies).toEqual([
-      {
-        description: "Search the web",
-        displayName: "Search",
-        kind: "none",
-        strategyId: "search-disabled"
-      },
-      {
-        description: "Search the web",
-        displayName: "Perplexity Search",
-        kind: "perplexity_tool_search",
-        strategyId: "perplexity-tool-search"
-      }
-    ]);
+    expect(data?.search).toMatchObject({ engine: null, entitled: true, reason: "search_engine_not_configured" });
+    expect(catalog.searchStrategies).toEqual([]);
+    expect(catalog.search).toEqual({ engine: null, reason: "search_engine_not_configured" });
+
+    const chosen = await createPrismaCatalogDataLoader({
+      env: {},
+      loadEntitlements: async () => entitlements({
+        models: [["connection-answer", "deployment-answer"]],
+        searches: ["an-earlier-source"]
+      }),
+      prisma: {
+        ...prisma,
+        searchPolicy: { findUnique: vi.fn(async () => ({
+          backupOptionId: null, engineOptionId: "openrouter-web-search", inAnswerSearch: true
+        })) }
+      } as never
+    })("user-1");
+    // Chosen, it serves every model of the user, whichever source their grant named.
+    expect(chosen?.search).toMatchObject({
+      engine: { displayName: "OpenRouter Web Search", protocol: "openrouter_web_search", usable: true },
+      entitled: true,
+      reason: null
+    });
+    const chosenCatalog = buildCurrentUserCatalog(chosen!);
+    expect(chosenCatalog.search).toEqual({ engine: { displayName: "OpenRouter Web Search" }, reason: null });
+    expect(chosenCatalog.models[0]).toMatchObject({ searchStrategyIds: ["web-search"], webSearch: "engine" });
+    expect(chosenCatalog.searchStrategies.map((strategy) => strategy.strategyId)).toEqual(["web-search"]);
     expect(catalog.providers).toEqual([{
       family: "openai",
       id: "connection-answer",

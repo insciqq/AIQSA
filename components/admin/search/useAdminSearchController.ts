@@ -10,7 +10,6 @@ import {
   type AdminSearchApiResult
 } from "@/components/admin/adminSearchApi";
 import type { AdminSearchCatalog, AdminSearchDraft } from "@/lib/contracts/adminSearch";
-import type { SearchPlan } from "@/lib/domain/search";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type AdminSearchMutationResult =
@@ -21,6 +20,13 @@ export type AdminSearchSourceInput = Readonly<{
   description: string;
   displayName: string;
   draft: AdminSearchDraft;
+}>;
+
+/** The installation's engine (null: the default order picks it), its backup and the in-answer switch. */
+export type AdminSearchPolicyInput = Readonly<{
+  backupOptionId: string | null;
+  engineOptionId: string | null;
+  inAnswerSearch: boolean;
 }>;
 
 export type AdminSearchController = Readonly<{
@@ -35,8 +41,8 @@ export type AdminSearchController = Readonly<{
     saveAndCheck(
       input: AdminSearchSourceInput & Readonly<{ expectedDraftVersion: number; id: string }>
     ): Promise<AdminSearchMutationResult>;
-    /** Returns the error message to show in the plan card, or null. */
-    savePolicy(defaultPlan: SearchPlan, expectedVersion: number): Promise<string | null>;
+    /** Saves the engine, the backup and the in-answer switch; returns the error message for the card, or null. */
+    savePolicy(input: AdminSearchPolicyInput, expectedVersion: number): Promise<string | null>;
     setEnabled(id: string, enabled: boolean): Promise<boolean>;
   }>;
   state: Readonly<{
@@ -164,10 +170,10 @@ export function useAdminSearchController(
         toastError: false
       });
     },
-    async savePolicy(defaultPlan, expectedVersion) {
+    async savePolicy(input, expectedVersion) {
       const result = await commit(
-        updateAdminSearchPolicy({ defaultPlan, expectedVersion }),
-        { notice: "Organization Search default saved.", toastError: false }
+        updateAdminSearchPolicy({ ...input, expectedVersion }),
+        { notice: "Search engine saved.", toastError: false }
       );
       return result.ok ? null : result.message;
     },

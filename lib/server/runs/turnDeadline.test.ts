@@ -77,13 +77,15 @@ describe("turn deadlines", () => {
 
   it("bounds each call by its own tool's frozen timeout, and slow sources never move the rounds' tool time", () => {
     const bounds = toolCallBounds({ imagePlan: imagePlan(86_400_000), mcp: loaded(600_000), mcpDiscovery: catalog,
-      searchPlan: { mode: "all_selected", options: [source(120_000), source(900_000)] }, visionAnalysis: vision,
+      searchPlan: { mode: "all_selected", options: [{ ...source(120_000), optionId: "engine" }, { ...source(900_000), optionId: "backup" }] },
+      visionAnalysis: vision,
       workspace: { syncToolTimeoutSeconds: 120 } as NormalizedRunRequest["workspace"] }, ANSWER_MS);
     expect(bounds.call({ capability: "mcp", name: "mcp_jira_get_issue" })).toBe(300_000);
     expect(bounds.call({ capability: "mcp", name: "mcp_export_run" })).toBe(600_000);
     expect(bounds.call({ capability: "mcp", name: "mcp_wiki_search" })).toBe(1_200_000);
     expect(bounds.call({ capability: "mcp", name: "find_tools" })).toBe(300_000);
-    expect(bounds.call({ capability: "web_search", name: "search_selected_engines" })).toBe(900_000);
+    // The engine, then its backup after a failed call: both timeouts.
+    expect(bounds.call({ capability: "web_search", name: "web_search" })).toBe(1_020_000);
     expect(bounds.call({ capability: "workspace", name: "workspace_exec" })).toBe(120_000);
     expect(bounds.call({ capability: "workspace", name: ANALYZE_IMAGE_TOOL_NAME })).toBe(300_000);
     // A handoff waits for the user up to ten minutes: it may start until 44 minutes of an hour's turn.
@@ -99,10 +101,20 @@ describe("turn deadlines", () => {
       .toBe(1_800_000);
   });
 
-  it("bounds a search tool by its own sources when each source has a tool", () => {
-    const bounds = toolCallBounds({ searchPlan: { mode: "model_choice", options: [source(120_000), source(900_000)] } }, ANSWER_MS);
-    expect(bounds.call({ capability: "web_search", name: "search_engine_1" })).toBe(120_000);
-    expect(bounds.call({ capability: "web_search", name: "search_engine_2" })).toBe(900_000);
+  it("bounds web_search by the engine alone without a backup, and by the sub-agents' engine while the answer searches in itself", () => {
+    const engine = { ...source(120_000), optionId: "engine", use: "engine" as const };
+    expect(toolCallBounds({ searchPlan: { mode: "engine", options: [engine] } }, ANSWER_MS)
+      .call({ capability: "web_search", name: "web_search" })).toBe(120_000);
+    const hosted = { ...source(900_000), adapterKind: "answer_provider_hosted" as const, optionId: "hosted", use: "in_answer" as const };
+    const backup = { ...source(600_000), optionId: "backup", use: "backup" as const };
+    // The main agent has no `web_search`, but its sub-agents and researchers search with the engine, then the backup.
+    expect(toolCallBounds({ searchPlan: { mode: "engine", options: [hosted, engine, backup] } }, ANSWER_MS)
+      .call({ capability: "web_search", name: "web_search" })).toBe(720_000);
+    // A pre-upgrade plan with a hosted source offered no tool to anyone, so any name falls back to the floor.
+    const { use: _hostedUse, ...legacyHosted } = hosted;
+    const { use: _engineUse, ...legacyClient } = engine;
+    expect(toolCallBounds({ searchPlan: { mode: "all_selected", options: [legacyHosted, legacyClient] } }, ANSWER_MS)
+      .call({ capability: "web_search", name: "web_search" })).toBe(300_000);
   });
 
   it("counts a malformed frozen bound as MCP's default", () => {

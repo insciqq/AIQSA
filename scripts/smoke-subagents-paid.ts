@@ -174,8 +174,9 @@
  *   - AIQSA_SUBAGENTS_T_SEARCH=production with AIQSA_SUBAGENTS_SEARCH_MODEL (no default) and DEEPSEEK_API_KEY:
  *     production's Search plan, every search to three sources at once (`all_selected`), through the Control Center's routes
  *     (`/api/admin/search`, its `actions`): OpenAI Responses web search on a codex-lb connection whose model is SEARCH_MODEL (added by
- *     `ensureModel` with native Search; its setup creates the connection's client source), Perplexity on an OpenRouter connection's
- *     `perplexity/sonar-pro-search` (`openrouter_perplexity_chat`), and the DeepSeek Search API. The OpenRouter connection must already
+ *     `ensureModel` with native Search; its setup creates the connection's client source), OpenRouter's web search with Perplexity on
+ *     an OpenRouter connection (`openrouter_web_search`: its live Perplexity source's technical model, else one of the template's,
+ *     `RESEARCH_PERPLEXITY_SEARCH_MODELS`), and the DeepSeek Search API. The OpenRouter connection must already
  *     be on the stand, live with a key and that model, checked first so a stand without it stops before anything paid
  *     (`research_search_perplexity_perplexity_connection_missing`): the harness never adds one, since an OpenRouter connection's first
  *     key, through Quick Setup or the manual routes alike, adds and checks every built-in OpenRouter model. DeepSeek, when missing, comes
@@ -1635,7 +1636,7 @@ async function scenarioQ(ctx: Context, run: Run): Promise<Outcome> {
     const tools = await toolRows(ctx.db, chat.id);
     const verdict = oracleQ({ main: await pageReads(ctx.db, chat.id, null), reader: threadId ? await pageReads(ctx.db, chat.id, threadId) : {},
       searches: route.mode === "model_choice" ? null
-        : tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^search_(?:selected_engines|engine_[1-3])$/u.test(row.toolName)).length,
+        : tools.filter((row) => row.threadId === threadId && row.state === "complete" && /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u.test(row.toolName)).length,
       settled: evidence.settled, turn });
     if (verdict.failed.length > 0) failed = true;
     routes.push({ checksFailed: verdict.failed, oracleCounts: verdict.counts, route: route.name, terminal: terminal.status });
@@ -1654,7 +1655,7 @@ async function handOverEvidence(db: PostgresClient, chatId: string): Promise<Omi
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND "subagentThreadId" IS NOT NULL) AS "subagentCalls",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
-      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^(web_search|search_selected_engines|search_engine_[1-3])$') AS "searches",
       (SELECT count(*)::int FROM "SubagentThread" WHERE "chatId" = $1 AND "parentThreadId" IS NOT NULL) AS "helperThreads",
       (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1) AS "total",
       (SELECT count(*)::int FROM "SubagentTurn" WHERE "chatId" = $1 AND "state"::text = 'done' AND "outcome"::text = 'done') AS "done",
@@ -1703,7 +1704,7 @@ async function ownTypeEvidence(db: PostgresClient, chatId: string): Promise<Omit
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'call_subagent' AND strpos("arguments", '/workspace') > 0) AS "briefsNamingWorkspace",
       (SELECT count(*)::int FROM calls WHERE "toolName" = 'find_tools' AND "subagentThreadId" IS NOT NULL AND "arguments" ~* $2) AS "fileToolSearches",
       (SELECT count(*)::int FROM calls WHERE "subagentThreadId" IN (SELECT "id" FROM threads) AND "toolName" ~ $4) AS "workspaceCalls",
-      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^search_(selected_engines|engine_[1-3])$') AS "searches",
+      (SELECT count(*)::int FROM calls WHERE "state" = 'complete' AND "toolName" ~ '^(web_search|search_selected_engines|search_engine_[1-3])$') AS "searches",
       (SELECT count(*)::int FROM turns) AS "total",
       (SELECT count(*)::int FROM turns WHERE "state" = 'done' AND "outcome" = 'done') AS "done",
       (SELECT count(*)::int FROM turns WHERE "outcome" = 'partial') AS "partial",
@@ -2503,7 +2504,7 @@ async function scenarioT(ctx: Context, run: Run): Promise<Outcome> {
         } catch { facts.acceptance = { failed: "research_acceptance_failed" }; }
         Object.assign(facts, { terminal: ["complete", "error", "cancelled", "interrupted"].includes(terminal) ? terminal : "other", metrics, tokens: usage.total.total,
           roles: usage.roles, tokensByModel: usage.byModel, store: await researchStore(ctx.db, chat.id, runId), planProposals: count("propose_research_plan"), toolCalls: calls.length, fetchCalls: count("fetch_url"),
-          searches: calls.filter((call) => /^search_(?:selected_engines|engine_[1-3])$/u.test(call.toolName)).length });
+          searches: calls.filter((call) => /^(?:web_search|search_selected_engines|search_engine_[1-3])$/u.test(call.toolName)).length });
         questionFailed = terminal !== "complete" || !metrics.started || savedAnswers.size === 0 || (job.kind === "purchase" && !options.acts.purchase && metrics.independentOpened === 0);
         if (act === "restart" || act === "outage") facts.continued = await continuedFacts(ctx.db, chat.id, runId);
         // A push follows the run's end by its grace and the push service's own time.

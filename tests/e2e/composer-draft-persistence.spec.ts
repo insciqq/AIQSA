@@ -15,7 +15,7 @@ async function storedText(page: Page) {
 }
 async function prepareSend(page: Page) {
   await selectFakeModel(page);
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
 }
 /** Sends `source` to the fake model, then saves `comment` on the sent message's text. */
 async function sendAndCommentOnMessage(page: Page, source: string, comment: string) {

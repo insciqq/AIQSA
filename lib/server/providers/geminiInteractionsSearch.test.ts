@@ -1,12 +1,19 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { catalogModelTokenPricing } from "../../domain/modelPrices";
+import { estimateCostMicros } from "../../domain/usage";
 import { validateSearchToolArguments } from "../search/query";
+import { createSearchPlanToolRouter, searchExecutionsFromToolResult } from "../search/toolExecutor";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import {
   buildGeminiInteractionsSearchRequest,
-  createGeminiInteractionsSearchAdapter
+  createGeminiInteractionsSearchAdapter,
+  type GeminiInteractionsSearchAdapterOptions
 } from "./geminiInteractionsSearch";
+import type { ProviderRuntimeBinding } from "./runtimeFactory";
 import {
   isProviderSearchExecutionError,
+  type NormalizedSearchPlanOption,
+  type ProviderRunRequest,
   type ProviderSearchPolicy,
   type ProviderSearchRequest
 } from "./types";
@@ -86,6 +93,7 @@ function response(overrides: Record<string, unknown> = {}): Record<string, unkno
       }
     ],
     usage: {
+      grounding_tool_count: [{ count: 1, type: "google_search" }],
       total_cached_tokens: 2,
       total_input_tokens: 9,
       total_output_tokens: 6,
@@ -208,27 +216,137 @@ describe("Gemini Interactions query-only Search adapter", () => {
     expect(result.requestPreview).not.toHaveProperty("body.input");
   });
 
-  it("reports each distinct non-empty query Gemini bills, in success, failure and dispatch usage", async () => {
+  it("bills the queries Gemini reports in grounding_tool_count, in success, failure and dispatch usage", async () => {
     const searchCall = (id: string, queries?: unknown[]) => ({
       ...(queries ? { arguments: { queries } } : {}), id, signature: "PRIVATE_CALL_SIGNATURE", type: "google_search_call" });
     const [thought, , searchResult, output] = response().steps as Record<string, unknown>[];
-    // Two distinct queries (one repeated, one empty) plus a call that lists none.
-    const steps = [thought, searchCall("google-search-1", ["Valencia weather", "Valencia forecast"]),
-      searchCall("google-search-2", ["Valencia weather", "  "]), searchCall("google-search-3"), searchResult, output];
+    // The steps list two distinct queries; the provider's count is what it billed.
+    const steps = [thought, searchCall("google-search-1", ["Valencia weather", "Valencia forecast"]), searchResult, output];
+    const usage = { ...(response().usage as Record<string, unknown>),
+      grounding_tool_count: [{ count: 4, type: "google_search" }, { count: 7, type: "url_context" }] };
     const dispatched: unknown[] = [];
-    const result = await createGeminiInteractionsSearchAdapter({ client: client(async () => response({ steps })) })
+    const result = await createGeminiInteractionsSearchAdapter({ client: client(async () => response({ steps, usage })) })
       .search(request(), { dispatch: async (attempt) => {
         const value = await attempt.execute();
         dispatched.push(attempt.usage(value));
         return value;
       } });
-    expect(result.usage).toMatchObject({ inputTokens: 9, webSearchCount: 3 });
-    expect(dispatched).toEqual([expect.objectContaining({ inputTokens: 9, webSearchCount: 3 })]);
+    expect(result.usage).toMatchObject({ completeness: "complete", inputTokens: 9, webSearchCount: 4 });
+    expect(result.costUsd).toBeUndefined();
+    expect(dispatched).toEqual([expect.objectContaining({ completeness: "complete", inputTokens: 9, webSearchCount: 4 })]);
 
     const failed = await createGeminiInteractionsSearchAdapter({
-      client: client(async () => response({ steps: [thought, searchCall("google-search-1", ["Valencia weather"]), searchResult] }))
+      client: client(async () => response({ steps: [thought, searchCall("google-search-1", ["Valencia weather"]), searchResult],
+        usage: { ...usage, grounding_tool_count: [{ count: 1, type: "google_search" }] } }))
     }).search(request()).then(() => null, (value: unknown) => value);
     expect(failed).toMatchObject({ usage: { inputTokens: 9, webSearchCount: 1 } });
+  });
+
+  it.each([
+    ["no count", undefined],
+    ["no Google Search entry", [{ count: 2, type: "url_context" }]],
+    ["an unreadable count", [{ count: 2.5, type: "google_search" }]],
+    ["a negative count", [{ count: -1, type: "google_search" }]]
+  ])("leaves the charge unknown with %s, never estimated from the listed queries", async (_label, groundingToolCount) => {
+    const { grounding_tool_count: _reported, ...tokens } = response().usage as Record<string, unknown>;
+    const usage = { ...tokens, ...(groundingToolCount ? { grounding_tool_count: groundingToolCount } : {}) };
+    const dispatched: unknown[] = [];
+    const result = await createGeminiInteractionsSearchAdapter({ client: client(async () => response({ usage })) })
+      .search(request(), { dispatch: async (attempt) => {
+        const value = await attempt.execute();
+        dispatched.push(attempt.usage(value));
+        return value;
+      } });
+    expect(result.usage).toMatchObject({ completeness: "partial", inputTokens: 9, outputTokens: 9, totalTokens: 18 });
+    expect(result.usage).not.toHaveProperty("webSearchCount");
+    expect(dispatched).toEqual([expect.objectContaining({ completeness: "partial" })]);
+    // A partial usage row has no estimated cost (`estimateCostMicros`).
+    expect(estimateCostMicros(result.usage, catalogModelTokenPricing("gemini:gemini-3.6-flash"))).toBeNull();
+  });
+
+  it("prices reported queries at the published Google Search fee on top of tokens", async () => {
+    const usage = { total_input_tokens: 1_000, total_output_tokens: 1_000, total_thought_tokens: 0, total_tokens: 2_000,
+      grounding_tool_count: [{ count: 2, type: "google_search" }] };
+    const result = await createGeminiInteractionsSearchAdapter({ client: client(async () => response({ usage })) })
+      .search(request());
+    // gemini-3.6-flash: $1.5 / $7.5 per million tokens, $14 per 1,000 queries.
+    expect(estimateCostMicros(result.usage, catalogModelTokenPricing("gemini:gemini-3.6-flash"))).toBe(1_500 + 7_500 + 28_000);
+  });
+
+  it("cites each page at its resolved address with the answer segments it supports as the excerpt", async () => {
+    // Trimmed from a recorded Interactions response (2026-11-26): Russian text, byte offsets, domain titles.
+    const text = [
+      "Официальный курс евро, установленный Банком России:",
+      "",
+      "* **На 25 ноября 2026 года:** **89,8818 руб.** (действовал в течение дня 25 ноября).",
+      "* **С 26 ноября 2026 года** (установлен регулятором 25 ноября): **90,2397 руб.**"
+    ].join("\n");
+    const span = (part: string) => {
+      const start = Buffer.byteLength(text.slice(0, text.indexOf(part)), "utf8");
+      return { end_index: start + Buffer.byteLength(part, "utf8"), start_index: start };
+    };
+    const first = "(действовал в течение дня 25 ноября)";
+    const second = "**С 26 ноября 2026 года** (установлен регулятором 25 ноября): **90,2397 руб.**";
+    const third = "* **На 25 ноября 2026 года:** **89,8818 руб.**";
+    const redirect = (id: string) => `https://vertexaisearch.cloud.google.com/grounding-api-redirect/${id}`;
+    const annotations = [
+      { ...span(first), title: "vedomosti.ru", type: "url_citation", url: redirect("vedomosti") },
+      { ...span(second), title: "finmarket.ru", type: "url_citation", url: redirect("finmarket") },
+      { ...span(second), title: "rosbalt.ru", type: "url_citation", url: redirect("rosbalt") },
+      // A second redirect to the same finmarket page, supporting another segment.
+      { ...span(third), title: "finmarket.ru", type: "url_citation", url: redirect("finmarket-2") },
+      // Offsets past the block give no segment.
+      { end_index: 9_999, start_index: 9_000, title: "rosbalt.ru", type: "url_citation", url: redirect("rosbalt") }
+    ];
+    const steps = (response().steps as Record<string, unknown>[]).map((step) => step.type === "model_output"
+      ? { ...step, content: [{ annotations, text, type: "text" }] }
+      : step);
+    const usage = { ...(response().usage as Record<string, unknown>), grounding_tool_count: [{ count: 2, type: "google_search" }] };
+    const resolveRedirects = vi.fn(async (urls: readonly string[]) => new Map([
+      [redirect("vedomosti"), "https://www.vedomosti.ru/economics/news/2026/11/25/euro"],
+      [redirect("finmarket"), "https://www.finmarket.ru/news/6757758"],
+      [redirect("finmarket-2"), "https://www.finmarket.ru/news/6757758"]
+      // rosbalt does not resolve and keeps its redirect link.
+    ].filter(([from]) => urls.includes(from!)) as [string, string][]));
+    const controller = new AbortController();
+
+    const result = await createGeminiInteractionsSearchAdapter({
+      client: client(async () => response({ steps, usage })),
+      resolveRedirects
+    }).search(request(), { signal: controller.signal });
+
+    expect(resolveRedirects).toHaveBeenCalledWith(
+      [redirect("vedomosti"), redirect("finmarket"), redirect("rosbalt"), redirect("finmarket-2")],
+      { signal: controller.signal, totalTimeoutMs: 5_000 });
+    expect(result.findings).toBe(text);
+    expect(result.sources).toEqual([
+      { citation: 1, rank: 1, snippet: first, title: "vedomosti.ru",
+        url: "https://www.vedomosti.ru/economics/news/2026/11/25/euro" },
+      { citation: 2, rank: 2, snippet: `${second} … **На 25 ноября 2026 года:** **89,8818 руб.**`, title: "finmarket.ru",
+        url: "https://www.finmarket.ru/news/6757758" },
+      { citation: 3, rank: 3, snippet: second, title: "rosbalt.ru", url: redirect("rosbalt") }
+    ]);
+    expect(result.usage).toMatchObject({ webSearchCount: 2 });
+    const citations = result.artifacts.filter((event) => event.type === "artifact" && event.data.artifactType === "citation");
+    expect(citations.map((event) => event.type === "artifact" ? event.data.payload : null)).toEqual([
+      { index: 1, source: "gemini", title: "vedomosti.ru", url: "https://www.vedomosti.ru/economics/news/2026/11/25/euro" },
+      { index: 2, source: "gemini", title: "finmarket.ru", url: "https://www.finmarket.ru/news/6757758" },
+      { index: 3, source: "gemini", title: "rosbalt.ru", url: redirect("rosbalt") }
+    ]);
+    expect(result.finalProviderResponsePreview).toMatchObject({ grounding: { citationCount: 3 } });
+  });
+
+  it("keeps every cited redirect when resolution fails", async () => {
+    const redirectUrl = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZ";
+    const steps = (response().steps as Record<string, unknown>[]).map((step) => step.type === "model_output"
+      ? { ...step, content: [{ annotations: [{ end_index: 8, start_index: 0, title: "example.com", type: "url_citation",
+        url: redirectUrl }], text: "Valencia is warm and sunny.", type: "text" }] }
+      : step);
+    const result = await createGeminiInteractionsSearchAdapter({
+      client: client(async () => response({ steps })),
+      resolveRedirects: async () => { throw new Error("resolver_broken"); }
+    }).search(request());
+    expect(result.sources).toEqual([{ citation: 1, rank: 1, snippet: "Valencia", title: "example.com", url: redirectUrl }]);
   });
 
   it("fails closed without terminal grounded citation proof while retaining safe usage", async () => {
@@ -271,5 +389,92 @@ describe("Gemini Interactions query-only Search adapter", () => {
     expect(result.sources.map((source) => source.url)).toEqual([
       "https://example.test/offset-free", "https://example.test/valencia-weather"
     ]);
+  });
+});
+
+describe("Gemini redirect resolution within the search deadline", () => {
+  const redirectUrl = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZ-slow";
+  const redirectSteps = () => (response().steps as Record<string, unknown>[]).map((step) => step.type === "model_output"
+    ? { ...step, content: [{ annotations: [{ end_index: 8, start_index: 0, title: "example.com", type: "url_citation",
+      url: redirectUrl }], text: "Valencia is warm and sunny.", type: "text" }] }
+    : step);
+  /** Gemini answers after `delayMs`; every HEAD hangs until its signal ends. */
+  function slowEngine(delayMs: number) {
+    const resolveRedirects = vi.fn<NonNullable<GeminiInteractionsSearchAdapterOptions["resolveRedirects"]>>(
+      () => new Promise(() => undefined));
+    const adapter = createGeminiInteractionsSearchAdapter({
+      client: client(() => new Promise((resolve) => setTimeout(() => resolve(response({ steps: redirectSteps() })), delayMs))),
+      resolveRedirects
+    });
+    return { adapter, resolveRedirects };
+  }
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("returns a search that answered at 29.5 of 30 s as complete, with Gemini's links and no resolution", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(29_500);
+    const option: NormalizedSearchPlanOption = {
+      adapterKind: "provider_model_client",
+      config: { maxOutputTokens: 4_096, modelCapabilities: (request().searchPolicy as GeminiSearchPolicy).modelCapabilities,
+        queryMaxCharacters: 500, reasoningPolicy: "lowest_supported", timeoutMs: 30_000 },
+      credentialMode: "provider_model",
+      displayName: "Gemini Google Search",
+      executionModes: ["all_selected", "model_choice"],
+      modelId: "gemini-3.6-flash",
+      optionId: "gemini",
+      protocol: "gemini_google_search",
+      provider: "gemini",
+      providerModelId: "gemini-3.6-flash",
+      revisionId: "revision-gemini",
+      searchStrategyRowId: "integration-gemini"
+    };
+    const runtime: ProviderRuntimeBinding = {
+      adapter: { buildRequestPreview: () => ({}), async *stream() { throw new Error("answer_adapter_unused"); } },
+      responseTimeoutMs: 300_000,
+      searchAdapter: adapter
+    };
+    const router = createSearchPlanToolRouter({ plan: { mode: "model_choice", options: [option] }, runtimes: { gemini: runtime } })!;
+    const execution = router.execute({ arguments: { query: "weather in Valencia" }, id: "call-1", name: router.tools[0]!.name },
+      {} as ProviderRunRequest);
+    await vi.advanceTimersByTimeAsync(31_000);
+    const result = await execution;
+
+    expect(resolveRedirects).not.toHaveBeenCalled();
+    expect(result.status).toBe("complete");
+    expect(searchExecutionsFromToolResult(result)).toEqual([expect.objectContaining({
+      sources: [expect.objectContaining({ snippet: "Valencia", url: redirectUrl })],
+      status: "complete"
+    })]);
+  });
+
+  it("gives slow redirects only what the deadline leaves, minus the margin, and keeps Gemini's links", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(27_000);
+    let settledAt: number | null = null;
+    const pending = adapter.search(request(), { timeoutMs: 30_000 }).then((value) => {
+      settledAt = performance.now();
+      return value;
+    });
+    const startedAt = performance.now();
+    await vi.advanceTimersByTimeAsync(27_000);
+    expect(resolveRedirects).toHaveBeenCalledWith([redirectUrl], { totalTimeoutMs: 2_000 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await pending;
+
+    expect(settledAt! - startedAt).toBe(29_000);
+    expect(result.sources).toEqual([{ citation: 1, rank: 1, snippet: "Valencia", title: "example.com", url: redirectUrl }]);
+  });
+
+  it("returns the completed search at once when Stop comes during resolution", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const { adapter, resolveRedirects } = slowEngine(1_000);
+    const stop = new AbortController();
+    const pending = adapter.search(request(), { signal: stop.signal, timeoutMs: 30_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(resolveRedirects).toHaveBeenCalledWith([redirectUrl], { signal: stop.signal, totalTimeoutMs: 5_000 });
+    stop.abort();
+    const result = await pending;
+    expect(result.sources.map((source) => source.url)).toEqual([redirectUrl]);
   });
 });

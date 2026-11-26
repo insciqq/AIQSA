@@ -4,9 +4,11 @@ import {
   adminSearchExecutionLimits
 } from "../../contracts/adminSearch";
 import {
-  extractGeminiInteractionUsage,
-  normalizeGeminiInteractionsSearchResponse
+  extractGeminiSearchUsage,
+  normalizeGeminiInteractionsSearchResponse,
+  withResolvedGeminiSearchSources
 } from "./geminiInteractionsResponse";
+import { GEMINI_GROUNDING_REDIRECT_LIMITS, resolveGeminiGroundingRedirects } from "./geminiGroundingRedirect";
 import type { GeminiInteractionsClient } from "./geminiInteractionsTransport";
 import { citedSearchSources } from "../search/evidence";
 import { geminiConfiguredThinkingLevels } from "./providerModelCapabilities";
@@ -37,7 +39,51 @@ export type GeminiInteractionsSearchRequestBody = Readonly<{
 
 export type GeminiInteractionsSearchAdapterOptions = Readonly<{
   client: GeminiInteractionsClient;
+  /** Test seam: the grounding redirect resolver (`resolveGeminiGroundingRedirects`). */
+  resolveRedirects?: (
+    urls: readonly string[],
+    options: Readonly<{ signal?: AbortSignal; totalTimeoutMs: number }>
+  ) => Promise<ReadonlyMap<string, string>>;
 }>;
+
+/**
+ * Redirect resolution runs inside the search's own deadline (the `timeoutMs`
+ * the Search tool gives this attempt): it ends this long before it, so the
+ * completed search is returned in time, and it is skipped when less than the
+ * minimum window would remain. Skipped or cut short, the findings keep
+ * Gemini's own links.
+ */
+export const GEMINI_REDIRECT_DEADLINE_MARGIN_MS = 1_000;
+export const GEMINI_REDIRECT_MIN_WINDOW_MS = 500;
+
+/** How long resolution may take, or null when it must be skipped. */
+function redirectResolutionWindowMs(timeoutMs: number | undefined, startedAt: number): number | null {
+  const ceiling = GEMINI_GROUNDING_REDIRECT_LIMITS.totalTimeoutMs;
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return ceiling;
+  const left = timeoutMs - (performance.now() - startedAt) - GEMINI_REDIRECT_DEADLINE_MARGIN_MS;
+  return left >= GEMINI_REDIRECT_MIN_WINDOW_MS ? Math.min(ceiling, Math.floor(left)) : null;
+}
+
+/** The resolved addresses, or none once the window ends, Stop is pressed or
+ * the resolver fails: the completed search is returned either way. */
+function withinWindow(
+  resolution: Promise<ReadonlyMap<string, string>>,
+  windowMs: number,
+  signal: AbortSignal | undefined
+): Promise<ReadonlyMap<string, string>> {
+  const none: ReadonlyMap<string, string> = new Map();
+  return new Promise((resolve) => {
+    const finish = (value: ReadonlyMap<string, string>) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    const onAbort = () => finish(none);
+    const timer = setTimeout(onAbort, windowMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    resolution.then(finish, () => finish(none));
+  });
+}
 
 function boundedModelId(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && value.length <= 256 &&
@@ -122,6 +168,9 @@ function safeProviderStatus(response: Readonly<Record<string, unknown>>): string
 export function createGeminiInteractionsSearchAdapter(
   options: GeminiInteractionsSearchAdapterOptions
 ): ProviderSearchAdapter {
+  const resolveRedirects = options.resolveRedirects ??
+    ((urls, { signal, totalTimeoutMs }) =>
+      resolveGeminiGroundingRedirects(urls, { limits: { totalTimeoutMs }, ...(signal ? { signal } : {}) }));
   const adapter: ProviderSearchAdapter = {
     buildRequestPreview(request) {
       const body = buildGeminiInteractionsSearchRequest(request);
@@ -145,6 +194,7 @@ export function createGeminiInteractionsSearchAdapter(
       };
     },
     async search(request, searchOptions = {}) {
+      const startedAt = performance.now();
       const body = buildGeminiInteractionsSearchRequest(request);
       const response = await dispatchSearchRequest(searchOptions, {
         body, execute: () => options.client.createInteraction(body, {
@@ -152,29 +202,41 @@ export function createGeminiInteractionsSearchAdapter(
           ...(typeof searchOptions.timeoutMs === "number"
             ? { timeoutMs: searchOptions.timeoutMs }
             : {})
-        }), usage: extractGeminiInteractionUsage
+        }), usage: extractGeminiSearchUsage
       });
+      let normalized: ReturnType<typeof normalizeGeminiInteractionsSearchResponse>;
       try {
-        const normalized = normalizeGeminiInteractionsSearchResponse(response, {
+        normalized = normalizeGeminiInteractionsSearchResponse(response, {
           groundingExpected: true,
           modelId: body.model
         });
-        return {
-          ...normalized,
-          requestPreview: adapter.buildRequestPreview(request),
-          sourceAttribution: "available" as const,
-          // Every grounding source is cited by the findings.
-          sources: citedSearchSources(normalized.sources)
-        };
       } catch (error) {
         const providerStatus = safeProviderStatus(response);
         throw new ProviderSearchExecutionError({
           artifacts: [],
           code: safeFailureCode(error),
           ...(providerStatus ? { providerStatus } : {}),
-          usage: extractGeminiInteractionUsage(response)
+          usage: extractGeminiSearchUsage(response)
         });
       }
+      // Google's redirect links become the pages they name; resolution is
+      // bounded by what the search's deadline leaves and never fails the
+      // search (`geminiGroundingRedirect.ts`).
+      const windowMs = redirectResolutionWindowMs(searchOptions.timeoutMs, startedAt);
+      const resolved = windowMs === null || searchOptions.signal?.aborted
+        ? new Map<string, string>()
+        : await withinWindow(Promise.resolve().then(() => resolveRedirects(normalized.sources.map((source) => source.url), {
+            ...(searchOptions.signal ? { signal: searchOptions.signal } : {}),
+            totalTimeoutMs: windowMs
+          })), windowMs, searchOptions.signal);
+      const result = withResolvedGeminiSearchSources(normalized, resolved);
+      return {
+        ...result,
+        requestPreview: adapter.buildRequestPreview(request),
+        sourceAttribution: "available" as const,
+        // Every grounding source is cited by the findings.
+        sources: citedSearchSources(result.sources)
+      };
     }
   };
   return adapter;

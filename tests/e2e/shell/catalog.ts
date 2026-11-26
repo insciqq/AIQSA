@@ -6,7 +6,6 @@ export type MatrixModel = {
     documentInputMode: "native_pdf" | "none" | "pdf_text_extraction";
     imageInput: boolean;
     nativeWebSearch: boolean;
-    openRouterPerplexitySearch: boolean;
     reasoning: boolean;
     streaming: boolean;
     toolCalling: boolean;
@@ -49,6 +48,7 @@ export type MatrixModel = {
   providerFamily: string;
   searchStrategyIds: string[];
   upstreamModelId: string;
+  webSearch: "engine" | "in_answer" | null;
 };
 
 function matrixModel(input: {
@@ -68,7 +68,6 @@ function matrixModel(input: {
       documentInputMode: "pdf_text_extraction",
       imageInput: true,
       nativeWebSearch: input.provider === "openai",
-      openRouterPerplexitySearch: true,
       reasoning: true,
       streaming: true,
       toolCalling: true
@@ -122,8 +121,9 @@ function matrixModel(input: {
     },
     provider: input.provider,
     providerFamily: input.provider,
-    searchStrategyIds: ["search-disabled", "perplexity-tool-search"],
-    upstreamModelId: input.modelId
+    searchStrategyIds: ["search-disabled", "web-search"],
+    upstreamModelId: input.modelId,
+    webSearch: "engine"
   };
 }
 
@@ -137,6 +137,7 @@ export const matrixCatalog = {
     organizationSearchPlan: { mode: "all_selected", optionIds: [] },
     personalModelDefault: { modelId: "gpt-5.5", provider: "openai" },
     provider: "openai",
+    searchEnabled: false as boolean,
     searchPlan: { mode: "all_selected", optionIds: [] },
     searchPreferenceSource: "personal",
     showCitations: true,
@@ -217,6 +218,8 @@ export const matrixCatalog = {
       name: "OpenRouter"
     }
   ],
+  // Users switch Search on or off; the installation's engine searches (search-v2, 2026-11-26).
+  search: { engine: { displayName: "OpenRouter Web Search" }, reason: null },
   searchStrategies: [
     {
       description: "No Search tool",
@@ -225,10 +228,10 @@ export const matrixCatalog = {
       strategyId: "search-disabled"
     },
     {
-      description: "Provider-neutral Perplexity search tool",
-      displayName: "Perplexity tool",
-      kind: "perplexity_tool_search",
-      strategyId: "perplexity-tool-search"
+      description: "Web search",
+      displayName: "Web search",
+      kind: "web_search",
+      strategyId: "web-search"
     }
   ]
 } satisfies Catalog;

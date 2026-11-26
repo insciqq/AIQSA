@@ -71,11 +71,11 @@ function baseProps() {
     draft: "",
     onDraftChange: vi.fn(),
     onSelectModel: vi.fn(),
-    onSelectSearchOptionIds: vi.fn(),
+    onSearchEnabledChange: vi.fn(),
     onSend: vi.fn(),
     selectedModelId: "gpt-5.2",
     selectedProvider: "openai-work",
-    selectedSearchOptionIds: ["web-primary"]
+    searchEnabled: true
   } satisfies Parameters<typeof ComposerV2>[0];
 }
 

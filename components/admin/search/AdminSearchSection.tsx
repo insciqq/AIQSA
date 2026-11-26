@@ -4,7 +4,7 @@ import { adminSectionPath } from "@/components/admin/adminSections";
 import { AdminTopbarMenu, useAdminSectionTopbar, type AdminShellTopbar } from "@/components/admin/AdminShell";
 import { sectionHeadingClass } from "@/components/admin/roles/rolesControls";
 import { AdminSearchList } from "@/components/admin/search/AdminSearchList";
-import { AdminSearchPlanCard } from "@/components/admin/search/AdminSearchPlanCard";
+import { AdminSearchEngineCard } from "@/components/admin/search/AdminSearchEngineCard";
 import { AdminSearchSourcePage } from "@/components/admin/search/AdminSearchSourcePage";
 import { AdminSearchSourceSheet } from "@/components/admin/search/AdminSearchSourceSheet";
 import { useAdminSearchController } from "@/components/admin/search/useAdminSearchController";
@@ -49,8 +49,8 @@ function Crumbs({ current, onBack }: Readonly<{ current: string; onBack(): void 
 }
 
 /**
- * Search section (PRD 5.6): the recommended plan and the source list on one
- * page, one source page per `?resource=`, and the Add source / Configure
+ * Search section (PRD 5.6): the installation's engine and the source list on
+ * one page, one source page per `?resource=`, and the Add source / Configure
  * sheets. The section owns the topbar and the one controller.
  */
 export function AdminSearchSection({
@@ -62,8 +62,8 @@ export function AdminSearchSection({
   resource
 }: AdminSearchSectionProps) {
   const [addingRequested, setAdding] = useState(false);
-  // A plan saved from its footer: the card remounted for the new version focuses its status line.
-  const [planStatusFocus, setPlanStatusFocus] = useState(false);
+  // An engine saved from its footer: the card remounted for the new version focuses its status line.
+  const [engineStatusFocus, setEngineStatusFocus] = useState(false);
   // Keyed by the open page so a page change never carries a sheet along.
   const [configureOpenFor, setConfigureOpenFor] = useState<string | null>(null);
   const adding = addingRequested && resource === null;
@@ -177,6 +177,7 @@ export function AdminSearchSection({
       <div className="min-w-0" data-testid="admin-search-section">
         <AdminSearchSourcePage
           controller={controller}
+          policy={catalog?.policy ?? null}
           onOpenConfigure={() => setConfigureOpenFor(source.id)}
           source={source}
         />
@@ -199,13 +200,13 @@ export function AdminSearchSection({
     <div className="min-w-0" data-testid="admin-search-section">
       <div className="flex max-w-[1120px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
         {catalog ? (
-          <AdminSearchPlanCard
+          <AdminSearchEngineCard
             busy={busy}
             catalog={catalog}
-            focusStatus={planStatusFocus}
+            focusStatus={engineStatusFocus}
             key={catalog.policy.version}
-            onFocusStatusChange={setPlanStatusFocus}
-            onSave={(plan) => controller.actions.savePolicy(plan, catalog.policy.version)}
+            onFocusStatusChange={setEngineStatusFocus}
+            onSave={(input) => controller.actions.savePolicy(input, catalog.policy.version)}
           />
         ) : null}
         <section aria-labelledby="admin-search-sources-heading" className="grid gap-2.5">
@@ -216,10 +217,11 @@ export function AdminSearchSection({
             loading={controller.state.loading}
             onOpen={(sourceId) => onSelectResource(sourceId)}
             onRetry={() => void controller.actions.refresh()}
+            policy={catalog?.policy ?? null}
             sources={catalog?.integrations ?? []}
           />
           <p className="text-xs leading-5 text-ink-muted">
-            People choose sources in chat; who may use which source is set per group in Groups. Sources for built-in providers appear when the provider is added.
+            Who may search is set per group in Groups. Sources for built-in providers appear when the provider is added.
           </p>
         </section>
       </div>

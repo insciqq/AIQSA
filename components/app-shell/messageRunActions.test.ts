@@ -67,7 +67,6 @@ const model: CatalogModel = {
     documentInputMode: "pdf_text_extraction",
     imageInput: true,
     nativeWebSearch: true,
-    openRouterPerplexitySearch: true,
     reasoning: true,
     streaming: true,
     toolCalling: true
@@ -1491,9 +1490,9 @@ describe("message run actions", () => {
 
       const body = requestBody(fetchMock);
       expect(Object.keys(body).sort()).toEqual([
-        "admissionId", "content", "expectedActiveLeafId", "searchPlan", "skillIds", "timeZone", "workspace"
+        "admissionId", "content", "expectedActiveLeafId", "searchEnabled", "skillIds", "timeZone", "workspace"
       ]);
-      expect(body.searchPlan).toEqual({ mode: "all_selected", optionIds: [] });
+      expect(body.searchEnabled).toBe(false);
     });
 
     it("sends each changed row with its ordinary key", async () => {
@@ -2148,7 +2147,7 @@ describe("message run actions", () => {
   });
 
   it.each(["personal", "organization"] as const)(
-    "uses model-choice execution for a mixed hosted/client %s Search preference",
+    "sends the %s Search switch as on, never a source list",
     async (searchPreferenceSource) => {
       const fetchMock = vi.fn(async (..._args: unknown[]) =>
         new Response("", { status: 200 }));
@@ -2171,44 +2170,43 @@ describe("message run actions", () => {
         string,
         RequestInit
       ];
-      expect(JSON.parse(String(requestInit.body))).toMatchObject({
-        searchPlan: {
-          mode: "model_choice",
-          optionIds: [hostedSearchOptionId, clientSearchOptionId]
-        },
-        searchPreferencePlan: {
-          mode: "all_selected",
-          optionIds: [hostedSearchOptionId, clientSearchOptionId]
-        },
-        searchPreferenceSource
-      });
+      const body = JSON.parse(String(requestInit.body)) as Record<string, unknown>;
+      expect(body).toMatchObject({ searchEnabled: true });
+      expect(body).not.toHaveProperty("searchPlan");
+      expect(body).not.toHaveProperty("searchPreferencePlan");
+      expect(body).not.toHaveProperty("searchPreferenceSource");
     }
   );
 
+  it("keeps Search on while the engine is unavailable and this model has no search of its own", async () => {
+    const fetchMock = vi.fn(async (..._args: unknown[]) => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const unsearchable: CatalogModel = { ...model, searchOptionCompatibility: {}, searchStrategyIds: [], webSearch: null };
+    const actions = useMessageRunActionsForTest({ attachments: [], model: unsearchable });
+    const catalog = mixedSearchCatalog("organization");
+    useWorkspaceStore.getState().setCatalog({
+      ...catalog,
+      defaults: { ...catalog.defaults, searchEnabled: true },
+      models: [unsearchable],
+      // The engine cannot search now: the catalog lists no source and says why (search-v2, 2026-11-26).
+      search: { engine: null, reason: "search_engine_unavailable" },
+      searchStrategies: []
+    });
+    useComposerControlStore.setState({ selectedSearchOptionIds: ["web-search"], searchPlanMode: "all_selected" });
+
+    await actions.submitComposer();
+
+    const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    // Admission binds the engine or says why it could not search; the send never turns Search off.
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({ searchEnabled: true });
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual(["web-search"]);
+  });
+
   it.each([
-    {
-      expectedMode: "all_selected" as const,
-      expectedOptionIds: [clientSearchOptionId],
-      label: "keeps a client-only plan",
-      selectedOptionIds: [clientSearchOptionId]
-    },
-    {
-      expectedMode: "all_selected" as const,
-      expectedOptionIds: [hostedSearchOptionId],
-      label: "keeps a hosted-only plan",
-      selectedOptionIds: [hostedSearchOptionId]
-    },
-    {
-      expectedMode: "model_choice" as const,
-      expectedOptionIds: [hostedSearchOptionId, clientSearchOptionId],
-      label: "keeps and reconciles a mixed plan",
-      selectedOptionIds: [hostedSearchOptionId, clientSearchOptionId]
-    }
-  ])("$label for a send with attachments", async ({
-    expectedMode,
-    expectedOptionIds,
-    selectedOptionIds
-  }) => {
+    { label: "keeps Search on with a stored client source", selectedOptionIds: [clientSearchOptionId] },
+    { label: "keeps Search on with a stored hosted source", selectedOptionIds: [hostedSearchOptionId] },
+    { label: "keeps Search on with stored mixed sources", selectedOptionIds: [hostedSearchOptionId, clientSearchOptionId] }
+  ])("$label for a send with attachments", async ({ selectedOptionIds }) => {
     const fetchMock = vi.fn(async (..._args: unknown[]) =>
       new Response("", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -2226,15 +2224,7 @@ describe("message run actions", () => {
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
-      searchPlan: {
-        mode: expectedMode,
-        optionIds: expectedOptionIds
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: selectedOptionIds
-      },
-      searchPreferenceSource: "personal"
+      searchEnabled: true
     });
   });
 
@@ -2289,14 +2279,7 @@ describe("message run actions", () => {
           { attachmentId: searchAttachment.id, type: "file" }
         ]
       },
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      }
+      searchEnabled: true
     });
     expect(actions.session(composerSessionKey("chat-a"))).toMatchObject({
       attachments: [newerSearchAttachment],
@@ -2352,14 +2335,7 @@ describe("message run actions", () => {
       content: {
         blocks: [{ text: "Question without sent attachments", type: "text" }]
       },
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      }
+      searchEnabled: true
     });
     expect(actions.session(composerSessionKey(createdChat.id))).toMatchObject({
       attachments: [newerSearchAttachment],
@@ -2872,7 +2848,7 @@ describe("message run actions", () => {
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
       modelId: "gpt-5.5",
       provider: "openai",
-      searchPlan: { mode: "all_selected", optionIds: [] }
+      searchEnabled: false
     });
   });
 
@@ -3182,15 +3158,7 @@ describe("message run actions", () => {
         maxOutputTokens: 4096
       },
       provider: sourceModel.provider,
-      searchPlan: {
-        mode: "model_choice",
-        optionIds: [hostedSearchOptionId, clientSearchOptionId]
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: [hostedSearchOptionId, clientSearchOptionId]
-      },
-      searchPreferenceSource: "personal",
+      searchEnabled: true,
       timeZone: expect.any(String),
       tools: "none",
       workspace: { enabled: false, reason: "installation_disabled" }
@@ -3483,7 +3451,7 @@ describe("message run actions", () => {
     expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
       modelId: "gpt-5.5",
       provider: "openai",
-      searchPlan: { mode: "all_selected", optionIds: [] }
+      searchEnabled: false
     });
     expect(selectThreadSnapshot(useThreadStore.getState(), "chat-a")).toMatchObject({
       activeLeafId: "assistant-edit-persisted",
@@ -3559,14 +3527,7 @@ describe("message run actions", () => {
 
     const [, regenerateInit] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
     expect(JSON.parse(String(regenerateInit.body))).toMatchObject({
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      }
+      searchEnabled: true
     });
   });
 
@@ -4257,15 +4218,7 @@ describe("message run actions", () => {
       modelId: "gpt-5.5",
       params: {},
       provider: "openai",
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: []
-      },
-      searchPreferencePlan: {
-        mode: "all_selected",
-        optionIds: []
-      },
-      searchPreferenceSource: "personal",
+      searchEnabled: false,
       timeZone: expect.any(String),
       workspace: { enabled: false, reason: "installation_disabled" }
     });
@@ -4358,14 +4311,7 @@ describe("message run actions", () => {
 
       const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
       expect(JSON.parse(String(requestInit.body))).toMatchObject({
-        searchPlan: {
-          mode: "model_choice",
-          optionIds: [clientSearchOptionId]
-        },
-        searchPreferencePlan: {
-          mode: "model_choice",
-          optionIds: [clientSearchOptionId]
-        }
+        searchEnabled: true
       });
     }
   );
@@ -4396,10 +4342,7 @@ describe("message run actions", () => {
 
     const [, requestInit] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
-      searchPlan: {
-        mode: "all_selected",
-        optionIds: [clientSearchOptionId]
-      }
+      searchEnabled: true
     });
   });
 

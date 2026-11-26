@@ -19,39 +19,39 @@ function source(overrides: Partial<AdminSearchIntegration> = {}): AdminSearchInt
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
       maxOutputTokens: 4_096,
-      protocol: "openrouter_perplexity_chat",
-      providerModelId: "model-sonar",
+      protocol: "anthropic_web_search",
+      providerModelId: "model-haiku",
       queryMaxCharacters: 500,
       reasoningPolicy: "lowest_supported",
       timeoutMs: 300_000
     },
     configurationActive: true,
-    description: "Web search through OpenRouter.",
-    displayName: "Perplexity Search",
+    description: "Web search through Anthropic.",
+    displayName: "Anthropic Search",
     draftDirty: false,
     draftTestEvidence: {
       checkedAt: NOW,
       method: "provider_search",
       normalizedSourceCount: 3,
-      protocol: "openrouter_perplexity_chat",
+      protocol: "anthropic_web_search",
       status: "available"
     },
     draftVersion: 1,
     enabled: true,
     executionModes: ["all_selected", "model_choice"],
-    id: "source-perplexity",
-    kind: "perplexity_search",
+    id: "source-anthropic",
+    kind: "web_search",
     providerModel: {
-      connectionDisplayName: "OpenRouter",
-      connectionId: "conn-openrouter",
-      displayName: "Sonar",
-      id: "model-sonar",
+      connectionDisplayName: "Anthropic",
+      connectionId: "conn-anthropic",
+      displayName: "Claude Haiku 5.5",
+      id: "model-haiku",
       responseTimeoutSeconds: 240
     },
     ready: true,
     readiness: "ready",
-    sourceConnectionId: "conn-openrouter",
-    strategyId: "perplexity-search",
+    sourceConnectionId: "conn-anthropic",
+    strategyId: "anthropic-search",
     system: false,
     ...overrides
   };
@@ -76,6 +76,7 @@ function catalog(): AdminSearchCatalog {
         description: "Web search with OpenAI.",
         displayName: "OpenAI Search",
         draftTestEvidence: null,
+        executionModes: [],
         id: "source-openai",
         kind: "web_search",
         providerModel: {
@@ -106,25 +107,34 @@ function catalog(): AdminSearchCatalog {
         system: true
       })
     ],
-    policy: { defaultPlan: { mode: "all_selected", optionIds: [] }, updatedAt: NOW, version: 4 },
+    policy: {
+      backupOptionId: null,
+      defaultPlan: { mode: "all_selected", optionIds: [] },
+      engineOptionId: null,
+      inAnswerSearch: true,
+      // The server resolved no engine for this synthetic installation (search-v2, 2026-11-26).
+      resolved: { automatic: true, backupOptionId: null, engineOptionId: null, reason: "search_engine_not_configured" },
+      updatedAt: NOW,
+      version: 4
+    },
     providerModels: [
       {
-        connectionDisplayName: "OpenRouter",
-        connectionId: "conn-openrouter",
-        displayName: "Sonar",
+        connectionDisplayName: "Anthropic",
+        connectionId: "conn-anthropic",
+        displayName: "Claude Haiku 5.5",
         enabled: true,
-        id: "model-sonar",
+        id: "model-haiku",
         responseTimeoutSeconds: 240,
-        searchKind: "perplexity_search",
+        searchKind: "anthropic_web_search",
         searchReasoningSupported: false
       },
       {
         connectionDisplayName: "OpenRouter EU",
         connectionId: "conn-openrouter-eu",
-        displayName: "Sonar Pro",
+        displayName: "GPT-6 Luna",
         enabled: true,
-        id: "model-sonar-eu",
-        searchKind: "perplexity_search",
+        id: "model-luna-eu",
+        searchKind: "openrouter_web_search",
         searchReasoningSupported: false
       },
       {
@@ -234,12 +244,17 @@ describe("AdminSearchSection", () => {
     await waitFor(() => expect(result.current.state.loaded).toBe(true));
     let refreshing!: Promise<void>;
     act(() => { refreshing = result.current.actions.refresh(); });
-    await act(async () => { await result.current.actions.savePolicy(previous.policy.defaultPlan, previous.policy.version); });
+    await act(async () => {
+      await result.current.actions.savePolicy(
+        { backupOptionId: null, engineOptionId: null, inAnswerSearch: true },
+        previous.policy.version
+      );
+    });
     await act(async () => { finish(Response.json({ search: previous })); await refreshing; });
     expect(result.current.state.catalog?.policy.version).toBe(previous.policy.version + 1);
   });
 
-  it("shows the plan and the source list on one page with one status word per source", async () => {
+  it("shows the engine and the source list on one page with one status word per source", async () => {
     mockFetch(state);
     const { onSelectResource } = renderSection();
 
@@ -248,15 +263,22 @@ describe("AdminSearchSection", () => {
     expect(rows).toHaveLength(3);
     expect(rows.map((row) => within(row).getByTestId("search-source-status").textContent))
       .toEqual(["Working", "Setup needed", "Disabled"]);
-    expect(rows[0]).toHaveTextContent("All chat models");
-    expect(rows[1]).toHaveTextContent("No Search model yet");
-    // Google Search reaches every chat model through its client route.
-    expect(rows[2]).toHaveTextContent("All chat models");
+    // No source is the engine or the backup yet.
+    expect(rows.map((row) => within(row).getByTestId("search-source-role").textContent)).toEqual(["", "", ""]);
     expect(within(rows[2]!).getByRole("link")).toHaveClass("opacity-65");
-    expect(within(rows[0]!).getByRole("link")).toHaveAttribute("href", "/admin?section=search&resource=source-perplexity");
-    expect(screen.getByRole("region", { name: "Recommended Search plan" })).toHaveTextContent("never grants access");
-    // No source chosen means the best working one, never Off.
-    expect(screen.getByTestId("admin-search-plan-automatic")).toHaveTextContent("Automatic: Perplexity Search");
+    expect(within(rows[0]!).getByRole("link")).toHaveAttribute("href", "/admin?section=search&resource=source-anthropic");
+    const engine = screen.getByRole("region", { name: "Engine" });
+    // The server's resolution in words: no engine in the default order can search, never Off.
+    expect(screen.getByTestId("admin-search-engine-resolved")).toHaveTextContent("No engine can search yet.");
+    expect(engine).toHaveTextContent(
+      "Automatic uses the first working one of: OpenAI web search, OpenRouter with Perplexity, DeepSeek Search API, Gemini Google Search, Anthropic web search."
+    );
+    // Only a turned-on source that searches for every model can be the engine or the backup.
+    expect(within(within(engine).getByLabelText(/^Search engine/)).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["Automatic", "Anthropic Search"]);
+    expect(within(within(engine).getByLabelText(/^Backup/)).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["None", "Anthropic Search"]);
+    expect(within(engine).getByRole("switch", { name: "GPT searches inside its own answer" })).toBeChecked();
     expect(screen.queryByText("Let the model choose")).not.toBeInTheDocument();
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Search");
     await waitFor(() => expect(screen.getByRole("button", { name: "Add source" })).toBeEnabled());
@@ -264,7 +286,7 @@ describe("AdminSearchSection", () => {
     expect(screen.getByTestId("admin-search-section").textContent).not.toMatch(bannedWords);
 
     fireEvent.click(within(rows[0]!).getByRole("link"));
-    expect(onSelectResource).toHaveBeenCalledWith("source-perplexity");
+    expect(onSelectResource).toHaveBeenCalledWith("source-anthropic");
   });
 
   it("folds archived sources behind one disclosure that still opens their pages", async () => {
@@ -314,13 +336,24 @@ describe("AdminSearchSection", () => {
     expect(within(screen.getByRole("list", { name: "Archived Search sources" })).getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("saves the recommended plan with the current policy version and reports it once", async () => {
+  it("saves the engine, the backup and the in-answer switch as named fields with the policy version", async () => {
+    state.current = {
+      ...state.current,
+      integrations: [
+        ...state.current.integrations,
+        source({ displayName: "DeepSeek Search API", id: "source-deepseek", kind: "deepseek_search_api", strategyId: "deepseek-search-api" })
+      ]
+    };
     const calls = mockFetch(state, ({ body, method, url }) => {
       if (url === "/api/admin/search" && method === "PATCH") {
         state.current = {
           ...state.current,
           policy: {
-            defaultPlan: body?.defaultPlan as AdminSearchCatalog["policy"]["defaultPlan"],
+            backupOptionId: body?.backupOptionId as string | null,
+            defaultPlan: { mode: "all_selected", optionIds: ["anthropic-search", "deepseek-search-api"] },
+            engineOptionId: body?.engineOptionId as string | null,
+            inAnswerSearch: body?.inAnswerSearch as boolean,
+            resolved: { automatic: false, backupOptionId: "deepseek-search-api", engineOptionId: "anthropic-search", reason: null },
             updatedAt: NOW,
             version: 5
           }
@@ -331,39 +364,77 @@ describe("AdminSearchSection", () => {
     });
     const { feedback, onMutationCommitted } = renderSection();
 
-    const plan = await screen.findByRole("region", { name: "Recommended Search plan" });
-    expect(within(plan).queryByRole("button", { name: "OpenAI Search" })).not.toBeInTheDocument();
+    const engine = await screen.findByRole("region", { name: "Engine" });
     // A clean card offers no actions (issue #66).
-    expect(within(plan).queryByRole("button", { name: "Save default" })).not.toBeInTheDocument();
-    expect(within(plan).queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
-    expect(within(plan).getByText("No unsaved changes")).toBeInTheDocument();
-    fireEvent.click(within(plan).getByRole("button", { name: "Perplexity Search" }));
-    expect(within(plan).getByRole("button", { name: "Perplexity Search" })).toHaveAttribute("aria-pressed", "true");
-    const save = within(plan).getByRole("button", { name: "Save default" });
+    expect(within(engine).queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(within(engine).queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+    expect(within(engine).getByText("No unsaved changes")).toBeInTheDocument();
+    fireEvent.change(within(engine).getByLabelText(/^Backup/), { target: { value: "anthropic-search" } });
+    // The engine cannot be its own backup: choosing it clears the backup.
+    fireEvent.change(within(engine).getByLabelText(/^Search engine/), { target: { value: "anthropic-search" } });
+    expect(within(engine).getByLabelText(/^Backup/)).toHaveValue("");
+    expect(within(within(engine).getByLabelText(/^Backup/)).getByRole("option", { name: "Anthropic Search" })).toBeDisabled();
+    fireEvent.change(within(engine).getByLabelText(/^Backup/), { target: { value: "deepseek-search-api" } });
+    fireEvent.click(within(engine).getByRole("switch", { name: "GPT searches inside its own answer" }));
+    expect(within(engine).getByText("Unsaved changes")).toBeInTheDocument();
+    const save = within(engine).getByRole("button", { name: "Save" });
     save.focus();
     fireEvent.click(save);
 
-    await waitFor(() => expect(feedback.reportNotice).toHaveBeenCalledWith("Organization Search default saved."));
+    await waitFor(() => expect(feedback.reportNotice).toHaveBeenCalledWith("Search engine saved."));
     expect(calls.find(({ method }) => method === "PATCH")?.body).toEqual({
-      defaultPlan: { mode: "all_selected", optionIds: ["perplexity-search"] },
-      expectedVersion: 4
+      backupOptionId: "deepseek-search-api",
+      engineOptionId: "anthropic-search",
+      expectedVersion: 4,
+      inAnswerSearch: false
     });
     expect(onMutationCommitted).toHaveBeenCalled();
-    await waitFor(() => expect(within(screen.getByRole("region", { name: "Recommended Search plan" }))
-      .queryByRole("button", { name: "Save default" })).not.toBeInTheDocument());
-    expect(within(screen.getByRole("region", { name: "Recommended Search plan" })).getByRole("button", { name: "Perplexity Search" }))
-      .toHaveAttribute("aria-pressed", "true");
+    const saved = screen.getByRole("region", { name: "Engine" });
+    await waitFor(() => expect(within(saved).queryByRole("button", { name: "Save" })).not.toBeInTheDocument());
+    expect(screen.getByTestId("admin-search-engine-resolved"))
+      .toHaveTextContent("Searching with Anthropic Search, backup DeepSeek Search API.");
+    expect(within(saved).getByLabelText(/^Search engine/)).toHaveValue("anthropic-search");
+    expect(within(saved).getByRole("switch", { name: "GPT searches inside its own answer" })).not.toBeChecked();
+    const list = screen.getByRole("list", { name: "Search sources" });
+    expect(within(list).getAllByTestId("search-source-role").map((role) => role.textContent))
+      .toEqual(["Engine", "", "", "Backup"]);
     // Save left with the change; the card remounted for the new version holds focus on its status line.
-    expect(within(screen.getByRole("region", { name: "Recommended Search plan" })).getByText("No unsaved changes")).toHaveFocus();
+    expect(within(saved).getByText("No unsaved changes")).toHaveFocus();
+  });
+
+  it("names a chosen engine that cannot search and asks for another before saving", async () => {
+    state.current = {
+      ...state.current,
+      policy: {
+        ...state.current.policy,
+        engineOptionId: "openai-native-web-search",
+        resolved: { automatic: false, backupOptionId: null, engineOptionId: null, reason: "search_engine_unavailable" }
+      }
+    };
+    mockFetch(state);
+    renderSection();
+
+    const engine = await screen.findByRole("region", { name: "Engine" });
+    expect(screen.getByTestId("admin-search-engine-resolved"))
+      .toHaveTextContent("OpenAI Search cannot search now, and nothing replaces it.");
+    expect(within(engine).getByLabelText(/^Search engine/)).toHaveValue("openai-native-web-search");
+    expect(within(engine).getByRole("option", { name: "OpenAI Search · unavailable" })).toBeDisabled();
+    fireEvent.click(within(engine).getByRole("switch", { name: "GPT searches inside its own answer" }));
+    expect(within(engine).getByRole("status")).toHaveTextContent("OpenAI Search can no longer be the engine.");
+    expect(within(engine).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(within(engine).getByLabelText(/^Search engine/), { target: { value: "" } });
+    expect(within(engine).getByRole("button", { name: "Save" })).toBeEnabled();
+    const list = screen.getByRole("list", { name: "Search sources" });
+    expect(within(list).getAllByTestId("search-source-role")[1]).toHaveTextContent("Engine");
   });
 
   it("owns the source page topbar: Enabled switch, Run check with an inline result, and Archive behind one confirmation", async () => {
     const calls = mockFetch(state, ({ body, method, url }) => {
-      if (method === "POST" && url === "/api/admin/search/source-perplexity/actions") {
+      if (method === "POST" && url === "/api/admin/search/source-anthropic/actions") {
         if (body?.action === "disable" || body?.action === "enable") {
           state.current = {
             ...state.current,
-            integrations: state.current.integrations.map((item) => item.id === "source-perplexity"
+            integrations: state.current.integrations.map((item) => item.id === "source-anthropic"
               ? { ...item, enabled: body.action === "enable" }
               : item)
           };
@@ -371,14 +442,14 @@ describe("AdminSearchSection", () => {
         if (body?.action === "test") {
           state.current = {
             ...state.current,
-            integrations: state.current.integrations.map((item) => item.id === "source-perplexity"
+            integrations: state.current.integrations.map((item) => item.id === "source-anthropic"
               ? {
                   ...item,
                   draftTestEvidence: {
                     checkedAt: NOW,
                     method: "provider_search",
                     normalizedSourceCount: 0,
-                    protocol: "openrouter_perplexity_chat",
+                    protocol: "anthropic_web_search",
                     status: "unavailable"
                   }
                 }
@@ -388,7 +459,7 @@ describe("AdminSearchSection", () => {
         if (body?.action === "archive") {
           state.current = {
             ...state.current,
-            integrations: state.current.integrations.map((item) => item.id === "source-perplexity"
+            integrations: state.current.integrations.map((item) => item.id === "source-anthropic"
               ? { ...item, archivedAt: NOW, enabled: false }
               : item)
           };
@@ -397,30 +468,30 @@ describe("AdminSearchSection", () => {
       }
       return null;
     });
-    const { confirmations, feedback, onSelectResource } = renderSection("source-perplexity");
+    const { confirmations, feedback, onSelectResource } = renderSection("source-anthropic");
 
     const status = await screen.findByTestId("search-source-page-status");
-    expect(status).toHaveTextContent(/^Working · Sonar on OpenRouter · checked today \d{1,2}:\d{2}$/u);
-    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Perplexity Search"));
+    expect(status).toHaveTextContent(/^Working · Claude Haiku 5.5 on Anthropic · checked today \d{1,2}:\d{2}$/u);
+    await waitFor(() => expect(screen.getByTestId("topbar-title")).toHaveTextContent("Anthropic Search"));
     expect(screen.getByTestId("topbar-title")).toHaveTextContent("Search");
     expect(screen.getByTestId("search-source-check")).toHaveTextContent("working, 3 sources found");
     expect(screen.getByTestId("search-source-page").textContent).not.toMatch(bannedWords);
 
-    fireEvent.click(screen.getByRole("switch", { name: "Perplexity Search enabled" }));
-    await waitFor(() => expect(screen.getByRole("switch", { name: "Perplexity Search enabled" })).not.toBeChecked());
+    fireEvent.click(screen.getByRole("switch", { name: "Anthropic Search enabled" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Anthropic Search enabled" })).not.toBeChecked());
     expect(calls.find(({ body }) => body?.action === "disable")).toBeTruthy();
     expect(feedback.reportNotice).toHaveBeenCalledWith("Search source turned off.");
     expect(screen.getByTestId("search-source-page-status")).toHaveTextContent(/^Disabled ·/u);
 
     fireEvent.click(screen.getByRole("button", { name: "Run check" }));
     await waitFor(() => expect(screen.getByTestId("search-source-check")).toHaveTextContent("no sources found"));
-    expect(calls.find(({ body }) => body?.action === "test")?.url).toBe("/api/admin/search/source-perplexity/actions");
+    expect(calls.find(({ body }) => body?.action === "test")?.url).toBe("/api/admin/search/source-anthropic/actions");
     expect(confirmations).toHaveLength(0);
 
-    fireEvent.click(screen.getByRole("button", { name: "More actions for Perplexity Search" }));
+    fireEvent.click(screen.getByRole("button", { name: "More actions for Anthropic Search" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
     expect(confirmations).toHaveLength(1);
-    expect(confirmations[0]).toMatchObject({ confirmLabel: "Archive source", title: "Archive “Perplexity Search”?" });
+    expect(confirmations[0]).toMatchObject({ confirmLabel: "Archive source", title: "Archive “Anthropic Search”?" });
     expect(confirmations[0]!.body).toMatch(/hidden from new chats/u);
     expect(calls.some(({ body }) => body?.action === "archive")).toBe(false);
     await act(async () => { await confirmations[0]!.onConfirm(); });
@@ -454,13 +525,13 @@ describe("AdminSearchSection", () => {
 
   it("configures a source with one Save that saves and checks, keeps the fields and the previous configuration when the check fails", async () => {
     const calls = mockFetch(state, ({ body, method, url }) => {
-      if (method === "POST" && url === "/api/admin/search/source-perplexity/actions" && body?.action === "save_and_check") {
+      if (method === "POST" && url === "/api/admin/search/source-anthropic/actions" && body?.action === "save_and_check") {
         if (body.displayName === "Broken Search") {
           return Response.json({ error: "search_test_failed" }, { status: 422 });
         }
         state.current = {
           ...state.current,
-          integrations: state.current.integrations.map((item) => item.id === "source-perplexity"
+          integrations: state.current.integrations.map((item) => item.id === "source-anthropic"
             ? {
                 ...item,
                 description: String(body.description),
@@ -473,15 +544,16 @@ describe("AdminSearchSection", () => {
       }
       return null;
     });
-    const { feedback } = renderSection("source-perplexity");
+    const { feedback } = renderSection("source-anthropic");
 
     fireEvent.click(await screen.findByRole("button", { name: "Configure" }));
     const sheet = await screen.findByRole("dialog", { name: "Configure source" });
     expect(within(sheet).getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(within(sheet).getByLabelText(/^Search model/)).not.toBeVisible();
-    fireEvent.click(within(sheet).getByText("Advanced Search execution"));
+    // The Search model leads the sheet; a choice is keyed by its Search kind and model.
     expect(within(sheet).getByLabelText(/^Search model/)).toBeVisible();
-    expect(within(sheet).getByLabelText(/^Search model/)).toHaveValue("model-sonar");
+    expect(within(sheet).getByLabelText(/^Search model/)).toHaveValue("anthropic_web_search:model-haiku");
+    expect(within(sheet).queryByLabelText(/^OpenRouter engine/u)).not.toBeInTheDocument();
+    fireEvent.click(within(sheet).getByText("Advanced Search execution"));
     const output = within(sheet).getByRole("spinbutton", { name: /^Maximum Search output/ });
     expect(within(sheet).queryByRole("spinbutton", { name: /^Maximum requests to this source/ })).not.toBeInTheDocument();
     expect(within(sheet).queryByRole("spinbutton", { name: /^Results per search/ })).not.toBeInTheDocument();
@@ -500,14 +572,14 @@ describe("AdminSearchSection", () => {
     expect(alert).toHaveTextContent("The check found no working source, so nothing was changed.");
     expect(within(sheet).getByLabelText("Name")).toHaveValue("Broken Search");
     expect(output).toHaveValue(8193);
-    expect(screen.getByTestId("search-source-page")).toHaveTextContent("Perplexity Search");
+    expect(screen.getByTestId("search-source-page")).toHaveTextContent("Anthropic Search");
     expect(feedback.reportError).not.toHaveBeenCalled();
     expect(feedback.reportNotice).not.toHaveBeenCalled();
     expect(calls.filter(({ body }) => body?.action === "save_and_check")).toHaveLength(1);
     expect(calls.find(({ body }) => body?.action === "save_and_check")?.body).toMatchObject({
       action: "save_and_check",
       displayName: "Broken Search",
-      draft: expect.objectContaining({ providerModelId: "model-sonar",
+      draft: expect.objectContaining({ providerModelId: "model-haiku",
         maxOutputTokens: 8193, queryMaxCharacters: 4000, timeoutMs: 121_000 }),
       expectedDraftVersion: 1
     });
@@ -518,16 +590,16 @@ describe("AdminSearchSection", () => {
       "queryMaxCharacters", "reasoningPolicy", "timeoutMs"
     ]);
 
-    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Perplexity Search EU" } });
+    fireEvent.change(within(sheet).getByLabelText("Name"), { target: { value: "Anthropic Search EU" } });
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Configure source" })).not.toBeInTheDocument());
     expect(feedback.reportNotice).toHaveBeenCalledWith("Search source saved and working.");
-    expect(screen.getByTestId("search-source-page")).toHaveTextContent("Perplexity Search EU");
+    expect(screen.getByTestId("search-source-page")).toHaveTextContent("Anthropic Search EU");
     expect(calls.filter(({ body }) => body?.action === "save_and_check")).toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "Configure" }));
     const reopened = await screen.findByRole("dialog", { name: "Configure source" });
-    expect(within(reopened).getByLabelText("Name")).toHaveValue("Perplexity Search EU");
+    expect(within(reopened).getByLabelText("Name")).toHaveValue("Anthropic Search EU");
     fireEvent.change(within(reopened).getByLabelText("Name"), { target: { value: "Renamed" } });
     fireEvent.keyDown(reopened, { key: "Escape" });
     const discard = await screen.findByRole("dialog", { name: "Discard unsaved source settings" });
@@ -548,8 +620,8 @@ describe("AdminSearchSection", () => {
               providerModel: {
                 connectionDisplayName: "OpenRouter EU",
                 connectionId: "conn-openrouter-eu",
-                displayName: "Sonar Pro",
-                id: "model-sonar-eu"
+                displayName: "GPT-6 Luna",
+                id: "model-luna-eu"
               },
               sourceConnectionId: "conn-openrouter-eu",
               strategyId: "openrouter-eu-search"
@@ -569,21 +641,22 @@ describe("AdminSearchSection", () => {
     const model = within(sheet).getByLabelText(/^Search model/);
     expect(within(model).getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Select a Search-capable model",
-      "OpenRouter EU · Sonar Pro"
+      "OpenRouter EU web search · GPT-6 Luna"
     ]);
-    fireEvent.change(model, { target: { value: "model-sonar-eu" } });
-    expect(within(sheet).getByLabelText("Name")).toHaveValue("OpenRouter EU Search");
+    fireEvent.change(model, { target: { value: "openrouter_web_search:model-luna-eu" } });
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("OpenRouter EU Web Search");
     fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add source" })).not.toBeInTheDocument());
     expect(calls.find(({ method }) => method === "POST")?.body).toEqual({
       check: true,
-      description: "Web search through OpenRouter EU.",
-      displayName: "OpenRouter EU Search",
+      description: "Web results with source links through OpenRouter EU web search.",
+      displayName: "OpenRouter EU Web Search",
       draft: expect.objectContaining({
         adapterKind: "provider_model_client",
-        protocol: "openrouter_perplexity_chat",
-        providerModelId: "model-sonar-eu"
+        openRouterWebSearch: { engine: "perplexity", mode: null },
+        protocol: "openrouter_web_search",
+        providerModelId: "model-luna-eu"
       })
     });
     expect(feedback.reportNotice).toHaveBeenCalledWith("Search source added and working.");
@@ -613,10 +686,10 @@ describe("AdminSearchSection", () => {
     const model = within(sheet).getByLabelText(/^Search model/);
     expect(within(model).getAllByRole("option").map((option) => option.textContent)).toEqual([
       "Select a Search-capable model",
-      "OpenRouter EU · Sonar Pro",
+      "OpenRouter EU web search · GPT-6 Luna",
       "DeepSeek Search API · key via DeepSeek V4 Flash"
     ]);
-    fireEvent.change(model, { target: { value: "model-flash" } });
+    fireEvent.change(model, { target: { value: "deepseek_search_api:model-flash" } });
     expect(within(sheet).getByLabelText("Name")).toHaveValue("DeepSeek Search API");
     expect(within(sheet).queryByText("Advanced Search execution")).not.toBeInTheDocument();
     expect(within(sheet).queryByRole("spinbutton", { name: /^Results per search/ })).not.toBeInTheDocument();
@@ -638,6 +711,154 @@ describe("AdminSearchSection", () => {
         protocol: "deepseek_search_api",
         providerModelId: "model-flash",
         queryMaxCharacters: 128
+      })
+    });
+  });
+
+  it("configures OpenRouter web search with its engine and mode and keeps them on save", async () => {
+    const flash = {
+      connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash",
+      enabled: true, id: "model-flash", responseTimeoutSeconds: 300, searchKind: "openrouter_web_search",
+      searchReasoningSupported: false
+    } as const;
+    const webSource = source({
+      configuration: {
+        adapterKind: "provider_model_client",
+        credentialMode: "provider_model",
+        maxOutputTokens: null,
+        openRouterWebSearch: { engine: "parallel", mode: "fast" },
+        protocol: "openrouter_web_search",
+        providerModelId: "model-flash",
+        queryMaxCharacters: 1_000,
+        reasoningPolicy: "lowest_supported",
+        timeoutMs: 120_000
+      },
+      description: "Web results with source links through OpenRouter web search.",
+      displayName: "OpenRouter Web Search",
+      id: "source-openrouter-web",
+      kind: "web_search",
+      providerModel: { connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash", id: "model-flash" },
+      sourceConnectionId: "conn-openrouter",
+      strategyId: "openrouter-web-search"
+    });
+    state.current = {
+      ...state.current,
+      integrations: [...state.current.integrations, webSource],
+      // The same OpenRouter model may be listed once per Search kind; here only for the web search.
+      providerModels: [...state.current.providerModels, flash]
+    };
+    const calls = mockFetch(state, ({ method, url }) => method === "POST" &&
+      url === "/api/admin/search/source-openrouter-web/actions"
+      ? Response.json({ search: state.current })
+      : null);
+    renderSection("source-openrouter-web");
+
+    expect(await screen.findByTestId("search-source-page")).toHaveTextContent("Parallel, Fast");
+    fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+    const sheet = await screen.findByRole("dialog", { name: "Configure source" });
+    const model = within(sheet).getByLabelText(/^Search model/);
+    expect(model).toHaveValue("openrouter_web_search:model-flash");
+    expect(within(model).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Select a Search-capable model",
+      "OpenRouter web search · DeepSeek V4.1 Flash"
+    ]);
+    expect(within(sheet).getByText(/DeepSeek V4\.1 Flash and GPT-6 Luna passed this check/u)).toBeInTheDocument();
+    const engine = within(sheet).getByLabelText(/^OpenRouter engine/u);
+    expect(engine).toHaveValue("parallel");
+    expect(within(engine).getAllByRole("option").map((option) => option.textContent)).toEqual(["Exa", "Parallel", "Perplexity"]);
+    const mode = within(sheet).getByLabelText(/^Engine mode/u);
+    expect(within(mode).getAllByRole("option").map((option) => option.textContent))
+      .toEqual(["Turbo", "Fast", "Basic", "Advanced"]);
+    // The reply limit does not apply to a results-only engine.
+    expect(within(sheet).queryByLabelText("Maximum Search output, tokens")).not.toBeInTheDocument();
+    expect(within(sheet).queryByText("Advanced Search execution")).not.toBeInTheDocument();
+    expect(sheet.textContent).not.toMatch(bannedWords);
+
+    fireEvent.change(mode, { target: { value: "turbo" } });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.find(({ body }) => body?.action === "save_and_check")).toBeTruthy());
+    expect(calls.find(({ body }) => body?.action === "save_and_check")?.body?.draft).toEqual({
+      ...webSource.configuration,
+      openRouterWebSearch: { engine: "parallel", mode: "turbo" }
+    });
+  });
+
+  it("switches OpenRouter web search to Perplexity, which has no modes", async () => {
+    const webSource = source({
+      configuration: {
+        adapterKind: "provider_model_client",
+        credentialMode: "provider_model",
+        maxOutputTokens: null,
+        openRouterWebSearch: { engine: "exa", mode: "deep" },
+        protocol: "openrouter_web_search",
+        providerModelId: "model-flash",
+        queryMaxCharacters: 1_000,
+        reasoningPolicy: "lowest_supported",
+        timeoutMs: 120_000
+      },
+      id: "source-openrouter-web",
+      kind: "web_search",
+      sourceConnectionId: "conn-openrouter",
+      strategyId: "openrouter-web-search"
+    });
+    state.current = {
+      ...state.current,
+      integrations: [webSource],
+      providerModels: [{
+        connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash",
+        enabled: true, id: "model-flash", searchKind: "openrouter_web_search", searchReasoningSupported: false
+      }]
+    };
+    const calls = mockFetch(state, ({ method }) => method === "POST" ? Response.json({ search: state.current }) : null);
+    renderSection("source-openrouter-web");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Configure" }));
+    const sheet = await screen.findByRole("dialog", { name: "Configure source" });
+    fireEvent.change(within(sheet).getByLabelText(/^OpenRouter engine/u), { target: { value: "perplexity" } });
+    expect(within(sheet).queryByLabelText(/^Engine mode/u)).not.toBeInTheDocument();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.find(({ body }) => body?.action === "save_and_check")).toBeTruthy());
+    expect(calls.find(({ body }) => body?.action === "save_and_check")?.body?.draft)
+      .toMatchObject({ openRouterWebSearch: { engine: "perplexity", mode: null }, protocol: "openrouter_web_search" });
+  });
+
+  it("adds OpenRouter web search on an OpenRouter connection that has none yet", async () => {
+    state.current = {
+      ...state.current,
+      providerModels: [...state.current.providerModels, {
+        connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash",
+        enabled: true, id: "model-flash", searchKind: "openrouter_web_search", searchReasoningSupported: false
+      }]
+    };
+    const calls = mockFetch(state, ({ method, url }) => method === "POST" && url === "/api/admin/search"
+      ? Response.json({ error: "search_test_failed" }, { status: 422 })
+      : null);
+    renderSection();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Add source" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+    const sheet = await screen.findByRole("dialog", { name: "Add source" });
+    const model = within(sheet).getByLabelText(/^Search model/);
+    expect(within(model).getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "Select a Search-capable model",
+      "OpenRouter EU web search · GPT-6 Luna",
+      "OpenRouter web search · DeepSeek V4.1 Flash"
+    ]);
+    fireEvent.change(model, { target: { value: "openrouter_web_search:model-flash" } });
+    expect(within(sheet).getByLabelText("Name")).toHaveValue("OpenRouter Web Search");
+    expect(within(sheet).getByLabelText(/^OpenRouter engine/u)).toHaveValue("perplexity");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Save" }));
+
+    expect(await within(sheet).findByRole("alert")).toHaveTextContent("The check found no working source");
+    expect(calls.find(({ method }) => method === "POST")?.body).toEqual({
+      check: true,
+      description: "Web results with source links through OpenRouter web search.",
+      displayName: "OpenRouter Web Search",
+      draft: expect.objectContaining({
+        maxOutputTokens: null,
+        openRouterWebSearch: { engine: "perplexity", mode: null },
+        protocol: "openrouter_web_search",
+        providerModelId: "model-flash"
       })
     });
   });

@@ -62,7 +62,7 @@ describe("admin Search diagnostic policies", () => {
     });
   });
 
-  it("keeps OpenAI and Perplexity diagnostics on their typed client policies", () => {
+  it("keeps OpenAI diagnostics on their typed client policy and refuses Perplexity Sonar", () => {
     expect(adminSearchProviderPolicy({
       capabilities,
       defaultParams: {},
@@ -74,23 +74,25 @@ describe("admin Search diagnostic policies", () => {
       provider: "openai",
       strategyId: "openai-responses-web-search"
     });
-    expect(adminSearchProviderPolicy({
+    // Perplexity Sonar (retired 2026-11-26) has no policy any more.
+    expect(() => adminSearchProviderPolicy({
       capabilities,
-      defaultParams: { routing: "private" },
-      draft: draft("openrouter_perplexity_chat"),
+      defaultParams: {},
+      draft: draft("openrouter_perplexity_chat" as AdminSearchDraft["protocol"]),
       modelId: "perplexity/sonar-pro-search",
       provider: "openrouter"
-    })).toMatchObject({
-      defaultParams: {
-        maxOutputTokens: 4_096,
-        routing: "private",
-        stream: false,
-        temperature: 0
-      },
-      modelId: "perplexity/sonar-pro-search",
-      provider: "openrouter",
-      strategyId: "perplexity-tool-search"
+    })).toThrow("search_protocol_not_supported");
+  });
+
+  it("runs OpenRouter's web search with the draft's engine on the technical model and its routing", () => {
+    const input = { capabilities, defaultParams: { provider: { dataCollection: "deny" } },
+      draft: { ...draft("openrouter_web_search"), openRouterWebSearch: { engine: "exa" as const, mode: "auto" } },
+      modelId: "deepseek/deepseek-v4.1-flash", provider: "openrouter" };
+    expect(adminSearchProviderPolicy(input)).toEqual({
+      defaultParams: { provider: { dataCollection: "deny" } }, engine: "exa", mode: "auto", modelCapabilities: capabilities,
+      modelId: "deepseek/deepseek-v4.1-flash", provider: "openrouter", strategyId: "openrouter-web-search"
     });
+    expect(() => adminSearchProviderPolicy({ ...input, provider: "openai" })).toThrow("search_protocol_not_supported");
   });
 
   it("rejects a protocol on the wrong provider family", () => {
@@ -275,6 +277,34 @@ describe("admin Search diagnostic execution", () => {
     await vi.advanceTimersByTimeAsync(5_001);
     expect(await execution).toMatchObject({ code: "provider_request_timed_out", timeoutMs: 5_000 });
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  describe("OpenRouter web search probe", () => {
+    const webSearchDraft = { ...draft("openrouter_web_search"), openRouterWebSearch: { engine: "perplexity" as const, mode: null } };
+    beforeEach(async () => {
+      const base = await loadTechnicalProviderRole({} as never, {} as never);
+      vi.mocked(loadTechnicalProviderRole).mockResolvedValue({ ...base,
+        snapshot: { ...base.snapshot, providerFamily: "openrouter",
+          model: { ...base.snapshot.model, upstreamModelId: "deepseek/deepseek-v4.1-flash" } } } as Awaited<ReturnType<typeof loadTechnicalProviderRole>>);
+    });
+
+    it("accepts a model that searched once with the verbatim query and found a result", async () => {
+      search.mockResolvedValueOnce({ ...sourceResult(), searchQueries: ["OpenAI  official website"] });
+      await expect(tester().test({ draft: webSearchDraft, userId: "admin" }))
+        .resolves.toMatchObject({ normalizedSourceCount: 1, protocol: "openrouter_web_search", status: "available" });
+      expect(search.mock.calls[0]![0].searchPolicy).toMatchObject({ engine: "perplexity", strategyId: "openrouter-web-search" });
+    });
+
+    it.each([
+      { case: "an empty query", searchQueries: [""] },
+      { case: "a rewritten query", searchQueries: ["OpenAI homepage URL"] },
+      { case: "a rewritten query, then the verbatim one on the repeat", searchQueries: ["OpenAI homepage URL", "OpenAI official website"] },
+      { case: "two searches", searchQueries: ["OpenAI official website", "OpenAI official website"] },
+      { case: "no search", searchQueries: [] }
+    ])("refuses a model that searched with $case, results or not", async ({ searchQueries }) => {
+      search.mockResolvedValueOnce({ ...sourceResult(), searchQueries });
+      await expect(tester().test({ draft: webSearchDraft, userId: "admin" })).resolves.toMatchObject({ status: "unavailable" });
+    });
   });
 
   it("charges the acting administrator for each request the exact checked deployment answered", async () => {

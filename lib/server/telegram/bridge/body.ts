@@ -1,8 +1,7 @@
 import type { ChatDefaultMcpMode, ChatDefaultSkillsMode } from "../../../contracts/chatDefaults";
 import type { CatalogWireModel, CatalogWireSearchStrategy } from "../../../contracts/catalog";
-import { reconcileModelSearchPlan } from "../../../domain/catalogMatrix";
 import type { ContentBlock } from "../../../domain/content";
-import type { SearchPlan } from "../../../domain/search";
+import { searchPlanEnabled, type SearchPlan } from "../../../domain/search";
 import {
   assistantRunControlIssue, materializeAssistantRunParams, runControlsFromSavedValues
 } from "../../assistants/runControlMaterialization";
@@ -12,7 +11,7 @@ import { connectorWorkspaceRequest } from "../../connectors/turn";
  * The send body of a Telegram message, built explicitly from the user's
  * current catalog: the server applies no saved defaults of its own (only the
  * browser does), so every value the composer would send is named here —
- * model, Search plan reconciled with the model, MCP and Skills modes, the
+ * model, Search on or off, MCP and Skills modes, the
  * saved controls as params, the Workspace as the composer asks for it — plus
  * the expected leaf and, for a first message, the personal draft. In an
  * Assistant chat the Assistant governs those rows, so none of them is sent.
@@ -72,16 +71,13 @@ export function resolveTelegramModel(catalog: TelegramRunCatalog, input: Readonl
 }
 
 /**
- * Search on: the user's default sources the model supports, else none. A
- * source the user did not choose, or Search they turned off in Chat
- * defaults, is never substituted. Search off: no options.
+ * Search on while the link has it on and the user has not turned it off in Chat defaults (operator decisions
+ * 2026-11-26: users switch Search on or off). The server binds the installation's engine, or the model's in-answer
+ * search, and names the reason in the answer when neither can run; Telegram never turns Search off on the model's
+ * behalf.
  */
-export function telegramSearchPlan(catalog: TelegramRunCatalog, model: TelegramCatalogModel, enabled: boolean): SearchPlan {
-  const off: SearchPlan = { mode: "all_selected", optionIds: [] };
-  if (!enabled) return off;
-  const preferred = reconcileModelSearchPlan(model, catalog.defaults.searchPlan.optionIds, catalog.defaults.searchPlan.mode,
-    catalog.searchStrategies);
-  return preferred.optionIds.length > 0 ? { mode: preferred.mode, optionIds: [...preferred.optionIds] } : off;
+export function telegramSearchEnabled(catalog: TelegramRunCatalog, enabled: boolean): boolean {
+  return enabled && searchPlanEnabled(catalog.defaults.searchPlan);
 }
 
 function savedControlDraft(value: unknown): Record<string, boolean | string> {
@@ -167,7 +163,7 @@ export function buildTelegramSendBody(input: Readonly<{
     ...common,
     modelId: model.modelId,
     provider: model.provider,
-    searchPlan: telegramSearchPlan(input.catalog, model, settings.searchEnabled),
+    searchEnabled: telegramSearchEnabled(input.catalog, settings.searchEnabled),
     mcp: { mode: input.catalog.defaults.mcpMode },
     skills: { mode: input.catalog.defaults.skillsMode },
     ...(controls ? { controlDefaults: controls.controlDefaults, params: controls.params } : {}),

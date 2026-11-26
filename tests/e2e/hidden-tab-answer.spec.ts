@@ -92,7 +92,7 @@ test("a quiet answer streaming while the tab is hidden stays attached on return"
     await startNewChat(page);
     await selectModel(page, setup.connectionId, model.displayName);
     // Installations without configured Search omit its chip entirely.
-    if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+    if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
     let sends = 0;
     page.on("request", (request) => {
       if (request.method() === "POST" && /\/api\/chats\/[^/]+\/messages$/u.test(request.url())) sends++;
@@ -129,6 +129,9 @@ test("a quiet answer streaming while the tab is hidden stays attached on return"
         const chatIds = [...new Set([...chats.map(({ id }) => id), ...runs.map(({ chatId }) => chatId)])];
         await tx.providerRunBinding.deleteMany({ where: { connectionId } });
         await tx.modelRun.deleteMany({ where: { id: { in: runs.map(({ id }) => id) } } });
+        // Every chat has the Workspace (2026-10-20), and its session restricts the chat's deletion.
+        await tx.workspaceCleanupJob.deleteMany({ where: { workspaceSession: { chatId: { in: chatIds }, chat: { userId } } } });
+        await tx.workspaceSession.deleteMany({ where: { chatId: { in: chatIds }, chat: { userId } } });
         await tx.chat.deleteMany({ where: { userId, id: { in: chatIds } } });
         await tx.accessGrant.deleteMany({ where: { OR: [{ providerConnectionId: connectionId }, { providerModel: { connectionId } }] } });
         await tx.providerUserCredentialAssignment.deleteMany({ where: { connectionId } });

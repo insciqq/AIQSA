@@ -1,14 +1,11 @@
 "use client";
 
-import type { CatalogSearchStrategy } from "@/lib/contracts/catalog";
+import type { CatalogSearch } from "@/lib/contracts/catalog";
 import type { McpRunSelection } from "@/lib/contracts/mcp";
 import { userImageModelErrorMessage, type ImageModelUnavailableReason, type UserImageModelOption } from "@/lib/contracts/imageModels";
 import type { ShellComposerView } from "@/components/app-shell/powerAppShellV2Contracts";
 import { ConfirmationDialog } from "@/components/app-shell/ConfirmationDialog";
-import { UiV2Button } from "@/components/ui-v2";
-import { SearchPlanPickerV2 } from "@/components/ui-v2/SearchPlanPickerV2";
-import { TranslatableLabel } from "@/components/ui-v2/TranslatableLabel";
-import type { SearchPlan } from "@/lib/domain/search";
+import { UiV2Button, UiV2Switch } from "@/components/ui-v2";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { SettingsSelectV2 } from "./SettingsSelectV2";
 import { SettingsRowV2 } from "./SettingsV2";
@@ -142,41 +139,46 @@ export function ImageModelRowV2({ view }: Readonly<{ view: ChatDefaultImageModel
   );
 }
 
+/** The row's status line: why Search, switched on, cannot search now; null while it can or while it is off. */
+function webSearchStatus(searchEnabled: boolean, search: CatalogSearch | null | undefined): string | null {
+  if (!searchEnabled || !search?.reason) return null;
+  if (search.reason === "search_not_granted") return "Your organization has not given you web search.";
+  return search.reason === "search_engine_not_configured"
+    ? "Web search is not set up yet."
+    : "Web search is unavailable right now.";
+}
+
 /**
- * Chat defaults › Web search: the sources every chat searches (chats keep no
- * Search plan of their own, operator decision 2026-10-24). This is the only
- * place Search is turned off, and only after a confirmation that names the cost.
+ * Chat defaults › Web search: one switch for every chat (chats keep no Search
+ * of their own; operator decisions 2026-10-24 and 2026-11-26, no choice of
+ * source). This is the only place Search is turned off, and only after a
+ * confirmation that names the cost; turning it on needs none.
  */
-function WebSearchDefaultRowV2({ engines, onResetSearchPlan, onSearchPlan, searchPlan, searchPreferenceSource }: Readonly<{
-  engines: readonly CatalogSearchStrategy[];
-  onResetSearchPlan?(): void;
-  onSearchPlan(plan: SearchPlan): void;
-  searchPlan: SearchPlan;
-  searchPreferenceSource?: "organization" | "personal";
+function WebSearchDefaultRowV2({ onSearchEnabled, search, searchEnabled }: Readonly<{
+  onSearchEnabled(enabled: boolean): void;
+  search?: CatalogSearch | null;
+  searchEnabled: boolean;
 }>) {
   const [confirmingOff, setConfirmingOff] = useState(false);
-  const names = searchPlan.optionIds.map((id) =>
-    engines.find((engine) => engine.strategyId === id)?.displayName ?? "Unavailable source");
+  const status = webSearchStatus(searchEnabled, search);
   return (
-    <SettingsRowV2 description="Sources the model uses to search the web in every chat." testId="settings-default-search" title="Web search">
-      <details className="v2-search-default-disclosure">
-        <summary aria-label="Web search default">
-          {searchPreferenceSource === "organization" ? <span>Organization default · </span> : null}
-          <TranslatableLabel>{names.length ? names.join(", ") : "Off"}</TranslatableLabel>
-        </summary>
-        <SearchPlanPickerV2 options={engines} selectedIds={searchPlan.optionIds}
-          onChange={(optionIds) => onSearchPlan({ mode: "all_selected", optionIds })} />
-        {(searchPreferenceSource === "personal" && onResetSearchPlan) || searchPlan.optionIds.length ? (
-          <div className="v2-search-plan-actions">
-            {searchPreferenceSource === "personal" && onResetSearchPlan ? (
-              <button className="v2-search-plan-link v2-focusable" type="button" onClick={onResetSearchPlan}>Use organization default</button>
-            ) : null}
-            {searchPlan.optionIds.length ? (
-              <button className="v2-search-plan-link v2-focusable" type="button" onClick={() => setConfirmingOff(true)}>Turn off web search</button>
-            ) : null}
-          </div>
-        ) : null}
-      </details>
+    <SettingsRowV2
+      description={<>
+        <span>Lets the model search the web in every chat.</span>
+        {status ? <span data-testid="settings-default-search-status" role="status"> {status}</span> : null}
+      </>}
+      testId="settings-default-search"
+      title="Web search"
+    >
+      <UiV2Switch
+        checked={searchEnabled}
+        data-testid="settings-default-search-switch"
+        label="Web search default"
+        onChange={(next) => {
+          if (next) onSearchEnabled(true);
+          else setConfirmingOff(true);
+        }}
+      />
       {confirmingOff ? (
         <ConfirmationDialog
           portal
@@ -187,7 +189,7 @@ function WebSearchDefaultRowV2({ engines, onResetSearchPlan, onSearchPlan, searc
           onCancel={() => setConfirmingOff(false)}
           onConfirm={() => {
             setConfirmingOff(false);
-            onSearchPlan({ mode: "all_selected", optionIds: [] });
+            onSearchEnabled(false);
           }}
           testId="turn-off-web-search-confirmation"
           title="Turn off web search?"
@@ -212,11 +214,9 @@ export function ChatDefaultsRowsV2({
   onMcpMode,
   onOpenMcp,
   onOpenSkills,
-  onSearchPlan,
-  onResetSearchPlan,
-  searchPreferenceSource,
-  searchPlan,
-  searchStrategies
+  onSearchEnabled,
+  search,
+  searchEnabled
 }: Readonly<{
   imageModel?: ChatDefaultImageModelView;
   mcpMode: ChatDefaultMcpMode;
@@ -225,18 +225,14 @@ export function ChatDefaultsRowsV2({
   onMcpMode(mode: ChatDefaultMcpMode): void;
   onOpenMcp?(): void;
   onOpenSkills?(): void;
-  onSearchPlan(plan: SearchPlan): void;
-  onResetSearchPlan?(): void;
-  searchPreferenceSource?: "organization" | "personal";
-  searchPlan: SearchPlan;
-  searchStrategies: readonly CatalogSearchStrategy[];
+  onSearchEnabled(enabled: boolean): void;
+  /** The catalog's Search, which says why Search cannot search now. */
+  search?: CatalogSearch | null;
+  searchEnabled: boolean;
 }>) {
-  const engines = searchStrategies.filter((strategy) => strategy.kind !== "none");
-
   return (
     <>
-      <WebSearchDefaultRowV2 engines={engines} onResetSearchPlan={onResetSearchPlan} onSearchPlan={onSearchPlan}
-        searchPlan={searchPlan} searchPreferenceSource={searchPreferenceSource} />
+      <WebSearchDefaultRowV2 onSearchEnabled={onSearchEnabled} search={search} searchEnabled={searchEnabled} />
       <SettingsRowV2 description={<>How a new chat discovers tools from your enabled servers. {onOpenMcp ? <button className="v2-studio-inline-link v2-focusable" onClick={onOpenMcp} type="button">MCP servers</button> : null}</>} testId="settings-default-mcp" title="MCP tools">
         <SettingsSegmentV2
           label="MCP tools default"

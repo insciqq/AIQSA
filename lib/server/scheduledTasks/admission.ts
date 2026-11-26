@@ -1,6 +1,10 @@
 import type { PrismaClient } from "@prisma/client";
-import type { SearchPlan } from "../../contracts/search";
-import { reconcileModelSearchPlan } from "../../domain/catalogMatrix";
+import {
+  searchPlanEnabled,
+  searchSettingPlan,
+  WEB_SEARCH_OPTION_ID,
+  type SearchPlan
+} from "../../contracts/search";
 import type { AuthenticatedUser, RequestAuthResolver } from "../auth/requestAuth";
 import { createSendMessageHandler, type RunHandlerDeps } from "../runs/handlers";
 import type { ScheduledOccurrenceAdmission } from "../runs/runRepositoryContract";
@@ -19,20 +23,20 @@ export type ScheduledTaskSendTarget =
   | Readonly<{ kind: "new"; chatId: string }>;
 
 /**
- * The run's Search: none when the task has it off; otherwise the owner's
- * default sources that the model supports. Null when Search is on but none
- * of them can run, so the occurrence pauses visibly: a source the owner did
- * not choose, or one they turned off, is never substituted.
+ * The run's Search: off when the task has it off; otherwise on, while the owner keeps Search on and the task's model
+ * can search, inside its own answer or with the installation's engine (`CatalogWireModel.webSearch`). Null when Search
+ * is on but cannot run, so the occurrence pauses visibly instead of running without it.
  */
 export function scheduledTaskSearchPlan(input: Readonly<{
   catalog: ScheduledTaskRunCatalog;
   model: ScheduledTaskRunCatalog["models"][number];
   searchEnabled: boolean;
 }>): SearchPlan | null {
-  if (!input.searchEnabled) return { mode: "all_selected", optionIds: [] };
+  if (!input.searchEnabled) return searchSettingPlan(false);
   const { model, catalog } = input;
-  const preferred = reconcileModelSearchPlan(model, catalog.searchPlan.optionIds, catalog.searchPlan.mode, catalog.searchStrategies);
-  return preferred.optionIds.length > 0 ? preferred : null;
+  return searchPlanEnabled(catalog.searchPlan) && model.searchStrategyIds.includes(WEB_SEARCH_OPTION_ID)
+    ? searchSettingPlan(true)
+    : null;
 }
 
 /**
@@ -69,7 +73,7 @@ export function scheduledTaskSendBody(input: Readonly<{
     modelId: input.modelId,
     ...(input.target.kind === "new" ? { personalDraft: { folderId: null, memoryMode: "EXCLUDED" } } : {}),
     provider: input.provider,
-    searchPlan: { mode: input.searchPlan.mode, optionIds: [...input.searchPlan.optionIds] },
+    searchEnabled: searchPlanEnabled(input.searchPlan),
     ...(input.toolsEnabled && input.pinnedSkillIds.length > 0 ? { skillIds: [...input.pinnedSkillIds] } : {}),
     skills: { mode: tools },
 

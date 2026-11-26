@@ -13,7 +13,7 @@ import {
 } from "./toolResults";
 import { resultLength } from "./compaction/retained";
 import { quoteIsIn } from "../research/quoteCheck";
-import { proseFindings, searchEngine, searchResult, threeEngineResult } from "../search/toolResult.testFixtures";
+import { deepSeekEngine, proseFindings, searchEngine, searchResult, threeEngineResult } from "../search/toolResult.testFixtures";
 import type { ToolExecutionResult } from "../tools/types";
 
 const handle = `tor1_${"a".repeat(32)}`;
@@ -95,14 +95,15 @@ describe("the model's view of a result", () => {
   it("lets a quote from the visible part check against the saved text", () => {
     const result = threeEngineResult();
     const output = view(result);
-    const entry = /\[6\] DeepSeek source 6 — shop-6\.example\nEntry 6 says model M-6 costs 1006 EUR\./u.exec(output)![0];
-    expect(quoteIsIn("Entry 6 says model M-6 costs 1006 EUR.", textOf(result))).toBe(true);
+    const entry = /\[3\] DeepSeek source 3 — deepseek\.example\nhttps:\/\/deepseek\.example\/page-3\nEntry 3 says model M-3 costs 1003 EUR\./u
+      .exec(output)![0];
+    expect(quoteIsIn("Entry 3 says model M-3 costs 1003 EUR.", textOf(result))).toBe(true);
     expect(textOf(result)).toContain(entry);
     const perplexity = /Perplexity paragraph 18 reports finding 18 with care \[6\]\./u.exec(output)![0];
     expect(quoteIsIn(perplexity, textOf(result))).toBe(true);
   });
 
-  it("passes a short result whole and keeps head and tail for a single engine, an unsaved result and any other tool", () => {
+  it("passes a short result whole, gives a single long engine its share and keeps head and tail for any other tool", () => {
     const short = searchResult([
       searchEngine({ count: 2, displayName: "A", findings: proseFindings("A", 2_000, 2), host: "a.example", optionId: "a" }),
       searchEngine({ count: 2, displayName: "B", findings: proseFindings("B", 2_000, 2), host: "b.example", optionId: "b" })
@@ -110,12 +111,36 @@ describe("the model's view of a result", () => {
     expect(view(short)).toBe(textOf(short));
     const single = searchResult([searchEngine({ count: 4, displayName: "A", findings: proseFindings("A", 40_000, 4), host: "a.example",
       optionId: "a" })]);
-    expect(view(single)).toBe(toolOutputExcerpt(textOf(single), { handle }).output);
+    const singleView = view(single);
+    expect(singleView).toMatch(/\[Search source "A": findings cut here, /u);
+    expect(singleView).toMatch(new RegExp(`\\[\\d+ of ${textOf(single).length} characters omitted here: each search source keeps a share`, "u"));
     const merged = threeEngineResult();
-    const unsaved = { unsavedReason: "saved_results_budget_reached" };
-    expect(view(merged, unsaved)).toBe(toolOutputExcerpt(textOf(merged), unsaved).output);
     const other: ToolExecutionResult = { callId: "c", content: [{ text: textOf(merged), type: "text" }], name: "workspace_shell", status: "complete" };
     expect(view(other)).toBe(toolOutputExcerpt(textOf(merged), { handle }).output);
+    // A run-scoped result is shown whole, as its excerpt says.
+    expect(toolModelOutput(merged, textOf(merged), { handle: null, output: textOf(merged) })).toBe(textOf(merged));
+  });
+
+  it("keeps every URL with its result when a long search result could not be saved", () => {
+    const result = searchResult([deepSeekEngine(50, 1_150)]);
+    const text = textOf(result);
+    const unsaved = { unsavedReason: "saved_results_budget_reached" };
+    const output = view(result, unsaved);
+    expect(output).not.toBe(toolOutputExcerpt(text, unsaved).output);
+    // The head ends before the entry its fixed cut would split, and the tail starts after one.
+    const note = /\n\n\[(\d+) of (\d+) characters omitted here \(characters (\d+)-(\d+)\)\. The whole result could not be saved \(saved_results_budget_reached\), so the omitted part cannot be read later\.\]\n\n/u
+      .exec(output)!;
+    expect(Number(note[2])).toBe(text.length);
+    const [headEnd, tailStart] = [Number(note[3]), Number(note[4])];
+    expect(headEnd).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.headChars);
+    expect(text.length - tailStart).toBeLessThanOrEqual(TOOL_RESULT_LIMITS.tailChars);
+    expect(output.slice(0, note.index)).toBe(text.slice(0, headEnd));
+    expect(output.slice(note.index + note[0].length)).toBe(text.slice(tailStart));
+    expect(text.slice(tailStart)).toMatch(/^\[\d+\] DeepSeek source \d+ — deepseek\.example\nhttps:\/\/deepseek\.example\/page-\d+\n/u);
+    for (const match of output.matchAll(/^\[(\d+)\] DeepSeek source \d+ — [^\n]*\n([^\n]*)/gmu)) {
+      expect(match[2]).toBe(`https://deepseek.example/page-${match[1]}`);
+    }
+    expect(resultLength(output)).toBe(text.length);
   });
 });
 

@@ -115,24 +115,24 @@ function integration(overrides: Partial<AdminSearchIntegration> = {}): AdminSear
     configuration: null,
     configurationActive: true,
     description: "",
-    displayName: "Perplexity Search",
+    displayName: "OpenRouter Web Search",
     draftDirty: false,
     draftTestEvidence: null,
     draftVersion: 1,
     enabled: true,
     executionModes: [],
-    id: "search-perplexity",
-    kind: "perplexity_search",
+    id: "search-openrouter-web",
+    kind: "web_search",
     providerModel: {
       connectionDisplayName: "OpenRouter",
       connectionId: "conn-openrouter",
-      displayName: "Sonar Pro",
-      id: "model-sonar"
+      displayName: "GPT-6 Luna",
+      id: "model-luna"
     },
     ready: false,
     readiness: "source_unavailable",
     sourceConnectionId: "conn-openrouter",
-    strategyId: "perplexity",
+    strategyId: "openrouter-web",
     system: true,
     ...overrides
   };
@@ -420,11 +420,11 @@ describe("deriveAdminAttentionItems", () => {
     expect(result).toEqual([
       expect.objectContaining({
         code: "search_source_model_off",
-        detail: "Its model Sonar Pro on OpenRouter is not available — turn the model on, or archive the source",
-        id: "search_source_model_off:search-perplexity",
+        detail: "Its model GPT-6 Luna on OpenRouter is not available — turn the model on, or archive the source",
+        id: "search_source_model_off:search-openrouter-web",
         severity: "bad",
-        target: { resource: "search-perplexity", section: "search" },
-        title: "Perplexity Search has no working source"
+        target: { resource: "search-openrouter-web", section: "search" },
+        title: "OpenRouter Web Search has no working source"
       })
     ]);
   });

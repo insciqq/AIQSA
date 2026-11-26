@@ -5,7 +5,20 @@ import {
   fallbackParameterControls,
   resolveProviderModelParameterControls
 } from "./catalog";
-import { availableSearchStrategiesForModel, buildCatalogModel, isSearchCombinationCompatible, reconcileSearchPlanSelection, resolveSearchRouteForModel, toCatalogSearchStrategy } from "./catalogMatrix";
+import {
+  availableSearchStrategiesForModel,
+  buildCatalogModel,
+  catalogModelWebSearch,
+  isSearchCombinationCompatible,
+  reconcileSearchPlanSelection,
+  resolveSearchRouteForModel,
+  toCatalogSearchStrategy,
+  type CatalogSearchAvailability
+} from "./catalogMatrix";
+import { WEB_SEARCH_OPTION_ID } from "./search";
+
+/** A catalog where nobody can search, for checks that are not about Search. */
+const noSearch: CatalogSearchAvailability = { engine: null, entitled: false, inAnswerConnectionIds: [] };
 
 describe("catalog capability matrix", () => {
   it.each([
@@ -20,7 +33,7 @@ describe("catalog capability matrix", () => {
       parameterControls: { maxOutputTokens: { maxValue: 384_000 } },
       upstreamModelId: modelId
     });
-    const catalog = buildCatalogModel(model, defaultSearchStrategies);
+    const catalog = buildCatalogModel(model, noSearch);
     expect(catalog.displayName).toBe(displayName);
     expect(catalog.capabilities).toMatchObject({
       imageInput: true, nativeWebSearch: false, streaming: true, toolCalling: true
@@ -66,13 +79,12 @@ describe("catalog capability matrix", () => {
     });
   });
 
-  it("exposes one OpenAI Search source and Perplexity to an OpenAI model", () => {
+  it("exposes one OpenAI Search source to an OpenAI model", () => {
     const model = defaultProviderModels.find((entry) => entry.provider === "openai" && entry.modelId === "gpt-5.5");
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
       "openai-native-web-search",
-      "perplexity-tool-search",
       "search-disabled"
     ]);
   });
@@ -113,8 +125,8 @@ describe("catalog capability matrix", () => {
       defaultValue: false,
       supported: true
     });
-    expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.streaming).toBe(true);
-    expect(buildCatalogModel(model!, defaultSearchStrategies).capabilities.toolCalling).toBe(true);
+    expect(buildCatalogModel(model!, noSearch).capabilities.streaming).toBe(true);
+    expect(buildCatalogModel(model!, noSearch).capabilities.toolCalling).toBe(true);
   });
 
   it("uses reported compatible reasoning controls and offers a mode only where it is configured", () => {
@@ -305,7 +317,7 @@ describe("catalog capability matrix", () => {
         },
         providerFamily: "gemini"
       });
-      expect(buildCatalogModel(model, defaultSearchStrategies).defaultParams).not.toHaveProperty(
+      expect(buildCatalogModel(model, noSearch).defaultParams).not.toHaveProperty(
         "temperature"
       );
       // Hosted Google Search never coexists with the tools every chat has;
@@ -320,7 +332,7 @@ describe("catalog capability matrix", () => {
     "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6.1-terra", "openai/gpt-6.2-astra", "openai/gpt-6.2-sol"])(
     "keeps %s on the OpenRouter contract without unsupported temperature or native modes", (modelId) => {
       const model = defaultProviderModels.find((entry) => entry.modelId === modelId)!;
-      const catalog = buildCatalogModel(model, defaultSearchStrategies);
+      const catalog = buildCatalogModel(model, noSearch);
       expect(model.adapterKind).toBe("openrouter_chat_completions");
       expect(model.contextWindow).toBe(1_050_000);
       expect(model.parameterControls.maxOutputTokens.maxValue).toBe(128_000);
@@ -372,10 +384,10 @@ describe("catalog capability matrix", () => {
     const openRouterClaude = defaultProviderModels.find((entry) => entry.modelId === "anthropic/claude-opus-4.8");
     const openRouterGemini = defaultProviderModels.find((entry) => entry.modelId === "google/gemini-3.5-flash");
 
-    expect(buildCatalogModel(openAI!, defaultSearchStrategies).capabilities.documentInputMode).toBe("native_pdf");
-    expect(buildCatalogModel(anthropic!, defaultSearchStrategies).capabilities.documentInputMode).toBe("native_pdf");
-    expect(buildCatalogModel(openRouterClaude!, defaultSearchStrategies).capabilities.documentInputMode).toBe("native_pdf");
-    expect(buildCatalogModel(openRouterGemini!, defaultSearchStrategies).capabilities.documentInputMode).toBe(
+    expect(buildCatalogModel(openAI!, noSearch).capabilities.documentInputMode).toBe("native_pdf");
+    expect(buildCatalogModel(anthropic!, noSearch).capabilities.documentInputMode).toBe("native_pdf");
+    expect(buildCatalogModel(openRouterClaude!, noSearch).capabilities.documentInputMode).toBe("native_pdf");
+    expect(buildCatalogModel(openRouterGemini!, noSearch).capabilities.documentInputMode).toBe(
       "pdf_text_extraction"
     );
   });
@@ -385,7 +397,6 @@ describe("catalog capability matrix", () => {
 
     expect(model).toBeDefined();
     expect(availableSearchStrategiesForModel(model!, defaultSearchStrategies).sort()).toEqual([
-      "perplexity-tool-search",
       "search-disabled"
     ]);
   });
@@ -434,27 +445,6 @@ describe("catalog capability matrix", () => {
       ...openAI!,
       capabilities: { ...openAI!.capabilities, toolCalling: false }
     }, anthropicSearch)).toBeNull();
-  });
-
-  it("excludes only the exact Perplexity technical deployment from answering with itself", () => {
-    const technical = defaultProviderModels.find(
-      (entry) => entry.provider === "openrouter" && entry.modelId === "perplexity/sonar-pro-search"
-    );
-    expect(technical).toBeDefined();
-    expect(availableSearchStrategiesForModel(technical!, defaultSearchStrategies)).not.toContain(
-      "perplexity-tool-search"
-    );
-
-    const sameModelIdOnAnotherConnection = {
-      ...technical!,
-      adapterKind: "openai_responses_compatible" as const,
-      provider: "custom-connection",
-      providerFamily: "openai_compatible"
-    };
-    expect(availableSearchStrategiesForModel(
-      sameModelIdOnAnotherConnection,
-      defaultSearchStrategies
-    )).toContain("perplexity-tool-search");
   });
 
   it("offers one logical OpenAI Search through its query-only route to tool-capable models", () => {
@@ -510,12 +500,29 @@ describe("catalog capability matrix", () => {
     ])).toEqual([]);
   });
 
-  it("lets Claude-through-OpenRouter use Perplexity without native web search", () => {
-    const model = defaultProviderModels.find((entry) => entry.modelId === "anthropic/claude-opus-4.8");
-    const catalogModel = buildCatalogModel(model!, defaultSearchStrategies);
+  it("lists the one virtual Search source for a model that can search, as admission binds it", () => {
+    const claude = defaultProviderModels.find((entry) => entry.modelId === "anthropic/claude-opus-4.8")!;
+    const gpt = { ...defaultProviderModels.find((entry) => entry.provider === "openai" && entry.capabilities.nativeSearch)!,
+      provider: "connection-openai" };
+    const engine: CatalogSearchAvailability = { engine: { protocol: "deepseek_search_api", usable: true }, entitled: true,
+      inAnswerConnectionIds: ["connection-openai"] };
 
-    expect(catalogModel.searchStrategyIds).toContain("perplexity-tool-search");
-    expect(catalogModel.searchStrategyIds).not.toContain("openai-native-web-search");
+    // Without native web search, Claude searches with the installation's engine.
+    expect(buildCatalogModel(claude, engine)).toMatchObject({
+      capabilities: { nativeWebSearch: false },
+      searchOptionCompatibility: { [WEB_SEARCH_OPTION_ID]: { clientToolCompatible: true } },
+      searchStrategyIds: [WEB_SEARCH_OPTION_ID],
+      webSearch: "engine"
+    });
+    // GPT with verified hosted search searches in its own answer on a connection with hosted search.
+    expect(buildCatalogModel(gpt, engine).webSearch).toBe("in_answer");
+    expect(buildCatalogModel(gpt, { ...engine, inAnswerConnectionIds: [] }).webSearch).toBe("engine");
+    // With the engine out of reach only in-answer search is left, and a user without a grant has none.
+    expect(buildCatalogModel(gpt, { ...engine, engine: { protocol: "deepseek_search_api", usable: false } }).webSearch).toBe("in_answer");
+    expect(buildCatalogModel(claude, { ...engine, engine: null })).toMatchObject({ searchStrategyIds: [], webSearch: null });
+    expect(buildCatalogModel(gpt, { ...engine, entitled: false })).toMatchObject({ searchStrategyIds: [], webSearch: null });
+    expect(catalogModelWebSearch(claude, { ...engine, engine: { protocol: "openrouter_web_search", usable: true } }))
+      .toBe("engine");
   });
 
   it("projects only UI-safe defaults and search metadata into the ordinary catalog", () => {
@@ -537,7 +544,7 @@ describe("catalog capability matrix", () => {
           verbosity: "high"
         }
       },
-      defaultSearchStrategies
+      noSearch
     );
 
     expect(model.defaultParams).toEqual({
@@ -550,15 +557,15 @@ describe("catalog capability matrix", () => {
     expect(model).not.toHaveProperty("routeProviderPreferences");
 
     const strategyTemplate = defaultSearchStrategies.find(
-      ({ strategyId }) => strategyId === "perplexity-tool-search"
+      ({ strategyId }) => strategyId === "openai-native-web-search"
     );
     expect(strategyTemplate).toBeDefined();
     const strategy = toCatalogSearchStrategy(strategyTemplate!);
     expect(strategy).toEqual({
-      description: "Web evidence from Perplexity through OpenRouter.",
-      displayName: "Perplexity",
-      kind: "perplexity_tool_search",
-      strategyId: "perplexity-tool-search"
+      description: "Web evidence from OpenAI Search.",
+      displayName: "OpenAI Search",
+      kind: "web_search",
+      strategyId: "openai-native-web-search"
     });
     expect(strategy).not.toHaveProperty("config");
     expect(strategy).not.toHaveProperty("providerModelId");
@@ -578,7 +585,7 @@ describe("catalog capability matrix", () => {
       options: ["none", "minimal", "low", "medium", "high"],
       supported: true
     });
-    expect(buildCatalogModel(flash!, defaultSearchStrategies).capabilities.background).toBe(false);
+    expect(buildCatalogModel(flash!, noSearch).capabilities.background).toBe(false);
   });
 
   it.each(["gemini-3.8-flash", "google/gemini-3.8-flash", "gemini-4-argon", "google/gemini-4-argon",

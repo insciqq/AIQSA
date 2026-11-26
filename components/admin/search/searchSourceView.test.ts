@@ -6,14 +6,18 @@ import {
   emptySearchForm,
   manuallyAddableModels,
   searchCheckSummary,
+  searchDefaultOrderText,
+  searchEngineCandidates,
+  searchEngineRole,
+  searchEngineRoleLabel,
+  searchEngineSetupDetail,
   searchExecutionValidation,
   searchFormFrom,
   searchHeaderStatus,
+  searchModelOptionKey,
   searchModelOptionLabel,
-  searchModelsReach,
-  searchModelsReachDetail,
   searchSourceStatus,
-  selectablePlanSources,
+  selectedSearchModel,
   sourceIdentityFor
 } from "./searchSourceView";
 
@@ -28,32 +32,32 @@ function source(overrides: Partial<AdminSearchIntegration> = {}): AdminSearchInt
       adapterKind: "provider_model_client",
       credentialMode: "provider_model",
       maxOutputTokens: 4_096,
-      protocol: "openrouter_perplexity_chat",
-      providerModelId: "model-sonar",
+      protocol: "anthropic_web_search",
+      providerModelId: "model-haiku",
       queryMaxCharacters: 500,
       reasoningPolicy: "lowest_supported",
       timeoutMs: 300_000
     },
     configurationActive: true,
-    description: "Web search through OpenRouter.",
-    displayName: "Perplexity Search",
+    description: "Web search through Anthropic.",
+    displayName: "Anthropic Search",
     draftDirty: false,
     draftTestEvidence: null,
     draftVersion: 1,
     enabled: true,
     executionModes: ["all_selected", "model_choice"],
-    id: "source-perplexity",
-    kind: "perplexity_search",
+    id: "source-anthropic",
+    kind: "web_search",
     providerModel: {
-      connectionDisplayName: "OpenRouter",
-      connectionId: "conn-openrouter",
-      displayName: "Sonar",
-      id: "model-sonar"
+      connectionDisplayName: "Anthropic",
+      connectionId: "conn-anthropic",
+      displayName: "Claude Haiku 5.5",
+      id: "model-haiku"
     },
     ready: true,
     readiness: "ready",
-    sourceConnectionId: "conn-openrouter",
-    strategyId: "perplexity-search",
+    sourceConnectionId: "conn-anthropic",
+    strategyId: "anthropic-search",
     system: false,
     ...overrides
   };
@@ -76,7 +80,7 @@ describe("searchSourceStatus", () => {
         checkedAt: NOW.toISOString(),
         method: "provider_search",
         normalizedSourceCount: 0,
-        protocol: "openrouter_perplexity_chat",
+        protocol: "anthropic_web_search",
         status: "unavailable"
       }
     });
@@ -85,22 +89,63 @@ describe("searchSourceStatus", () => {
   });
 });
 
-describe("searchModelsReach", () => {
-  it("names the chat models a source can serve", () => {
-    expect(searchModelsReach(source())).toBe("All chat models");
-    expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "ready" }))).toBe("All chat models");
-    expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required" }))).toBe("This provider's models");
-    expect(searchModelsReach(source({ kind: "web_search", broaderModelSetup: "setup_required", ready: false, readiness: "setup_required" }))).toBe("No Search model yet");
-    expect(searchModelsReach(source({ kind: "gemini_google_search", broaderModelSetup: "not_applicable" }))).toBe("All chat models");
+describe("the installation's engine", () => {
+  const policy = (overrides: Partial<AdminSearchCatalog["policy"]> = {}): AdminSearchCatalog["policy"] => ({
+    backupOptionId: null,
+    defaultPlan: { mode: "all_selected", optionIds: [] },
+    engineOptionId: null,
+    inAnswerSearch: true,
+    resolved: { automatic: true, backupOptionId: null, engineOptionId: "anthropic-search", reason: null },
+    updatedAt: NOW.toISOString(),
+    version: 1,
+    ...overrides
   });
 
-  it("points a source that is not set up at the action that exists for it", () => {
-    const unready = { ready: false, readiness: "setup_required" as const };
-    expect(searchModelsReachDetail(source(unready))).toContain("in Configure");
-    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "deepseek_search_api" })))
+  it("offers as engine or backup only turned-on sources that search for every model", () => {
+    const catalog: AdminSearchCatalog = {
+      integrations: [
+        source(),
+        source({ enabled: false, id: "off", strategyId: "off" }),
+        source({ archivedAt: NOW.toISOString(), id: "archived", strategyId: "archived" }),
+        // OpenAI search inside GPT answers only: no Search model of its own.
+        source({ executionModes: ["model_choice"], id: "hosted", kind: "web_search", strategyId: "hosted" })
+      ],
+      policy: policy(),
+      providerModels: []
+    };
+    expect(searchEngineCandidates(catalog).map(({ id }) => id)).toEqual(["source-anthropic"]);
+  });
+
+  it("names the engine the order picked, the chosen engine and the backup", () => {
+    expect(searchEngineRole(source(), policy())).toBe("engine");
+    expect(searchEngineRoleLabel("engine", policy())).toBe("Engine (automatic)");
+    const chosen = policy({ backupOptionId: "anthropic-search", engineOptionId: "deepseek" });
+    expect(searchEngineRole(source(), chosen)).toBe("backup");
+    expect(searchEngineRole(source({ strategyId: "deepseek" }), chosen)).toBe("engine");
+    expect(searchEngineRoleLabel("engine", chosen)).toBe("Engine");
+    expect(searchEngineRole(source({ strategyId: "other" }), chosen)).toBeNull();
+    expect(searchEngineRoleLabel(null, chosen)).toBeNull();
+    // An older server without the resolution: nothing is named.
+    expect(searchEngineRole(source(), { defaultPlan: { mode: "all_selected", optionIds: [] }, updatedAt: "", version: 1 })).toBeNull();
+  });
+
+  it("writes the default order in words", () => {
+    expect(searchDefaultOrderText()).toBe(
+      "OpenAI web search, OpenRouter with Perplexity, DeepSeek Search API, Gemini Google Search, Anthropic web search"
+    );
+  });
+
+  it("points a source that cannot be the engine at the action that exists for it", () => {
+    const unready = { executionModes: [], ready: false, readiness: "setup_required" as const };
+    expect(searchEngineSetupDetail(source())).toBeNull();
+    expect(searchEngineSetupDetail(source(unready))).toContain("in Configure");
+    expect(searchEngineSetupDetail(source({ ...unready, configurable: false, kind: "deepseek_search_api" })))
       .toBe("Adding a key on its provider page sets it up. Add source can also set it up with one of that connection's models.");
-    expect(searchModelsReachDetail(source({ ...unready, configurable: false, kind: "web_search" })))
+    expect(searchEngineSetupDetail(source({ ...unready, configurable: false, kind: "web_search" })))
       .toBe("Adding a key on its provider page sets it up.");
+    expect(searchEngineSetupDetail(source({ executionModes: ["model_choice"], kind: "web_search" })))
+      .toContain("Only GPT answers on this connection can search with it now.");
+    expect(searchEngineSetupDetail(source({ enabled: false, ...unready }))).toBeNull();
   });
 });
 
@@ -112,14 +157,14 @@ describe("searchCheckSummary and searchHeaderStatus", () => {
         checkedAt: NOW.toISOString(),
         method: "provider_search",
         normalizedSourceCount: 3,
-        protocol: "openrouter_perplexity_chat",
+        protocol: "anthropic_web_search",
         status: "available"
       }
     });
     const summary = searchCheckSummary(checked, NOW);
     expect(summary.tone).toBe("ok");
     expect(summary.detail).toMatch(/^Checked today \d{1,2}:\d{2} · working, 3 sources found$/u);
-    expect(searchHeaderStatus(checked, NOW)).toMatch(/^Working · Sonar on OpenRouter · checked today \d{1,2}:\d{2}$/u);
+    expect(searchHeaderStatus(checked, NOW)).toMatch(/^Working · Claude Haiku 5.5 on Anthropic · checked today \d{1,2}:\d{2}$/u);
     expect(searchHeaderStatus(source({ providerModel: null, configurable: false }), NOW))
       .toBe("Working · Managed with its provider · not checked yet");
     for (const text of [summary.detail, searchHeaderStatus(checked, NOW)]) {
@@ -133,7 +178,7 @@ describe("searchCheckSummary and searchHeaderStatus", () => {
         checkedAt: NOW.toISOString(),
         method: "configuration",
         normalizedSourceCount: 0,
-        protocol: "openrouter_perplexity_chat",
+        protocol: "anthropic_web_search",
         status: "available"
       }
     });
@@ -152,21 +197,21 @@ describe("plan and form helpers", () => {
     policy: { defaultPlan: { mode: "all_selected", optionIds: [] }, updatedAt: NOW.toISOString(), version: 1 },
     providerModels: [
       {
-        connectionDisplayName: "OpenRouter",
-        connectionId: "conn-openrouter",
-        displayName: "Sonar",
+        connectionDisplayName: "Anthropic",
+        connectionId: "conn-anthropic",
+        displayName: "Claude Haiku 5.5",
         enabled: true,
-        id: "model-sonar",
-        searchKind: "perplexity_search",
+        id: "model-haiku",
+        searchKind: "anthropic_web_search",
         searchReasoningSupported: false
       },
       {
         connectionDisplayName: "OpenRouter EU",
         connectionId: "conn-openrouter-eu",
-        displayName: "Sonar Pro",
+        displayName: "GPT-6 Luna",
         enabled: true,
-        id: "model-sonar-eu",
-        searchKind: "perplexity_search",
+        id: "model-luna-eu",
+        searchKind: "openrouter_web_search",
         searchReasoningSupported: false
       },
       {
@@ -181,16 +226,12 @@ describe("plan and form helpers", () => {
     ]
   };
 
-  it("offers only enabled, working, unarchived sources to the recommended plan", () => {
-    expect(selectablePlanSources(catalog).map(({ id }) => id)).toEqual(["source-perplexity"]);
-  });
-
-  it("offers a manual source only on a Perplexity model without a live source", () => {
-    expect(manuallyAddableModels(catalog).map(({ id }) => id)).toEqual(["model-sonar-eu"]);
+  it("offers a manual source only on an OpenRouter or DeepSeek model without a live source", () => {
+    expect(manuallyAddableModels(catalog).map(({ id }) => id)).toEqual(["model-luna-eu"]);
   });
 
   it("lets Configure pick only models on the source's own connection and kind", () => {
-    expect(configurableModels(source(), catalog.providerModels).map(({ id }) => id)).toEqual(["model-sonar"]);
+    expect(configurableModels(source(), catalog.providerModels).map(({ id }) => id)).toEqual(["model-haiku"]);
     expect(configurableModels({ kind: "web_search", sourceConnectionId: "conn-openai" }, catalog.providerModels)
       .map(({ id }) => id)).toEqual(["model-terra"]);
   });
@@ -220,6 +261,50 @@ describe("plan and form helpers", () => {
     expect(draftForModel(catalog.providerModels[0]!, saved.draft)).toMatchObject({
       maxOutputTokens: 4_096, queryMaxCharacters: 500, timeoutMs: 300_000
     });
+  });
+});
+
+describe("OpenRouter web search choices", () => {
+  const technical = {
+    connectionDisplayName: "OpenRouter", connectionId: "conn-openrouter", displayName: "DeepSeek V4.1 Flash", enabled: true,
+    id: "model-flash", searchKind: "openrouter_web_search", searchReasoningSupported: false
+  } as const;
+
+  it("offers OpenRouter web search on a connection without a web source and keys each choice by kind", () => {
+    const catalog: AdminSearchCatalog = {
+      integrations: [source()],
+      policy: { defaultPlan: { mode: "all_selected", optionIds: [] }, updatedAt: NOW.toISOString(), version: 1 },
+      providerModels: [technical]
+    };
+    // The OpenRouter connection has no web source yet.
+    expect(manuallyAddableModels(catalog).map(searchModelOptionKey)).toEqual(["openrouter_web_search:model-flash"]);
+    const withWeb = { ...catalog, integrations: [source(),
+      source({ id: "web", kind: "web_search", sourceConnectionId: "conn-openrouter", strategyId: "web" })] };
+    expect(manuallyAddableModels(withWeb)).toEqual([]);
+    expect(searchModelOptionLabel(technical)).toBe("OpenRouter web search · DeepSeek V4.1 Flash");
+    expect(sourceIdentityFor(technical)).toEqual({
+      description: "Web results with source links through OpenRouter web search.",
+      displayName: "OpenRouter Web Search"
+    });
+    // A model listed for another Search kind too is chosen under the configuration's own protocol.
+    const sameModel = { ...technical, searchKind: "deepseek_search_api" } as const;
+    expect(selectedSearchModel({ protocol: "openrouter_web_search", providerModelId: "model-flash" }, [sameModel, technical]))
+      .toBe(technical);
+  });
+
+  it("hides the reply limit and drafts it as Auto", () => {
+    const form = searchFormFrom(source({ configuration: { ...draftForModel(technical), maxOutputTokens: null } }));
+    expect(draftForModel(technical, { ...emptySearchForm().draft, maxOutputTokens: 4_096 }).maxOutputTokens).toBeNull();
+    expect(searchExecutionValidation({ ...form, executionInputs: { maxOutputTokens: "12" } }))
+      .toEqual({ maxOutputTokens: null, valid: true });
+  });
+
+  it("lets Configure switch the technical model of the connection's web source and keeps its engine", () => {
+    expect(configurableModels({ kind: "web_search", sourceConnectionId: "conn-openrouter" }, [technical])).toEqual([technical]);
+    expect(draftForModel(technical, { ...emptySearchForm().draft, openRouterWebSearch: { engine: "exa", mode: "deep" } })).toMatchObject({
+      openRouterWebSearch: { engine: "exa", mode: "deep" }, protocol: "openrouter_web_search", providerModelId: "model-flash"
+    });
+    expect(draftForModel(technical).openRouterWebSearch).toEqual({ engine: "perplexity", mode: null });
   });
 });
 
@@ -271,8 +356,7 @@ describe("DeepSeek Search API choices", () => {
     expect(configurableModels({ kind: "web_search", sourceConnectionId: "conn-deepseek" }, [carrier])).toEqual([]);
   });
 
-  it("reaches every chat model and hides the model-reply limit", () => {
-    expect(searchModelsReach(apiSource)).toBe("All chat models");
+  it("hides the model-reply limit", () => {
     expect(searchHeaderStatus(apiSource, NOW)).toBe("Working · DeepSeek Search API, key via DeepSeek V4 Flash · not checked yet");
     const form = searchFormFrom(apiSource);
     expect(searchExecutionValidation({ ...form, executionInputs: { ...form.executionInputs, maxOutputTokens: "12" } }))

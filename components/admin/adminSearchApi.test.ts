@@ -94,8 +94,10 @@ describe("adminSearchApi", () => {
       draft
     }, fetcher);
     await updateAdminSearchPolicy({
-      defaultPlan: { mode: "all_selected", optionIds: [] },
-      expectedVersion: 1
+      backupOptionId: null,
+      engineOptionId: "deepseek-search-api",
+      expectedVersion: 1,
+      inAnswerSearch: false
     }, fetcher);
     await saveAndCheckAdminSearchIntegration({
       description: "Updated evidence",
@@ -118,8 +120,10 @@ describe("adminSearchApi", () => {
     }));
     expect(fetcher).toHaveBeenNthCalledWith(3, "/api/admin/search", expect.objectContaining({
       body: JSON.stringify({
-        defaultPlan: { mode: "all_selected", optionIds: [] },
-        expectedVersion: 1
+        backupOptionId: null,
+        engineOptionId: "deepseek-search-api",
+        expectedVersion: 1,
+        inAnswerSearch: false
       }),
       method: "PATCH"
     }));

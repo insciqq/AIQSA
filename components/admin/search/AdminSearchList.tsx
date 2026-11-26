@@ -2,9 +2,9 @@
 
 import { adminSectionPath } from "@/components/admin/adminSections";
 import { SearchSourceTile, SearchStatusPill } from "@/components/admin/search/searchPrimitives";
-import { searchModelsReach, searchSourceStatus } from "@/components/admin/search/searchSourceView";
+import { searchEngineRole, searchEngineRoleLabel, searchSourceStatus } from "@/components/admin/search/searchSourceView";
 import { UiV2Button, UiV2Icon } from "@/components/ui-v2";
-import type { AdminSearchIntegration } from "@/lib/contracts/adminSearch";
+import type { AdminSearchIntegration, AdminSearchPolicy } from "@/lib/contracts/adminSearch";
 import { useId, useState, type MouseEvent } from "react";
 
 const focusRing =
@@ -27,16 +27,20 @@ export type AdminSearchListProps = Readonly<{
   loading: boolean;
   onOpen(sourceId: string): void;
   onRetry(): void;
+  /** The installation's Search, which names the engine and the backup; null before the catalog loads. */
+  policy: AdminSearchPolicy | null;
   sources: readonly AdminSearchIntegration[];
 }>;
 
-/** The source list (PRD 5.6): tile, name and purpose, chat-model reach, one status word, chevron; archived sources fold away. */
+/** The source list (PRD 5.6): tile, name and purpose, its part as engine or backup, one status word, chevron;
+ * archived sources fold away. */
 export function AdminSearchList({
   error,
   loaded,
   loading,
   onOpen,
   onRetry,
+  policy,
   sources
 }: AdminSearchListProps) {
   // Archived sources stay listed for history and their pages, behind one disclosure (issue #66).
@@ -62,7 +66,7 @@ export function AdminSearchList({
       <div className="rounded-[12px] border border-trace-subtle bg-answer-paper px-5 py-10 text-center" role="status">
         <p className="text-sm font-semibold text-ink-secondary">No Search sources yet</p>
         <p className="mx-auto mt-1 max-w-xl text-sm leading-6 text-ink-muted">
-          Sources for built-in providers appear when the provider is added. Add source creates one from a Perplexity model or the DeepSeek Search API.
+          Sources for built-in providers appear when the provider is added. Add source creates one with OpenRouter web search, a Perplexity model or the DeepSeek Search API.
         </p>
       </div>
     );
@@ -72,11 +76,11 @@ export function AdminSearchList({
   const archived = sources.filter((source) => source.archivedAt !== null);
   const row = (source: AdminSearchIntegration) => {
     const status = searchSourceStatus(source);
-    const reach = searchModelsReach(source);
+    const role = policy ? searchEngineRoleLabel(searchEngineRole(source, policy), policy) : null;
     return (
       <li key={source.id}>
         <a
-          aria-label={`Open ${source.displayName} · ${status.label}`}
+          aria-label={`Open ${source.displayName} · ${role ? `${role} · ` : ""}${status.label}`}
           className={[
             "grid min-h-14 grid-cols-[2rem_minmax(0,1fr)_auto_1rem] items-center gap-x-3 px-4 py-3 hover:bg-control-hover sm:px-5 md:gap-x-4",
             gridTracks,
@@ -96,9 +100,9 @@ export function AdminSearchList({
           <span className="min-w-0">
             <span className="block truncate text-sm font-medium text-ink">{source.displayName}</span>
             <span className="block truncate text-xs text-ink-muted">{source.description}</span>
-            <span className="mt-0.5 block truncate text-xs text-ink-muted md:hidden">{reach}</span>
+            {role ? <span className="mt-0.5 block truncate text-xs text-ink-muted md:hidden">{role}</span> : null}
           </span>
-          <span className="hidden truncate text-sm text-ink-secondary md:block">{reach}</span>
+          <span className="hidden truncate text-sm text-ink-secondary md:block" data-testid="search-source-role">{role ?? ""}</span>
           <span className="justify-self-start">
             <SearchStatusPill label={status.label} tone={status.tone} />
           </span>
@@ -116,7 +120,7 @@ export function AdminSearchList({
       >
         <span />
         <span>Source</span>
-        <span>Chat models</span>
+        <span>Use</span>
         <span>Status</span>
         <span />
       </div>

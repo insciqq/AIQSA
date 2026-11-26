@@ -12,29 +12,36 @@ describe("production Search setup and OpenRouter", () => {
   const connection = (id: string, family: string, models: unknown[], live = true) => ({ activeConfig: live ? { apiRoot: "https://openrouter.invalid/api/v1" } : null,
     activeVersion: live ? 1 : 0, credentials: [{ activeVersion: { id: "version-1", revokedAt: null }, enabled: true, id: "key-1" }], defaultCredentialId: "key-1",
     draftConfig: { apiRoot: "https://openrouter.invalid/api/v1" }, enabled: true, family, id, models });
-  const stand = (connections: unknown[]) => {
+  const searchCatalog = (integrations: unknown[] = []) => Response.json({ search: { integrations, policy: { version: 1 } } });
+  const stand = (connections: unknown[], integrations: unknown[] = []) => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: URL, init: RequestInit) => {
       calls.push(`${init.method ?? "GET"} ${url.pathname}`);
+      if (url.pathname === "/api/admin/search" && (init.method ?? "GET") === "GET") return searchCatalog(integrations);
       return url.pathname === "/api/admin/providers" && (init.method ?? "GET") === "GET"
         ? Response.json({ connections }) : Response.json({ error: "unexpected_call" }, { status: 500 });
     }));
     return calls;
   };
+  /** OpenRouter's web search on a connection, as Admin › Search lists it. */
+  const webSearchSource = (connectionId: string, providerModelId: string, engine: string) => ({ archivedAt: null,
+    configuration: { adapterKind: "provider_model_client", openRouterWebSearch: { engine, mode: engine === "parallel" ? "fast" : null },
+      protocol: "openrouter_web_search", providerModelId }, configurationActive: true, draftVersion: 1, enabled: true, id: `web-${connectionId}`,
+    kind: "web_search", sourceConnectionId: connectionId, strategyId: `web-${connectionId}` });
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it("stops before any setup when no live OpenRouter connection holds Perplexity's model, and never runs Quick Setup", async () => {
     for (const connections of [
       [],
       [connection("router", "openrouter", [model("openai/gpt-6-astra")])],
-      [connection("router", "openrouter", [model("perplexity/sonar-pro-search", "openrouter_chat_completions", false)])],
-      [connection("router", "openrouter", [model("perplexity/sonar-pro-search")], false)],
-      [connection("compatible", "openai_compatible", [model("perplexity/sonar-pro-search", "openai_chat_completions_compatible")])]
+      [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash", "openrouter_chat_completions", false)])],
+      [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash")], false)],
+      [connection("compatible", "openai_compatible", [model("deepseek/deepseek-v4.1-flash", "openai_chat_completions_compatible")])]
     ]) {
       const calls = stand(connections);
       await expect(ensureProductionSearch(api, { apiRoot: "https://codex-lb.invalid/v1", deepseekKey: "synthetic", searchModel: "search-model-1",
         secret: "synthetic", report: () => undefined })).rejects.toThrow("research_search_perplexity_perplexity_connection_missing");
-      expect(calls).toEqual(["GET /api/admin/providers"]);
+      expect(calls.filter((call) => call !== "GET /api/admin/search")).toEqual(["GET /api/admin/providers"]);
       expect(calls.some((call) => call.includes("quick-setup"))).toBe(false);
       vi.unstubAllGlobals();
     }
@@ -47,8 +54,9 @@ describe("production Search setup and OpenRouter", () => {
       const method = init.method ?? "GET";
       calls.push(`${method} ${url.pathname}`);
       if (url.pathname === "/api/admin/providers" && method === "GET") {
-        return Response.json({ connections: added ? [connection("router", "openrouter", [model("perplexity/sonar-pro-search")])] : [] });
+        return Response.json({ connections: added ? [connection("router", "openrouter", [model("deepseek/deepseek-v4.1-flash")])] : [] });
       }
+      if (url.pathname === "/api/admin/search" && method === "GET") return searchCatalog();
       if (url.pathname === "/api/admin/providers/quick-setup" && method === "GET") return Response.json({ providers: [{ provider: "openrouter", stateToken: "state-1" }] });
       if (url.pathname === "/api/admin/providers/quick-setup" && method === "POST") {
         expect(JSON.parse(String(init.body))).toMatchObject({ provider: "openrouter", secret: "synthetic-openrouter" });
@@ -84,9 +92,23 @@ describe("production Search setup and OpenRouter", () => {
 
   it("reuses only a live OpenRouter connection with a key and the exact model on OpenRouter's adapter", async () => {
     const calls = stand([connection("other", "openrouter", [model("openai/gpt-6-astra")]),
-      connection("router", "openrouter", [model("openai/gpt-6-astra"), model("perplexity/sonar-pro-search")])]);
-    await expect(perplexitySearchConnection(api, "perplexity/sonar-pro-search")).resolves.toBe("router");
-    expect(calls).toEqual(["GET /api/admin/providers"]);
+      connection("router", "openrouter", [model("openai/gpt-6-astra"), model("deepseek/deepseek-v4.1-flash")])]);
+    await expect(perplexitySearchConnection(api, ["deepseek/deepseek-v4.1-flash"]))
+      .resolves.toEqual({ connectionId: "router", upstreamModelId: "deepseek/deepseek-v4.1-flash" });
+    expect(calls).toEqual(["GET /api/admin/providers", "GET /api/admin/search"]);
+  });
+
+  it("takes the technical model of the stand's live Perplexity web search, never one of another engine", async () => {
+    const models = [model("deepseek/deepseek-v4.1-flash"), model("deepseek/deepseek-v4.1-flash-1017")];
+    // Quick Setup's source runs on the -1017 snapshot: that model is used, whatever the preferred order says.
+    stand([connection("router", "openrouter", models)], [webSearchSource("router", "model-deepseek/deepseek-v4.1-flash-1017", "perplexity")]);
+    await expect(perplexitySearchConnection(api, ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017"]))
+      .resolves.toEqual({ connectionId: "router", upstreamModelId: "deepseek/deepseek-v4.1-flash-1017" });
+    vi.unstubAllGlobals();
+    // A web search with Parallel is not the Perplexity source: the preferred technical model is used.
+    stand([connection("router", "openrouter", models)], [webSearchSource("router", "model-deepseek/deepseek-v4.1-flash-1017", "parallel")]);
+    await expect(perplexitySearchConnection(api, ["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash-1017"]))
+      .resolves.toEqual({ connectionId: "router", upstreamModelId: "deepseek/deepseek-v4.1-flash" });
   });
 });
 

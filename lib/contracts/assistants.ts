@@ -1,6 +1,7 @@
 import {
   decodeSearchPlan,
   MAX_SEARCH_PLAN_OPTIONS,
+  SEARCH_ON_PLAN,
   type SearchPlan,
   type SearchPlanMode
 } from "./search";
@@ -513,9 +514,12 @@ export function decodeAssistantSearchValue(
   const plan = decodeSearchPlan({ mode: value.mode, optionIds: value.optionIds });
   if (hiddenCount === null || !plan.ok) return null;
   const total = plan.plan.optionIds.length + hiddenCount;
-  return total >= 1 && total <= MAX_SEARCH_PLAN_OPTIONS
-    ? withHiddenCount({ mode: plan.plan.mode, optionIds: [...plan.plan.optionIds] }, hiddenCount)
-    : null;
+  if (total < 1 || total > MAX_SEARCH_PLAN_OPTIONS) return null;
+  // Search is on or off (operator decisions 2026-11-26): a stored or written value that names sources, from before
+  // the single engine or an earlier client, is on. A projection is the server's, made from values read this way.
+  return mode === "draft"
+    ? { mode: SEARCH_ON_PLAN.mode, optionIds: [...SEARCH_ON_PLAN.optionIds] }
+    : withHiddenCount({ mode: plan.plan.mode, optionIds: [...plan.plan.optionIds] }, hiddenCount);
 }
 
 export function decodeAssistantToolsValue(

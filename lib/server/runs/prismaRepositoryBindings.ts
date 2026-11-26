@@ -505,17 +505,7 @@ export async function insertAcceptedProviderRunBindings(
     current = await loadProviderAdmissionPlan(tx, {
       providerConnectionId: input.plan.selection.providerConnectionId,
       providerModelId: input.plan.selection.providerModelId,
-      ...(input.plan.requiresClientToolCoexistence
-        ? { requiresClientToolCoexistence: true }
-        : {}),
-      ...(input.plan.requiresClientSearchRoutes ? { requiresClientSearchRoutes: true } : {}),
       searchPlan: input.plan.requestedSearchPlan,
-      ...(input.plan.requestedSearchPreferenceSource
-        ? {
-            searchPreferencePlan: input.plan.requestedSearchPreferencePlan,
-            searchPreferenceSource: input.plan.requestedSearchPreferenceSource
-          }
-        : {}),
       userId: input.userId
     });
   } catch (error) {

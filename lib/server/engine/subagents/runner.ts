@@ -29,6 +29,7 @@ import type { ProviderHistoryItem } from "../../providers/history";
 import { observedFailure } from "../../providers/providerObservability";
 import type { ProviderRunRequest, ProviderRunResult } from "../../providers/types";
 import type { RunUsageAttribution } from "../../runs/runRepositoryContract";
+import { subagentSearchPlan } from "../../search/toolExecutor";
 import { ToolCallRepeatHistory } from "../../runs/toolCallRepeatGuard";
 import { reportedAnswerCost } from "../../runs/usagePricing";
 import type { WorkspaceAgent } from "../../subagents/guestProtocol";
@@ -356,7 +357,8 @@ export function subagentRequest(request: ProviderRunRequest, route: SubagentMode
       ...(kept.length > 0 ? { turnGuidance: kept } : {})
     },
     provider: route.request.provider,
-    reasoningEffort: route.request.reasoningEffort
+    reasoningEffort: route.request.reasoningEffort,
+    searchPlan: subagentSearchPlan(request.searchPlan)
   };
 }
 

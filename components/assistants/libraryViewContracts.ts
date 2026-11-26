@@ -28,7 +28,7 @@ import type { AssistantListingStatus } from "@/lib/contracts/assistantListing";
 import type { ModelParameterControls } from "@/lib/contracts/catalog";
 import type { McpReadiness } from "@/lib/contracts/mcp";
 import { SKILL_ASSISTANT_MAX_AVAILABLE, SKILL_MAX_PINNED } from "@/lib/contracts/skills";
-import { MAX_SEARCH_PLAN_OPTIONS, type SearchPlanMode } from "@/lib/domain/search";
+import type { SearchPlanMode } from "@/lib/domain/search";
 
 export type LibraryNotice = {
   kind: "error" | "success";
@@ -428,14 +428,9 @@ export function assistantDraftFromEditor(
     }
   }
 
+  // Search is on or off (operator decisions 2026-11-26), so a row names no sources to bound; one stored earlier keeps
+  // its plan, which reads as On.
   const search = rows.search.value;
-  if (search.mode !== "inherit" && search.mode !== "off") {
-    if (search.optionIds.length === 0) {
-      errors.rows.search ??= "Choose at least one Search source, or turn Web search off.";
-    } else if (search.optionIds.length > MAX_SEARCH_PLAN_OPTIONS) {
-      errors.rows.search ??= `Choose up to ${MAX_SEARCH_PLAN_OPTIONS} Search sources.`;
-    }
-  }
 
   const tools = rows.tools.value;
   if (tools.mode === "exact") {
@@ -519,9 +514,8 @@ export function draftRowsFromChatSetup(setup: AssistantChatSetup): AssistantDraf
     streamMode: setup.streamMode,
     temperature: setup.temperature
   };
-  const searchIds = setup.search.optionIds.slice(0, MAX_SEARCH_PLAN_OPTIONS);
-  rows.search.value = searchIds.length > 0
-    ? { mode: setup.search.mode, optionIds: [...searchIds] }
+  rows.search.value = setup.search.optionIds.length > 0
+    ? { mode: setup.search.mode, optionIds: [...setup.search.optionIds] }
     : { mode: "off" };
   const mcp = setup.mcp;
   const serverIds = mcp.mode === "exact" ? mcp.serverIds : mcp.mode === "load_all" ? mcp.enabledServerIds : null;

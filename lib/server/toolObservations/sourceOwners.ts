@@ -1,6 +1,6 @@
 import type { Prisma, ToolObservation } from "@prisma/client";
 import { loadEntitlementsForUser } from "../auth/dbEntitlements";
-import { canAccessSearchStrategy } from "../auth/entitlements";
+import { canAccessSearchStrategy, searchEntitled } from "../auth/entitlements";
 import { assertMcpToolAccess } from "../mcp/toolAccess";
 import { namespacedMcpToolName } from "../mcp/runPlan";
 import { createSkillCatalogRepository } from "../skills/catalogRepository";
@@ -69,16 +69,22 @@ export function createObservationSourceOwners() {
             skillId: binding.skillId, revisionId: binding.revisionId })) throw unavailable();
         return;
       }
-      const [accepted] = await tx.$queryRaw<Array<{ options: unknown }>>`
-        SELECT "normalizedRequest"->'searchPlan'->'options' AS options FROM "ModelRun" WHERE "id" = ${source.modelRunId}`;
+      const [accepted] = await tx.$queryRaw<Array<{ mode: unknown; options: unknown }>>`
+        SELECT "normalizedRequest"->'searchPlan'->>'mode' AS mode, "normalizedRequest"->'searchPlan'->'options' AS options
+        FROM "ModelRun" WHERE "id" = ${source.modelRunId}`;
       if (!Array.isArray(accepted?.options)) throw unavailable();
       const entitlements = await loadEntitlementsForUser(actor.userId, tx);
+      // A single-engine run searched with the installation's engine, which no per-source grant names: any Search grant
+      // opens it, as at admission. A run accepted before keeps the grant of each source it called.
+      const granted = (optionId: string) => accepted.mode === "engine"
+        ? searchEntitled(entitlements)
+        : canAccessSearchStrategy(entitlements, optionId);
       for (const item of binding.sources) {
         if (!accepted.options.some(option => record(option) && option.optionId === item.optionId && option.revisionId === item.revisionId)) throw unavailable();
         const revision = await tx.searchIntegrationRevision.findFirst({ where: { id: item.revisionId,
           searchStrategy: { enabled: true, archivedAt: null, searchOption: { optionId: item.optionId, enabled: true, archivedAt: null } } },
           select: { id: true } });
-        if (!revision || !canAccessSearchStrategy(entitlements, item.optionId)) throw unavailable();
+        if (!revision || !granted(item.optionId)) throw unavailable();
       }
     },
 

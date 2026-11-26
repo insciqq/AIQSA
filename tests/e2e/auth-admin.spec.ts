@@ -808,7 +808,7 @@ test("admin console keeps all redesigned sections operable end to end", async ({
     const searchPage = searchSection.getByTestId("search-source-page");
     await expect(searchPage.getByRole("region", { name: "Check", exact: true })).toBeVisible();
     await expect(searchPage.getByRole("region", { name: "Details", exact: true })).toBeVisible();
-    await expect(searchPage.getByText("Chat models", { exact: true })).toBeVisible();
+    await expect(searchPage.getByText("Use", { exact: true })).toBeVisible();
     await expect(searchPage.getByTestId("search-source-page-status")).toBeVisible();
     await expectNoPageOverflow(page);
     await page.setViewportSize({ height: 900, width: 1_440 });

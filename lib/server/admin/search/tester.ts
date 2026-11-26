@@ -1,15 +1,13 @@
 import { admitModelGenerationBudget, modelOutputAllowance } from "../../providers/modelOutputAllowance";
 import type { ProviderAdapterKind } from "../../providers/providerConfiguration";
 import type { PrismaClient } from "@prisma/client";
-import {
-  adminSearchExecutionLimits,
-  type AdminSearchDraft
-} from "../../../contracts/adminSearch";
+import type { AdminSearchDraft } from "../../../contracts/adminSearch";
 import { decryptProviderCredentialSecret } from "../../providers/credentialSecrets";
 import {
   DEEPSEEK_SEARCH_API_MODEL_ID,
   DEEPSEEK_SEARCH_API_STRATEGY_ID
 } from "../../providers/deepSeekSearchApi";
+import { OPENROUTER_WEB_SEARCH_STRATEGY_ID } from "../../providers/openRouterWebSearch";
 import { providerAuthenticationMode } from "../../providers/providerConfiguration";
 import { createProviderSafeFetch } from "../../providers/providerSafeFetch";
 import { createProviderRuntimeBinding } from "../../providers/runtimeFactory";
@@ -28,6 +26,11 @@ import type { AdminSearchTester } from "./service";
 
 const connectivityQuery = "OpenAI official website";
 
+/** A query as the search ran it, compared without case or spacing. */
+function searchedQuery(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
 export function adminSearchProviderPolicy(input: Readonly<{
   capabilities: ProviderModelCapabilities;
   adapterKind?: ProviderAdapterKind;
@@ -40,25 +43,16 @@ export function adminSearchProviderPolicy(input: Readonly<{
     adapterKind: input.adapterKind ?? "fake", capabilities: input.capabilities, defaultParams: { ...input.defaultParams },
     upstreamModelId: input.modelId
   } }, { query: connectivityQuery }, input.draft.maxOutputTokens);
-  if (input.draft.protocol === "openrouter_perplexity_chat") {
-    if (input.provider !== "openrouter") throw new Error("search_protocol_not_supported");
+  if (input.draft.protocol === "openrouter_web_search") {
+    if (input.provider !== "openrouter" || !input.draft.openRouterWebSearch) throw new Error("search_protocol_not_supported");
     return {
-      controls: {
-        maxOutputTokens: {
-          defaultValue: maxOutputTokens,
-          maxValue: adminSearchExecutionLimits.maxOutputTokens.maximum
-        },
-        temperature: { defaultValue: 0, maxValue: 2, minValue: 0, supported: true }
-      },
-      defaultParams: {
-        ...input.defaultParams,
-        maxOutputTokens: maxOutputTokens,
-        stream: false,
-        temperature: 0
-      },
+      defaultParams: input.defaultParams,
+      engine: input.draft.openRouterWebSearch.engine,
+      mode: input.draft.openRouterWebSearch.mode,
+      modelCapabilities: input.capabilities,
       modelId: input.modelId,
       provider: "openrouter",
-      strategyId: "perplexity-tool-search"
+      strategyId: OPENROUTER_WEB_SEARCH_STRATEGY_ID
     };
   }
   if (input.draft.protocol === "openai_responses_web_search") {
@@ -218,13 +212,17 @@ export function createAdminSearchTester(prisma: PrismaClient, options: Readonly<
         });
         deadline.signal.throwIfAborted();
         const normalizedSourceCount = result.sources.length;
+        // OpenRouter's technical model qualifies only by running the search
+        // itself: once, with the query verbatim (operator decision 2026-11-26).
+        const searchedVerbatim = draft.protocol !== "openrouter_web_search" ||
+          result.searchQueries?.length === 1 && searchedQuery(result.searchQueries[0]!) === searchedQuery(validatedQuery.query);
 
         return {
           method: "provider_search",
           normalizedSourceCount,
           probeBinding: role.authority,
           protocol: draft.protocol,
-          status: normalizedSourceCount > 0 ? "available" : "unavailable"
+          status: normalizedSourceCount > 0 && searchedVerbatim ? "available" : "unavailable"
         };
       } finally {
         deadline.clear();

@@ -26,6 +26,7 @@
     "check:hermetic": "prisma generate && next typegen && npm run docs:check && npm run lint && tsc --noEmit && vitest run",
     "docs:check": "node scripts/docs-check.mjs",
     "calibrate:token-estimate": "tsx scripts/calibrate-token-estimate.ts",
+    "eval:web-search": "tsx scripts/eval/web-search-quality.ts",
     "release:privacy:check": "node scripts/release-privacy-check.mjs --require-origin",
     "db:generate": "prisma generate",
     "db:bootstrap": "tsx prisma/bootstrap.ts",
@@ -52,7 +53,6 @@
     "smoke:deepseek-browser-paid": "node scripts/smoke-deepseek-browser-paid.cjs",
     "smoke:openai": "tsx scripts/smoke-openai-responses.ts",
     "smoke:gemini": "tsx scripts/smoke-gemini-interactions.ts",
-    "smoke:openrouter": "tsx scripts/smoke-openrouter-perplexity.ts",
     "smoke:parsers": "tsx scripts/smoke-parser-sidecars.ts",
     "smoke:tool-result-recall-paid": "tsx scripts/smoke-tool-result-recall-paid.ts",
     "smoke:telegram": "tsx scripts/smoke-telegram.ts",
@@ -74,7 +74,8 @@
     "task:complete": "node scripts/task-ledger.mjs complete",
     "smoke:workspace-user-paid": "tsx scripts/smoke-workspace-user-paid.ts",
     "smoke:browser-scenarios-paid": "tsx scripts/smoke-browser-scenarios-paid.ts",
-    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts"
+    "smoke:subagents-paid": "tsx scripts/smoke-subagents-paid.ts",
+    "smoke:search-paid": "tsx scripts/smoke-search-paid.ts"
   },
   "dependencies": {
     "@aws-crypto/sha256-js": "5.2.0",

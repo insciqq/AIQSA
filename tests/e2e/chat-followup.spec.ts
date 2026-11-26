@@ -42,7 +42,7 @@ async function startAnswer(page: Page): Promise<string> {
   // Compile this route before a short fake generation on reusable dev servers.
   expect((await page.request.post("/api/model-runs/missing/followups", { data: {} })).status()).toBe(400);
   // Installations without configured Search omit its chip entirely.
-  if (await page.getByRole("button", { name: /^Choose web search/u }).isVisible()) await chooseSearchStrategy(page, "Off");
+  if (await page.getByRole("button", { name: "Web search", exact: true }).isVisible()) await chooseSearchStrategy(page, "Off");
   await page.getByRole("textbox", { name: "Message" }).fill("Explain this synthetic example. " + "synthetic ".repeat(3_600));
   const admission = page.waitForResponse(response => response.request().method() === "POST" &&
     /^\/api\/chats\/[^/]+\/messages$/u.test(new URL(response.url()).pathname));

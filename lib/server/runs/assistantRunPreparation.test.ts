@@ -129,12 +129,6 @@ function fakeAdmissionPlan(input: AdmissionInput, toolCalling = true): ProviderA
     },
     fingerprint: "f".repeat(64),
     requestedSearchPlan: input.searchPlan,
-    ...(input.searchPreferenceSource
-      ? {
-          requestedSearchPreferencePlan: input.searchPreferencePlan,
-          requestedSearchPreferenceSource: input.searchPreferenceSource
-        }
-      : {}),
     searches: [],
     selection: {
       providerConnectionId: input.providerConnectionId,
@@ -776,7 +770,10 @@ describe("bound chat Assistant rows", () => {
     const cases: [Record<string, unknown>, string, number][] = [
       [{ modelId: "missing-model", provider: "fake" }, "model_not_available", 403],
       [{ modelId: "fake-model", provider: "another-connection" }, "model_not_available", 403],
+      // Any plan that names a source asks for Search on, which this runner cannot have.
       [{ searchPlan: { mode: "all_selected", optionIds: ["hidden-web"] } }, "search_strategy_not_available", 403],
+      [{ searchEnabled: true }, "search_strategy_not_available", 403],
+      [{ searchEnabled: "yes" }, "search_plan_invalid", 400],
       [{ controlDefaults: { reasoningEffort: "impossible" } }, "invalid_run_params", 400],
       [{ controlDefaults: { reasoningMode: "pro" } }, "reasoning_mode_not_available", 400],
       [{ params: { temperature: 1 } }, "invalid_run_params", 400],
@@ -785,7 +782,7 @@ describe("bound chat Assistant rows", () => {
     ];
     for (const [override, code, status] of cases) {
       const result = await prepareRun(
-        rowDeps(resolver(rows, { runControls: {} }), loader({ unavailable: ["hidden-web"] })),
+        rowDeps(resolver(rows, { runControls: {} }), loader({ unavailable: ["hidden-web", "web-search"] })),
         { body: { text: "Hi", ...override }, source: boundSource(), userId: "user-1" }
       );
       expect(result).toMatchObject({ code, ok: false, status });

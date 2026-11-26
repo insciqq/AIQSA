@@ -39,7 +39,7 @@ function Harness({ initialDraft = "", initialPins = [], onPin, onSkillSearch, ..
       onOpenSkillLibrary={vi.fn()}
       onSelectMcp={vi.fn()}
       onSelectModel={vi.fn()}
-      onSelectSearchOptionIds={vi.fn()}
+      onSearchEnabledChange={vi.fn()}
       onSend={vi.fn()}
       onUploadFiles={vi.fn()}
       paletteSkills={{
@@ -305,7 +305,7 @@ describe("composer / palette entries mirror existing actions", () => {
   });
 
   it("opens the MCP and Search layers as their chips do", () => {
-    render(<Harness selectedSearchOptionIds={["web-primary"]} />);
+    render(<Harness searchEnabled />);
     type("/", "/mcp");
     key("Enter");
     expect(screen.getByRole("menu", { name: "MCP tools" })).toBeInTheDocument();
@@ -317,12 +317,12 @@ describe("composer / palette entries mirror existing actions", () => {
   });
 
   it("offers no command to turn web search or Workspace off", () => {
-    const onSelectSearchOptionIds = vi.fn();
-    render(<Harness selectedSearchOptionIds={["web-primary"]} onSelectSearchOptionIds={onSelectSearchOptionIds} />);
+    const onSearchEnabledChange = vi.fn();
+    render(<Harness searchEnabled onSearchEnabledChange={onSearchEnabledChange} />);
     // Search is turned off only in Chat defaults (operator decision 2026-10-24).
     type("/", "/turn off web");
     expect(screen.queryByRole("option", { name: /Turn off web search/u })).toBeNull();
-    expect(onSelectSearchOptionIds).not.toHaveBeenCalled();
+    expect(onSearchEnabledChange).not.toHaveBeenCalled();
     // Workspace is ambient: the palette offers no command to switch it.
     type("/", "/workspace");
     expect(screen.queryByRole("option", { name: /Turn (on|off) Workspace/u })).toBeNull();

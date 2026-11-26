@@ -8,10 +8,13 @@ import type { ErrorResponse, SessionErrorCode } from "./http";
 import { decodeCatalogDictation, type CatalogDictation } from "./speechToText";
 import {
   decodeSearchPlan,
+  isSearchUnavailableReason,
+  type ModelWebSearch,
   type SearchAdapterKind,
   type SearchPlan,
   type SearchPlanMode,
-  type SearchProtocol
+  type SearchProtocol,
+  type SearchUnavailableReason
 } from "./search";
 import { catalogConnectionLabels } from "./providerConnectionLabels";
 
@@ -78,7 +81,11 @@ export type CatalogWireModelCapabilities = {
   /** Present on tool-calling models; absent means no image tools route. */
   imageRoutes?: CatalogImageRoutes;
   nativeWebSearch: boolean;
-  openRouterPerplexitySearch: boolean;
+  /**
+   * Retired with Perplexity Sonar (search-v2, 2026-11-26) and always false. Still sent for one release because a
+   * v0.5.2 tab open during the upgrade rejects a catalog without it; nothing reads it. Remove in the next release.
+   */
+  openRouterPerplexitySearch?: false;
   reasoning: boolean;
   streaming: boolean;
   text: true;
@@ -100,6 +107,21 @@ export type CatalogWireModel = {
   }>;
   searchStrategyIds: string[];
   upstreamModelId: string;
+  /**
+   * How this model searches with Search on (operator decisions 2026-11-26): inside its own answer, with the
+   * installation's engine, or not at all (null). Absent on older wires.
+   */
+  webSearch?: ModelWebSearch;
+};
+
+/**
+ * The installation's Search as the user sees it: the engine's name while it can serve the user, and why not
+ * otherwise. Users only switch Search on or off (`CatalogDefaults.searchEnabled`); a model may still search inside its
+ * own answer while the engine cannot (`CatalogWireModel.webSearch`).
+ */
+export type CatalogSearch = {
+  engine: { displayName: string } | null;
+  reason: SearchUnavailableReason | null;
 };
 
 export type CatalogWireSearchStrategy = {
@@ -107,7 +129,7 @@ export type CatalogWireSearchStrategy = {
   description?: string;
   displayName: string;
   executionModes?: SearchPlanMode[];
-  kind: "anthropic_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "perplexity_tool_search" | "provider_model_web_search" | "web_search";
+  kind: "anthropic_native_web_search" | "gemini_google_search" | "none" | "openai_native_web_search" | "provider_model_web_search" | "web_search";
   privacy?: "answer_provider" | "query_only";
   protocol?: SearchProtocol;
   revisionId?: string;
@@ -145,9 +167,13 @@ export type CatalogDefaults = Partial<AnswerSoundPreferences> & {
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
   personalModelDefault: { modelId: string; provider: string } | null;
+  /** Earlier clients' view of `searchEnabled`: `SEARCH_ON_PLAN` for everyone. */
   organizationSearchPlan: SearchPlan;
   provider: string;
+  /** Earlier clients' view of `searchEnabled`: `SEARCH_ON_PLAN` or `SEARCH_OFF_PLAN`. */
   searchPlan: SearchPlan;
+  /** The user's own Search switch for every chat (on unless turned off in Chat defaults); absent on older wires. */
+  searchEnabled?: boolean;
   searchPreferenceSource: "organization" | "personal";
   showCitations: boolean;
   showReasoningBlocks: boolean;
@@ -189,6 +215,8 @@ export type Catalog = {
   dictation?: CatalogDictation;
   models: CatalogModel[];
   providers: CatalogProvider[];
+  /** Absent on older wires. */
+  search?: CatalogSearch;
   searchStrategies: CatalogSearchStrategy[];
 };
 
@@ -299,7 +327,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
     typeof capabilities.imageInput !== "boolean" ||
     (capabilities.imageRoutes !== undefined && (!isRecord(capabilities.imageRoutes) || typeof capabilities.imageRoutes.systemVision !== "boolean" || typeof capabilities.imageRoutes.imageEditing !== "boolean")) ||
     typeof capabilities.nativeWebSearch !== "boolean" ||
-    typeof capabilities.openRouterPerplexitySearch !== "boolean" ||
     typeof capabilities.reasoning !== "boolean" ||
     typeof capabilities.streaming !== "boolean" ||
     typeof capabilities.toolCalling !== "boolean" ||
@@ -312,12 +339,15 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
         candidate.executionModes.some((mode) => mode !== "all_selected" && mode !== "model_choice")
       )
     )) ||
-    ("text" in capabilities && capabilities.text !== true)
+    ("text" in capabilities && capabilities.text !== true) ||
+    (value.webSearch !== undefined && value.webSearch !== null && value.webSearch !== "engine" &&
+      value.webSearch !== "in_answer")
   ) {
     return null;
   }
 
   return {
+    ...(value.webSearch !== undefined ? { webSearch: value.webSearch as ModelWebSearch } : {}),
     capabilities: {
       background: capabilities.background,
       documentInputMode,
@@ -325,7 +355,6 @@ function decodeCatalogModel(value: unknown): CatalogModel | null {
       ...(isRecord(capabilities.imageRoutes) ? { imageRoutes: { systemVision: capabilities.imageRoutes.systemVision as boolean,
         imageEditing: capabilities.imageRoutes.imageEditing as boolean } } : {}),
       nativeWebSearch: capabilities.nativeWebSearch,
-      openRouterPerplexitySearch: capabilities.openRouterPerplexitySearch,
       reasoning: capabilities.reasoning,
       streaming: capabilities.streaming,
       toolCalling: capabilities.toolCalling
@@ -383,7 +412,6 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       value.kind !== "anthropic_native_web_search" &&
       value.kind !== "gemini_google_search" &&
       value.kind !== "openai_native_web_search" &&
-      value.kind !== "perplexity_tool_search" &&
       value.kind !== "provider_model_web_search" &&
       value.kind !== "web_search") ||
     !nonEmptyString(value.strategyId)
@@ -408,7 +436,7 @@ function decodeSearchStrategy(value: unknown): CatalogSearchStrategy | null {
       protocol !== "deepseek_search_api" &&
       protocol !== "gemini_google_search" &&
       protocol !== "openai_responses_web_search" &&
-      protocol !== "openrouter_perplexity_chat") ||
+      protocol !== "openrouter_web_search") ||
     (value.revisionId !== undefined && !nonEmptyString(value.revisionId))
   ) {
     return null;
@@ -484,6 +512,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
   const models = catalog.models.map(decodeCatalogModel);
   const providers = catalog.providers.map(decodeCatalogProvider);
   const searchStrategies = catalog.searchStrategies.map(decodeSearchStrategy);
+  const search = catalog.search === undefined ? undefined : decodeCatalogSearch(catalog.search);
   const decodedSearchPlan = decodeSearchPlan(defaults.searchPlan);
   const decodedOrganizationSearchPlan = decodeSearchPlan(defaults.organizationSearchPlan);
   const chatDefaults = decodeOptionalChatDefaults({
@@ -509,7 +538,9 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
     defaults.organizationSearchPlan === undefined ||
     !decodedSearchPlan.ok ||
     !decodedOrganizationSearchPlan.ok ||
-    (defaults.searchPreferenceSource !== "organization" && defaults.searchPreferenceSource !== "personal")
+    (defaults.searchPreferenceSource !== "organization" && defaults.searchPreferenceSource !== "personal") ||
+    (defaults.searchEnabled !== undefined && typeof defaults.searchEnabled !== "boolean") ||
+    search === null
   ) {
     return null;
   }
@@ -542,6 +573,7 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       organizationSearchPlan: decodedOrganizationSearchPlan.plan,
       provider: defaults.provider,
       searchPlan: decodedSearchPlan.plan,
+      ...(typeof defaults.searchEnabled === "boolean" ? { searchEnabled: defaults.searchEnabled } : {}),
       searchPreferenceSource: defaults.searchPreferenceSource,
       sendWithEnter: chatDefaults.sendWithEnter,
       workspaceEnabled: defaults.workspaceEnabled ?? false,
@@ -553,8 +585,19 @@ export function decodeCatalogResponse(value: unknown): Catalog | null {
       ...provider,
       name: providerLabels.get(provider.id) ?? provider.name
     })),
+    ...(search ? { search } : {}),
     searchStrategies: searchStrategies.filter(
       (strategy): strategy is CatalogSearchStrategy => strategy !== null
     )
+  };
+}
+
+function decodeCatalogSearch(value: unknown): CatalogSearch | null {
+  if (!isRecord(value) || (value.reason !== null && !isSearchUnavailableReason(value.reason))) return null;
+  const engine = value.engine;
+  if (engine !== null && !(isRecord(engine) && nonEmptyString(engine.displayName))) return null;
+  return {
+    engine: engine === null ? null : { displayName: (engine as Record<string, unknown>).displayName as string },
+    reason: value.reason as SearchUnavailableReason | null
   };
 }

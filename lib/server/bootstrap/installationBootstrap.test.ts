@@ -14,10 +14,7 @@ import {
 
 const USER_ID = "7e6db97e-d8a9-4e94-b03c-6df0f1df44a1";
 const NOW = new Date("2026-07-14T16:00:00.000Z");
-const bootstrapSearchStrategies = defaultSearchStrategies.filter(
-  (strategy) => strategy.kind !== "perplexity_tool_search"
-);
-const bootstrapSearchRoutes = bootstrapSearchStrategies.flatMap((strategy) => strategy.routes);
+const bootstrapSearchRoutes = defaultSearchStrategies.flatMap((strategy) => strategy.routes);
 const bootstrapPhysicalSearchStrategyCount = bootstrapSearchRoutes.length + 1;
 // Provider setup adds the DeepSeek Search API route; bootstrap owns only its row.
 const bootstrapSearchOptionCount = defaultSearchStrategies.length + 1;
@@ -307,7 +304,7 @@ describe("installation bootstrap", () => {
       })
     ).resolves.toEqual({
       catalogModelCount: 1 + automaticRerankerRoutePresets.length,
-      catalogSearchOptionCount: bootstrapSearchStrategies.length,
+      catalogSearchOptionCount: defaultSearchStrategies.length,
       status: "created"
     });
 

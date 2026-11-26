@@ -1962,7 +1962,7 @@ describe("through the engine", () => {
       expect(JSON.stringify(other.requests[0]!.history)).not.toContain("Проведи исследование");
       expect(other.requests[0]!.prompt.system).not.toContain("Be brief.");
       const tools = other.requests[0]!.tools?.map((tool) => tool.name) ?? [];
-      expect(tools).toContain("search_selected_engines");
+      expect(tools).toContain("web_search");
       expect(tools).not.toContain("record_evidence");
       expect(tools).not.toContain("change_research_frame");
       expect(tools).not.toContain(SUBMIT_RESEARCH_DRAFT_TOOL_NAME);

@@ -114,6 +114,10 @@ export function toolActivityDescriptors(normalizedRequest: unknown, sanitize: (v
         origin: "web_search", serverName: "Web search", toolName: "search"
       });
     }
+    // The one Search tool of a plan admitted since the single engine (`lib/server/search/toolExecutor.ts`).
+    if (clientOptions.length > 0) {
+      descriptors.set("web_search", { origin: "web_search", serverName: "Web search", toolName: "search" });
+    }
   }
 
   if (isRecord(normalizedRequest.workspace) && normalizedRequest.workspace.enabled === true) {

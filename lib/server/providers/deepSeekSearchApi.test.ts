@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ValidatedSearchQuery } from "../../domain/search";
 import { SEARCH_NO_RESULTS_FINDINGS } from "../search/evidence";
+import { SEARCH_RESULT_LIST_FINDINGS } from "../search/toolResult";
 import {
   createDeepSeekSearchApiAdapter,
   createFetchDeepSeekSearchApiClient,
@@ -72,12 +73,12 @@ describe("DeepSeek Search API adapter", () => {
     expect(init?.method).toBe("POST");
     expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${KEY}`);
     // The user's question (`ori_question`) and conversation never leave the server.
-    expect(JSON.parse(String(init?.body))).toEqual({ count: 50, need_content: false, query: "bounded query" });
+    expect(JSON.parse(String(init?.body))).toEqual({ count: 10, need_content: false, query: "bounded query" });
     expect(deepSeekSearchApiEndpoint("https://api.deepseek.com/v1/")).toBe("https://api.deepseek.com/v1/tools/search");
     expect(deepSeekSearchApiEndpoint("https://proxy.example.test/deepseek")).toBe("https://proxy.example.test/deepseek/v1/tools/search");
   });
 
-  it("feeds summaries to the model and keeps each linked result as a cited, billed source", async () => {
+  it("keeps each linked result as a cited, billed source whose excerpt is its summary", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () => json({ results: [
       result(1),
       result(2, { summary: null, title: "  Title\n2  " }),
@@ -87,15 +88,13 @@ describe("DeepSeek Search API adapter", () => {
     ] }));
     const searched = await adapter(fetchFn).search(request());
 
-    expect(searched.findings).toBe([
-      "[1] Title 1 — Site 1 · 2026-10-01T08:00:00+08:00\nSummary 1 for the model.",
-      "[2] Title 2 — Site 2 · 2026-10-02T08:00:00+08:00\nSnippet 2",
-      "[3] example.com\nLine five"
-    ].join("\n\n"));
+    // A result list: the model reads each source as an entry (`lib/server/search/toolResult.ts`), not provider prose.
+    expect(searched.findings).toBe(SEARCH_RESULT_LIST_FINDINGS);
     expect(searched.sources).toEqual([
-      { citation: 1, date: "2026-10-01T08:00:00+08:00", rank: 1, snippet: "Snippet 1", title: "Title 1", url: "https://example.com/page-1" },
+      { citation: 1, date: "2026-10-01T08:00:00+08:00", rank: 1, snippet: "Summary 1 for the model.", title: "Title 1",
+        url: "https://example.com/page-1" },
       { citation: 2, date: "2026-10-02T08:00:00+08:00", rank: 2, snippet: "Snippet 2", title: "Title 2", url: "https://example.com/page-2" },
-      { citation: 3, rank: 3, snippet: "Snippet 5", title: "example.com", url: "https://example.com/page-5" }
+      { citation: 3, rank: 3, snippet: "Line five", title: "example.com", url: "https://example.com/page-5" }
     ]);
     expect(searched.costUsd).toBe(DEEPSEEK_SEARCH_API_REQUEST_USD);
     expect(searched.usage).toMatchObject({ completeness: "complete", inputTokens: 0, outputTokens: 0, webSearchCount: 1 });

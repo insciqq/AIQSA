@@ -47,4 +47,27 @@ describe("code-owned Search catalog on PostgreSQL", () => {
     expect(await prisma.searchOption.count({ where: { id: BUILT_IN_SEARCH_API_ID, templateKey: "search:deepseek-search-api" } }))
       .toBe(1);
   });
+
+  it("leaves the archived Perplexity Sonar source as the upgrade left it and creates no new one", async () => {
+    const sonarId = "00000000-0000-4000-8000-000000001404";
+    const outcome = prisma.$transaction(async (tx) => {
+      // As the 2026-11-26 migration leaves an installation that had the built-in Sonar source.
+      await tx.searchOption.upsert({
+        create: { archivedAt: new Date("2026-11-26T12:00:00Z"), description: "Web search provided by Perplexity through OpenRouter.",
+          displayName: "Perplexity Search", enabled: false, id: sonarId, kind: "perplexity_search", optionId: "perplexity-tool-search",
+          sourceConnectionId: providerTemplateIds.openRouterConnection, templateKey: "search:perplexity" },
+        update: { archivedAt: new Date("2026-11-26T12:00:00Z"), enabled: false },
+        where: { id: sonarId }
+      });
+      const before = await tx.searchOption.findUniqueOrThrow({ include: { strategies: true }, where: { id: sonarId } });
+      for (let start = 0; start < 2; start += 1) {
+        await synchronizeCodeOwnedCatalog(tx, { mode: "installation", now: new Date() });
+      }
+      expect(await tx.searchOption.findUniqueOrThrow({ include: { strategies: true }, where: { id: sonarId } })).toEqual(before);
+      expect(await tx.searchOption.count({ where: { archivedAt: null, kind: "perplexity_search" } })).toBe(0);
+      expect(await tx.searchStrategy.count({ where: { archivedAt: null, enabled: true, kind: "perplexity_tool_search" } })).toBe(0);
+      throw new Rollback();
+    }, { timeout: 60_000 });
+    await expect(outcome).rejects.toBeInstanceOf(Rollback);
+  });
 });

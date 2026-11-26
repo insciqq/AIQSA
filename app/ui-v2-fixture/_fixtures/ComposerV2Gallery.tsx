@@ -131,11 +131,12 @@ export const composerGalleryConfig: ComposerConfig = {
       modelId: "gpt-5.2",
       modelPreferenceSource: "personal",
       organizationModelDefault: { modelId: "gemini-3-pro", provider: "google-work" },
-      organizationSearchPlan: { mode: "all_selected", optionIds: ["web-primary"] },
+      organizationSearchPlan: { mode: "all_selected", optionIds: ["web-search"] },
       personalModelDefault: { modelId: "gpt-5.2", provider: "openai-work" },
       provider: "openai-work",
-      searchPlan: { mode: "all_selected", optionIds: ["web-primary"] },
-      searchPreferenceSource: "personal",
+      searchEnabled: true,
+      searchPlan: { mode: "all_selected", optionIds: ["web-search"] },
+      searchPreferenceSource: "organization",
       showCitations: true,
       showReasoningBlocks: false,
     },
@@ -145,7 +146,6 @@ export const composerGalleryConfig: ComposerConfig = {
         documentInputMode: "native_pdf",
         imageInput: true,
         nativeWebSearch: true,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true
@@ -167,19 +167,15 @@ export const composerGalleryConfig: ComposerConfig = {
       },
       provider: "openai-work",
       providerFamily: "openai",
-      searchOptionCompatibility: {
-        "web-primary": { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] },
-        "research-search": { clientToolCompatible: true, executionModes: ["all_selected", "model_choice"] }
-      },
-      searchStrategyIds: ["search-disabled", "web-primary", "research-search"],
-      upstreamModelId: "gpt-5.2"
+      searchStrategyIds: ["web-search"],
+      upstreamModelId: "gpt-5.2",
+      webSearch: "in_answer"
     }, {
       capabilities: {
         background: false,
         documentInputMode: "pdf_text_extraction",
         imageInput: true,
         nativeWebSearch: false,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true
@@ -201,18 +197,15 @@ export const composerGalleryConfig: ComposerConfig = {
       },
       provider: "openai-work",
       providerFamily: "openai",
-      searchOptionCompatibility: {
-        "web-primary": { clientToolCompatible: true, executionModes: ["all_selected"] }
-      },
-      searchStrategyIds: ["search-disabled", "web-primary"],
-      upstreamModelId: "gpt-5.2-mini"
+      searchStrategyIds: ["web-search"],
+      upstreamModelId: "gpt-5.2-mini",
+      webSearch: "engine"
     }, {
       capabilities: {
         background: false,
         documentInputMode: "native_pdf",
         imageInput: true,
         nativeWebSearch: true,
-        openRouterPerplexitySearch: false,
         reasoning: true,
         streaming: true,
         toolCalling: true
@@ -234,11 +227,9 @@ export const composerGalleryConfig: ComposerConfig = {
       },
       provider: "google-work",
       providerFamily: "google",
-      searchOptionCompatibility: {
-        "web-primary": { clientToolCompatible: false, executionModes: ["model_choice"] }
-      },
-      searchStrategyIds: ["search-disabled", "web-primary"],
-      upstreamModelId: "gemini-3-pro"
+      searchStrategyIds: ["web-search"],
+      upstreamModelId: "gemini-3-pro",
+      webSearch: "engine"
     }],
     providers: [{
       family: "openai",
@@ -251,20 +242,13 @@ export const composerGalleryConfig: ComposerConfig = {
       models: ["gemini-3-pro"],
       name: "Google"
     }],
+    // Users switch Search on or off; the installation's engine searches (search-v2, 2026-11-26).
+    search: { engine: { displayName: "OpenRouter Web Search" }, reason: null },
     searchStrategies: [{
-      displayName: "No Search",
-      kind: "none",
-      strategyId: "search-disabled"
-    }, {
-      description: "Fresh web sources",
-      displayName: "Web Search",
+      description: "Searches the web with the engine your administrator set up.",
+      displayName: "Web search",
       kind: "web_search",
-      strategyId: "web-primary"
-    }, {
-      description: "Research-grade search",
-      displayName: "Research Search",
-      kind: "provider_model_web_search",
-      strategyId: "research-search"
+      strategyId: "web-search"
     }]
   },
   mcpServers: [{
@@ -456,7 +440,7 @@ const INITIAL_LAYER_TRIGGERS: Readonly<Record<Exclude<ComposerV2Layer, null>, st
   files: 'button[aria-label="Add"]',
   model: '[data-testid="header-model-trigger"]',
   reasoning: 'button[aria-label^="Reasoning effort"]',
-  search: 'button[aria-label^="Choose web search"]',
+  search: 'button[aria-label="Web search"]',
   skills: 'button[aria-label="Change Skills mode"]',
   tools: 'button[aria-label="Change MCP mode"]'
 };
@@ -601,9 +585,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
   const assistantChanged = state === "assistant-changed";
   const [assistantOrigins, setAssistantOrigins] = useState(assistantSetup?.origins ?? {});
   const [selectedModel, setSelectedModel] = useState({ modelId: "gpt-5.2", provider: "openai-work" });
-  const [searchIds, setSearchIds] = useState<string[]>(state === "zero" || offChips ||
-    (assistantSetup && !assistantChanged)
-    ? [] : wideChips ? ["web-primary", "research-search"] : ["web-primary"]);
+  const [searchOn, setSearchOn] = useState(!(state === "zero" || offChips || (assistantSetup && !assistantChanged)));
   const [mcpSelection, setMcpSelection] = useState<ComposerMcpSelection>(assistantSetup && !assistantChanged
     ? structuredClone(composerGalleryAssistantValues.tools as ComposerMcpSelection)
     : { mode: wideChips || state === "load-all-refused" ? "load_all" : offChips ? "off" : "auto" });
@@ -625,7 +607,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
     if (!assistantSetup || rowFixed(row)) return;
     setAssistantOrigins((current) => ({ ...current, [row]: assistantSetup.origins[row] ?? "assistant" }));
     if (row === "model") setSelectedModel({ modelId: "gpt-5.2", provider: "openai-work" });
-    if (row === "search") setSearchIds([]);
+    if (row === "search") setSearchOn(false);
     if (row === "tools") setMcpSelection(structuredClone(assistantValues.tools as ComposerMcpSelection));
     if (row === "skills") setSkillsMode(assistantValues.skills.mode);
   };
@@ -635,7 +617,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
       origins: assistantOrigins,
       values: {
         model: { mode: "model", modelId: selectedModel.modelId },
-        search: searchIds.length > 0 ? { mode: "all_selected", optionIds: searchIds } : { mode: "off" },
+        search: searchOn ? { mode: "all_selected", optionIds: ["web-search"] } : { mode: "off" },
         skills: { ...assistantValues.skills, mode: skillsMode },
         tools: mcpSelection
       }
@@ -802,7 +784,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
               onSelectModel={(model) => {
                 if (changeRow("model")) setSelectedModel({ modelId: model.modelId, provider: model.provider });
               }}
-              onSelectSearchOptionIds={(ids) => { if (changeRow("search")) setSearchIds([...ids]); }}
+              onSearchEnabledChange={(enabled) => { if (changeRow("search")) setSearchOn(enabled); }}
               comments={comments}
               onUpdateComment={(id, text) => {
                 setComments(current => current.map(comment => comment.id === id ? { ...comment, text } : comment));
@@ -846,7 +828,7 @@ export function ComposerV2Gallery({ state = "default" }: { state?: ComposerGalle
                 : allCapabilities && !chipFixture ? ["one", "two", "three"] : []}
               selectedModelId={selectedModel.modelId}
               selectedProvider={selectedModel.provider}
-              selectedSearchOptionIds={searchIds}
+              searchEnabled={searchOn}
             />
           </div>
         </main>

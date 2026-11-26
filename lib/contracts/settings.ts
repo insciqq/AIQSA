@@ -21,8 +21,11 @@ export type UserSettingsWire = AnswerSoundPreferences & {
   modelPreferenceSource: "none" | "organization" | "personal";
   organizationModelDefault: { modelId: string; provider: string } | null;
   personalModelDefault: { modelId: string; provider: string } | null;
+  /** Earlier clients' view of `searchEnabled` (`SEARCH_ON_PLAN` or `SEARCH_OFF_PLAN`). */
   defaultSearchPlan: SearchPlan;
   organizationSearchPlan: SearchPlan;
+  /** The user's Search switch for every chat; absent on older wires. Written as `searchEnabled` too. */
+  searchEnabled?: boolean;
   searchPreferenceSource: "organization" | "personal";
   sendWithEnter: boolean;
   showCitations: boolean;
@@ -85,6 +88,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
     settings.organizationSearchPlan === undefined ||
     !defaultSearchPlan.ok ||
     !organizationSearchPlan.ok ||
+    (settings.searchEnabled !== undefined && typeof settings.searchEnabled !== "boolean") ||
     (settings.searchPreferenceSource !== "organization" && settings.searchPreferenceSource !== "personal")
   ) {
     return null;
@@ -106,6 +110,7 @@ export function decodeUpdateSettingsResponse(value: unknown): UpdateSettingsResp
       personalModelDefault: settings.personalModelDefault,
       defaultSearchPlan: defaultSearchPlan.plan,
       organizationSearchPlan: organizationSearchPlan.plan,
+      ...(typeof settings.searchEnabled === "boolean" ? { searchEnabled: settings.searchEnabled } : {}),
       searchPreferenceSource: settings.searchPreferenceSource,
       sendWithEnter: chatDefaults.sendWithEnter,
       showCitations: settings.showCitations,

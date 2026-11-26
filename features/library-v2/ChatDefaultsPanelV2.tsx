@@ -5,6 +5,7 @@ import { UiV2Button } from "@/components/ui-v2";
 import { ChatDefaultsRowsV2 } from "@/features/settings-v2/ChatDefaultsRowsV2";
 import { SettingsRowV2 } from "@/features/settings-v2/SettingsV2";
 import { SettingsSelectV2 } from "@/features/settings-v2/SettingsSelectV2";
+import { searchPlanEnabled, searchSettingPlan } from "@/lib/domain/search";
 import { SectionHeading } from "./LibraryV2";
 import type { LibraryTabIdV2 } from "./contracts";
 import { useEffect, useRef } from "react";
@@ -23,10 +24,11 @@ export function ChatDefaultsPanelV2({ composer, onNavigate }: Readonly<{
     {defaults ? <ChatDefaultsRowsV2
       imageModel={defaults.imageModel}
       mcpMode={defaults.mcpMode} skillsMode={defaults.skillsMode}
-      onSkillsMode={defaults.setSkillsMode} searchPlan={defaults.searchPlan}
-      searchStrategies={composer.catalog?.searchStrategies ?? []}
-      onMcpMode={defaults.setMcpMode} onSearchPlan={defaults.setSearchPlan}
-      onResetSearchPlan={defaults.resetSearchPlan} searchPreferenceSource={defaults.searchPreferenceSource}
+      onSkillsMode={defaults.setSkillsMode}
+      /* The user's Search switch (operator decisions 2026-11-26); an older wire says it with its plan. */
+      searchEnabled={composer.catalog?.defaults.searchEnabled ?? searchPlanEnabled(defaults.searchPlan)}
+      search={composer.catalog?.search ?? null}
+      onMcpMode={defaults.setMcpMode} onSearchEnabled={(enabled) => defaults.setSearchPlan(searchSettingPlan(enabled))}
       onOpenMcp={() => onNavigate("mcp")} onOpenSkills={() => onNavigate("skills")}
     /> : <p className="v2-settings-note" role="status">Defaults are unavailable until the model catalog loads.</p>}
   </section>;

@@ -6,6 +6,7 @@ import { COMPUTER_SEND_FIELD } from "../../contracts/computer";
 import { decodeWorkspaceNotRequestedReason } from "../../contracts/workspace";
 import { decodeDeepResearchRequest, DEEP_RESEARCH_REFUSALS, DEEP_RESEARCH_REGENERATE_REFUSAL, DEEP_RESEARCH_SEND_FIELD } from "../../contracts/research";
 import { deepResearchRefusal } from "../research/run";
+import { subagentSearchSourceCount } from "../search/toolExecutor";
 import { connectorTurnRules, DISCORD_RUN_REFUSALS, type ConnectorTurn } from "../connectors/turn";
 import type { FrozenComputerBinding } from "../tools/computerBinding";
 import {
@@ -334,7 +335,7 @@ function deepResearchAdmissionResponse(deps: Pick<RunHandlerDeps, "connectorTurn
   if (request.deepResearch !== true) return null;
   const { engine } = deps.nativeEngine;
   const code = deepResearchRefusal({ monitoring: request.monitoringVerdictTool === true, scheduled: deps.scheduledOccurrence !== undefined,
-    searchOptions: request.searchPlan.options.length, subagents: Boolean(engine.research && engine.subagentThreads) && request.toolMode !== "none",
+    searchOptions: subagentSearchSourceCount(request.searchPlan), subagents: Boolean(engine.research && engine.subagentThreads) && request.toolMode !== "none",
     connector: deps.connectorTurn !== undefined });
   return code ? Response.json({ error: code }, { status: 409 }) : null;
 }
