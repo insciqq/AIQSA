@@ -12,6 +12,8 @@ import { runAccountMenuAction } from "./shell/page";
 
 const prisma = new PrismaClient();
 test.afterAll(() => prisma.$disconnect());
+// A step that cannot act fails where it stands instead of waiting out the test.
+test.use({ actionTimeout: 20_000, navigationTimeout: 30_000 });
 
 test("one Search switch serves every chat across navigation, reload and login", async ({ page }, testInfo) => {
   test.setTimeout(150_000);
@@ -127,6 +129,8 @@ test("one Search switch serves every chat across navigation, reload and login", 
     await expect.poll(async () => (await prisma.userSettings.findUniqueOrThrow({ where: { userId: id } })).defaultSearchPlan).toBeNull();
     expect((await prisma.chat.findUniqueOrThrow({ where: { id: chatId } })).defaultSearchPlan).toEqual(off);
     await expect(searchChip).toHaveAccessibleDescription("Search: On");
+    // Below 1024px the chat list is a drawer; New chat is in reach again at the desktop size.
+    await page.setViewportSize({ width: 1440, height: 900 });
     await startNewChat(page);
     await expect(searchChip).toHaveAccessibleDescription("Search: On");
     expect((await catalog()).defaults).toMatchObject({ searchEnabled: true });
