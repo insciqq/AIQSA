@@ -23,9 +23,12 @@ import {
 import {
   reconcileSearchPlanSelection
 } from "@/lib/domain/catalogMatrix";
+import type { CatalogDefaults } from "@/lib/contracts/catalog";
 import {
   decodeSearchPlan,
   SEARCH_DISABLED_STRATEGY_ID,
+  searchPlanEnabled,
+  searchSettingPlan,
   type SearchPlan
 } from "@/lib/domain/search";
 
@@ -109,13 +112,18 @@ function resolveModelSearchPlan(
     : { mode: decoded.plan.mode, optionIds };
 }
 
+/**
+ * The user's Search switch as the composer holds it (operator decisions 2026-11-26): the one virtual source when on,
+ * none when off, whatever the engine or a model can search now, so a send never turns Search off because the engine
+ * is unavailable at the moment; admission binds the engine or says why not.
+ */
 function resolvePreferredSearchPlan(
-  preferredPlan: unknown,
-  strategies: readonly CatalogSearchStrategy[] = []
+  defaults: Pick<CatalogDefaults, "searchEnabled" | "searchPlan"> | null | undefined
 ): SearchPlan {
-  const decoded = decodeSearchPlan(preferredPlan);
-  if (!decoded.ok) return { mode: "all_selected", optionIds: [] };
-  return reconcileSearchPlanSelection(decoded.plan.optionIds, decoded.plan.mode, strategies);
+  if (!defaults) return searchSettingPlan(false);
+  if (typeof defaults.searchEnabled === "boolean") return searchSettingPlan(defaults.searchEnabled);
+  const decoded = decodeSearchPlan(defaults.searchPlan);
+  return searchSettingPlan(decoded.ok && searchPlanEnabled(decoded.plan));
 }
 
 function resolveModelControlDefaults(

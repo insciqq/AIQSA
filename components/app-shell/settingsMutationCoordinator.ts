@@ -188,6 +188,7 @@ function reconciledPatch(
     patch.searchPlan = settings.defaultSearchPlan;
     patch.organizationSearchPlan = settings.organizationSearchPlan;
     patch.searchPreferenceSource = settings.searchPreferenceSource;
+    if (settings.searchEnabled !== undefined) patch.searchEnabled = settings.searchEnabled;
   }
   if (Object.prototype.hasOwnProperty.call(sent, "assistantId")) {
     patch.assistantId = settings.defaultAssistantId ?? null;

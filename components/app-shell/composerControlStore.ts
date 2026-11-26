@@ -22,8 +22,8 @@ export type ComposerModelSelection = {
   modelId: string;
   provider: string;
   /**
-   * Search options the new model can run; selected options outside it are
-   * dropped so an unavailable engine is never kept silently (A6).
+   * Search options the new model can run. Not read any more: Search stays the user's on or off across models
+   * (operator decisions 2026-11-26); callers stop passing it with the legacy cleanup.
    */
   searchStrategyIds?: readonly string[];
 };
@@ -301,7 +301,7 @@ function assistantControlDefaults(
  */
 function userModelSelection(
   state: ComposerControlSnapshot,
-  { controlDefaults, modelId, provider, searchStrategyIds }: ComposerModelSelection
+  { controlDefaults, modelId, provider }: ComposerModelSelection
 ): Partial<ComposerControlSnapshot> {
   const assistant = boundComposerAssistant(state);
   const assistantModel = assistant?.rows.model.assistantValue;
@@ -310,19 +310,12 @@ function userModelSelection(
   const controls = governs && controlsRow
     ? assistantControlDefaults(controlDefaults, controlsRow.assistantValue)
     : controlDefaults;
-  const searchRowFree = !assistant || assistant.rows.search.origin === "chat";
+  // Search stays the user's on or off across models (operator decisions 2026-11-26): a model that cannot search
+  // never turns it off; the composer says so and admission explains.
   const update: Partial<ComposerControlSnapshot> = {
     ...controls,
     selectedModelId: modelId,
-    selectedProvider: provider,
-    ...(searchRowFree && searchStrategyIds &&
-      state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
-      ? {
-          selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
-            searchStrategyIds.includes(id)
-          )
-        }
-      : {})
+    selectedProvider: provider
   };
   if (!assistant || !controlsRow) return update;
   const changed = rowChange(state, "model", update);
@@ -359,22 +352,10 @@ export const useComposerControlStore = create<ComposerControlStore>((set, get) =
     });
   },
   applyModelSelection(selection, origin = "user") {
-    const { controlDefaults, modelId, provider, searchStrategyIds } = selection;
+    const { controlDefaults, modelId, provider } = selection;
     set((state) => origin === "user"
       ? userModelSelection(state, selection)
-      : {
-          ...controlDefaults,
-          selectedModelId: modelId,
-          selectedProvider: provider,
-          ...(searchStrategyIds &&
-            state.selectedSearchOptionIds.some((id) => !searchStrategyIds.includes(id))
-            ? {
-                selectedSearchOptionIds: state.selectedSearchOptionIds.filter((id) =>
-                  searchStrategyIds.includes(id)
-                )
-              }
-            : {})
-        });
+      : { ...controlDefaults, selectedModelId: modelId, selectedProvider: provider });
   },
   clearAssistant(fallback) {
     set((state) => {

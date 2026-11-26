@@ -669,10 +669,7 @@ export function useWorkspaceActions({
     setSelectedModelId(model?.modelId ?? chat.defaultModelId, "system");
     // A chat keeps no Search plan of its own (operator decision 2026-10-24):
     // every chat searches with the user's personal or organization default.
-    const searchPlan = resolvePreferredSearchPlan(
-      catalogOverride?.defaults.searchPlan,
-      catalogOverride?.searchStrategies
-    );
+    const searchPlan = resolvePreferredSearchPlan(catalogOverride?.defaults);
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
     applyModelControlDefaults(model, catalogOverride?.defaults.controlValues);
     // A chat keeps no MCP mode of its own: it runs in the user's saved mode.
@@ -904,7 +901,7 @@ export function useWorkspaceActions({
     setSelectedProvider(defaultModel?.provider ?? "", "system");
     setSelectedModelId(defaultModel?.modelId ?? "", "system");
     applyModelControlDefaults(defaultModel, catalog?.defaults.controlValues);
-    const searchPlan = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
+    const searchPlan = resolvePreferredSearchPlan(catalog?.defaults);
     setSelectedSearchPlan(searchPlan.optionIds, searchPlan.mode, "system");
     useComposerControlStore.getState().setMcpSelection({
       mode: catalog?.defaults.mcpMode ?? "auto"

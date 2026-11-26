@@ -213,22 +213,24 @@ describe("composer MCP mode", () => {
 });
 
 describe("composer Search", () => {
-  const strategies = [
-    { displayName: "One", kind: "web_search", strategyId: "one" },
-    { displayName: "Two", kind: "web_search", strategyId: "two" },
-    { displayName: "Hosted", executionModes: ["model_choice"], kind: "web_search", strategyId: "hosted" }
-  ];
+  const ON = { mode: "all_selected", optionIds: ["web-search"] };
+  const OFF = { mode: "all_selected", optionIds: [] };
 
-  function useSearchActionsForTest(searchPlan = { mode: "all_selected", optionIds: ["one"] }) {
+  function useSearchActionsForTest(
+    searchPlan: { mode: string; optionIds: string[] } = OFF,
+    // The one virtual source the catalog lists while some model can search; none while the engine is unavailable.
+    searchStrategies = [{ displayName: "Web search", kind: "web_search", strategyId: "web-search" }]
+  ) {
     const catalog = {
       defaults: {
         controlValues: {},
-        organizationSearchPlan: { mode: "all_selected", optionIds: ["two"] },
+        organizationSearchPlan: ON,
+        searchEnabled: searchPlan.optionIds.length > 0,
         searchPlan,
         searchPreferenceSource: "personal"
       },
       models: [],
-      searchStrategies: strategies
+      searchStrategies
     } as unknown as Catalog;
     const enqueue = vi.fn(async () => true);
     const fetch = vi.fn();
@@ -253,54 +255,66 @@ describe("composer Search", () => {
     vi.unstubAllGlobals();
   });
 
-  it("saves a chip change once as the personal default for every chat, never as the chat's plan", () => {
+  it("saves turning Search on once as the personal default for every chat, never as the chat's plan", () => {
     const { actions, enqueue, fetch } = useSearchActionsForTest();
 
-    actions.selectSearchPlan(["one", "two"], "model_choice");
+    actions.selectSearchPlan(["web-search"]);
 
-    const plan = { mode: "all_selected", optionIds: ["one", "two"] };
-    expect(useComposerControlStore.getState()).toMatchObject({ searchPlanMode: "all_selected", selectedSearchOptionIds: ["one", "two"] });
+    expect(useComposerControlStore.getState()).toMatchObject({ searchPlanMode: "all_selected", selectedSearchOptionIds: ["web-search"] });
     expect(enqueue).toHaveBeenCalledOnce();
-    expect(enqueue).toHaveBeenCalledWith({ searchPlan: plan, searchPreferenceSource: "personal" }, {});
+    expect(enqueue).toHaveBeenCalledWith({ searchEnabled: true, searchPlan: ON, searchPreferenceSource: "personal" }, {});
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("searches all selected sources, leaving out a source that cannot join them", () => {
-    const { actions, enqueue } = useSearchActionsForTest({ mode: "all_selected", optionIds: ["two"] });
+  it("saves Search on, never a source, while the engine is unavailable and no source is listed", () => {
+    const { actions, enqueue } = useSearchActionsForTest(OFF, []);
 
-    actions.selectSearchPlan(["one", "hosted"], "all_selected");
+    actions.selectSearchPlan(["web-search"]);
 
-    expect(enqueue).toHaveBeenCalledWith({ searchPlan: { mode: "all_selected", optionIds: ["one"] }, searchPreferenceSource: "personal" }, {});
+    expect(enqueue).toHaveBeenCalledWith({ searchEnabled: true, searchPlan: ON, searchPreferenceSource: "personal" }, {});
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual(["web-search"]);
   });
 
   it("never turns search off from the composer and skips an unchanged default", () => {
-    const { actions, enqueue } = useSearchActionsForTest();
+    const { actions, enqueue } = useSearchActionsForTest(ON);
 
-    actions.selectSearchPlan([], "all_selected");
-    actions.selectSearchPlan(["one"], "all_selected");
+    actions.selectSearchPlan([]);
+    actions.selectSearchPlan(["web-search"]);
 
     expect(enqueue).not.toHaveBeenCalled();
   });
 
   it("keeps an Assistant chat's Search as that chat's own row", () => {
     useComposerControlStore.setState({ assistant: boundComposerAssistantFixture() });
-    const { actions, enqueue } = useSearchActionsForTest();
+    const { actions, enqueue } = useSearchActionsForTest(ON);
 
-    actions.selectSearchPlan([], "all_selected");
+    actions.selectSearchPlan([]);
 
     expect(enqueue).not.toHaveBeenCalled();
     expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([]);
   });
 
   it("turns search off from Chat defaults and applies it to the open chat", () => {
-    const { actions, enqueue } = useSearchActionsForTest();
+    const { actions, enqueue } = useSearchActionsForTest(ON);
 
-    actions.setDefaultSearchPlan({ mode: "all_selected", optionIds: [] });
+    actions.setDefaultSearchPlan(OFF as never);
 
     expect(enqueue).toHaveBeenCalledWith(
-      { searchPlan: { mode: "all_selected", optionIds: [] }, searchPreferenceSource: "personal" },
+      { searchEnabled: false, searchPlan: OFF, searchPreferenceSource: "personal" },
       { noticeScope: "settings" }
     );
     expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual([]);
+  });
+
+  it("turns search back on from Chat defaults even while no source is listed", () => {
+    const { actions, enqueue } = useSearchActionsForTest(OFF, []);
+
+    actions.setDefaultSearchPlan(ON as never);
+
+    expect(enqueue).toHaveBeenCalledWith(
+      { searchEnabled: true, searchPlan: ON, searchPreferenceSource: "personal" },
+      { noticeScope: "settings" }
+    );
+    expect(useComposerControlStore.getState().selectedSearchOptionIds).toEqual(["web-search"]);
   });
 });

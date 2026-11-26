@@ -728,24 +728,25 @@ describe("workspace actions", () => {
     expect(state.activeComposer().workspaceEnabled).toBe(true);
   });
 
-  it.each([null, "folder-1"])("uses the current Search default in every chat and a new chat in %s", async (folderId) => {
+  it.each([null, "folder-1"])("uses the current Search switch in every chat and a new chat in %s", async (folderId) => {
     const state = useWorkspaceActionsForTest({ attachments: [], draft: "" });
     const catalog = useWorkspaceStore.getState().catalog!;
-    const selected = { mode: "all_selected" as const, optionIds: ["search-a", "search-b"] };
+    const on = { mode: "all_selected" as const, optionIds: ["web-search"] };
     const off = { mode: "all_selected" as const, optionIds: [] };
+    // On even while the engine is unavailable and the catalog lists no source (search-v2, 2026-11-26).
     useWorkspaceStore.setState({ catalog: {
       ...catalog,
-      defaults: { ...catalog.defaults, searchPlan: selected },
-      searchStrategies: selected.optionIds.map(strategyId => ({ strategyId, kind: "web_search", displayName: strategyId }))
+      defaults: { ...catalog.defaults, searchEnabled: true, searchPlan: on },
+      searchStrategies: []
     } });
     await state.actions.activateChat(state.chatA, { resumeRuns: false });
-    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(selected.optionIds, "all_selected", "system");
+    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(["web-search"], "all_selected", "system");
 
     state.actions.activateBlankWorkspace(folderId);
-    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(selected.optionIds, "all_selected", "system");
+    expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith(["web-search"], "all_selected", "system");
 
     useWorkspaceStore.getState().setCatalog(current => current
-      ? { ...current, defaults: { ...current.defaults, searchPlan: off } } : current);
+      ? { ...current, defaults: { ...current.defaults, searchEnabled: false, searchPlan: off } } : current);
     await state.actions.activateChat(state.chatB, { resumeRuns: false });
     expect(state.setSelectedSearchPlan).toHaveBeenLastCalledWith([], "all_selected", "system");
     state.actions.activateBlankWorkspace(folderId);

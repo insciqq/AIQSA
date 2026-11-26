@@ -81,7 +81,7 @@ export function personalComposerAssistantDefaults(catalog: Catalog | null): Comp
   const model = catalog?.models.find((candidate) =>
     candidate.provider === catalog.defaults.provider && candidate.modelId === catalog.defaults.modelId
   );
-  const search = resolvePreferredSearchPlan(catalog?.defaults.searchPlan, catalog?.searchStrategies);
+  const search = resolvePreferredSearchPlan(catalog?.defaults);
   return {
     model: model ? { modelId: model.modelId, provider: model.provider } : null,
     search: { mode: search.mode, optionIds: [...search.optionIds] },

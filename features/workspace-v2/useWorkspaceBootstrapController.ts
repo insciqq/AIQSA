@@ -155,10 +155,7 @@ export function useWorkspaceBootstrapController({
           setCatalogError(null);
           setSelectedProvider(defaultModel?.provider ?? "", "system");
           setSelectedModelId(defaultModel?.modelId ?? "", "system");
-          const defaultSearchPlan = resolvePreferredSearchPlan(
-            nextCatalog.defaults.searchPlan,
-            nextCatalog.searchStrategies
-          );
+          const defaultSearchPlan = resolvePreferredSearchPlan(nextCatalog.defaults);
           setSelectedSearchPlan(defaultSearchPlan.optionIds, defaultSearchPlan.mode, "system");
           setShowCitations(nextCatalog.defaults.showCitations);
           setShowReasoningBlocks(nextCatalog.defaults.showReasoningBlocks);
