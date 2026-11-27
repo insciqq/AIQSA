@@ -4,7 +4,11 @@ import "./dictation.css";
 import { UiV2IconButton } from "@/components/ui-v2";
 import type { CatalogDictation } from "@/lib/contracts/speechToText";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
+import { DictationWaveV2 } from "./DictationWaveV2";
 import { useDictationRecorder, useDictationSupportReason } from "./useDictationRecorder";
+
+/** Why Send is off while the wave covers the draft. */
+export const DICTATION_SEND_DISABLED_REASON = "Stop or cancel the dictation to send.";
 
 function elapsedLabel(ms: number): string {
   const seconds = Math.floor(ms / 1_000);
@@ -33,6 +37,11 @@ export function insertDictatedText(draft: string, text: string, selection: Reado
  * and the transcript inserted at the caret. Hidden without the administrator
  * role; disabled with the reason on plain HTTP, without browser recording, or
  * while the composer itself is blocked. The draft is never replaced.
+ *
+ * While recording with a measurable microphone level, `wave` takes the
+ * message field's place (`coversField`): the composer hides the draft and
+ * holds Send until the recording ends. Without a measurable level there is
+ * no wave and the composer behaves as before (operator decision 2026-11-27).
  */
 export function useComposerDictationV2(input: Readonly<{
   blockedReason: string | null;
@@ -41,7 +50,7 @@ export function useComposerDictationV2(input: Readonly<{
   onDraftChange(value: string): void;
   sessionKey: string;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
-}>): Readonly<{ control: ReactNode; status: ReactNode }> {
+}>): Readonly<{ control: ReactNode; coversField: boolean; status: ReactNode; wave: ReactNode }> {
   const support = useDictationSupportReason();
   const [error, setError] = useState<Readonly<{ message: string; sessionKey: string }> | null>(null);
   const describedBy = useId();
@@ -92,7 +101,7 @@ export function useComposerDictationV2(input: Readonly<{
   }, [cancel, phase]);
 
   const dictation = input.dictation;
-  if (!dictation || dictation.unavailableReason === "not_configured") return { control: null, status: null };
+  if (!dictation || dictation.unavailableReason === "not_configured") return { control: null, coversField: false, status: null, wave: null };
 
   const shownError = error && error.sessionKey === input.sessionKey ? error.message : null;
   const status = shownError ? (
@@ -103,7 +112,10 @@ export function useComposerDictationV2(input: Readonly<{
   ) : null;
 
   if (phase === "recording" || phase === "starting") {
+    const covers = phase === "recording" && recorder.meterLive;
     return {
+      coversField: covers,
+      wave: covers ? <DictationWaveV2 level={recorder.level} /> : null,
       control: (
         <span className="v2-composer-dictation" data-phase={phase} role="group" aria-label="Dictation">
           <span className="v2-composer-dictation-timer" aria-hidden="true">
@@ -124,6 +136,8 @@ export function useComposerDictationV2(input: Readonly<{
 
   if (phase === "transcribing") {
     return {
+      coversField: false,
+      wave: null,
       control: (
         <span className="v2-composer-dictation" data-phase="transcribing">
           <button className="v2-icon-button v2-focusable v2-composer-dictation-mic" type="button" disabled aria-busy="true"
@@ -141,6 +155,8 @@ export function useComposerDictationV2(input: Readonly<{
     : support ?? (dictation.available ? null : "Dictation is unavailable right now. Ask your administrator to check Speech to text.") ??
       input.blockedReason;
   return {
+    coversField: false,
+    wave: null,
     control: (
       <span className="v2-composer-dictation" data-phase="idle">
         <UiV2IconButton icon="mic" label="Dictate" className="v2-composer-dictation-mic"

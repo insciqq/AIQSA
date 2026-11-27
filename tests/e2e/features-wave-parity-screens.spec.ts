@@ -285,6 +285,31 @@ async function installDictationFixture() {
   };
 }
 
+/**
+ * The recording wave covers the message field: the field is hidden, Send (when
+ * shown) waits, and the fake microphone's beep paints a bar taller than the
+ * 2px silence baseline.
+ */
+async function expectRecordingWave(page: Page, message: Locator) {
+  const wave = page.getByTestId("composer-dictation-wave");
+  await expect(wave).toBeVisible();
+  await expect(message).toBeHidden();
+  const send = page.getByRole("button", { exact: true, name: "Send message" });
+  if (await send.count()) await expect(send).toBeDisabled();
+  await expect.poll(() => wave.locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext("2d");
+    if (!context || !canvas.width || !canvas.height) return 0;
+    const { data, height, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let tallest = 0;
+    for (let x = 0; x < width; x += 1) {
+      let painted = 0;
+      for (let y = 0; y < height; y += 1) if (data[(y * width + x) * 4 + 3]! > 0) painted += 1;
+      tallest = Math.max(tallest, painted);
+    }
+    return tallest / (window.devicePixelRatio || 1);
+  }), { timeout: 10_000 }).toBeGreaterThan(6);
+}
+
 async function dictationScreens(page: Page, testInfo: TestInfo, viewport: Viewport) {
   const fixture = await installDictationFixture();
   try {
@@ -301,6 +326,8 @@ async function dictationScreens(page: Page, testInfo: TestInfo, viewport: Viewpo
     const cancel = page.getByRole("button", { name: "Cancel dictation" });
     await expect(stop).toBeEnabled();
     await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[1-9]$/u, { timeout: 10_000 });
+    // The measured wave takes the field's place; the draft is hidden and Send waits.
+    await expectRecordingWave(page, message);
     await shot(page, testInfo, "dictation-recording", viewport);
     await expectContained(page, viewport, "dictation-recording", [cancel, stop]);
 
@@ -327,6 +354,19 @@ async function dictationScreens(page: Page, testInfo: TestInfo, viewport: Viewpo
     // Dismiss is the composer's shared compact status action, not a new control.
     await expectContained(page, viewport, "dictation-error", []);
     await softly("dictation-error: message within the viewport", () => expectWithinViewport(page, error));
+
+    // An empty draft records the same way (the refusal only applies on upload); Cancel sends nothing.
+    await page.getByRole("button", { name: "Dismiss" }).click();
+    await message.fill("");
+    await mic.click();
+    await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[1-9]$/u, { timeout: 10_000 });
+    await expectRecordingWave(page, message);
+    await shot(page, testInfo, "dictation-recording-empty", viewport);
+    await expectContained(page, viewport, "dictation-recording-empty", [cancel, stop]);
+    await cancel.click();
+    await expect(mic).toBeEnabled();
+    await expect(message).toBeVisible();
+    await expect(message).toHaveValue("");
   } finally {
     await page.goto("about:blank").catch(() => undefined);
     await fixture.cleanup();

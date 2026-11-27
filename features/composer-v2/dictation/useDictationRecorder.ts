@@ -15,6 +15,7 @@ import {
 } from "@/lib/contracts/speechToText";
 import { decodeUsageLimitRefusal } from "@/lib/contracts/usageLimits";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createDictationLevelMeter, type DictationLevelMeter } from "./dictationLevelMeter";
 
 export type DictationPhase = "idle" | "starting" | "recording" | "transcribing";
 
@@ -83,6 +84,7 @@ type Session = {
   cancelled: boolean;
   chunks: Blob[];
   controller: AbortController | null;
+  meter: DictationLevelMeter | null;
   recorder: MediaRecorder | null;
   stream: MediaStream | null;
   timer: ReturnType<typeof setInterval> | null;
@@ -95,7 +97,9 @@ type Session = {
  * fixed bitrate so a full-length dictation stays under the upload bound),
  * upload to `/api/me/transcriptions`, then `onText` with the transcript.
  * Cancel discards the audio at any phase. The audio only lives in this
- * browser until it is sent; nothing is kept after.
+ * browser until it is sent; nothing is kept after. While recording, a level
+ * meter reads the same stream's amplitude: `meterLive` says whether the level
+ * can really be measured now, and `level()` pulls the current 0..1 value.
  */
 export function useDictationRecorder(input: Readonly<{
   onError(message: string): void;
@@ -103,6 +107,7 @@ export function useDictationRecorder(input: Readonly<{
 }>) {
   const [phase, setPhase] = useState<DictationPhase>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [meterLive, setMeterLive] = useState(false);
   const session = useRef<Session | null>(null);
   const callbacks = useRef(input);
   useEffect(() => { callbacks.current = input; });
@@ -112,6 +117,9 @@ export function useDictationRecorder(input: Readonly<{
     if (current.autoStop) clearTimeout(current.autoStop);
     current.timer = null;
     current.autoStop = null;
+    current.meter?.close();
+    current.meter = null;
+    setMeterLive(false);
     current.stream?.getTracks().forEach((track) => track.stop());
     current.stream = null;
   }, []);
@@ -189,7 +197,8 @@ export function useDictationRecorder(input: Readonly<{
 
   const start = useCallback(async () => {
     if (session.current) return;
-    const current: Session = { autoStop: null, cancelled: false, chunks: [], controller: null, recorder: null, stream: null, timer: null };
+    const current: Session = { autoStop: null, cancelled: false, chunks: [], controller: null, meter: null, recorder: null, stream: null,
+      timer: null };
     session.current = current;
     setPhase("starting");
     let stream: MediaStream;
@@ -216,6 +225,11 @@ export function useDictationRecorder(input: Readonly<{
       return;
     }
     current.recorder = recorder;
+    // Only the level of the same stream, read in this tab. Without a running
+    // audio context there is no meter, and the composer keeps the timer alone.
+    current.meter = createDictationLevelMeter(stream, (live) => {
+      if (session.current === current && current.meter) setMeterLive(live);
+    });
     recorder.addEventListener("dataavailable", (event: BlobEvent) => {
       if (!current.cancelled && event.data.size) current.chunks.push(event.data);
     });
@@ -244,9 +258,13 @@ export function useDictationRecorder(input: Readonly<{
     }
     if (current.timer) clearInterval(current.timer);
     if (current.autoStop) clearTimeout(current.autoStop);
+    current.meter?.close();
+    current.meter = null;
     current.stream?.getTracks().forEach((track) => track.stop());
     session.current = null;
   }, []);
 
-  return { cancel, elapsedMs, phase, start, stop };
+  const level = useCallback(() => session.current?.meter?.level() ?? 0, []);
+
+  return { cancel, elapsedMs, level, meterLive: phase === "recording" && meterLive, phase, start, stop };
 }

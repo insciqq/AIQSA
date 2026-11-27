@@ -74,6 +74,37 @@
   .v2-composer-dictation[data-phase="recording"] .v2-composer-dictation-dot { animation: none; }
 }
 
+/* While a dictation records with a measurable level, its wave takes the
+   message field's place (operator decision 2026-11-27): the same grid area
+   (composer.css), so the composer never changes size; the field keeps its
+   box, value and selection under it and is hidden and inert. Ink bars only:
+   the canvas reads this `color`, so the theme decides it. */
+.v2-composer-input[inert] {
+  visibility: hidden;
+}
+
+.v2-composer-dictation-wave {
+  --v2-composer-dictation-wave-inset: 0.25rem;
+  position: relative;
+  grid-area: input;
+  align-self: stretch;
+  justify-self: stretch;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--v2-color-text);
+  pointer-events: none;
+}
+
+.v2-composer-dictation-wave > canvas {
+  position: absolute;
+  top: 0;
+  left: var(--v2-composer-dictation-wave-inset);
+  display: block;
+  width: calc(100% - 2 * var(--v2-composer-dictation-wave-inset));
+  height: 100%;
+}
+
 /* Touch and narrow composers size the dictation buttons like the composer's
    other run-action buttons (composer.css): at least 44px targets. */
 @media (hover: none), (pointer: coarse) {
@@ -91,6 +122,9 @@
     height: 2.75rem;
   }
 
+  /* The wave lines up with the narrow field's text inset. */
+  .v2-composer-dictation-wave { --v2-composer-dictation-wave-inset: 0.625rem; }
+
   /* While recording, the timer, Cancel and Stop take their own row beside
      Send (right-aligned) so the message keeps the full width; the chips
      stay below. Idle and transcribing keep the one-row layout. */
@@ -103,4 +137,10 @@
   .v2-composer-entry:has(.v2-composer-dictation[data-phase="starting"]) .v2-composer-run-action {
     justify-self: end;
   }
+}
+
+/* The phone's resting one-line field has its own text inset (composer.css). */
+@media (max-width: 767px) {
+  .v2-composer[data-resting] .v2-composer-dictation-wave { --v2-composer-dictation-wave-inset: 0.25rem; }
+  .v2-composer[data-message-only][data-resting] .v2-composer-dictation-wave { --v2-composer-dictation-wave-inset: 0.75rem; }
 }

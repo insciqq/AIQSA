@@ -40,7 +40,17 @@
   border: 0;
 }
 
+/* The message field owns the `input` area in every composer layout; the
+   dictation wave (dictation.css) takes the same area, so it covers exactly
+   the field's box without measuring it. */
+.v2-composer-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "input" "controls";
+}
+
 .v2-composer-input {
+  grid-area: input;
   display: block;
   width: 100%;
   min-height: 2.25rem;
@@ -112,6 +122,7 @@
 }
 
 .v2-composer-controls {
+  grid-area: controls;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;

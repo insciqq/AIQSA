@@ -105,12 +105,47 @@ async function installDictationFixture() {
   };
 }
 
+/** The tallest painted column of the dictation wave's canvas, in CSS pixels. */
+async function tallestWaveBar(page: Page): Promise<number> {
+  return page.getByTestId("composer-dictation-wave").locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
+    const context = canvas.getContext("2d");
+    if (!context || !canvas.width || !canvas.height) return 0;
+    const { data, height, width } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let tallest = 0;
+    for (let x = 0; x < width; x += 1) {
+      let painted = 0;
+      for (let y = 0; y < height; y += 1) if (data[(y * width + x) * 4 + 3]! > 0) painted += 1;
+      tallest = Math.max(tallest, painted);
+    }
+    return tallest / (window.devicePixelRatio || 1);
+  });
+}
+
+/**
+ * While recording, the measured wave takes the message field's exact box: the
+ * field is hidden, Send waits, and the fake microphone's periodic beep draws
+ * at least one bar well above the 2px silence baseline.
+ */
+async function expectWaveOverField(page: Page) {
+  const wave = page.getByTestId("composer-dictation-wave");
+  await expect(wave).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  const [waveBox, fieldBox] = await Promise.all([wave.boundingBox(), page.locator("textarea.v2-composer-input").boundingBox()]);
+  expect(waveBox && fieldBox).toBeTruthy();
+  for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(waveBox![key] - fieldBox![key])).toBeLessThanOrEqual(1);
+  await expect.poll(() => tallestWaveBar(page), { timeout: 10_000 }).toBeGreaterThan(6);
+}
+
 async function dictate(page: Page, seconds = 1.2) {
   await page.getByRole("button", { name: "Dictate", exact: true }).click();
   const stop = page.getByRole("button", { name: "Stop dictation and transcribe" });
   await expect(stop).toBeEnabled();
-  await page.waitForTimeout(seconds * 1_000);
+  const startedAt = Date.now();
+  await expectWaveOverField(page);
+  await page.waitForTimeout(Math.max(0, seconds * 1_000 - (Date.now() - startedAt)));
   await stop.click();
+  await expect(page.getByTestId("composer-dictation-wave")).toHaveCount(0);
 }
 
 test("an administrator's passing Test shows the microphone and a dictation lands at the caret, accounted", async ({ page }) => {
@@ -138,6 +173,7 @@ test("an administrator's passing Test shows the microphone and a dictation lands
     await message.fill("Hello world");
     await message.evaluate((element: HTMLTextAreaElement) => element.setSelectionRange(5, 5));
     await dictate(page);
+    await expect(message).toBeVisible();
     await expect(message).toHaveValue(`Hello ${TRANSCRIPT} world`);
     await expect(message).toBeFocused();
     expect(fixture.calls).toHaveLength(2);
@@ -166,6 +202,7 @@ test("a budget refusal discards the recording with a clear message, keeps the dr
     await expectNoHorizontalOverflow(page);
     await dictate(page, 0.8);
     await expect(page.getByTestId("composer-dictation-error")).toContainText("Recording discarded. Your monthly budget is $0.00");
+    await expect(message).toBeVisible();
     await expect(message).toHaveValue("Keep this draft");
     expect(fixture.calls).toHaveLength(0);
     expect(await prisma.usageEvent.count({ where: { modelId: MODEL, purpose: "speech_to_text" } })).toBe(0);

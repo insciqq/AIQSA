@@ -41,7 +41,7 @@ import {
 import { RunComposerActionV2 } from "@/features/run-lifecycle-v2/RunLifecycleV2";
 import { AttachmentTrayV2 } from "@/features/attachments-v2/AttachmentTrayV2";
 import { UsageLimitNoticeV2 } from "./UsageLimitNoticeV2";
-import { useComposerDictationV2 } from "./dictation/ComposerDictationV2";
+import { DICTATION_SEND_DISABLED_REASON, useComposerDictationV2 } from "./dictation/ComposerDictationV2";
 import { PASTE_AS_FILE_MIN_CHARS, usePastedTextAttachmentsV2 } from "./pastedTextAttachments";
 import type { CatalogDictation } from "@/lib/contracts/speechToText";
 import {
@@ -664,16 +664,24 @@ export function ComposerV2({
   const effectiveSkillsMode = skillsMode;
   const builtText = buildComposerMessage(draft, comments);
   const followupTooLong = builtText.length > RUN_FOLLOWUP_MAX_CHARS;
-  const sendDisabled = followupMode ? Boolean(followupSending || stopping || inputDisabled || !builtText.trim() || followupTooLong) : Boolean(
-    sending || inputDisabled || artifactBlockReason || attachmentBlockReason || (!builtText.trim() && !readyAttachment)
-  );
-  const sendDisabledReason = followupMode
+  /* Dimmed "+" rows say why: the composer's own blocking reason (an inline
+     edit, a disabled hint) rather than a bare "Unavailable" or the row's
+     ordinary description. The "+" button itself is off while a response runs. */
+  const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
+  const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
+  // The wave hides the draft while it records: nobody sends what they cannot see.
+  const dictationCoversField = dictationUi.coversField;
+  const sendDisabled = dictationCoversField || (followupMode
+    ? Boolean(followupSending || stopping || inputDisabled || !builtText.trim() || followupTooLong)
+    : Boolean(sending || inputDisabled || artifactBlockReason || attachmentBlockReason || (!builtText.trim() && !readyAttachment)));
+  const draftSendDisabledReason = followupMode
     ? followupSending ? "Sending follow-up…" : bootstrapReason ?? (followupTooLong
       ? `Keep the follow-up under ${RUN_FOLLOWUP_MAX_CHARS.toLocaleString()} characters. Shorten the draft or edit or delete a comment.` : !builtText.trim() ? "Type a follow-up." : null)
     : sending
     ? "Sending message…"
     : bootstrapReason ?? artifactBlockReason ?? attachmentBlockReason ??
       (!builtText.trim() && !readyAttachment ? "Type a message." : null);
+  const sendDisabledReason = dictationCoversField ? DICTATION_SEND_DISABLED_REASON : draftSendDisabledReason;
 
   const attachmentAccept = attachmentAcceptForPolicy(attachmentPolicy);
   // Files already uploading sit in the tray, so more can be added meanwhile.
@@ -681,11 +689,6 @@ export function ComposerV2({
     !onUploadFiles || (!attachmentAccept && !attachmentPolicy.files) ||
       inputDisabled || activeRun
   );
-  /* Dimmed "+" rows say why: the composer's own blocking reason (an inline
-     edit, a disabled hint) rather than a bare "Unavailable" or the row's
-     ordinary description. The "+" button itself is off while a response runs. */
-  const inputBlockedReason = inputDisabled ? bootstrapReason ?? "Unavailable" : null;
-  const dictationUi = useComposerDictationV2({ blockedReason: inputBlockedReason, dictation, draft, onDraftChange, sessionKey, textareaRef });
   const pastedTexts = usePastedTextAttachmentsV2(attachmentItems, sessionKey);
   const [pasteBackAttempt, setPasteBackAttempt] = useState<Readonly<{ id: string; sessionKey: string }> | null>(null);
   const pendingPasteCaret = useRef<Readonly<{ caret: number; draft: string }> | null>(null);
@@ -1415,7 +1418,7 @@ export function ComposerV2({
         {followupMode && (attachmentItems.length > 0 || artifactCreate || artifactEdit) ? (
           <p className="v2-composer-status">Only your text is sent as a follow-up. Files and artifact choices are kept for your next message.</p>
         ) : null}
-        {followupMode && followupTooLong ? <p className="v2-composer-status" role="alert">{sendDisabledReason}</p> : null}
+        {followupMode && followupTooLong ? <p className="v2-composer-status" role="alert">{draftSendDisabledReason}</p> : null}
         {draftTooLargeToKeep ? (
           <p className="v2-composer-status" role="status">
             Too large to keep after a reload: only the last version that fit would come back. Send this message, or shorten its text or comments.
@@ -1449,6 +1452,9 @@ export function ComposerV2({
             rows={1}
             value={draft}
             disabled={inputDisabled}
+            // Under the dictation wave the draft keeps its box, value and
+            // selection but takes no focus or typing until recording ends.
+            inert={dictationCoversField || undefined}
             aria-describedby={bootstrapReason ? statusId : undefined}
             role={paletteOpen ? "combobox" : undefined}
             aria-activedescendant={paletteOpen && palette.activeEntry ? palette.optionId(palette.activeEntry) : undefined}
@@ -1471,6 +1477,7 @@ export function ComposerV2({
             }}
             onPaste={handlePaste}
           />
+          {dictationUi.wave}
 
           <div className="v2-composer-controls">
             {!messageOnly ? <>
