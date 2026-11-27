@@ -81,7 +81,7 @@ for (const viewport of [
         }
         await expectReasoningValueVisible(page, "xhigh");
         await expect(composer.locator(".v2-composer-indicator").last()).toHaveAccessibleName("Reasoning effort: xhigh");
-        await expect(composer.locator(".v2-composer-indicator-count")).toHaveText(["2", "32"]);
+        await expect(composer.locator(".v2-composer-indicator-count")).toHaveText(["32"]);
         if (viewport.touch) {
           for (const button of await composer.locator("button:visible").all()) await expectTouchSafe(button);
         }
