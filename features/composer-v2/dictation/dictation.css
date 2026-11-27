@@ -77,8 +77,9 @@
 /* While a dictation records with a measurable level, its wave takes the
    message field's place (operator decision 2026-11-27): the same grid area
    (composer.css), so the composer never changes size; the field keeps its
-   box, value and selection under it and is hidden and inert. Ink bars only:
-   the canvas reads this `color`, so the theme decides it. */
+   box, value and selection under it and is hidden and inert. The canvas
+   reads two resolved colours, so the theme decides both: the box's muted
+   text colour for the still track, its own ink for the measured bars. */
 .v2-composer-input[inert] {
   visibility: hidden;
 }
@@ -92,12 +93,13 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  color: var(--v2-color-text);
+  color: var(--v2-color-text3);
   pointer-events: none;
 }
 
 .v2-composer-dictation-wave > canvas {
   position: absolute;
+  color: var(--v2-color-text);
   top: 0;
   left: var(--v2-composer-dictation-wave-inset);
   display: block;
