@@ -321,15 +321,22 @@ async function dictationScreens(page: Page, testInfo: TestInfo, viewport: Viewpo
     await shot(page, testInfo, "dictation-idle", viewport);
     await expectContained(page, viewport, "dictation-idle", [mic]);
 
+    // The suite runs with reduced motion; the travelling wave needs motion allowed.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await mic.click();
     const stop = page.getByRole("button", { name: "Stop dictation and transcribe" });
     const cancel = page.getByRole("button", { name: "Cancel dictation" });
     await expect(stop).toBeEnabled();
-    await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[1-9]$/u, { timeout: 10_000 });
+    // A few seconds in, the wave has travelled far enough to read as one.
+    await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[4-9]$/u, { timeout: 15_000 });
     // The measured wave takes the field's place; the draft is hidden and Send waits.
     await expectRecordingWave(page, message);
     await shot(page, testInfo, "dictation-recording", viewport);
     await expectContained(page, viewport, "dictation-recording", [cancel, stop]);
+    // Reduced motion: the level stays in place instead of travelling.
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expectRecordingWave(page, message);
+    await shot(page, testInfo, "dictation-recording-still", viewport);
 
     const release = fixture.hold();
     await stop.click();
@@ -358,11 +365,13 @@ async function dictationScreens(page: Page, testInfo: TestInfo, viewport: Viewpo
     // An empty draft records the same way (the refusal only applies on upload); Cancel sends nothing.
     await page.getByRole("button", { name: "Dismiss" }).click();
     await message.fill("");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await mic.click();
-    await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[1-9]$/u, { timeout: 10_000 });
+    await expect(page.locator(".v2-composer-dictation-timer")).toHaveText(/^0:0[4-9]$/u, { timeout: 15_000 });
     await expectRecordingWave(page, message);
     await shot(page, testInfo, "dictation-recording-empty", viewport);
     await expectContained(page, viewport, "dictation-recording-empty", [cancel, stop]);
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await cancel.click();
     await expect(mic).toBeEnabled();
     await expect(message).toBeVisible();

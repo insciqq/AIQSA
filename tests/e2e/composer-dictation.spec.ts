@@ -138,6 +138,8 @@ async function expectWaveOverField(page: Page) {
 }
 
 async function dictate(page: Page, seconds = 1.2) {
+  // The suite runs with reduced motion; these dictations check the travelling wave.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.getByRole("button", { name: "Dictate", exact: true }).click();
   const stop = page.getByRole("button", { name: "Stop dictation and transcribe" });
   await expect(stop).toBeEnabled();
